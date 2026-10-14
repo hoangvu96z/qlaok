@@ -141,7 +141,6 @@ export async function POST(req: Request) {
         // Proceed with Supabase public.profiles registration
       }
 
-      const nowIso = new Date().toISOString();
       const newProfilePayload: Profile = {
         id: newOwnerId,
         email: normalizedEmail,
@@ -149,8 +148,6 @@ export async function POST(req: Request) {
         phone: phone.trim() || undefined,
         plan: 'free',
         plan_expires_at: null,
-        created_at: nowIso,
-        updated_at: nowIso,
       };
 
       const { data: createdProfile, error: insertErr } = await sb
