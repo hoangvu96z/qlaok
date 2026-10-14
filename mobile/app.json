@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Qlaok CMS – Chủ Quán",
+    "slug": "qlaok-mobile-owner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "vn.qlaok.owner"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#10b981"
+      },
+      "package": "vn.qlaok.owner"
+    }
+  }
+}

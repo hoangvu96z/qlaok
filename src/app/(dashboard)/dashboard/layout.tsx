@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import { createClient } from '@/lib/supabase/client';
+import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 
 const NAV_ITEMS = [
   {
@@ -283,6 +284,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="flex-1 mx-auto w-full max-w-5xl p-4 sm:p-6">
+          <PwaInstallBanner />
           {children}
         </main>
       </div>

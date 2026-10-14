@@ -20,6 +20,16 @@ export const metadata: Metadata = {
   title: 'Qlaok (Quét là OK) – Menu, Bảng giá & Web Đa Ngôn Ngữ Cho Mọi Cửa Hàng',
   description:
     'Nền tảng tạo Menu, Bảng giá dịch vụ 5 ngôn ngữ tự động bằng AI (Việt, Anh, Hàn, Nhật, Trung) và Micro-Website QR cho Quán ăn, Tiệm Nail, Spa, Cửa hàng bán lẻ.',
+  manifest: '/manifest.webmanifest',
+  icons: {
+    icon: '/icon.svg',
+    apple: '/icon.svg',
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Qlaok CMS',
+  },
 };
 
 export const viewport: Viewport = {
