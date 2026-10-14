@@ -11,6 +11,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const slug = searchParams.get('slug');
   const shopId = searchParams.get('shopId');
+  const ownerId = searchParams.get('ownerId') || undefined;
 
   if (slug) {
     const bundle = await dbGetStorefrontBundle(slug);
@@ -28,14 +29,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ shop });
   }
 
-  const data = await dbGetAllShopsAndProfile();
+  const data = await dbGetAllShopsAndProfile(ownerId);
   return NextResponse.json(data);
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const created = await dbCreateShop(body);
+    const created = await dbCreateShop(body, body.owner_id);
     return NextResponse.json({ shop: created }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create shop';

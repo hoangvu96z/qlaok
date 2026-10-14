@@ -119,13 +119,40 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
 
 // ================= SHOP HELPERS =================
 
-export async function dbGetAllShopsAndProfile(): Promise<{
+export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
   shops: Shop[];
   profile: Profile;
   source: 'supabase';
 }> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+
+  if (ownerId) {
+    const [{ data: shops, error: shopsErr }, { data: ownerProfile }] =
+      await Promise.all([
+        sb
+          .from('shops')
+          .select('*')
+          .eq('owner_id', ownerId)
+          .order('created_at', { ascending: true }),
+        sb.from('profiles').select('*').eq('id', ownerId).maybeSingle(),
+      ]);
+
+    if (shopsErr) {
+      throw new Error(shopsErr.message);
+    }
+
+    return {
+      shops: (shops || []) as Shop[],
+      profile:
+        (ownerProfile as Profile) || {
+          ...SEED_PROFILE,
+          id: ownerId,
+          plan: 'free',
+        },
+      source: 'supabase',
+    };
+  }
 
   const [{ data: shops, error: shopsErr }, { data: profiles }] =
     await Promise.all([
@@ -209,7 +236,8 @@ export async function dbGetStorefrontBundle(slug: string) {
 }
 
 export async function dbCreateShop(
-  newShop: Omit<Shop, 'id' | 'owner_id'>
+  newShop: Omit<Shop, 'id' | 'owner_id'> & { owner_id?: string },
+  ownerId?: string
 ): Promise<Shop> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
@@ -231,17 +259,41 @@ export async function dbCreateShop(
     slug = `${slug}-${Math.floor(100 + Math.random() * 900)}`;
   }
 
-  const { data: profile } = await sb
-    .from('profiles')
-    .select('id')
-    .limit(1)
-    .single();
-  const ownerId = profile?.id || SEED_PROFILE.id;
+  let resolvedOwnerId = ownerId || newShop.owner_id;
+  if (!resolvedOwnerId) {
+    const { data: profile } = await sb
+      .from('profiles')
+      .select('id')
+      .limit(1)
+      .single();
+    resolvedOwnerId = profile?.id || SEED_PROFILE.id;
+  } else {
+    // Ensure owner profile exists in public.profiles to satisfy FK constraint
+    const { data: existingOwner } = await sb
+      .from('profiles')
+      .select('id')
+      .eq('id', resolvedOwnerId)
+      .maybeSingle();
+
+    if (!existingOwner) {
+      await sb.from('profiles').upsert(
+        {
+          id: resolvedOwnerId,
+          email: `${resolvedOwnerId}@qlaok.vn`,
+          full_name: 'Chủ Quán Qlaok',
+          plan: 'free',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+    }
+  }
 
   const payload: Shop = {
     ...newShop,
     id: `shop-${Date.now()}`,
-    owner_id: ownerId,
+    owner_id: resolvedOwnerId,
     slug,
   };
 
@@ -750,20 +802,22 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
   };
 }
 
-export async function dbGetBillingData() {
+export async function dbGetBillingData(ownerId?: string) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+  const resolvedOwnerId = ownerId || SEED_PROFILE.id;
 
-  const [{ data: profiles }, { data: transactions }] = await Promise.all([
-    sb.from('profiles').select('*').limit(1),
+  const [{ data: ownerProfile }, { data: transactions }] = await Promise.all([
+    sb.from('profiles').select('*').eq('id', resolvedOwnerId).maybeSingle(),
     sb
       .from('payment_transactions')
       .select('*')
+      .eq('user_id', resolvedOwnerId)
       .order('created_at', { ascending: false }),
   ]);
 
   return {
-    profile: (profiles?.[0] as Profile) || SEED_PROFILE,
+    profile: (ownerProfile as Profile) || SEED_PROFILE,
     transactions: (transactions || []).map((t) => ({
       ...t,
       amount: Number(t.amount),
@@ -773,15 +827,17 @@ export async function dbGetBillingData() {
 
 export async function dbCreatePaymentOrder(
   targetPlan: PlanTier,
-  amount: number
+  amount: number,
+  ownerId?: string
 ): Promise<PaymentTransaction> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+  const resolvedOwnerId = ownerId || SEED_PROFILE.id;
 
   const orderCode = `QLAOK${targetPlan.toUpperCase().slice(0, 1)}${Math.floor(10000 + Math.random() * 90000)}`;
   const tx: PaymentTransaction = {
     id: `tx-${Date.now()}`,
-    user_id: SEED_PROFILE.id,
+    user_id: resolvedOwnerId,
     order_code: orderCode,
     target_plan: targetPlan,
     amount,
@@ -801,7 +857,8 @@ export async function dbCreatePaymentOrder(
 
 export async function dbCompletePaymentWebhook(
   orderCode: string,
-  bankRefId?: string
+  bankRefId?: string,
+  ownerId?: string
 ) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
@@ -815,6 +872,7 @@ export async function dbCompletePaymentWebhook(
   const nowIso = new Date().toISOString();
   const refId = bankRefId || `FT${Date.now()}`;
   let targetPlan: PlanTier = 'premium';
+  const resolvedOwnerId = existingTx?.user_id || ownerId || SEED_PROFILE.id;
 
   if (existingTx) {
     targetPlan = existingTx.target_plan as PlanTier;
@@ -832,7 +890,7 @@ export async function dbCompletePaymentWebhook(
       : 'premium';
     await sb.from('payment_transactions').insert({
       id: `tx-${Date.now()}`,
-      user_id: SEED_PROFILE.id,
+      user_id: resolvedOwnerId,
       order_code: orderCode,
       target_plan: targetPlan,
       amount: targetPlan === 'basic' ? 39000 : 69000,
@@ -853,19 +911,23 @@ export async function dbCompletePaymentWebhook(
       plan_expires_at: expires.toISOString(),
       updated_at: nowIso,
     })
-    .eq('id', SEED_PROFILE.id);
+    .eq('id', resolvedOwnerId);
 
-  return dbGetBillingData();
+  return dbGetBillingData(resolvedOwnerId);
 }
 
-export async function dbSetProfilePlan(plan: PlanTier): Promise<Profile> {
+export async function dbSetProfilePlan(
+  plan: PlanTier,
+  ownerId?: string
+): Promise<Profile> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+  const resolvedOwnerId = ownerId || SEED_PROFILE.id;
 
   const { data, error } = await sb
     .from('profiles')
     .update({ plan, updated_at: new Date().toISOString() })
-    .eq('id', SEED_PROFILE.id)
+    .eq('id', resolvedOwnerId)
     .select('*')
     .single();
 

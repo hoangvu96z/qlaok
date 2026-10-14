@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowRight,
   Mail,
@@ -15,15 +15,19 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { getStoredAuthOwner, setStoredAuthOwner } from '@/lib/auth-session';
 
 type AuthMode = 'password_login' | 'register' | 'otp';
 
-export default function LoginPage() {
+function LoginFormContent() {
   const router = useRouter();
-  const [mode, setMode] = useState<AuthMode>('password_login');
+  const searchParams = useSearchParams();
+  const initialMode =
+    searchParams.get('mode') === 'register' ? 'register' : 'password_login';
+  const [mode, setMode] = useState<AuthMode>(initialMode);
 
-  const [email, setEmail] = useState('chuquan@qlaok.vn');
-  const [password, setPassword] = useState('qlaok123456');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [otpToken, setOtpToken] = useState('');
@@ -37,26 +41,52 @@ export default function LoginPage() {
 
   const supabaseEnabled = isSupabaseConfigured();
 
-  const syncUserProfile = async (user: {
-    id: string;
-    email?: string;
-    user_metadata?: Record<string, unknown>;
-  }) => {
-    const supabase = createClient();
-    if (!supabase) return;
-    await supabase.from('profiles').upsert(
-      {
-        id: user.id,
-        email: user.email || email,
-        full_name:
-          (user.user_metadata?.full_name as string) ||
-          fullName ||
-          (user.email ? user.email.split('@')[0] : 'Chủ Quán Qlaok'),
-        phone: (user.user_metadata?.phone as string) || phone || null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
-    );
+  useEffect(() => {
+    const modeParam = searchParams.get('mode');
+    if (modeParam === 'register') {
+      setMode('register');
+    } else if (modeParam === 'login') {
+      setMode('password_login');
+    }
+  }, [searchParams]);
+
+  // If already logged in, allow quick redirect or switching accounts
+  useEffect(() => {
+    const existing = getStoredAuthOwner();
+    if (existing && !searchParams.get('switch')) {
+      // Do not auto-redirect if user explicitly opened /login?mode=register
+      if (!searchParams.get('mode')) {
+        router.replace('/dashboard');
+      }
+    }
+  }, [router, searchParams]);
+
+  const handleDemoLogin = async () => {
+    setMessage(null);
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'demo_login' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.user) {
+        throw new Error(data.error || 'Không thể mở tài khoản Demo.');
+      }
+      setStoredAuthOwner(data.user);
+      if (data.shops?.[0]?.id && typeof window !== 'undefined') {
+        localStorage.setItem('qlaok_active_shop_id', data.shops[0].id);
+      }
+      router.push('/dashboard');
+    } catch (err) {
+      setMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Lỗi mở tài khoản Demo.',
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -64,82 +94,73 @@ export default function LoginPage() {
     setMessage(null);
     setLoading(true);
 
-    const supabase = createClient();
-    if (!supabase) {
-      router.push('/dashboard');
-      return;
-    }
-
     try {
       if (mode === 'password_login') {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'login',
+            email: email.trim(),
+            password,
+          }),
         });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(
+            data.error || 'Email hoặc mật khẩu không chính xác.'
+          );
+        }
 
-        if (error) {
-          // If logging in with the default demo credentials and account isn't registered in auth.users yet, auto-register or allow demo entry
-          if (
-            email.trim().toLowerCase() === 'chuquan@qlaok.vn' &&
-            error.message.toLowerCase().includes('invalid login credentials')
-          ) {
-            const signUpRes = await supabase.auth.signUp({
-              email: email.trim(),
-              password,
-              options: {
-                data: {
-                  full_name: 'Nguyễn Văn Minh (Chủ Quán Demo)',
-                  phone: '0905123456',
-                },
-              },
-            });
-            if (signUpRes.data?.user) {
-              await syncUserProfile(signUpRes.data.user);
-            }
-            router.push('/dashboard');
-            return;
+        setStoredAuthOwner(data.user);
+        const ownerShops = data.shops || [];
+        if (ownerShops.length === 0) {
+          router.push('/onboarding');
+        } else {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('qlaok_active_shop_id', ownerShops[0].id);
           }
-          throw error;
+          router.push('/dashboard');
         }
-
-        if (data.user) {
-          await syncUserProfile(data.user);
-        }
-        router.push('/dashboard');
         return;
       }
 
       if (mode === 'register') {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            data: {
-              full_name: fullName.trim() || 'Chủ Quán Qlaok',
-              phone: phone.trim(),
-            },
-          },
+        if (!fullName.trim()) {
+          throw new Error('Vui lòng nhập họ và tên Chủ quán.');
+        }
+
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'register',
+            email: email.trim(),
+            password,
+            fullName: fullName.trim(),
+            phone: phone.trim(),
+          }),
         });
-
-        if (error) throw error;
-
-        if (data.user) {
-          await syncUserProfile(data.user);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Không thể đăng ký tài khoản.');
         }
 
-        if (data.session) {
-          router.push('/dashboard');
-        } else {
-          setMessage({
-            type: 'success',
-            text: 'Đăng ký thành công! Nếu Supabase yêu cầu xác thực email, vui lòng kiểm tra hộp thư hoặc bấm đăng nhập ngay.',
-          });
-          setMode('password_login');
+        setStoredAuthOwner(data.user);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('qlaok_active_shop_id');
         }
+        // New owner has 0 shops -> take them directly to 3-step Onboarding Wizard
+        router.push('/onboarding');
         return;
       }
 
       if (mode === 'otp') {
+        const supabase = createClient();
+        if (!supabase) {
+          throw new Error('Supabase Auth chưa được cấu hình.');
+        }
+
         if (!otpSent) {
           const { error } = await supabase.auth.signInWithOtp({
             email: email.trim(),
@@ -161,7 +182,25 @@ export default function LoginPage() {
           });
           if (error) throw error;
           if (data.user) {
-            await syncUserProfile(data.user);
+            const syncRes = await fetch('/api/auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'sync_user',
+                userId: data.user.id,
+                email: data.user.email || email.trim(),
+                fullName: data.user.user_metadata?.full_name as string,
+                phone: data.user.user_metadata?.phone as string,
+              }),
+            });
+            const syncData = await syncRes.json();
+            if (syncData.user) {
+              setStoredAuthOwner(syncData.user);
+            }
+            if ((syncData.shops || []).length === 0) {
+              router.push('/onboarding');
+              return;
+            }
           }
           router.push('/dashboard');
         }
@@ -190,41 +229,19 @@ export default function LoginPage() {
             Q
           </Link>
           <h1 className="text-2xl font-black tracking-tight">
-            Qlaok CMS – Chủ Quán
+            {mode === 'register'
+              ? 'Đăng Ký Tài Khoản Chủ Quán'
+              : 'Đăng Nhập Qlaok CMS'}
           </h1>
           <p className="text-xs text-slate-400">
-            Quản lý Menu 5 ngôn ngữ, Bảng giá & Mã QR cho cửa hàng của bạn
+            Quản lý Menu 5 ngôn ngữ, Bảng giá, Tồn kho &amp; Đơn hàng mPOS cho cửa hàng của bạn
           </p>
           {supabaseEnabled && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-bold text-emerald-400">
               <CheckCircle2 className="h-3 w-3" />
-              Supabase Auth & PostgreSQL Ready
+              Supabase Auth &amp; PostgreSQL Connected
             </span>
           )}
-        </div>
-
-        {/* 1-Tap Demo Owner Login */}
-        <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-400">
-              <Sparkles className="h-4 w-4" />
-              <span>Tài khoản Demo (3 Cửa hàng mẫu)</span>
-            </div>
-            <span className="rounded-md bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-              PREMIUM
-            </span>
-          </div>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            Vào thẳng CMS quản lý 3 cửa hàng mẫu trên Supabase (Phở Hội An, Linh Spa & Nail, Làng Quà Việt).
-          </p>
-          <button
-            type="button"
-            onClick={() => router.push('/dashboard')}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-emerald-500 py-2.5 px-4 text-xs font-black text-slate-950 shadow-md hover:bg-emerald-400 active:scale-98"
-          >
-            <span>Vào Ngay Trang Quản Trị (1 Chạm)</span>
-            <ArrowRight className="h-4 w-4" />
-          </button>
         </div>
 
         {/* Mode Switcher Tabs */}
@@ -237,7 +254,7 @@ export default function LoginPage() {
             }}
             className={`rounded-lg py-2 text-xs font-bold transition-all ${
               mode === 'password_login'
-                ? 'bg-slate-800 text-white shadow-xs'
+                ? 'bg-emerald-500 text-slate-950 shadow-xs'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -251,7 +268,7 @@ export default function LoginPage() {
             }}
             className={`rounded-lg py-2 text-xs font-bold transition-all ${
               mode === 'register'
-                ? 'bg-slate-800 text-white shadow-xs'
+                ? 'bg-emerald-500 text-slate-950 shadow-xs'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -265,7 +282,7 @@ export default function LoginPage() {
             }}
             className={`rounded-lg py-2 text-xs font-bold transition-all ${
               mode === 'otp'
-                ? 'bg-slate-800 text-white shadow-xs'
+                ? 'bg-emerald-500 text-slate-950 shadow-xs'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -291,7 +308,7 @@ export default function LoginPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Họ và tên Chủ quán
+                  Họ và tên Chủ quán *
                 </label>
                 <div className="relative">
                   <User className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -325,7 +342,7 @@ export default function LoginPage() {
 
           <div>
             <label className="block text-xs font-bold text-slate-300 mb-1">
-              Email Chủ quán
+              Email Chủ quán *
             </label>
             <div className="relative">
               <Mail className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -333,6 +350,7 @@ export default function LoginPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                placeholder="tenquan@gmail.com"
                 required
                 className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
               />
@@ -342,7 +360,7 @@ export default function LoginPage() {
           {mode !== 'otp' && (
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Mật khẩu
+                Mật khẩu *
               </label>
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -352,7 +370,7 @@ export default function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   minLength={6}
-                  placeholder="Tối thiểu 6 ký tự"
+                  placeholder="Nhập mật khẩu (tối thiểu 6 ký tự)"
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
                 />
               </div>
@@ -381,30 +399,70 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-xl bg-white py-3 text-xs font-black text-slate-950 hover:bg-slate-100 disabled:opacity-50"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 py-3 text-xs font-black text-slate-950 hover:bg-emerald-400 disabled:opacity-50 shadow-lg"
           >
-            {loading
-              ? 'Đang xử lý với Supabase...'
-              : mode === 'password_login'
-                ? 'Đăng nhập bằng Mật khẩu'
-                : mode === 'register'
-                  ? 'Tạo tài khoản Chủ quán'
-                  : otpSent
-                    ? 'Xác nhận mã OTP'
-                    : 'Gửi mã OTP qua Email'}
+            <span>
+              {loading
+                ? 'Đang xử lý với Supabase...'
+                : mode === 'password_login'
+                  ? 'Đăng nhập vào Quản trị Quán'
+                  : mode === 'register'
+                    ? 'Đăng ký & Bắt đầu Tạo Quán →'
+                    : otpSent
+                      ? 'Xác nhận mã OTP'
+                      : 'Gửi mã OTP qua Email'}
+            </span>
+            {!loading && <ArrowRight className="h-4 w-4" />}
           </button>
         </form>
 
-        <div className="flex items-center justify-between border-t border-slate-800 pt-4 text-xs text-slate-400">
-          <span>Chưa có cửa hàng?</span>
-          <Link
-            href="/onboarding"
-            className="font-bold text-emerald-400 hover:underline"
+        {/* Optional Demo Preview Button at the bottom */}
+        <div className="border-t border-slate-800 pt-4 space-y-2.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>
+              {mode === 'register'
+                ? 'Đã có tài khoản Chủ quán?'
+                : 'Chưa có tài khoản Chủ quán?'}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === 'register' ? 'password_login' : 'register');
+                setMessage(null);
+              }}
+              className="font-bold text-emerald-400 hover:underline"
+            >
+              {mode === 'register'
+                ? 'Đăng nhập ngay →'
+                : 'Đăng ký miễn phí →'}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleDemoLogin}
+            className="w-full flex items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950/70 hover:bg-slate-800/80 py-2 px-3 text-[11px] font-semibold text-slate-400 hover:text-emerald-300 transition-colors"
           >
-            Tạo quán mới trong 2 phút →
-          </Link>
+            <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            <span>Xem thử CMS với Tài khoản Demo (3 cửa hàng mẫu)</span>
+          </button>
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        </div>
+      }
+    >
+      <LoginFormContent />
+    </Suspense>
   );
 }

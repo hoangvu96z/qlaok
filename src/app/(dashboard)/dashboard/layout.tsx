@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
+import { clearStoredAuthOwner } from '@/lib/auth-session';
 import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 import { ShopOrder } from '@/types/qlaok';
@@ -103,7 +104,7 @@ function playGlobalOrderChime() {
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { shops, activeShop, profile, selectShop } = useDashboard();
+  const { shops, activeShop, profile, loading, selectShop } = useDashboard();
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
   const [liveToastOrder, setLiveToastOrder] = useState<{
@@ -190,12 +191,24 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   }, [checkLiveOrders, activeShop?.id]);
 
   const handleLogout = async () => {
+    clearStoredAuthOwner();
     const supabase = createClient();
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push('/login');
+    router.replace('/login');
   };
+
+  if (loading || !profile) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-3">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-xs font-bold text-slate-400">
+          Đang kiểm tra phiên đăng nhập Chủ quán...
+        </p>
+      </div>
+    );
+  }
 
   const planBadgeColor =
     profile?.plan === 'premium'

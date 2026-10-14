@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -15,12 +15,15 @@ import {
   Scissors,
   ShoppingBag,
 } from 'lucide-react';
-import { BusinessVertical } from '@/types/qlaok';
+import { BusinessVertical, Profile } from '@/types/qlaok';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
+import { getStoredAuthOwner } from '@/lib/auth-session';
 
 export default function OnboardingWizardPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [ownerProfile, setOwnerProfile] = useState<Profile | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   // Step 1: Vertical & Name
   const [vertical, setVertical] = useState<BusinessVertical>('fnb');
@@ -41,6 +44,19 @@ export default function OnboardingWizardPage() {
 
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    const owner = getStoredAuthOwner();
+    if (!owner) {
+      router.replace('/login?mode=register');
+      return;
+    }
+    setOwnerProfile(owner);
+    if (owner.phone) {
+      setPhone(owner.phone);
+    }
+    setCheckingAuth(false);
+  }, [router]);
 
   const handleSelectVertical = (v: BusinessVertical) => {
     setVertical(v);
@@ -91,11 +107,12 @@ export default function OnboardingWizardPage() {
       });
       const transData = await transRes.json();
 
-      // 2. Create Shop
+      // 2. Create Shop attached to the logged-in Owner
       const shopRes = await fetch('/api/shops', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          owner_id: ownerProfile?.id,
           name: shopName.trim(),
           slug: slugBase || `shop-${Date.now()}`,
           vertical,
@@ -121,8 +138,8 @@ export default function OnboardingWizardPage() {
           google_review_url: `https://maps.google.com/?q=${encodeURIComponent(
             `${shopName} ${city}`
           )}`,
-          phone_contact: phone.trim() || '0905123456',
-          zalo_phone: phone.trim() || '0905123456',
+          phone_contact: phone.trim() || ownerProfile?.phone || '0905123456',
+          zalo_phone: phone.trim() || ownerProfile?.phone || '0905123456',
           wifi_info: {
             ssid: wifiSsid.trim() || `${slugBase}_FreeWiFi`,
             password: wifiPassword.trim() || '12345678',
@@ -197,6 +214,17 @@ export default function OnboardingWizardPage() {
       setCreating(false);
     }
   };
+
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-3">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-xs font-bold text-slate-400">
+          Đang kiểm tra tài khoản Chủ quán...
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-center items-center p-4">

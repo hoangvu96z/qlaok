@@ -7,28 +7,34 @@ import {
 } from '@/lib/db';
 import { PlanTier } from '@/types/qlaok';
 
-export async function GET() {
-  const data = await dbGetBillingData();
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const ownerId = searchParams.get('ownerId') || undefined;
+  const data = await dbGetBillingData(ownerId);
   return NextResponse.json(data);
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { action } = body;
+    const { action, ownerId } = body;
 
     if (action === 'create_order') {
       const targetPlan: PlanTier = body.targetPlan || 'premium';
       const amount = Number(
         body.amount ?? (targetPlan === 'basic' ? 39000 : 69000)
       );
-      const transaction = await dbCreatePaymentOrder(targetPlan, amount);
+      const transaction = await dbCreatePaymentOrder(
+        targetPlan,
+        amount,
+        ownerId
+      );
       return NextResponse.json({ transaction }, { status: 201 });
     }
 
     if (action === 'switch_plan_direct') {
       const plan: PlanTier = body.plan || 'premium';
-      const profile = await dbSetProfilePlan(plan);
+      const profile = await dbSetProfilePlan(plan, ownerId);
       return NextResponse.json({ profile });
     }
 
@@ -49,7 +55,8 @@ export async function POST(req: Request) {
 
     const result = await dbCompletePaymentWebhook(
       orderCode,
-      body.referenceCode || body.bankRefId
+      body.referenceCode || body.bankRefId,
+      ownerId
     );
     return NextResponse.json({
       success: true,

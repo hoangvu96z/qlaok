@@ -7,7 +7,14 @@ import React, {
   useEffect,
   useCallback,
 } from 'react';
+import { useRouter } from 'next/navigation';
 import { Profile, Shop } from '@/types/qlaok';
+import {
+  clearStoredAuthOwner,
+  getStoredAuthOwner,
+  setStoredAuthOwner,
+} from '@/lib/auth-session';
+import { createClient } from '@/lib/supabase/client';
 
 interface DashboardContextValue {
   shops: Shop[];
@@ -28,6 +35,7 @@ const DashboardContext = createContext<DashboardContextValue>({
 });
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const [shops, setShops] = useState<Shop[]>([]);
   const [activeShopId, setActiveShopId] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -35,11 +43,58 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
   const refreshDashboard = useCallback(async () => {
     try {
-      const res = await fetch('/api/shops', { cache: 'no-store' });
+      let owner = getStoredAuthOwner();
+
+      // If not in localStorage yet, check if Supabase Auth has an active session (e.g. from OTP/Magic Link)
+      if (!owner) {
+        const supabase = createClient();
+        if (supabase) {
+          const { data: userRes } = await supabase.auth.getUser();
+          if (userRes?.user?.email) {
+            const syncRes = await fetch('/api/auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'sync_user',
+                userId: userRes.user.id,
+                email: userRes.user.email,
+                fullName: userRes.user.user_metadata?.full_name as string,
+                phone: userRes.user.user_metadata?.phone as string,
+              }),
+            });
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              if (syncData.user) {
+                owner = syncData.user as Profile;
+                setStoredAuthOwner(owner);
+              }
+            }
+          }
+        }
+      }
+
+      if (!owner) {
+        clearStoredAuthOwner();
+        router.replace('/login');
+        return;
+      }
+
+      const res = await fetch(
+        `/api/shops?ownerId=${encodeURIComponent(owner.id)}`,
+        { cache: 'no-store' }
+      );
       const data = await res.json();
       const loadedShops: Shop[] = data.shops || [];
+      const loadedProfile: Profile = data.profile || owner;
+
+      setProfile(loadedProfile);
+      setStoredAuthOwner(loadedProfile);
       setShops(loadedShops);
-      setProfile(data.profile || null);
+
+      if (loadedShops.length === 0) {
+        router.replace('/onboarding');
+        return;
+      }
 
       const savedId =
         typeof window !== 'undefined'
@@ -53,12 +108,12 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           loadedShops.some((s) => s.id === prev) ? prev : loadedShops[0].id
         );
       }
+      setLoading(false);
     } catch (err) {
       console.error('Error loading dashboard shops:', err);
-    } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     refreshDashboard();

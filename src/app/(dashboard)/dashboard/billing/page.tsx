@@ -25,14 +25,19 @@ export default function DashboardBillingPage() {
   const [toast, setToast] = useState('');
 
   const loadBilling = async () => {
-    const res = await fetch('/api/webhooks/payment', { cache: 'no-store' });
+    const query = profile?.id
+      ? `?ownerId=${encodeURIComponent(profile.id)}`
+      : '';
+    const res = await fetch(`/api/webhooks/payment${query}`, {
+      cache: 'no-store',
+    });
     const data = await res.json();
     setTransactions(data.transactions || []);
   };
 
   useEffect(() => {
     loadBilling();
-  }, []);
+  }, [profile?.id]);
 
   const currentPlan: PlanTier = profile?.plan || 'free';
 
@@ -50,6 +55,7 @@ export default function DashboardBillingPage() {
         action: 'create_order',
         targetPlan,
         amount: cfg.priceMonthly,
+        ownerId: profile?.id,
       }),
     });
     const data = await res.json();
@@ -68,6 +74,7 @@ export default function DashboardBillingPage() {
         body: JSON.stringify({
           orderCode,
           referenceCode: `SEPAY_${Date.now()}`,
+          ownerId: profile?.id,
         }),
       });
       if (res.ok) {
@@ -91,6 +98,7 @@ export default function DashboardBillingPage() {
       body: JSON.stringify({
         action: 'switch_plan_direct',
         plan,
+        ownerId: profile?.id,
       }),
     });
     await refreshDashboard();

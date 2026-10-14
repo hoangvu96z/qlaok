@@ -133,23 +133,23 @@ export default function MarketingLandingPage() {
             <Link href="/pricing" className="hover:text-emerald-600">
               Bảng giá
             </Link>
-            <Link href="/dashboard" className="hover:text-emerald-600">
+            <Link href="/login" className="hover:text-emerald-600">
               Quản trị Chủ quán (CMS)
             </Link>
           </nav>
 
           <div className="flex items-center gap-2">
             <Link
-              href="/dashboard"
+              href="/login"
               className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100"
             >
-              Mở CMS Chủ Quán
+              Đăng nhập Chủ Quán
             </Link>
             <Link
-              href="/onboarding"
+              href="/login?mode=register"
               className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-emerald-500"
             >
-              <span>Tạo Menu QR Miễn Phí</span>
+              <span>Đăng ký Tạo Quán</span>
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -182,18 +182,18 @@ export default function MarketingLandingPage() {
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Link
-                href="/onboarding"
+                href="/login?mode=register"
                 className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-6 py-4 text-sm font-black text-slate-950 shadow-xl hover:bg-emerald-400 active:scale-98"
               >
                 <QrCode className="h-5 w-5" />
-                <span>Tạo Menu QR Cho Quán Ngay (Miễn Phí)</span>
+                <span>Đăng Ký & Tạo Menu QR Ngay (Miễn Phí)</span>
               </Link>
 
               <Link
-                href="/dashboard"
+                href="/login"
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-800/80 px-5 py-4 text-sm font-bold text-white hover:bg-slate-800"
               >
-                <span>Dùng Thử CMS Chủ Quán</span>
+                <span>Đăng Nhập CMS Chủ Quán</span>
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
