@@ -146,7 +146,7 @@ export async function POST(req: Request) {
         id: newOwnerId,
         email: normalizedEmail,
         full_name: fullName.trim() || normalizedEmail.split('@')[0],
-        phone: phone.trim() || null,
+        phone: phone.trim() || undefined,
         plan: 'free',
         plan_expires_at: null,
         created_at: nowIso,

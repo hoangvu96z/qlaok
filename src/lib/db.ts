@@ -290,10 +290,12 @@ export async function dbCreateShop(
     }
   }
 
+  const finalOwnerId: string = resolvedOwnerId || SEED_PROFILE.id;
+
   const payload: Shop = {
     ...newShop,
     id: `shop-${Date.now()}`,
-    owner_id: resolvedOwnerId,
+    owner_id: finalOwnerId,
     slug,
   };
 
