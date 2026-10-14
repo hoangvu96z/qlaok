@@ -14,6 +14,7 @@ import {
   Vibration,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 import {
   supabase,
   API_BASE_URL,
@@ -28,7 +29,7 @@ import {
 type TabType = 'orders' | 'overview' | 'catalog' | 'settings';
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(true);
   const [email, setEmail] = useState('chuquan@qlaok.vn');
   const [password, setPassword] = useState('qlaok123456');
   const [authLoading, setAuthLoading] = useState(false);
@@ -457,8 +458,9 @@ export default function App() {
             style={styles.demoButton}
             onPress={() => handleLogin(true)}
           >
+            <Ionicons name="flash" size={16} color="#020617" style={{ marginRight: 6 }} />
             <Text style={styles.demoButtonText}>
-              ⚡ Vào Nhanh Quầy Thu Ngân mPOS Demo (1 Chạm)
+              Vào Nhanh Quầy Thu Ngân mPOS Demo (1 Chạm)
             </Text>
           </TouchableOpacity>
 
@@ -548,9 +550,12 @@ export default function App() {
               <Text style={styles.headerTitle}>
                 {activeShop?.name || 'Qlaok mPOS'}
               </Text>
-              <Text style={styles.headerSub}>
-                📍 {activeShop?.city || 'Đà Nẵng'} • Realtime mPOS
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                <Ionicons name="location" size={12} color="#10b981" style={{ marginRight: 3 }} />
+                <Text style={styles.headerSub}>
+                  {activeShop?.city || 'Đà Nẵng'} • Realtime mPOS
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -576,19 +581,28 @@ export default function App() {
                 onPress={() => loadShopsAndData(shop.id)}
                 style={[styles.shopPill, active && styles.shopPillActive]}
               >
-                <Text
-                  style={[
-                    styles.shopPillText,
-                    active && styles.shopPillTextActive,
-                  ]}
-                >
-                  {shop.vertical === 'fnb'
-                    ? '🍜 '
-                    : shop.vertical === 'service'
-                      ? '💆‍♀️ '
-                      : '🛍️ '}
-                  {shop.name}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons
+                    name={
+                      shop.vertical === 'fnb'
+                        ? 'restaurant'
+                        : shop.vertical === 'service'
+                          ? 'sparkles'
+                          : 'bag-handle'
+                    }
+                    size={13}
+                    color={active ? '#ffffff' : '#64748b'}
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text
+                    style={[
+                      styles.shopPillText,
+                      active && styles.shopPillTextActive,
+                    ]}
+                  >
+                    {shop.name}
+                  </Text>
+                </View>
               </TouchableOpacity>
             );
           })}
@@ -606,9 +620,12 @@ export default function App() {
           }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={styles.liveAlertBadge}>
-              🔔 KHÁCH VỪA GỬI ĐƠN MỚI TẠI BÀN!
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Ionicons name="notifications" size={13} color="#ffffff" style={{ marginRight: 4 }} />
+              <Text style={styles.liveAlertBadge}>
+                KHÁCH VỪA GỬI ĐƠN MỚI TẠI BÀN!
+              </Text>
+            </View>
             <Text style={styles.liveAlertTitle}>
               {liveOrderAlert.tableLabel} • #{liveOrderAlert.orderCode} (
               {formatVnd(liveOrderAlert.totalAmount)})
@@ -730,9 +747,12 @@ export default function App() {
                                 {line.name_vi}
                               </Text>
                               {line.custom_note ? (
-                                <Text style={styles.orderNoteText}>
-                                  📝 {line.custom_note}
-                                </Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                                  <Ionicons name="create-outline" size={11} color="#64748b" style={{ marginRight: 3 }} />
+                                  <Text style={styles.orderNoteText}>
+                                    {line.custom_note}
+                                  </Text>
+                                </View>
                               ) : null}
                             </View>
                             <Text style={styles.viewCountText}>
@@ -746,9 +766,12 @@ export default function App() {
                       </View>
 
                       {order.customer_note ? (
-                        <Text style={styles.orderNoteText}>
-                          💬 Ghi chú bàn: {order.customer_note}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                          <Ionicons name="chatbubble-ellipses-outline" size={12} color="#64748b" style={{ marginRight: 4 }} />
+                          <Text style={styles.orderNoteText}>
+                            Ghi chú bàn: {order.customer_note}
+                          </Text>
+                        </View>
                       ) : null}
 
                       {/* Order Action Buttons */}
@@ -761,9 +784,12 @@ export default function App() {
                                 handleUpdateOrderStatus(order.id, 'preparing')
                               }
                             >
-                              <Text style={styles.btnPrepareText}>
-                                👨‍🍳 Nhận đơn &amp; Báo bếp
-                              </Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                                <Ionicons name="restaurant" size={13} color="#ffffff" style={{ marginRight: 4 }} />
+                                <Text style={styles.btnPrepareText}>
+                                  Nhận đơn &amp; Báo bếp
+                                </Text>
+                              </View>
                             </TouchableOpacity>
                             <TouchableOpacity
                               style={styles.btnCancel}
@@ -788,9 +814,12 @@ export default function App() {
                                 )
                               }
                             >
-                              <Text style={styles.btnCompleteText}>
-                                ✅ Đã phục vụ &amp; Thu tiền
-                              </Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                                <Ionicons name="checkmark-circle" size={14} color="#ffffff" style={{ marginRight: 4 }} />
+                                <Text style={styles.btnCompleteText}>
+                                  Đã phục vụ &amp; Thu tiền
+                                </Text>
+                              </View>
                             </TouchableOpacity>
                             <TouchableOpacity
                               style={styles.btnCancel}
@@ -866,9 +895,12 @@ export default function App() {
               </View>
 
               <View style={styles.card}>
-                <Text style={styles.cardHeading}>
-                  🔥 Top món bán chạy &amp; Số lượng tồn kho
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <Ionicons name="flame" size={16} color="#f97316" style={{ marginRight: 6 }} />
+                  <Text style={[styles.cardHeading, { marginBottom: 0 }]}>
+                    Top món bán chạy &amp; Số lượng tồn kho
+                  </Text>
+                </View>
                 {[...items]
                   .sort((a, b) => (b.sold_count || 0) - (a.sold_count || 0))
                   .slice(0, 6)
@@ -995,7 +1027,7 @@ export default function App() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.itemTitle}>{item.name_i18n?.vi}</Text>
                       <Text style={styles.itemSub}>
-                        🇬🇧 {item.name_i18n?.en || '—'} • Đã bán:{' '}
+                        EN: {item.name_i18n?.en || '—'} • Đã bán:{' '}
                         {item.sold_count || 0}
                       </Text>
 
@@ -1020,9 +1052,12 @@ export default function App() {
 
                       {/* Stock Quantity Row */}
                       <View style={styles.priceRow}>
-                        <Text style={styles.stockBadgeText}>
-                          📦 Tồn kho: {stock === null ? '∞' : stock}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Ionicons name="cube-outline" size={12} color="#0f766e" style={{ marginRight: 4 }} />
+                          <Text style={styles.stockBadgeText}>
+                            Tồn kho: {stock === null ? '∞' : stock}
+                          </Text>
+                        </View>
                         <TouchableOpacity
                           style={styles.priceStepBtn}
                           onPress={() =>
@@ -1076,9 +1111,12 @@ export default function App() {
           {activeTab === 'settings' && (
             <View style={styles.sectionStack}>
               <View style={styles.card}>
-                <Text style={styles.cardHeading}>
-                  🏪 Cài đặt Cửa hàng &amp; Wi-Fi (Đồng bộ Supabase)
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <Ionicons name="storefront" size={16} color="#10b981" style={{ marginRight: 6 }} />
+                  <Text style={[styles.cardHeading, { marginBottom: 0 }]}>
+                    Cài đặt Cửa hàng &amp; Wi-Fi (Đồng bộ Supabase)
+                  </Text>
+                </View>
 
                 <Text style={styles.fieldLabel}>Tên cửa hàng</Text>
                 <TextInput
@@ -1137,13 +1175,18 @@ export default function App() {
           style={styles.navTab}
           onPress={() => setActiveTab('orders')}
         >
+          <Ionicons
+            name={activeTab === 'orders' ? 'receipt' : 'receipt-outline'}
+            size={22}
+            color={activeTab === 'orders' ? '#10b981' : '#64748b'}
+          />
           <Text
             style={[
               styles.navTabText,
               activeTab === 'orders' && styles.navTabTextActive,
             ]}
           >
-            🔔 Đơn mPOS ({newOrdersCount})
+            Đơn mPOS ({newOrdersCount})
           </Text>
         </TouchableOpacity>
 
@@ -1151,13 +1194,18 @@ export default function App() {
           style={styles.navTab}
           onPress={() => setActiveTab('overview')}
         >
+          <Ionicons
+            name={activeTab === 'overview' ? 'bar-chart' : 'bar-chart-outline'}
+            size={22}
+            color={activeTab === 'overview' ? '#10b981' : '#64748b'}
+          />
           <Text
             style={[
               styles.navTabText,
               activeTab === 'overview' && styles.navTabTextActive,
             ]}
           >
-            📊 Doanh thu
+            Doanh thu
           </Text>
         </TouchableOpacity>
 
@@ -1165,13 +1213,18 @@ export default function App() {
           style={styles.navTab}
           onPress={() => setActiveTab('catalog')}
         >
+          <Ionicons
+            name={activeTab === 'catalog' ? 'restaurant' : 'restaurant-outline'}
+            size={22}
+            color={activeTab === 'catalog' ? '#10b981' : '#64748b'}
+          />
           <Text
             style={[
               styles.navTabText,
               activeTab === 'catalog' && styles.navTabTextActive,
             ]}
           >
-            🍜 Kho ({items.length})
+            Kho ({items.length})
           </Text>
         </TouchableOpacity>
 
@@ -1179,13 +1232,18 @@ export default function App() {
           style={styles.navTab}
           onPress={() => setActiveTab('settings')}
         >
+          <Ionicons
+            name={activeTab === 'settings' ? 'settings' : 'settings-outline'}
+            size={22}
+            color={activeTab === 'settings' ? '#10b981' : '#64748b'}
+          />
           <Text
             style={[
               styles.navTabText,
               activeTab === 'settings' && styles.navTabTextActive,
             ]}
           >
-            ⚙️ Cài đặt
+            Cài đặt
           </Text>
         </TouchableOpacity>
       </View>
@@ -1245,7 +1303,9 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: 14,
     marginBottom: 18,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   demoButtonText: {
     color: '#020617',
@@ -1728,6 +1788,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#64748b',
+    marginTop: 4,
   },
   navTabTextActive: {
     color: '#10b981',

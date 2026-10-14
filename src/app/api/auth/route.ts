@@ -3,38 +3,45 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
+import {
+  isSuperAdminEmail,
+  SUPER_ADMIN_EMAIL,
+  SUPER_ADMIN_ID,
+} from '@/lib/auth-session';
 import { SEED_PROFILE } from '@/lib/seed-data';
 import { Profile, Shop } from '@/types/qlaok';
 
 const STORE_DIR = path.join(process.cwd(), '.local-db');
 const CREDENTIALS_FILE = path.join(STORE_DIR, 'auth-credentials.json');
 
-interface CredentialMap {
+export interface CredentialMap {
   [emailLower: string]: {
     passwordHash: string;
     profileId: string;
   };
 }
 
-function hashPassword(password: string): string {
+export function hashPassword(password: string): string {
   return crypto
     .createHash('sha256')
     .update(`qlaok-salt-v1:${password}`)
     .digest('hex');
 }
 
-function readCredentials(): CredentialMap {
+export function readCredentials(): CredentialMap {
   try {
     if (!fs.existsSync(CREDENTIALS_FILE)) {
       return {};
     }
-    return JSON.parse(fs.readFileSync(CREDENTIALS_FILE, 'utf8')) as CredentialMap;
+    return JSON.parse(
+      fs.readFileSync(CREDENTIALS_FILE, 'utf8')
+    ) as CredentialMap;
   } catch {
     return {};
   }
 }
 
-function writeCredentials(creds: CredentialMap): void {
+export function writeCredentials(creds: CredentialMap): void {
   try {
     if (!fs.existsSync(STORE_DIR)) {
       fs.mkdirSync(STORE_DIR, { recursive: true });
@@ -45,10 +52,71 @@ function writeCredentials(creds: CredentialMap): void {
   }
 }
 
+export async function ensureSuperAdminSeeded(): Promise<Profile> {
+  const sb = getSupabaseDbClient();
+  const { data: existingList } = await sb
+    .from('profiles')
+    .select('*')
+    .ilike('email', SUPER_ADMIN_EMAIL)
+    .limit(1);
+
+  let adminProfile: Profile | null = (existingList?.[0] as Profile) || null;
+
+  if (!adminProfile) {
+    const payload = {
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      full_name: 'Hoàng Vũ (Super Admin)',
+      phone: '0905649696',
+      plan: 'premium' as const,
+      plan_expires_at: '2030-12-31T23:59:59Z',
+    };
+    const { data: created } = await sb
+      .from('profiles')
+      .upsert(payload, { onConflict: 'id' })
+      .select('*')
+      .maybeSingle();
+
+    adminProfile = (created as Profile) || payload;
+  } else if (adminProfile.plan !== 'premium') {
+    const { data: upgraded } = await sb
+      .from('profiles')
+      .update({
+        plan: 'premium',
+        plan_expires_at: '2030-12-31T23:59:59Z',
+      })
+      .eq('id', adminProfile.id)
+      .select('*')
+      .maybeSingle();
+    if (upgraded) {
+      adminProfile = upgraded as Profile;
+    }
+  }
+
+  // Ensure default credential exists for hoangvu96z@gmail.com if not set yet
+  const creds = readCredentials();
+  if (!creds[SUPER_ADMIN_EMAIL]) {
+    creds[SUPER_ADMIN_EMAIL] = {
+      passwordHash: hashPassword('Hoangvu@6496'),
+      profileId: adminProfile.id,
+    };
+    writeCredentials(creds);
+  }
+
+  return {
+    ...adminProfile,
+    plan: 'premium',
+    is_admin: true,
+    role: 'admin',
+  };
+}
+
 export async function POST(req: Request) {
   try {
     await ensureSupabaseReadyAndSeeded();
     const sb = getSupabaseDbClient();
+    await ensureSuperAdminSeeded();
+
     const body = await req.json();
     const {
       action,
@@ -67,6 +135,7 @@ export async function POST(req: Request) {
     };
 
     const normalizedEmail = email.trim().toLowerCase();
+    const isAdminUser = isSuperAdminEmail(normalizedEmail);
 
     // 1. Explicit Demo Account Login
     if (
@@ -87,10 +156,11 @@ export async function POST(req: Request) {
       return NextResponse.json({
         user: (demoProfile as Profile) || SEED_PROFILE,
         shops: (demoShops || []) as Shop[],
+        isAdmin: false,
       });
     }
 
-    // 2. Register New Shop Owner Account on Supabase
+    // 2. Register New Shop Owner Account (or set Super Admin password) on Supabase
     if (action === 'register') {
       if (!normalizedEmail || !normalizedEmail.includes('@')) {
         return NextResponse.json(
@@ -103,6 +173,49 @@ export async function POST(req: Request) {
           { error: 'Mật khẩu phải có ít nhất 6 ký tự.' },
           { status: 400 }
         );
+      }
+
+      // Special handling: If Super Admin registers, update their password & profile seamlessly
+      if (isAdminUser) {
+        const adminProfile = await ensureSuperAdminSeeded();
+        const updatedFullName =
+          fullName.trim() || adminProfile.full_name || 'Hoàng Vũ (Super Admin)';
+        const updatedPhone = phone.trim() || adminProfile.phone || '0905649696';
+
+        const { data: updatedAdmin } = await sb
+          .from('profiles')
+          .update({
+            full_name: updatedFullName,
+            phone: updatedPhone,
+            plan: 'premium',
+          })
+          .eq('id', adminProfile.id)
+          .select('*')
+          .maybeSingle();
+
+        const creds = readCredentials();
+        creds[SUPER_ADMIN_EMAIL] = {
+          passwordHash: hashPassword(password),
+          profileId: adminProfile.id,
+        };
+        writeCredentials(creds);
+
+        const { data: adminShops } = await sb
+          .from('shops')
+          .select('*')
+          .eq('owner_id', adminProfile.id)
+          .order('created_at', { ascending: true });
+
+        return NextResponse.json({
+          user: {
+            ...((updatedAdmin as Profile) || adminProfile),
+            plan: 'premium',
+            is_admin: true,
+            role: 'admin',
+          },
+          shops: (adminShops || []) as Shop[],
+          isAdmin: true,
+        });
       }
 
       const { data: existingProfiles } = await sb
@@ -121,7 +234,6 @@ export async function POST(req: Request) {
         );
       }
 
-      // Attempt Supabase Auth registration (non-blocking if rate-limited by Supabase free tier)
       let newOwnerId = userId || `owner-${crypto.randomUUID()}`;
       try {
         const signUpRes = await sb.auth.signUp({
@@ -141,12 +253,12 @@ export async function POST(req: Request) {
         // Proceed with Supabase public.profiles registration
       }
 
-      const newProfilePayload: Profile = {
+      const newProfilePayload = {
         id: newOwnerId,
         email: normalizedEmail,
         full_name: fullName.trim() || normalizedEmail.split('@')[0],
         phone: phone.trim() || undefined,
-        plan: 'free',
+        plan: 'free' as const,
         plan_expires_at: null,
       };
 
@@ -171,12 +283,13 @@ export async function POST(req: Request) {
         {
           user: createdProfile as Profile,
           shops: [] as Shop[],
+          isAdmin: false,
         },
         { status: 201 }
       );
     }
 
-    // 3. Login Existing Shop Owner Account
+    // 3. Login Existing Shop Owner or Super Admin Account
     if (action === 'login') {
       if (!normalizedEmail || !password) {
         return NextResponse.json(
@@ -205,7 +318,6 @@ export async function POST(req: Request) {
           );
         }
       } else {
-        // Verify via Supabase Auth if not in local credential store
         const { data: authData, error: authErr } =
           await sb.auth.signInWithPassword({
             email: normalizedEmail,
@@ -244,7 +356,7 @@ export async function POST(req: Request) {
                   normalizedEmail.split('@')[0],
                 phone:
                   (authData.user.user_metadata?.phone as string) || null,
-                plan: 'free',
+                plan: isAdminUser ? 'premium' : 'free',
                 created_at: nowIso,
                 updated_at: nowIso,
               },
@@ -266,6 +378,15 @@ export async function POST(req: Request) {
         );
       }
 
+      const finalUser: Profile = isAdminUser
+        ? {
+            ...profile,
+            plan: 'premium',
+            is_admin: true,
+            role: 'admin',
+          }
+        : profile;
+
       const { data: ownerShops } = await sb
         .from('shops')
         .select('*')
@@ -273,8 +394,9 @@ export async function POST(req: Request) {
         .order('created_at', { ascending: true });
 
       return NextResponse.json({
-        user: profile,
+        user: finalUser,
         shops: (ownerShops || []) as Shop[],
+        isAdmin: isAdminUser,
       });
     }
 
@@ -300,7 +422,7 @@ export async function POST(req: Request) {
               email: normalizedEmail,
               full_name: fullName || normalizedEmail.split('@')[0],
               phone: phone || null,
-              plan: 'free',
+              plan: isAdminUser ? 'premium' : 'free',
               created_at: nowIso,
               updated_at: nowIso,
             },
@@ -311,15 +433,25 @@ export async function POST(req: Request) {
         profile = (created as Profile) || null;
       }
 
+      const finalUser: Profile = isAdminUser
+        ? {
+            ...profile!,
+            plan: 'premium',
+            is_admin: true,
+            role: 'admin',
+          }
+        : profile!;
+
       const { data: ownerShops } = await sb
         .from('shops')
         .select('*')
-        .eq('owner_id', profile!.id)
+        .eq('owner_id', finalUser.id)
         .order('created_at', { ascending: true });
 
       return NextResponse.json({
-        user: profile,
+        user: finalUser,
         shops: (ownerShops || []) as Shop[],
+        isAdmin: isAdminUser,
       });
     }
 
@@ -328,7 +460,9 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error ? error.message : 'Lỗi xử lý xác thực tài khoản',
+          error instanceof Error
+            ? error.message
+            : 'Lỗi xử lý xác thực tài khoản',
       },
       { status: 500 }
     );

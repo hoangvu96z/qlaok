@@ -430,6 +430,14 @@ export async function setItemStockMetadata(
   }
 }
 
+export async function dbGetAllOrders(): Promise<ShopOrder[]> {
+  const store = readStore();
+  return [...store.orders].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
+
 export async function dbGetShopOrders(shopId: string): Promise<ShopOrder[]> {
   const store = readStore();
   return store.orders

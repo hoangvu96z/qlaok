@@ -12,6 +12,7 @@ import { Profile, Shop } from '@/types/qlaok';
 import {
   clearStoredAuthOwner,
   getStoredAuthOwner,
+  isSuperAdmin,
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { createClient } from '@/lib/supabase/client';
@@ -84,8 +85,22 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         { cache: 'no-store' }
       );
       const data = await res.json();
-      const loadedShops: Shop[] = data.shops || [];
-      const loadedProfile: Profile = data.profile || owner;
+      let loadedShops: Shop[] = data.shops || [];
+      const loadedProfile: Profile = {
+        ...(data.profile || owner),
+        ...(isSuperAdmin(owner)
+          ? { is_admin: true, role: 'admin', plan: 'premium' }
+          : {}),
+      };
+
+      // If Super Admin visits /dashboard and has no personal shops yet, load all platform shops
+      if (loadedShops.length === 0 && isSuperAdmin(loadedProfile)) {
+        const allRes = await fetch('/api/shops', { cache: 'no-store' });
+        if (allRes.ok) {
+          const allData = await allRes.json();
+          loadedShops = allData.shops || [];
+        }
+      }
 
       setProfile(loadedProfile);
       setStoredAuthOwner(loadedProfile);

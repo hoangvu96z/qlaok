@@ -71,6 +71,8 @@ export interface Shop {
     layout: 'grid' | 'list';
   };
   is_published?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Category {
@@ -173,6 +175,10 @@ export interface Profile {
   full_name: string;
   plan: PlanTier;
   plan_expires_at?: string | null;
+  is_admin?: boolean;
+  role?: 'admin' | 'owner';
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CartSelection {

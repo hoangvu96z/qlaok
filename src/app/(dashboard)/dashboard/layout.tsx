@@ -18,9 +18,15 @@ import {
   LogOut,
   UserCheck,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
-import { clearStoredAuthOwner } from '@/lib/auth-session';
+import {
+  clearStoredAuthOwner,
+  getAdminBackupSession,
+  isSuperAdmin,
+  stopAdminImpersonation,
+} from '@/lib/auth-session';
 import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 import { ShopOrder } from '@/types/qlaok';
@@ -374,7 +380,21 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-800 space-y-2.5">
+        <div className="p-3 border-t border-slate-800 space-y-2">
+          {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
+            <button
+              type="button"
+              onClick={() => {
+                stopAdminImpersonation();
+                router.push('/admin');
+              }}
+              className="w-full flex items-center justify-center gap-1.5 rounded-xl bg-amber-400 px-3 py-2.5 text-xs font-black text-slate-950 hover:bg-amber-300 shadow-sm"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span>🛡️ Super Admin Portal</span>
+            </button>
+          )}
+
           <Link
             href="/onboarding"
             className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-400 hover:bg-emerald-500/20"
@@ -409,6 +429,28 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
       {/* Main Content Area */}
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen pb-20 md:pb-8">
+        {/* Super Admin Impersonation / Quick Return Banner */}
+        {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
+          <div className="bg-slate-950 text-amber-300 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 truncate">
+              <ShieldCheck className="h-4 w-4 text-amber-400 shrink-0" />
+              <span className="font-bold truncate">
+                👑 Chế độ Super Admin ({activeShop?.name || 'Toàn sàn'})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                stopAdminImpersonation();
+                router.push('/admin');
+              }}
+              className="shrink-0 rounded-lg bg-amber-400 px-2.5 py-1 text-[11px] font-black text-slate-950 hover:bg-amber-300"
+            >
+              Về Trang Super Admin (/admin) →
+            </button>
+          </div>
+        )}
+
         {/* Top Mobile Header */}
         <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">

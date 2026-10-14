@@ -15,7 +15,11 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
-import { getStoredAuthOwner, setStoredAuthOwner } from '@/lib/auth-session';
+import {
+  getStoredAuthOwner,
+  isSuperAdmin,
+  setStoredAuthOwner,
+} from '@/lib/auth-session';
 
 type AuthMode = 'password_login' | 'register' | 'otp';
 
@@ -56,7 +60,7 @@ function LoginFormContent() {
     if (existing && !searchParams.get('switch')) {
       // Do not auto-redirect if user explicitly opened /login?mode=register
       if (!searchParams.get('mode')) {
-        router.replace('/dashboard');
+        router.replace(isSuperAdmin(existing) ? '/admin' : '/dashboard');
       }
     }
   }, [router, searchParams]);
@@ -113,6 +117,11 @@ function LoginFormContent() {
         }
 
         setStoredAuthOwner(data.user);
+        if (data.isAdmin || isSuperAdmin(data.user)) {
+          router.push('/admin');
+          return;
+        }
+
         const ownerShops = data.shops || [];
         if (ownerShops.length === 0) {
           router.push('/onboarding');
@@ -147,6 +156,10 @@ function LoginFormContent() {
         }
 
         setStoredAuthOwner(data.user);
+        if (data.isAdmin || isSuperAdmin(data.user)) {
+          router.push('/admin');
+          return;
+        }
         if (typeof window !== 'undefined') {
           localStorage.removeItem('qlaok_active_shop_id');
         }
