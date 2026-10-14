@@ -14,7 +14,7 @@ import {
   hashPassword,
   readCredentials,
   writeCredentials,
-} from '@/app/api/auth/route';
+} from '@/lib/auth-credentials';
 import {
   dbGetAllOrders,
   dbUpdateOrderStatus,
