@@ -1,25 +1,23 @@
 import { NextResponse } from 'next/server';
-import { readDb } from '@/lib/local-db';
 import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 import { isR2Configured } from '@/lib/r2';
 import { getGeminiClient } from '@/lib/gemini';
 
 export async function GET() {
-  const db = readDb();
   const sbStatus = await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
   let counts = {
-    shops: db.shops.length,
-    categories: db.categories.length,
-    items: db.items.length,
-    posts: db.posts.length,
-    analyticsEvents: db.analytics.length,
+    shops: 0,
+    categories: 0,
+    items: 0,
+    posts: 0,
+    analyticsEvents: 0,
     provinces: 34,
   };
 
-  if (sbStatus.ready && sb) {
+  if (sbStatus.ready) {
     const [shopsC, catsC, itemsC, postsC, analyticsC, provsC] =
       await Promise.all([
         sb.from('shops').select('*', { count: 'exact', head: true }),
@@ -31,11 +29,11 @@ export async function GET() {
       ]);
 
     counts = {
-      shops: shopsC.count ?? counts.shops,
-      categories: catsC.count ?? counts.categories,
-      items: itemsC.count ?? counts.items,
-      posts: postsC.count ?? counts.posts,
-      analyticsEvents: analyticsC.count ?? counts.analyticsEvents,
+      shops: shopsC.count ?? 0,
+      categories: catsC.count ?? 0,
+      items: itemsC.count ?? 0,
+      posts: postsC.count ?? 0,
+      analyticsEvents: analyticsC.count ?? 0,
       provinces: provsC.count ?? 34,
     };
   }
@@ -43,10 +41,9 @@ export async function GET() {
   return NextResponse.json({
     status: 'ok',
     service: 'qlaok-backend',
-    dataSource: sbStatus.ready ? 'supabase' : 'local',
+    dataSource: 'supabase',
     timestamp: new Date().toISOString(),
     environment: {
-      localDbReady: true,
       supabaseConfigured: isSupabaseConfigured(),
       supabaseTablesReady: sbStatus.ready,
       supabaseMessage: sbStatus.error || 'Connected & seeded',
@@ -56,5 +53,3 @@ export async function GET() {
     counts,
   });
 }
-
-

@@ -1,8 +1,8 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   UtensilsCrossed,
@@ -14,9 +14,11 @@ import {
   ExternalLink,
   PlusCircle,
   Store,
-  Crown,
+  LogOut,
+  UserCheck,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
+import { createClient } from '@/lib/supabase/client';
 
 const NAV_ITEMS = [
   {
@@ -58,7 +60,27 @@ const NAV_ITEMS = [
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { shops, activeShop, profile, selectShop } = useDashboard();
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const supabase = createClient();
+    if (!supabase) return;
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user?.email) {
+        setAuthEmail(data.user.email);
+      }
+    });
+  }, []);
+
+  const handleLogout = async () => {
+    const supabase = createClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    router.push('/login');
+  };
 
   const planBadgeColor =
     profile?.plan === 'premium'
@@ -167,7 +189,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-800 space-y-2">
+        <div className="p-3 border-t border-slate-800 space-y-2.5">
           <Link
             href="/onboarding"
             className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-400 hover:bg-emerald-500/20"
@@ -175,6 +197,28 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             <PlusCircle className="h-4 w-4" />
             <span>Tạo cửa hàng mới</span>
           </Link>
+
+          <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-800/70 px-3 py-2 border border-slate-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <UserCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-bold text-white">
+                  {profile?.full_name || 'Chủ Quán Qlaok'}
+                </p>
+                <p className="truncate text-[10px] text-slate-400">
+                  {authEmail || profile?.email || 'chuquan@qlaok.vn'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Đăng xuất"
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-700 hover:text-rose-400 transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </aside>
 

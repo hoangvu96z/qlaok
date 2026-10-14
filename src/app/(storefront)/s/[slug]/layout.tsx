@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Metadata } from 'next';
-import { getShopBySlug } from '@/lib/local-db';
+import { dbGetStorefrontBundle } from '@/lib/db';
 
 export async function generateMetadata({
   params,
@@ -8,7 +8,8 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const shop = getShopBySlug(slug);
+  const bundle = await dbGetStorefrontBundle(slug);
+  const shop = bundle?.shop;
 
   if (!shop) {
     return {
