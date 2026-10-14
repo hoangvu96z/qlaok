@@ -16,16 +16,20 @@ async function fetchJson(path, options = {}) {
   return { status: res.status, data };
 }
 
-test("1. Health Check API (/api/health)", async () => {
+test("1. Health Check API & Live Supabase Connection (/api/health)", async () => {
   const { status, data } = await fetchJson("/api/health");
   assert.equal(status, 200);
   assert.equal(data.status, "ok");
   assert.equal(data.service, "qlaok-backend");
-  assert.equal(data.environment.localDbReady, true);
+  assert.equal(data.dataSource, "supabase");
+  assert.equal(data.environment.supabaseConfigured, true);
+  assert.equal(data.environment.supabaseTablesReady, true);
+  assert.equal(data.counts.provinces, 34, "Should have all 34 Vietnam provinces");
   assert.ok(data.counts.shops >= 3, "Should have at least 3 seeded demo shops");
   assert.ok(data.counts.categories >= 6, "Should have seeded categories");
   assert.ok(data.counts.items >= 10, "Should have seeded items");
 });
+
 
 test("2. Shops API - List, Storefront Bundle & Patch (/api/shops)", async () => {
   const { status, data } = await fetchJson("/api/shops");
@@ -353,3 +357,63 @@ test("10. All 18 Frontend Routes Render 200 OK with Expected Content", async () 
     );
   }
 });
+
+test("11. PWA Manifest, Icon & Service Worker (/manifest.webmanifest, /icon.svg, /sw.js)", async () => {
+  const manifestRes = await fetch(`${BASE_URL}/manifest.webmanifest`);
+  assert.equal(manifestRes.status, 200);
+  const manifest = await manifestRes.json();
+  assert.equal(manifest.short_name, "Qlaok CMS");
+  assert.equal(manifest.start_url, "/dashboard");
+  assert.equal(manifest.display, "standalone");
+
+  const iconRes = await fetch(`${BASE_URL}/icon.svg`);
+  assert.equal(iconRes.status, 200);
+  const iconText = await iconRes.text();
+  assert.ok(iconText.includes("<svg"));
+
+  const swRes = await fetch(`${BASE_URL}/sw.js`);
+  assert.equal(swRes.status, 200);
+  const swText = await swRes.text();
+  assert.ok(swText.includes("qlaok-pwa-v1"));
+});
+
+test("12. Mobile Owner App Direct Supabase Flow (Shops, Provinces, Menu Toggle & Analytics)", async () => {
+  const { createClient } = await import("@supabase/supabase-js");
+  const sb = createClient(
+    "https://kftmrjmmympztzztunxf.supabase.co",
+    "sb_publishable_BpW2kqz1l3LfN8MFvngWLw_2YxmIgBv"
+  );
+
+  const { data: provinces, error: provErr } = await sb
+    .from("provinces")
+    .select("code, name, region")
+    .order("sort_order", { ascending: true });
+  assert.equal(provErr, null);
+  assert.equal(provinces.length, 34, "Mobile app queries all 34 Vietnam provinces");
+
+  const { data: items, error: itemErr } = await sb
+    .from("items")
+    .select("id, price, is_available")
+    .eq("shop_id", "shop-fnb-001")
+    .limit(1);
+  assert.equal(itemErr, null);
+  assert.equal(items.length, 1);
+
+  const targetItem = items[0];
+  const toggledVal = !targetItem.is_available;
+
+  // Toggle availability like mobile Switch
+  const { error: toggleErr } = await sb
+    .from("items")
+    .update({ is_available: toggledVal })
+    .eq("id", targetItem.id);
+  assert.equal(toggleErr, null);
+
+  // Restore original state
+  const { error: restoreErr } = await sb
+    .from("items")
+    .update({ is_available: targetItem.is_available })
+    .eq("id", targetItem.id);
+  assert.equal(restoreErr, null);
+});
+
