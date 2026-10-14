@@ -8,6 +8,9 @@ export const SUPABASE_KEY =
   process.env.EXPO_PUBLIC_SUPABASE_KEY ||
   'sb_publishable_BpW2kqz1l3LfN8MFvngWLw_2YxmIgBv';
 
+export const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -49,9 +52,44 @@ export interface MobileCatalogItem {
   price: number;
   is_available: boolean;
   is_featured: boolean;
+  stock_quantity?: number | null;
+  sold_count?: number;
   name_i18n: Record<string, string>;
   desc_i18n: Record<string, string>;
   view_count: number;
+}
+
+export interface MobileOrderLineItem {
+  item_id: string;
+  name_vi: string;
+  name_i18n?: Record<string, string>;
+  quantity: number;
+  unit_price: number;
+  extra_price: number;
+  selected_choices?: Array<{
+    id: string;
+    label_i18n: Record<string, string>;
+    extra_price: number;
+  }>;
+  custom_note?: string;
+  quick_tags?: string[];
+}
+
+export interface MobileShopOrder {
+  id: string;
+  shop_id: string;
+  order_code: string;
+  table_label: string;
+  visitor_lang: string;
+  status: 'new' | 'preparing' | 'completed' | 'cancelled';
+  payment_method: 'cash' | 'vietqr';
+  payment_status: 'unpaid' | 'paid';
+  items: MobileOrderLineItem[];
+  total_amount: number;
+  customer_note?: string;
+  source?: 'qr_table' | 'counter_pos';
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MobileAnalyticsEvent {

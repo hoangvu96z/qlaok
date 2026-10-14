@@ -97,6 +97,40 @@ export interface CatalogItem {
   desc_i18n: I18nText;
   options_json: ItemOptionGroup[];
   view_count: number;
+  stock_quantity?: number | null; // null = không giới hạn, >= 0 = số lượng tồn kho
+  sold_count?: number; // tổng số lượng đã bán
+}
+
+export type OrderStatus = 'new' | 'preparing' | 'completed' | 'cancelled';
+export type PaymentMethod = 'cash' | 'vietqr';
+
+export interface OrderLineItem {
+  item_id: string;
+  name_vi: string;
+  name_i18n?: I18nText;
+  quantity: number;
+  unit_price: number;
+  extra_price: number;
+  selected_choices: ItemOptionChoice[];
+  custom_note?: string;
+  quick_tags?: string[];
+}
+
+export interface ShopOrder {
+  id: string;
+  order_code: string;
+  shop_id: string;
+  table_label: string;
+  visitor_lang: SupportedLocale;
+  customer_note?: string;
+  status: OrderStatus;
+  payment_method: PaymentMethod;
+  payment_status: 'unpaid' | 'paid';
+  total_amount: number;
+  items: OrderLineItem[];
+  source: 'qr_table' | 'counter_pos';
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Post {
@@ -148,3 +182,4 @@ export interface CartSelection {
   customNote: string;
   quickTags?: string[];
 }
+

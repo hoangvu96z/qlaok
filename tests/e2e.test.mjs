@@ -325,7 +325,7 @@ test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment
   assert.equal(webhook.data.profile.plan, "premium");
 });
 
-test("10. All 18 Frontend Routes Render 200 OK with Expected Content", async () => {
+test("10. All 19 Frontend Routes Render 200 OK with Expected Content", async () => {
   const routes = [
     { path: "/", mustContain: "Qlaok" },
     { path: "/explore", mustContain: "Qlaok Directory" },
@@ -333,6 +333,7 @@ test("10. All 18 Frontend Routes Render 200 OK with Expected Content", async () 
     { path: "/login", mustContain: "Qlaok" },
     { path: "/onboarding", mustContain: "Qlaok" },
     { path: "/dashboard", mustContain: "Qlaok" },
+    { path: "/dashboard/orders", mustContain: "Qlaok" },
     { path: "/dashboard/catalog", mustContain: "Qlaok" },
     { path: "/dashboard/ai-scanner", mustContain: "Qlaok" },
     { path: "/dashboard/qr-studio", mustContain: "Qlaok" },
@@ -416,4 +417,87 @@ test("12. Mobile Owner App Direct Supabase Flow (Shops, Provinces, Menu Toggle &
     .eq("id", targetItem.id);
   assert.equal(restoreErr, null);
 });
+
+test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Analytics (/api/orders)", async () => {
+  const shopId = "shop-fnb-001";
+
+  // 13.1 Check initial stock of item-fnb-1
+  const catBefore = await fetchJson(`/api/catalog?shopId=${shopId}`);
+  assert.equal(catBefore.status, 200);
+  const targetItem = catBefore.data.items.find((i) => i.id === "item-fnb-1");
+  assert.ok(targetItem, "Should find item-fnb-1");
+  const initialStock = targetItem.stock_quantity;
+  assert.equal(typeof initialStock, "number");
+
+  // 13.2 Guest submits a table order for 2x item-fnb-1
+  const createOrderRes = await fetchJson("/api/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      shop_id: shopId,
+      table_label: "Bàn E2E-09",
+      visitor_lang: "ko",
+      customer_note: "Ít hành",
+      payment_method: "vietqr",
+      source: "qr_table",
+      items: [
+        {
+          item_id: "item-fnb-1",
+          name_vi: targetItem.name_i18n.vi,
+          name_i18n: targetItem.name_i18n,
+          quantity: 2,
+          unit_price: targetItem.price,
+          extra_price: 0,
+        },
+      ],
+    }),
+  });
+  assert.equal(createOrderRes.status, 201);
+  const createdOrder = createOrderRes.data.order;
+  assert.equal(createdOrder.status, "new");
+  assert.equal(createdOrder.table_label, "Bàn E2E-09");
+  assert.equal(createdOrder.total_amount, targetItem.price * 2);
+
+  // 13.3 Verify stock was deducted by 2
+  const catAfterOrder = await fetchJson(`/api/catalog?shopId=${shopId}`);
+  const itemAfterOrder = catAfterOrder.data.items.find((i) => i.id === "item-fnb-1");
+  assert.equal(itemAfterOrder.stock_quantity, Math.max(0, initialStock - 2));
+
+  // 13.4 Counter updates order status: new -> preparing -> completed
+  const prepRes = await fetchJson("/api/orders", {
+    method: "PATCH",
+    body: JSON.stringify({
+      shop_id: shopId,
+      order_id: createdOrder.id,
+      status: "preparing",
+    }),
+  });
+  assert.equal(prepRes.status, 200);
+  assert.equal(prepRes.data.order.status, "preparing");
+
+  // 13.5 Cancel the test order to verify automatic stock restoration
+  const cancelRes = await fetchJson("/api/orders", {
+    method: "PATCH",
+    body: JSON.stringify({
+      shop_id: shopId,
+      order_id: createdOrder.id,
+      status: "cancelled",
+    }),
+  });
+  assert.equal(cancelRes.status, 200);
+  assert.equal(cancelRes.data.order.status, "cancelled");
+
+  const catAfterCancel = await fetchJson(`/api/catalog?shopId=${shopId}`);
+  const itemAfterCancel = catAfterCancel.data.items.find((i) => i.id === "item-fnb-1");
+  assert.equal(itemAfterCancel.stock_quantity, initialStock, "Stock should be restored after order cancellation");
+
+  // 13.6 Verify Revenue & 7-Day Analytics fields in /api/analytics/track
+  const analyticsRes = await fetchJson(`/api/analytics/track?shopId=${shopId}`);
+  assert.equal(analyticsRes.status, 200);
+  assert.equal(typeof analyticsRes.data.todayRevenue, "number");
+  assert.equal(typeof analyticsRes.data.totalRevenue, "number");
+  assert.ok(Array.isArray(analyticsRes.data.dailyRevenue7d));
+  assert.equal(analyticsRes.data.dailyRevenue7d.length, 7);
+  assert.ok(Array.isArray(analyticsRes.data.topSellingItems));
+});
+
 

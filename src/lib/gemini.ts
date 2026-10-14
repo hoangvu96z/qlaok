@@ -1,4 +1,4 @@
-import { BusinessVertical, I18nText } from '@/types/qlaok';
+import type { BusinessVertical, I18nText } from '@/types/qlaok';
 
 export interface NineRouterConfig {
   baseUrl: string;

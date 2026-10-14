@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   SafeAreaView,
   View,
@@ -11,18 +11,21 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Vibration,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
   supabase,
+  API_BASE_URL,
   MobileShop,
   MobileCategory,
   MobileCatalogItem,
   MobileAnalyticsEvent,
+  MobileShopOrder,
   formatVnd,
 } from './src/lib/supabase';
 
-type TabType = 'overview' | 'catalog' | 'settings';
+type TabType = 'orders' | 'overview' | 'catalog' | 'settings';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -30,7 +33,7 @@ export default function App() {
   const [password, setPassword] = useState('qlaok123456');
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [activeTab, setActiveTab] = useState<TabType>('orders');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -39,10 +42,24 @@ export default function App() {
   const [categories, setCategories] = useState<MobileCategory[]>([]);
   const [items, setItems] = useState<MobileCatalogItem[]>([]);
   const [events, setEvents] = useState<MobileAnalyticsEvent[]>([]);
+  const [orders, setOrders] = useState<MobileShopOrder[]>([]);
+  const [orderFilter, setOrderFilter] = useState<
+    'active' | 'new' | 'preparing' | 'completed'
+  >('active');
+
+  // Realtime Mobile Notification Banner state
+  const [liveOrderAlert, setLiveOrderAlert] = useState<{
+    orderCode: string;
+    tableLabel: string;
+    totalAmount: number;
+  } | null>(null);
+  const knownNewOrderIdsRef = useRef<Set<string>>(new Set());
+  const isFirstOrderPollRef = useRef(true);
 
   // Quick Add Item state
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
+  const [newItemStock, setNewItemStock] = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
 
   // Settings form state
@@ -54,6 +71,51 @@ export default function App() {
 
   const activeShop =
     shops.find((s) => s.id === activeShopId) || shops[0] || null;
+
+  const fetchOrdersFromApi = useCallback(
+    async (shopId: string, silent = false) => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/orders?shopId=${encodeURIComponent(shopId)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const loadedOrders: MobileShopOrder[] = data.orders || [];
+        const newList = loadedOrders.filter((o) => o.status === 'new');
+
+        if (!isFirstOrderPollRef.current) {
+          const brandNew = newList.find(
+            (o) => !knownNewOrderIdsRef.current.has(o.id)
+          );
+          if (brandNew) {
+            try {
+              Vibration.vibrate([0, 300, 150, 300]);
+            } catch {
+              // ignore vibration error on web/simulator
+            }
+            setLiveOrderAlert({
+              orderCode: brandNew.order_code,
+              tableLabel: brandNew.table_label,
+              totalAmount: brandNew.total_amount,
+            });
+          }
+        }
+
+        knownNewOrderIdsRef.current = new Set(newList.map((o) => o.id));
+        isFirstOrderPollRef.current = false;
+        setOrders(loadedOrders);
+
+        if (Array.isArray(data.items) && data.items.length > 0) {
+          setItems(data.items);
+        }
+      } catch {
+        if (!silent) {
+          // Fallback if local Next.js API server is not reachable
+        }
+      }
+    },
+    []
+  );
 
   const loadShopsAndData = useCallback(
     async (targetShopId?: string) => {
@@ -105,6 +167,8 @@ export default function App() {
             })) as MobileCatalogItem[]
           );
           setEvents((eventsRes.data || []) as MobileAnalyticsEvent[]);
+
+          await fetchOrdersFromApi(currentShop.id, true);
         }
       } catch (err) {
         Alert.alert(
@@ -116,14 +180,24 @@ export default function App() {
         setRefreshing(false);
       }
     },
-    [activeShopId]
+    [activeShopId, fetchOrdersFromApi]
   );
 
   useEffect(() => {
     if (isLoggedIn) {
+      isFirstOrderPollRef.current = true;
       loadShopsAndData();
     }
   }, [isLoggedIn, loadShopsAndData]);
+
+  // Poll new table orders every 3.5 seconds when logged in
+  useEffect(() => {
+    if (!isLoggedIn || !activeShop?.id) return;
+    const interval = setInterval(() => {
+      fetchOrdersFromApi(activeShop.id, true);
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [isLoggedIn, activeShop?.id, fetchOrdersFromApi]);
 
   const handleLogin = async (demo = false) => {
     if (demo) {
@@ -143,10 +217,47 @@ export default function App() {
     } catch (err) {
       Alert.alert(
         'Đăng nhập thất bại',
-        err instanceof Error ? err.message : 'Vui lòng kiểm tra lại email/mật khẩu'
+        err instanceof Error
+          ? err.message
+          : 'Vui lòng kiểm tra lại email/mật khẩu'
       );
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  const handleUpdateOrderStatus = async (
+    orderId: string,
+    status: 'new' | 'preparing' | 'completed' | 'cancelled',
+    payment_status?: 'unpaid' | 'paid'
+  ) => {
+    if (!activeShop) return;
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              status,
+              payment_status: payment_status || o.payment_status,
+            }
+          : o
+      )
+    );
+
+    try {
+      await fetch(`${API_BASE_URL}/api/orders`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: activeShop.id,
+          orderId,
+          status,
+          payment_status,
+        }),
+      });
+      await fetchOrdersFromApi(activeShop.id, true);
+    } catch {
+      Alert.alert('Lỗi mạng', 'Không thể cập nhật trạng thái đơn hàng');
     }
   };
 
@@ -182,12 +293,46 @@ export default function App() {
       .eq('id', item.id);
   };
 
+  const handleUpdateItemStock = async (
+    item: MobileCatalogItem,
+    nextStock: number | null
+  ) => {
+    const nextAvail =
+      nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
+
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id
+          ? { ...i, stock_quantity: nextStock, is_available: nextAvail }
+          : i
+      )
+    );
+
+    try {
+      await fetch(`${API_BASE_URL}/api/catalog`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...item,
+            stock_quantity: nextStock,
+            is_available: nextAvail,
+          },
+        }),
+      });
+    } catch {
+      await supabase
+        .from('items')
+        .update({ is_available: nextAvail, updated_at: new Date().toISOString() })
+        .eq('id', item.id);
+    }
+  };
+
   const handleQuickAddItem = async () => {
     if (!activeShop || !newItemName.trim()) return;
     const targetCatId =
-      selectedCategoryId !== 'all'
-        ? selectedCategoryId
-        : categories[0]?.id;
+      selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id;
 
     if (!targetCatId) {
       Alert.alert('Chưa có danh mục', 'Vui lòng tạo danh mục trước.');
@@ -195,6 +340,46 @@ export default function App() {
     }
 
     const priceNum = Number(newItemPrice.replace(/[^0-9]/g, '')) || 35000;
+    const stockNum =
+      newItemStock.trim() === ''
+        ? null
+        : Math.max(0, Number(newItemStock.replace(/[^0-9]/g, '')));
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/catalog`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            shop_id: activeShop.id,
+            category_id: targetCatId,
+            price: priceNum,
+            stock_quantity: stockNum,
+            is_available: stockNum !== 0,
+            is_featured: false,
+            name_i18n: {
+              vi: newItemName.trim(),
+              en: newItemName.trim(),
+            },
+            desc_i18n: { vi: '' },
+          },
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.item) {
+          setItems((prev) => [...prev, data.item]);
+        }
+        setNewItemName('');
+        setNewItemPrice('');
+        setNewItemStock('');
+        return;
+      }
+    } catch {
+      // fallback direct to supabase
+    }
+
     const payload = {
       id: `item-${Date.now()}`,
       shop_id: activeShop.id,
@@ -225,6 +410,7 @@ export default function App() {
     setItems((prev) => [...prev, { ...data, price: Number(data.price) }]);
     setNewItemName('');
     setNewItemPrice('');
+    setNewItemStock('');
   };
 
   const handleSaveShopSettings = async () => {
@@ -261,9 +447,10 @@ export default function App() {
           <View style={styles.logoBadge}>
             <Text style={styles.logoText}>Q</Text>
           </View>
-          <Text style={styles.authTitle}>Qlaok CMS Mobile</Text>
+          <Text style={styles.authTitle}>Qlaok mPOS Mobile</Text>
           <Text style={styles.authSubtitle}>
-            Ứng dụng Chủ quán quản lý Thực đơn 5 ngôn ngữ, Bật/tắt hết món & Doanh thu
+            Ứng dụng Chủ quán &amp; Thu ngân nhận đơn QR tại bàn, quản lý tồn
+            kho &amp; doanh thu trực tiếp
           </Text>
 
           <TouchableOpacity
@@ -271,7 +458,7 @@ export default function App() {
             onPress={() => handleLogin(true)}
           >
             <Text style={styles.demoButtonText}>
-              ⚡ Vào Nhanh Tài Khoản Chủ Quán Demo (1 Chạm)
+              ⚡ Vào Nhanh Quầy Thu Ngân mPOS Demo (1 Chạm)
             </Text>
           </TouchableOpacity>
 
@@ -310,24 +497,41 @@ export default function App() {
     );
   }
 
-  // Compute Analytics & Estimated Order Revenue
+  // Compute Analytics, Orders & Inventory metrics
+  const newOrdersCount = orders.filter((o) => o.status === 'new').length;
+  const preparingOrdersCount = orders.filter(
+    (o) => o.status === 'preparing'
+  ).length;
+  const validOrders = orders.filter((o) => o.status !== 'cancelled');
+  const todayPrefix = new Date().toISOString().slice(0, 10);
+  const todayRevenue = validOrders
+    .filter((o) => o.created_at.startsWith(todayPrefix))
+    .reduce((sum, o) => sum + o.total_amount, 0);
+  const totalRevenue = validOrders.reduce((sum, o) => sum + o.total_amount, 0);
+
+  const lowStockCount = items.filter(
+    (i) =>
+      typeof i.stock_quantity === 'number' &&
+      i.stock_quantity > 0 &&
+      i.stock_quantity <= 5
+  ).length;
+  const outOfStockCount = items.filter(
+    (i) => !i.is_available || i.stock_quantity === 0
+  ).length;
+
   const scanDoorCount = events.filter((e) => e.event_type === 'scan_door').length;
   const scanTableCount = events.filter((e) => e.event_type === 'scan_table').length;
-  const showToStaffCount = events.filter(
-    (e) => e.event_type === 'show_to_staff'
-  ).length;
-  const wifiCopyCount = events.filter((e) => e.event_type === 'wifi_copy').length;
-
-  const avgItemPrice =
-    items.length > 0
-      ? items.reduce((sum, i) => sum + Number(i.price || 0), 0) / items.length
-      : 50000;
-  const estimatedOrderRevenue = Math.round(showToStaffCount * avgItemPrice * 1.8);
 
   const visibleItems =
     selectedCategoryId === 'all'
       ? items
       : items.filter((i) => i.category_id === selectedCategoryId);
+
+  const visibleOrders = orders.filter((o) => {
+    if (orderFilter === 'active')
+      return o.status === 'new' || o.status === 'preparing';
+    return o.status === orderFilter;
+  });
 
   return (
     <SafeAreaView style={styles.container}>
@@ -342,10 +546,10 @@ export default function App() {
             </View>
             <View>
               <Text style={styles.headerTitle}>
-                {activeShop?.name || 'Qlaok CMS'}
+                {activeShop?.name || 'Qlaok mPOS'}
               </Text>
               <Text style={styles.headerSub}>
-                📍 {activeShop?.city || 'Đà Nẵng'} • Supabase Live
+                📍 {activeShop?.city || 'Đà Nẵng'} • Realtime mPOS
               </Text>
             </View>
           </View>
@@ -391,10 +595,35 @@ export default function App() {
         </ScrollView>
       </View>
 
+      {/* REALTIME NEW ORDER PUSH NOTIFICATION BANNER ON MOBILE */}
+      {liveOrderAlert && (
+        <TouchableOpacity
+          style={styles.liveAlertBanner}
+          onPress={() => {
+            setActiveTab('orders');
+            setOrderFilter('active');
+            setLiveOrderAlert(null);
+          }}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.liveAlertBadge}>
+              🔔 KHÁCH VỪA GỬI ĐƠN MỚI TẠI BÀN!
+            </Text>
+            <Text style={styles.liveAlertTitle}>
+              {liveOrderAlert.tableLabel} • #{liveOrderAlert.orderCode} (
+              {formatVnd(liveOrderAlert.totalAmount)})
+            </Text>
+          </View>
+          <View style={styles.liveAlertCta}>
+            <Text style={styles.liveAlertCtaText}>Xem đơn</Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
       {loading ? (
         <View style={styles.centerBox}>
           <ActivityIndicator size="large" color="#10b981" />
-          <Text style={styles.loadingText}>Đang đồng bộ từ Supabase...</Text>
+          <Text style={styles.loadingText}>Đang đồng bộ mPOS &amp; Supabase...</Text>
         </View>
       ) : (
         <ScrollView
@@ -409,23 +638,214 @@ export default function App() {
             />
           }
         >
-          {/* ================= TAB 1: OVERVIEW & REVENUE ================= */}
+          {/* ================= TAB 1: COUNTER mPOS ORDERS ================= */}
+          {activeTab === 'orders' && (
+            <View style={styles.sectionStack}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {[
+                  {
+                    id: 'active',
+                    label: `Đang xử lý (${newOrdersCount + preparingOrdersCount})`,
+                  },
+                  { id: 'new', label: `Mới chờ nhận (${newOrdersCount})` },
+                  {
+                    id: 'preparing',
+                    label: `Đang làm (${preparingOrdersCount})`,
+                  },
+                  { id: 'completed', label: 'Đã hoàn tất' },
+                ].map((f) => {
+                  const active = orderFilter === f.id;
+                  return (
+                    <TouchableOpacity
+                      key={f.id}
+                      onPress={() =>
+                        setOrderFilter(
+                          f.id as 'active' | 'new' | 'preparing' | 'completed'
+                        )
+                      }
+                      style={[styles.catChip, active && styles.catChipActive]}
+                    >
+                      <Text
+                        style={[
+                          styles.catChipText,
+                          active && styles.catChipTextActive,
+                        ]}
+                      >
+                        {f.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              {visibleOrders.length === 0 ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardHeading}>
+                    Chưa có đơn hàng nào trong mục này
+                  </Text>
+                  <Text style={styles.itemSub}>
+                    Khi khách quét mã QR tại bàn và bấm gửi đơn, điện thoại sẽ
+                    rung và hiện phiếu gọi món ngay tại đây.
+                  </Text>
+                </View>
+              ) : (
+                visibleOrders.map((order) => {
+                  const isNew = order.status === 'new';
+                  const isPreparing = order.status === 'preparing';
+
+                  return (
+                    <View
+                      key={order.id}
+                      style={[
+                        styles.orderTicketCard,
+                        isNew && styles.orderTicketNew,
+                        isPreparing && styles.orderTicketPreparing,
+                      ]}
+                    >
+                      <View style={styles.orderHeaderRow}>
+                        <View>
+                          <Text style={styles.orderTableBadge}>
+                            {order.table_label} • #{order.order_code}
+                          </Text>
+                          <Text style={styles.itemSub}>
+                            Ngôn ngữ khách: {order.visitor_lang.toUpperCase()} •{' '}
+                            {order.payment_method === 'vietqr'
+                              ? 'Chuyển khoản QR'
+                              : 'Tiền mặt'}
+                          </Text>
+                        </View>
+                        <Text style={styles.orderTotalText}>
+                          {formatVnd(order.total_amount)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.orderItemsBox}>
+                        {order.items.map((line, idx) => (
+                          <View key={idx} style={styles.orderLineRow}>
+                            <Text style={styles.orderLineQty}>
+                              x{line.quantity}
+                            </Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.itemTitle}>
+                                {line.name_vi}
+                              </Text>
+                              {line.custom_note ? (
+                                <Text style={styles.orderNoteText}>
+                                  📝 {line.custom_note}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <Text style={styles.viewCountText}>
+                              {formatVnd(
+                                (line.unit_price + line.extra_price) *
+                                  line.quantity
+                              )}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+
+                      {order.customer_note ? (
+                        <Text style={styles.orderNoteText}>
+                          💬 Ghi chú bàn: {order.customer_note}
+                        </Text>
+                      ) : null}
+
+                      {/* Order Action Buttons */}
+                      <View style={styles.orderActionsRow}>
+                        {isNew && (
+                          <>
+                            <TouchableOpacity
+                              style={styles.btnPrepare}
+                              onPress={() =>
+                                handleUpdateOrderStatus(order.id, 'preparing')
+                              }
+                            >
+                              <Text style={styles.btnPrepareText}>
+                                👨‍🍳 Nhận đơn &amp; Báo bếp
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.btnCancel}
+                              onPress={() =>
+                                handleUpdateOrderStatus(order.id, 'cancelled')
+                              }
+                            >
+                              <Text style={styles.btnCancelText}>Hủy</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+
+                        {isPreparing && (
+                          <>
+                            <TouchableOpacity
+                              style={styles.btnComplete}
+                              onPress={() =>
+                                handleUpdateOrderStatus(
+                                  order.id,
+                                  'completed',
+                                  'paid'
+                                )
+                              }
+                            >
+                              <Text style={styles.btnCompleteText}>
+                                ✅ Đã phục vụ &amp; Thu tiền
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.btnCancel}
+                              onPress={() =>
+                                handleUpdateOrderStatus(order.id, 'cancelled')
+                              }
+                            >
+                              <Text style={styles.btnCancelText}>Hủy</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          )}
+
+          {/* ================= TAB 2: OVERVIEW, REVENUE & INVENTORY ================= */}
           {activeTab === 'overview' && (
             <View style={styles.sectionStack}>
               <View style={styles.revenueHeroCard}>
                 <Text style={styles.revenueLabel}>
-                  DOANH THU ƯỚC TÍNH TỪ KHÁCH QUÉT QR GỌI MÓN
+                  DOANH THU HÔM NAY (TỰ ĐỘNG TỪ QUẦY mPOS &amp; QR BÀN)
                 </Text>
                 <Text style={styles.revenueValue}>
-                  {formatVnd(estimatedOrderRevenue)}
+                  {formatVnd(todayRevenue)}
                 </Text>
                 <Text style={styles.revenueSub}>
-                  Dựa trên {showToStaffCount} lượt khách bấm &quot;Đưa Nhân Viên Xem&quot; •{' '}
-                  {items.filter((i) => i.is_available).length}/{items.length} món đang mở bán
+                  Tổng lũy kế: {formatVnd(totalRevenue)} ({validOrders.length}{' '}
+                  đơn) • {items.filter((i) => i.is_available).length}/
+                  {items.length} món đang mở bán
                 </Text>
               </View>
 
               <View style={styles.kpiGrid}>
+                <View style={styles.kpiCard}>
+                  <Text style={styles.kpiNumber}>
+                    {newOrdersCount + preparingOrdersCount}
+                  </Text>
+                  <Text style={styles.kpiTitle}>Đơn đang phục vụ</Text>
+                  <Text style={styles.kpiHint}>
+                    Mới: {newOrdersCount} • Đang làm: {preparingOrdersCount}
+                  </Text>
+                </View>
+
+                <View style={styles.kpiCard}>
+                  <Text style={styles.kpiNumber}>{lowStockCount}</Text>
+                  <Text style={styles.kpiTitle}>Món sắp hết (&lt;=5)</Text>
+                  <Text style={styles.kpiHint}>
+                    Đã hết hàng: {outOfStockCount} món
+                  </Text>
+                </View>
+
                 <View style={styles.kpiCard}>
                   <Text style={styles.kpiNumber}>
                     {scanDoorCount + scanTableCount}
@@ -433,20 +853,6 @@ export default function App() {
                   <Text style={styles.kpiTitle}>Tổng lượt quét QR</Text>
                   <Text style={styles.kpiHint}>
                     Cửa: {scanDoorCount} • Bàn: {scanTableCount}
-                  </Text>
-                </View>
-
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>{showToStaffCount}</Text>
-                  <Text style={styles.kpiTitle}>Lượt gọi món tại bàn</Text>
-                  <Text style={styles.kpiHint}>Show to Staff</Text>
-                </View>
-
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>{wifiCopyCount}</Text>
-                  <Text style={styles.kpiTitle}>Khách kết nối Wi-Fi</Text>
-                  <Text style={styles.kpiHint}>
-                    SSID: {activeShop?.wifi_info?.ssid || 'Chưa đặt'}
                   </Text>
                 </View>
 
@@ -461,11 +867,11 @@ export default function App() {
 
               <View style={styles.card}>
                 <Text style={styles.cardHeading}>
-                  🔥 Top món khách xem nhiều nhất
+                  🔥 Top món bán chạy &amp; Số lượng tồn kho
                 </Text>
                 {[...items]
-                  .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
-                  .slice(0, 5)
+                  .sort((a, b) => (b.sold_count || 0) - (a.sold_count || 0))
+                  .slice(0, 6)
                   .map((item, idx) => (
                     <View key={item.id} style={styles.topItemRow}>
                       <Text style={styles.rankBadge}>#{idx + 1}</Text>
@@ -474,11 +880,16 @@ export default function App() {
                           {item.name_i18n?.vi}
                         </Text>
                         <Text style={styles.itemSub}>
-                          {formatVnd(item.price)} • {item.name_i18n?.en || ''}
+                          {formatVnd(item.price)} • Đã bán:{' '}
+                          {item.sold_count || 0}
                         </Text>
                       </View>
                       <Text style={styles.viewCountText}>
-                        {item.view_count || 0} lượt xem
+                        Tồn:{' '}
+                        {item.stock_quantity === null ||
+                        item.stock_quantity === undefined
+                          ? '∞'
+                          : item.stock_quantity}
                       </Text>
                     </View>
                   ))}
@@ -486,25 +897,34 @@ export default function App() {
             </View>
           )}
 
-          {/* ================= TAB 2: CATALOG & 1-TAP OUT OF STOCK ================= */}
+          {/* ================= TAB 3: CATALOG & STOCK QUANTITY ================= */}
           {activeTab === 'catalog' && (
             <View style={styles.sectionStack}>
               {/* Quick Add Bar */}
               <View style={styles.card}>
-                <Text style={styles.cardHeading}>+ Thêm nhanh món / dịch vụ</Text>
+                <Text style={styles.cardHeading}>
+                  + Thêm nhanh món &amp; Số lượng tồn
+                </Text>
                 <View style={styles.quickAddRow}>
                   <TextInput
-                    style={[styles.input, { flex: 1.4 }]}
-                    placeholder="Tên món (VD: Phở tái nạm)"
+                    style={[styles.input, { flex: 1.3 }]}
+                    placeholder="Tên món (VD: Phở tái)"
                     value={newItemName}
                     onChangeText={setNewItemName}
                   />
                   <TextInput
-                    style={[styles.input, { flex: 0.9 }]}
+                    style={[styles.input, { flex: 0.8 }]}
                     placeholder="Giá (35000)"
                     keyboardType="numeric"
                     value={newItemPrice}
                     onChangeText={setNewItemPrice}
+                  />
+                  <TextInput
+                    style={[styles.input, { flex: 0.6 }]}
+                    placeholder="Tồn (∞)"
+                    keyboardType="numeric"
+                    value={newItemStock}
+                    onChangeText={setNewItemStock}
                   />
                   <TouchableOpacity
                     style={styles.addBtn}
@@ -558,66 +978,106 @@ export default function App() {
                 })}
               </ScrollView>
 
-              {/* Item List with 1-Tap Availability Switch & Price Adjust */}
-              {visibleItems.map((item) => (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.itemCard,
-                    !item.is_available && styles.itemCardSoldOut,
-                  ]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.itemTitle}>{item.name_i18n?.vi}</Text>
-                    <Text style={styles.itemSub}>
-                      🇬🇧 {item.name_i18n?.en || '—'} • 🇰🇷{' '}
-                      {item.name_i18n?.ko || '—'}
-                    </Text>
-                    <View style={styles.priceRow}>
-                      <Text style={styles.priceBadge}>
-                        {formatVnd(item.price)}
+              {/* Item List with 1-Tap Availability Switch, Price & Stock Adjust */}
+              {visibleItems.map((item) => {
+                const stock =
+                  item.stock_quantity === undefined
+                    ? null
+                    : item.stock_quantity;
+                return (
+                  <View
+                    key={item.id}
+                    style={[
+                      styles.itemCard,
+                      !item.is_available && styles.itemCardSoldOut,
+                    ]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemTitle}>{item.name_i18n?.vi}</Text>
+                      <Text style={styles.itemSub}>
+                        🇬🇧 {item.name_i18n?.en || '—'} • Đã bán:{' '}
+                        {item.sold_count || 0}
                       </Text>
-                      <TouchableOpacity
-                        style={styles.priceStepBtn}
-                        onPress={() => handleUpdateItemPrice(item, -5000)}
+
+                      {/* Price Row */}
+                      <View style={styles.priceRow}>
+                        <Text style={styles.priceBadge}>
+                          {formatVnd(item.price)}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.priceStepBtn}
+                          onPress={() => handleUpdateItemPrice(item, -5000)}
+                        >
+                          <Text style={styles.priceStepText}>-5k</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.priceStepBtn}
+                          onPress={() => handleUpdateItemPrice(item, 5000)}
+                        >
+                          <Text style={styles.priceStepText}>+5k</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Stock Quantity Row */}
+                      <View style={styles.priceRow}>
+                        <Text style={styles.stockBadgeText}>
+                          📦 Tồn kho: {stock === null ? '∞' : stock}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.priceStepBtn}
+                          onPress={() =>
+                            handleUpdateItemStock(
+                              item,
+                              Math.max(0, (stock ?? 10) - 1)
+                            )
+                          }
+                        >
+                          <Text style={styles.priceStepText}>-1</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.priceStepBtn}
+                          onPress={() =>
+                            handleUpdateItemStock(item, (stock ?? 0) + 5)
+                          }
+                        >
+                          <Text style={styles.priceStepText}>+5</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.priceStepBtn}
+                          onPress={() => handleUpdateItemStock(item, null)}
+                        >
+                          <Text style={styles.priceStepText}>∞</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <View style={styles.switchColumn}>
+                      <Switch
+                        value={item.is_available}
+                        onValueChange={() => handleToggleItemAvailability(item)}
+                        trackColor={{ false: '#cbd5e1', true: '#10b981' }}
+                      />
+                      <Text
+                        style={[
+                          styles.stockStatusText,
+                          { color: item.is_available ? '#059669' : '#e11d48' },
+                        ]}
                       >
-                        <Text style={styles.priceStepText}>-5k</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.priceStepBtn}
-                        onPress={() => handleUpdateItemPrice(item, 5000)}
-                      >
-                        <Text style={styles.priceStepText}>+5k</Text>
-                      </TouchableOpacity>
+                        {item.is_available ? 'Còn món' : 'Hết hàng'}
+                      </Text>
                     </View>
                   </View>
-
-                  <View style={styles.switchColumn}>
-                    <Switch
-                      value={item.is_available}
-                      onValueChange={() => handleToggleItemAvailability(item)}
-                      trackColor={{ false: '#cbd5e1', true: '#10b981' }}
-                    />
-                    <Text
-                      style={[
-                        styles.stockStatusText,
-                        { color: item.is_available ? '#059669' : '#e11d48' },
-                      ]}
-                    >
-                      {item.is_available ? 'Còn món' : 'Hết hàng'}
-                    </Text>
-                  </View>
-                </View>
-              ))}
+                );
+              })}
             </View>
           )}
 
-          {/* ================= TAB 3: STORE & WI-FI SETTINGS ================= */}
+          {/* ================= TAB 4: STORE & WI-FI SETTINGS ================= */}
           {activeTab === 'settings' && (
             <View style={styles.sectionStack}>
               <View style={styles.card}>
                 <Text style={styles.cardHeading}>
-                  🏪 Cài đặt Cửa hàng & Wi-Fi (Đồng bộ Supabase)
+                  🏪 Cài đặt Cửa hàng &amp; Wi-Fi (Đồng bộ Supabase)
                 </Text>
 
                 <Text style={styles.fieldLabel}>Tên cửa hàng</Text>
@@ -675,6 +1135,20 @@ export default function App() {
       <View style={styles.bottomNav}>
         <TouchableOpacity
           style={styles.navTab}
+          onPress={() => setActiveTab('orders')}
+        >
+          <Text
+            style={[
+              styles.navTabText,
+              activeTab === 'orders' && styles.navTabTextActive,
+            ]}
+          >
+            🔔 Đơn mPOS ({newOrdersCount})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navTab}
           onPress={() => setActiveTab('overview')}
         >
           <Text
@@ -683,7 +1157,7 @@ export default function App() {
               activeTab === 'overview' && styles.navTabTextActive,
             ]}
           >
-            📊 Doanh thu & QR
+            📊 Doanh thu
           </Text>
         </TouchableOpacity>
 
@@ -697,7 +1171,7 @@ export default function App() {
               activeTab === 'catalog' && styles.navTabTextActive,
             ]}
           >
-            🍜 Thực đơn ({items.length})
+            🍜 Kho ({items.length})
           </Text>
         </TouchableOpacity>
 
@@ -711,7 +1185,7 @@ export default function App() {
               activeTab === 'settings' && styles.navTabTextActive,
             ]}
           >
-            ⚙️ Cài đặt Quán
+            ⚙️ Cài đặt
           </Text>
         </TouchableOpacity>
       </View>
@@ -882,6 +1356,38 @@ const styles = StyleSheet.create({
   shopPillTextActive: {
     color: '#ffffff',
   },
+  liveAlertBanner: {
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 2,
+    borderBottomColor: '#fbbf24',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  liveAlertBadge: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: '#fbbf24',
+  },
+  liveAlertTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginTop: 2,
+  },
+  liveAlertCta: {
+    backgroundColor: '#fbbf24',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  liveAlertCtaText: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#020617',
+  },
   centerBox: {
     flex: 1,
     alignItems: 'center',
@@ -899,6 +1405,102 @@ const styles = StyleSheet.create({
   sectionStack: {
     gap: 14,
     paddingBottom: 28,
+  },
+  orderTicketCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    gap: 10,
+  },
+  orderTicketNew: {
+    borderColor: '#fbbf24',
+    backgroundColor: '#fffbeb',
+  },
+  orderTicketPreparing: {
+    borderColor: '#60a5fa',
+  },
+  orderHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  orderTableBadge: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#0f172a',
+  },
+  orderTotalText: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#059669',
+  },
+  orderItemsBox: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    gap: 6,
+  },
+  orderLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  orderLineQty: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#059669',
+    width: 26,
+  },
+  orderNoteText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#b45309',
+    marginTop: 2,
+  },
+  orderActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  btnPrepare: {
+    flex: 1,
+    backgroundColor: '#2563eb',
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnPrepareText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  btnComplete: {
+    flex: 1,
+    backgroundColor: '#059669',
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnCompleteText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  btnCancel: {
+    backgroundColor: '#ffe4e6',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnCancelText: {
+    color: '#be123c',
+    fontSize: 12,
+    fontWeight: '800',
   },
   revenueHeroCard: {
     backgroundColor: '#0f172a',
@@ -985,7 +1587,7 @@ const styles = StyleSheet.create({
   },
   quickAddRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
     alignItems: 'center',
   },
   input: {
@@ -1001,7 +1603,7 @@ const styles = StyleSheet.create({
   },
   addBtn: {
     backgroundColor: '#10b981',
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
     marginBottom: 8,
@@ -1058,12 +1660,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 8,
+    marginTop: 6,
   },
   priceBadge: {
     fontSize: 13,
     fontWeight: '900',
     color: '#059669',
+  },
+  stockBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
   },
   priceStepBtn: {
     backgroundColor: '#f1f5f9',
@@ -1110,7 +1717,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#e2e8f0',
     paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
   },
   navTab: {
     flex: 1,
@@ -1118,7 +1725,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   navTabText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: '#64748b',
   },

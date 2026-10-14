@@ -1,4 +1,4 @@
-import { PlanTier, SupportedLocale } from '@/types/qlaok';
+import type { PlanTier, SupportedLocale } from '@/types/qlaok';
 
 export interface PlanConfig {
   tier: PlanTier;

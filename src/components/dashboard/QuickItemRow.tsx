@@ -7,7 +7,7 @@ import {
   Sparkles,
   Clock,
   Check,
-  Edit3,
+  Package,
 } from 'lucide-react';
 import { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
@@ -17,6 +17,7 @@ interface QuickItemRowProps {
   item: CatalogItem;
   onToggleAvailable: (item: CatalogItem, nextAvailable: boolean) => Promise<void>;
   onUpdatePrice: (item: CatalogItem, nextPrice: number) => Promise<void>;
+  onUpdateStock?: (item: CatalogItem, nextStock: number | null) => Promise<void>;
   onToggleFeatured: (item: CatalogItem, nextFeatured: boolean) => Promise<void>;
   onEditTranslations: (item: CatalogItem) => void;
   onDelete: (itemId: string) => Promise<void>;
@@ -26,6 +27,7 @@ export function QuickItemRow({
   item,
   onToggleAvailable,
   onUpdatePrice,
+  onUpdateStock,
   onToggleFeatured,
   onEditTranslations,
   onDelete,
@@ -34,9 +36,24 @@ export function QuickItemRow({
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
 
+  const [stockInput, setStockInput] = useState(
+    item.stock_quantity === null || item.stock_quantity === undefined
+      ? ''
+      : String(item.stock_quantity)
+  );
+  const [stockSaved, setStockSaved] = useState(false);
+
   useEffect(() => {
     setPriceInput(String(item.price));
   }, [item.price]);
+
+  useEffect(() => {
+    setStockInput(
+      item.stock_quantity === null || item.stock_quantity === undefined
+        ? ''
+        : String(item.stock_quantity)
+    );
+  }, [item.stock_quantity]);
 
   const handlePriceBlurOrEnter = async () => {
     const numeric = Number(priceInput.replace(/[^\d]/g, ''));
@@ -51,9 +68,32 @@ export function QuickItemRow({
     setTimeout(() => setPriceSaved(false), 1800);
   };
 
+  const handleStockBlurOrEnter = async () => {
+    if (!onUpdateStock) return;
+    const trimmed = stockInput.trim();
+    const nextStock =
+      trimmed === '' ? null : Math.max(0, Number(trimmed.replace(/[^\d]/g, '')));
+    const currentStock =
+      item.stock_quantity === undefined ? null : item.stock_quantity;
+
+    if (nextStock === currentStock || (nextStock !== null && isNaN(nextStock))) {
+      setStockInput(currentStock === null ? '' : String(currentStock));
+      return;
+    }
+
+    await onUpdateStock(item, nextStock);
+    setStockSaved(true);
+    setTimeout(() => setStockSaved(false), 1800);
+  };
+
   const translatedLangs = ALL_LOCALES.filter(
     (loc) => item.name_i18n?.[loc] && item.name_i18n[loc]!.trim().length > 0
   );
+
+  const isLowStock =
+    typeof item.stock_quantity === 'number' &&
+    item.stock_quantity > 0 &&
+    item.stock_quantity <= 5;
 
   return (
     <div
@@ -87,6 +127,11 @@ export function QuickItemRow({
                   Tạm hết
                 </span>
               )}
+              {isLowStock && (
+                <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                  ⚠️ Sắp hết ({item.stock_quantity})
+                </span>
+              )}
               {item.is_featured && (
                 <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
                   ★ Bán chạy
@@ -102,7 +147,7 @@ export function QuickItemRow({
             )}
 
             {/* Translation status flags & duration */}
-            <div className="flex items-center gap-2 flex-wrap pt-0.5">
+            <div className="flex items-center gap-2.5 flex-wrap pt-0.5">
               <div className="flex items-center gap-1.5">
                 {ALL_LOCALES.map((loc) => {
                   const hasTrans = translatedLangs.includes(loc);
@@ -128,6 +173,10 @@ export function QuickItemRow({
                   {item.duration_mins}p
                 </span>
               )}
+
+              <span className="text-[11px] font-semibold text-emerald-700">
+                🔥 Đã bán: {item.sold_count || 0}
+              </span>
 
               <span className="text-[11px] text-slate-400">
                 👁 {item.view_count || 0} lượt xem
@@ -163,38 +212,76 @@ export function QuickItemRow({
         </div>
       </div>
 
-      {/* Bottom Row: Direct Price Edit & Action Buttons */}
+      {/* Bottom Row: Direct Price Edit, Stock Quantity Edit & Action Buttons */}
       <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5 flex-wrap">
-        {/* Direct inline price input */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-semibold text-slate-500">Giá:</span>
-          <div className="relative flex items-center">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={priceInput}
-              onChange={(e) => setPriceInput(e.target.value)}
-              onBlur={handlePriceBlurOrEnter}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.currentTarget.blur();
-                }
-              }}
-              className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 pr-7 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
-            />
-            <span className="pointer-events-none absolute right-2.5 text-xs font-bold text-slate-400">
-              đ
-            </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Direct inline price input */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-slate-500">Giá:</span>
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={priceInput}
+                onChange={(e) => setPriceInput(e.target.value)}
+                onBlur={handlePriceBlurOrEnter}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                  }
+                }}
+                className="w-24 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 pr-6 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
+              />
+              <span className="pointer-events-none absolute right-2 text-xs font-bold text-slate-400">
+                đ
+              </span>
+            </div>
+            {savingPrice && (
+              <span className="text-[11px] font-medium text-slate-400">
+                Lưu...
+              </span>
+            )}
+            {priceSaved && (
+              <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-emerald-600">
+                <Check className="h-3.5 w-3.5" />
+              </span>
+            )}
           </div>
-          {savingPrice && (
-            <span className="text-[11px] font-medium text-slate-400">
-              Đang lưu...
-            </span>
-          )}
-          {priceSaved && (
-            <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-emerald-600">
-              <Check className="h-3.5 w-3.5" /> Đã lưu
-            </span>
+
+          {/* Direct inline Stock Quantity input */}
+          {onUpdateStock && (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
+                <Package className="h-3.5 w-3.5 text-slate-400" />
+                <span>Tồn kho:</span>
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={stockInput}
+                placeholder="∞"
+                onChange={(e) => setStockInput(e.target.value)}
+                onBlur={handleStockBlurOrEnter}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                  }
+                }}
+                title="Nhập số lượng tồn kho (để trống = không giới hạn ∞)"
+                className={`w-16 rounded-xl border px-2.5 py-1.5 text-center text-xs font-extrabold focus:bg-white focus:outline-none ${
+                  item.stock_quantity === 0
+                    ? 'border-rose-300 bg-rose-50 text-rose-700'
+                    : isLowStock
+                      ? 'border-amber-300 bg-amber-50 text-amber-800'
+                      : 'border-slate-200 bg-slate-50 text-slate-900 focus:border-emerald-500'
+                }`}
+              />
+              {stockSaved && (
+                <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-emerald-600">
+                  <Check className="h-3.5 w-3.5" /> Đã lưu tồn
+                </span>
+              )}
+            </div>
           )}
         </div>
 
@@ -220,7 +307,7 @@ export function QuickItemRow({
             className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
           >
             <Languages className="h-3.5 w-3.5" />
-            <span>Sửa & Dịch 5 thứ tiếng</span>
+            <span>Sửa &amp; Dịch 5 thứ tiếng</span>
           </button>
 
           <button

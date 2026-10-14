@@ -1,4 +1,4 @@
-import { BusinessVertical, I18nText, OpeningHours, SupportedLocale } from '@/types/qlaok';
+import type { BusinessVertical, I18nText, OpeningHours, SupportedLocale } from '@/types/qlaok';
 
 export const LOCALE_META: Record<
   SupportedLocale,

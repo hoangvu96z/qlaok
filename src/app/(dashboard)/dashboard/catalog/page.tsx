@@ -105,6 +105,39 @@ export default function DashboardCatalogPage() {
     notifyRealtime();
   };
 
+  const handleUpdateStock = async (
+    item: CatalogItem,
+    nextStock: number | null
+  ) => {
+    const nextAvailable =
+      nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id
+          ? { ...i, stock_quantity: nextStock, is_available: nextAvailable }
+          : i
+      )
+    );
+    await fetch('/api/catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'upsert_item',
+        item: {
+          ...item,
+          stock_quantity: nextStock,
+          is_available: nextAvailable,
+        },
+      }),
+    });
+    notifyRealtime();
+    showToast(
+      nextStock === null
+        ? `Đã đặt tồn kho Không giới hạn (∞) cho: ${item.name_i18n.vi}`
+        : `Đã cập nhật tồn kho (${nextStock}) cho: ${item.name_i18n.vi}`
+    );
+  };
+
   const handleToggleFeatured = async (
     item: CatalogItem,
     nextFeatured: boolean
@@ -355,6 +388,7 @@ export default function DashboardCatalogPage() {
             item={item}
             onToggleAvailable={handleToggleAvailable}
             onUpdatePrice={handleUpdatePrice}
+            onUpdateStock={handleUpdateStock}
             onToggleFeatured={handleToggleFeatured}
             onEditTranslations={(target) => {
               setEditingItem(target);

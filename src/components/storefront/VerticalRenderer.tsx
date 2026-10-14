@@ -103,6 +103,22 @@ export function VerticalRenderer({
                               {labels.soldOut}
                             </span>
                           )}
+                          {!unavailable &&
+                            item.stock_quantity !== null &&
+                            item.stock_quantity !== undefined && (
+                              <span
+                                className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                                  item.stock_quantity <= 5
+                                    ? 'bg-orange-100 text-orange-800'
+                                    : 'bg-emerald-50 text-emerald-700'
+                                }`}
+                              >
+                                {item.stock_quantity <= 5 ? '🔥 ' : ''}
+                                {locale === 'vi'
+                                  ? `Còn ${item.stock_quantity}`
+                                  : `${item.stock_quantity} left`}
+                              </span>
+                            )}
                         </div>
 
                         <h3 className="text-sm font-bold text-slate-900 leading-snug">
@@ -197,6 +213,21 @@ export function VerticalRenderer({
                               {labels.soldOut}
                             </span>
                           )}
+                          {!unavailable &&
+                            item.stock_quantity !== null &&
+                            item.stock_quantity !== undefined && (
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                  item.stock_quantity <= 5
+                                    ? 'bg-orange-100 text-orange-800'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                {locale === 'vi'
+                                  ? `Còn ${item.stock_quantity} suất`
+                                  : `${item.stock_quantity} slots`}
+                              </span>
+                            )}
                         </div>
 
                         {/* Dotted leader line */}
@@ -279,6 +310,21 @@ export function VerticalRenderer({
                             {labels.bestSeller}
                           </span>
                         )}
+                        {!unavailable &&
+                          item.stock_quantity !== null &&
+                          item.stock_quantity !== undefined && (
+                            <span
+                              className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-bold text-white shadow-xs ${
+                                item.stock_quantity <= 5
+                                  ? 'bg-orange-600'
+                                  : 'bg-slate-900/75'
+                              }`}
+                            >
+                              {locale === 'vi'
+                                ? `Còn ${item.stock_quantity}`
+                                : `${item.stock_quantity} left`}
+                            </span>
+                          )}
                         {unavailable && (
                           <div className="absolute inset-0 flex items-center justify-center bg-black/50">
                             <span className="rounded-lg bg-rose-600 px-2.5 py-1 text-xs font-bold text-white">

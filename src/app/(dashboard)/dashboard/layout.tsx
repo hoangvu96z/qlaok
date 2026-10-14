@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
+  BellRing,
   UtensilsCrossed,
   ScanLine,
   QrCode,
@@ -16,10 +17,13 @@ import {
   Store,
   LogOut,
   UserCheck,
+  X,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
+import { ShopOrder } from '@/types/qlaok';
+import { formatCurrency } from '@/lib/i18n-helper';
 
 const NAV_ITEMS = [
   {
@@ -28,8 +32,14 @@ const NAV_ITEMS = [
     icon: LayoutDashboard,
   },
   {
+    href: '/dashboard/orders',
+    label: 'Đơn hàng mPOS',
+    icon: BellRing,
+    isOrders: true,
+  },
+  {
     href: '/dashboard/catalog',
-    label: 'Menu / Bảng giá',
+    label: 'Menu / Tồn kho',
     icon: UtensilsCrossed,
   },
   {
@@ -59,11 +69,51 @@ const NAV_ITEMS = [
   },
 ];
 
+function playGlobalOrderChime() {
+  if (typeof window === 'undefined') return;
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const playTone = (freq: number, start: number, duration: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(
+        0.001,
+        ctx.currentTime + start + duration
+      );
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + duration);
+    };
+    playTone(659.25, 0, 0.16);
+    playTone(880, 0.16, 0.32);
+  } catch {
+    // ignore autoplay restriction
+  }
+}
+
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { shops, activeShop, profile, selectShop } = useDashboard();
   const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [newOrdersCount, setNewOrdersCount] = useState(0);
+  const [liveToastOrder, setLiveToastOrder] = useState<{
+    orderCode: string;
+    tableLabel: string;
+    totalAmount: number;
+  } | null>(null);
+
+  const knownNewIdsRef = useRef<Set<string>>(new Set());
+  const firstCheckRef = useRef(true);
 
   useEffect(() => {
     const supabase = createClient();
@@ -74,6 +124,70 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       }
     });
   }, []);
+
+  const checkLiveOrders = useCallback(async () => {
+    if (!activeShop) return;
+    try {
+      const res = await fetch(
+        `/api/orders?shopId=${encodeURIComponent(activeShop.id)}`,
+        { cache: 'no-store' }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const orders: ShopOrder[] = data.orders || [];
+      const newList = orders.filter((o) => o.status === 'new');
+      setNewOrdersCount(newList.length);
+
+      if (!firstCheckRef.current) {
+        const brandNew = newList.find(
+          (o) => !knownNewIdsRef.current.has(o.id)
+        );
+        if (brandNew) {
+          playGlobalOrderChime();
+          setLiveToastOrder({
+            orderCode: brandNew.order_code,
+            tableLabel: brandNew.table_label,
+            totalAmount: brandNew.total_amount,
+          });
+        }
+      }
+
+      knownNewIdsRef.current = new Set(newList.map((o) => o.id));
+      firstCheckRef.current = false;
+    } catch {
+      // ignore
+    }
+  }, [activeShop]);
+
+  useEffect(() => {
+    firstCheckRef.current = true;
+    checkLiveOrders();
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      bc = new BroadcastChannel('qlaok_realtime_sync');
+      bc.onmessage = (ev) => {
+        if (
+          ev.data?.type === 'new_order_submitted' &&
+          ev.data?.shopId === activeShop?.id
+        ) {
+          playGlobalOrderChime();
+          setLiveToastOrder({
+            orderCode: ev.data.orderCode || 'MỚI',
+            tableLabel: ev.data.tableLabel || 'Bàn khách',
+            totalAmount: ev.data.totalAmount || 0,
+          });
+        }
+        checkLiveOrders();
+      };
+    }
+
+    const interval = setInterval(checkLiveOrders, 3500);
+    return () => {
+      if (bc) bc.close();
+      clearInterval(interval);
+    };
+  }, [checkLiveOrders, activeShop?.id]);
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -92,6 +206,50 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col md:flex-row">
+      {/* Global Floating New Order Toast Notification */}
+      {liveToastOrder && (
+        <div className="fixed top-4 right-4 z-50 w-full max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-slate-950">
+                <BellRing className="h-5 w-5" />
+              </div>
+              <div>
+                <span className="inline-block rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-black text-emerald-400 uppercase">
+                  Khách vừa gửi đơn mới!
+                </span>
+                <h4 className="mt-1 text-sm font-black text-white">
+                  {liveToastOrder.tableLabel} • #{liveToastOrder.orderCode}
+                </h4>
+                <p className="text-xs font-bold text-amber-400">
+                  Tổng đơn:{' '}
+                  {formatCurrency(
+                    liveToastOrder.totalAmount,
+                    activeShop?.currency || 'VND'
+                  )}
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <Link
+                    href="/dashboard/orders"
+                    onClick={() => setLiveToastOrder(null)}
+                    className="rounded-xl bg-amber-400 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
+                  >
+                    Mở Quầy mPOS Nhận Đơn
+                  </Link>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLiveToastOrder(null)}
+              className="rounded-lg p-1 text-slate-400 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-slate-900 text-white border-r border-slate-800">
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
@@ -101,10 +259,10 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
             <div>
               <span className="block text-base font-black tracking-tight">
-                Qlaok CMS
+                Qlaok mPOS
               </span>
               <span className="block text-[10px] text-slate-400">
-                Quét là OK • Quản trị cửa hàng
+                Quét là OK • Quản trị &amp; Thu ngân
               </span>
             </div>
           </Link>
@@ -177,14 +335,27 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-all ${
+                className={`flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-all ${
                   active
                     ? 'bg-emerald-500 text-slate-950 shadow-sm'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span>{item.label}</span>
+                <div className="flex items-center gap-3">
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{item.label}</span>
+                </div>
+                {item.isOrders && newOrdersCount > 0 && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
+                      active
+                        ? 'bg-slate-950 text-amber-400'
+                        : 'bg-amber-400 text-slate-950 animate-pulse'
+                    }`}
+                  >
+                    {newOrdersCount} mới
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -240,7 +411,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 <select
                   value={activeShop?.id || ''}
                   onChange={(e) => selectShop(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:outline-none max-w-[200px] sm:max-w-xs truncate"
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:outline-none max-w-[180px] sm:max-w-xs truncate"
                 >
                   {shops.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -259,16 +430,22 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
           {activeShop && (
             <div className="flex items-center gap-1.5 shrink-0">
-              <a
-                href={`/s/${activeShop.slug}?src=door`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+              <Link
+                href="/dashboard/orders"
+                className={`relative inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold border ${
+                  newOrdersCount > 0
+                    ? 'border-amber-400 bg-amber-400 text-slate-950 animate-pulse'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
               >
-                <ExternalLink className="h-3.5 w-3.5 text-emerald-600" />
-                <span className="hidden sm:inline">Xem QR Cửa</span>
-                <span className="sm:hidden">Cửa</span>
-              </a>
+                <BellRing className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Quầy mPOS</span>
+                {newOrdersCount > 0 && (
+                  <span className="rounded-full bg-slate-950 px-1.5 py-0.2 text-[10px] font-black text-amber-400">
+                    {newOrdersCount}
+                  </span>
+                )}
+              </Link>
               <a
                 href={`/s/${activeShop.slug}/menu?src=table`}
                 target="_blank"
@@ -302,7 +479,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex flex-col items-center justify-center gap-0.5 rounded-xl px-2 py-1 text-[10px] font-bold transition-colors ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl px-2 py-1 text-[10px] font-bold transition-colors ${
                 active
                   ? 'text-emerald-600'
                   : 'text-slate-500 hover:text-slate-900'
@@ -310,6 +487,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             >
               <Icon className="h-4 w-4" />
               <span className="truncate max-w-[60px]">{item.label}</span>
+              {item.isOrders && newOrdersCount > 0 && (
+                <span className="absolute -top-0.5 right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-slate-950">
+                  {newOrdersCount}
+                </span>
+              )}
             </Link>
           );
         })}

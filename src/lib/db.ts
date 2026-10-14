@@ -1,5 +1,5 @@
-import { createClient as createSupabaseJsClient, SupabaseClient } from '@supabase/supabase-js';
-import {
+import { createClient as createSupabaseJsClient, type SupabaseClient } from '@supabase/supabase-js';
+import type {
   AnalyticsEvent,
   AnalyticsEventType,
   CatalogItem,
@@ -22,6 +22,11 @@ import {
 } from './seed-data';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
 import { canAddMoreItems } from './plan-limits';
+import {
+  computeShopRevenueAndInventoryStats,
+  enrichItemsWithInventory,
+  setItemStockMetadata,
+} from './mpos-store';
 
 let cachedAdminClient: SupabaseClient | null = null;
 let seedingInProgress: Promise<boolean> | null = null;
@@ -185,17 +190,19 @@ export async function dbGetStorefrontBundle(slug: string) {
     sb.from('profiles').select('plan').eq('id', shop.owner_id).single(),
   ]);
 
+  const normalizedItems = (items || []).map((i) => ({
+    ...i,
+    price: Number(i.price),
+    compare_at_price:
+      i.compare_at_price !== null && i.compare_at_price !== undefined
+        ? Number(i.compare_at_price)
+        : null,
+  })) as CatalogItem[];
+
   return {
     shop: shop as Shop,
     categories: (categories || []) as Category[],
-    items: (items || []).map((i) => ({
-      ...i,
-      price: Number(i.price),
-      compare_at_price:
-        i.compare_at_price !== null && i.compare_at_price !== undefined
-          ? Number(i.compare_at_price)
-          : null,
-    })) as CatalogItem[],
+    items: enrichItemsWithInventory(normalizedItems),
     posts: (posts || []) as Post[],
     ownerPlan: (ownerProfile?.plan as PlanTier) || 'premium',
   };
@@ -319,17 +326,19 @@ export async function dbGetShopCatalog(shopId?: string) {
       sb.from('profiles').select('*').limit(1),
     ]);
 
+  const normalizedItems = (items || []).map((i) => ({
+    ...i,
+    price: Number(i.price),
+    compare_at_price:
+      i.compare_at_price !== null && i.compare_at_price !== undefined
+        ? Number(i.compare_at_price)
+        : null,
+  })) as CatalogItem[];
+
   return {
     shop: shop as Shop,
     categories: (categories || []) as Category[],
-    items: (items || []).map((i) => ({
-      ...i,
-      price: Number(i.price),
-      compare_at_price:
-        i.compare_at_price !== null && i.compare_at_price !== undefined
-          ? Number(i.compare_at_price)
-          : null,
-    })) as CatalogItem[],
+    items: enrichItemsWithInventory(normalizedItems),
     profile: (profiles?.[0] as Profile) || SEED_PROFILE,
   };
 }
@@ -394,6 +403,12 @@ export async function dbUpsertItem(
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
+  const {
+    stock_quantity: incomingStock,
+    sold_count: incomingSold,
+    ...dbSafeItem
+  } = item;
+
   if (item.id) {
     const { data: existing } = await sb
       .from('items')
@@ -402,11 +417,24 @@ export async function dbUpsertItem(
       .maybeSingle();
 
     if (existing) {
+      if (incomingStock !== undefined || incomingSold !== undefined) {
+        await setItemStockMetadata(item.id, incomingStock, incomingSold);
+      }
+
+      const nextAvailable =
+        incomingStock === 0
+          ? false
+          : dbSafeItem.is_available !== undefined
+            ? dbSafeItem.is_available
+            : undefined;
+
       const { data, error } = await sb
         .from('items')
         .update({
-          ...item,
-          price: item.price !== undefined ? Number(item.price) : undefined,
+          ...dbSafeItem,
+          is_available: nextAvailable,
+          price:
+            dbSafeItem.price !== undefined ? Number(dbSafeItem.price) : undefined,
           updated_at: new Date().toISOString(),
         })
         .eq('id', item.id)
@@ -414,7 +442,8 @@ export async function dbUpsertItem(
         .single();
 
       if (error) throw new Error(error.message);
-      return { ...data, price: Number(data.price) } as CatalogItem;
+      const updated = { ...data, price: Number(data.price) } as CatalogItem;
+      return enrichItemsWithInventory([updated])[0];
     }
   }
 
@@ -432,10 +461,11 @@ export async function dbUpsertItem(
     throw new Error(check.reason || 'PLAN_LIMIT_REACHED');
   }
 
+  const newItemId =
+    item.id || `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
   const payload: CatalogItem = {
-    id:
-      item.id ||
-      `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: newItemId,
     shop_id: item.shop_id,
     category_id: item.category_id,
     sort_order: item.sort_order ?? (count || 0) + 1,
@@ -450,13 +480,17 @@ export async function dbUpsertItem(
     },
     duration_mins: item.duration_mins ?? null,
     image_url: item.image_url || null,
-    is_available: item.is_available ?? true,
+    is_available: incomingStock === 0 ? false : (item.is_available ?? true),
     is_featured: item.is_featured ?? false,
     name_i18n: item.name_i18n || { vi: 'Món mới' },
     desc_i18n: item.desc_i18n || { vi: '' },
     options_json: item.options_json || [],
     view_count: item.view_count ?? 0,
   };
+
+  if (incomingStock !== undefined || incomingSold !== undefined) {
+    await setItemStockMetadata(newItemId, incomingStock, incomingSold);
+  }
 
   const { data, error } = await sb
     .from('items')
@@ -465,7 +499,8 @@ export async function dbUpsertItem(
     .single();
 
   if (error) throw new Error(error.message);
-  return { ...data, price: Number(data.price) } as CatalogItem;
+  const created = { ...data, price: Number(data.price) } as CatalogItem;
+  return enrichItemsWithInventory([created])[0];
 }
 
 export async function dbDeleteItem(itemId: string): Promise<boolean> {
@@ -651,7 +686,15 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
   ]);
 
   const events = (eventsData || []) as AnalyticsEvent[];
-  const items = (itemsData || []) as CatalogItem[];
+  const rawItems = ((itemsData || []) as CatalogItem[]).map((i) => ({
+    ...i,
+    price: Number(i.price),
+  }));
+  const items = enrichItemsWithInventory(rawItems);
+  const mposStats = computeShopRevenueAndInventoryStats(
+    targetShopId || SEED_SHOPS[0].id,
+    items
+  );
 
   const scanDoorCount = events.filter(
     (e) => e.event_type === 'scan_door'
@@ -701,6 +744,8 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     totalScans: scanDoorCount + scanTableCount,
     langBreakdown,
     topItems,
+    ...mposStats,
+    mposStats,
     recentEvents: events.slice(0, 15),
   };
 }

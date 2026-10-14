@@ -16,6 +16,7 @@ import {
   CatalogItem,
   Category,
   Shop,
+  ShopOrder,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
@@ -34,6 +35,7 @@ export default function StorefrontMenuPage() {
   const params = useParams<{ slug: string }>();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
+  const initialTableParam = searchParams.get('table') || 'Bàn 01';
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -53,6 +55,7 @@ export default function StorefrontMenuPage() {
   const [activeItem, setActiveItem] = useState<CatalogItem | null>(null);
   const [cart, setCart] = useState<CartSelection[]>([]);
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+  const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchCatalogData = useCallback(
@@ -341,6 +344,32 @@ export default function StorefrontMenuPage() {
         </div>
       </header>
 
+      {/* Active Order Realtime Banner if Guest Just Sent an Order */}
+      {lastOrder && (
+        <div className="mx-3.5 mt-3">
+          <button
+            type="button"
+            onClick={() => setIsStaffModalOpen(true)}
+            className="flex w-full items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-slate-900 px-3.5 py-2.5 text-left text-white shadow-md"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400 animate-ping" />
+              <div className="min-w-0">
+                <p className="truncate text-xs font-extrabold text-emerald-400">
+                  Đơn #{lastOrder.order_code} • {lastOrder.table_label} đã gửi xuống quầy
+                </p>
+                <p className="truncate text-[11px] text-slate-300">
+                  Chạm để xem tiến độ chế biến &amp; phục vụ trực tiếp
+                </p>
+              </div>
+            </div>
+            <span className="shrink-0 rounded-xl bg-emerald-500 px-2.5 py-1 text-[11px] font-black text-slate-950">
+              Xem đơn
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Main Catalog / Menu List by Vertical */}
       <main className="flex-1 p-3.5">
         <VerticalRenderer
@@ -357,7 +386,7 @@ export default function StorefrontMenuPage() {
         />
       </main>
 
-      {/* Floating Bottom Action Bar ("Show to Staff Card" trigger) */}
+      {/* Floating Bottom Action Bar (Send Order to Counter mPOS trigger) */}
       {totalItemsCount > 0 && (
         <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center p-3 pointer-events-none">
           <div className="w-full max-w-md pointer-events-auto">
@@ -376,7 +405,7 @@ export default function StorefrontMenuPage() {
                     {bottomCtaText}
                   </span>
                   <span className="block text-[10px] font-medium text-white/85">
-                    🇻🇳 Bật màn hình Tiếng Việt cỡ lớn cho nhân viên
+                    🚀 Gửi đơn trực tiếp xuống quầy mPOS &amp; báo bếp tự động
                   </span>
                 </div>
               </div>
@@ -402,15 +431,20 @@ export default function StorefrontMenuPage() {
         onAddToCart={handleAddFromDrawer}
       />
 
-      {/* Full-Screen Vietnamese "Show to Staff" Modal */}
+      {/* Full-Screen mPOS Order Submission & Live Status Tracker Modal */}
       <ShowToStaffModal
         isOpen={isStaffModalOpen}
         onClose={() => setIsStaffModalOpen(false)}
         shop={shop}
         locale={locale}
         cart={cart}
+        initialTableLabel={initialTableParam}
         onUpdateQuantity={handleUpdateQuantity}
         onClearCart={() => setCart([])}
+        onOrderCreated={(order) => {
+          setLastOrder(order);
+          fetchCatalogData(false);
+        }}
       />
     </div>
   );
