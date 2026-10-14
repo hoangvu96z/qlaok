@@ -1,0 +1,394 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useParams, useSearchParams } from 'next/navigation';
+import {
+  MapPin,
+  Phone,
+  Star,
+  Clock,
+  ArrowRight,
+  Sparkles,
+  QrCode,
+  ExternalLink,
+  Megaphone,
+  UtensilsCrossed,
+  Scissors,
+  ShoppingBag,
+} from 'lucide-react';
+import { Post, Shop, SupportedLocale } from '@/types/qlaok';
+import {
+  checkShopOpenStatus,
+  detectVisitorLocale,
+  tField,
+  UI_LABELS,
+} from '@/lib/i18n-helper';
+import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
+import { WifiBadge } from '@/components/storefront/WifiBadge';
+
+export default function StorefrontDoorPage() {
+  const params = useParams<{ slug: string }>();
+  const searchParams = useSearchParams();
+  const slug = params?.slug || 'pho-hoi-an';
+
+  const [shop, setShop] = useState<Shop | null>(null);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(['vi', 'en', 'ko', 'ja', 'zh']);
+  const [locale, setLocale] = useState<SupportedLocale>('vi');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadStorefront() {
+      try {
+        const res = await fetch(`/api/shops?slug=${encodeURIComponent(slug)}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          setLoading(false);
+          return;
+        }
+        const data = await res.json();
+        if (!mounted) return;
+
+        const loadedShop: Shop = data.shop;
+        const planLangs = getAllowedLocalesForPlan(
+          data.ownerPlan || 'premium',
+          loadedShop.supported_langs
+        );
+
+        setShop(loadedShop);
+        setPosts(data.posts || []);
+        setAllowedLangs(planLangs);
+
+        const detected = detectVisitorLocale(
+          planLangs,
+          searchParams.get('lang')
+        );
+        setLocale(detected);
+        setLoading(false);
+
+        // Track QR Door Scan
+        fetch('/api/analytics/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shop_id: loadedShop.id,
+            event_type: 'scan_door',
+            visitor_lang: detected,
+          }),
+        }).catch(() => {});
+      } catch (err) {
+        console.error('Error loading storefront:', err);
+        if (mounted) setLoading(false);
+      }
+    }
+    loadStorefront();
+    return () => {
+      mounted = false;
+    };
+  }, [slug, searchParams]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-8 space-y-3">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-xs font-semibold text-slate-500">
+          Đang tải thông tin cửa hàng...
+        </p>
+      </div>
+    );
+  }
+
+  if (!shop) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-8 text-center space-y-4">
+        <div className="text-4xl">🏪</div>
+        <h1 className="text-lg font-bold text-slate-900">
+          Không tìm thấy cửa hàng
+        </h1>
+        <p className="text-xs text-slate-500">
+          Đường dẫn <code className="font-mono text-rose-600">/s/{slug}</code> không tồn tại.
+        </p>
+        <Link
+          href="/explore"
+          className="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white"
+        >
+          Khám phá các cửa hàng khác
+        </Link>
+      </div>
+    );
+  }
+
+  const labels = UI_LABELS[locale] || UI_LABELS.vi;
+  const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const openStatus = checkShopOpenStatus(shop.opening_hours);
+
+  const mainCtaLabel =
+    shop.vertical === 'service'
+      ? labels.viewMenuService
+      : shop.vertical === 'retail'
+        ? labels.viewMenuRetail
+        : labels.viewMenuFnb;
+
+  const VerticalIcon =
+    shop.vertical === 'service'
+      ? Scissors
+      : shop.vertical === 'retail'
+        ? ShoppingBag
+        : UtensilsCrossed;
+
+  return (
+    <div className="flex flex-1 flex-col pb-24">
+      {/* Top Language Bar */}
+      <div className="sticky top-0 z-30 flex items-center justify-between bg-white/90 px-3.5 py-2.5 backdrop-blur-md border-b border-slate-200/70">
+        <Link
+          href="/"
+          className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
+        >
+          <span
+            className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
+            style={{ backgroundColor: primaryColor }}
+          >
+            Q
+          </span>
+          <span>Qlaok</span>
+        </Link>
+
+        <LanguageSwitcher
+          currentLocale={locale}
+          supportedLangs={allowedLangs}
+          onChange={setLocale}
+          compact
+        />
+      </div>
+
+      {/* Hero Cover Image & Shop Identity */}
+      <div className="relative h-52 w-full bg-slate-900 overflow-hidden">
+        {shop.cover_urls?.[0] ? (
+          <img
+            src={shop.cover_urls[0]}
+            alt={shop.name}
+            className="h-full w-full object-cover opacity-90"
+          />
+        ) : (
+          <div
+            className="h-full w-full"
+            style={{
+              background: `linear-gradient(135deg, ${primaryColor}, #0f172a)`,
+            }}
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/35 to-transparent" />
+
+        {/* Open / Closed Status Pill */}
+        <div className="absolute left-4 top-3.5 flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold shadow-md ${
+              openStatus.isOpen
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-rose-600 text-white'
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                openStatus.isOpen ? 'bg-slate-950 animate-pulse' : 'bg-white'
+              }`}
+            />
+            {openStatus.isOpen ? labels.openNow : labels.closedNow}
+          </span>
+          {!openStatus.todaySchedule.closed && (
+            <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-xs">
+              <Clock className="inline h-3 w-3 mr-1 -mt-0.5" />
+              {openStatus.todaySchedule.open} – {openStatus.todaySchedule.close}
+            </span>
+          )}
+        </div>
+
+        {/* Shop Logo & Title Overlay */}
+        <div className="absolute bottom-4 left-4 right-4 flex items-end gap-3.5">
+          {shop.logo_url ? (
+            <img
+              src={shop.logo_url}
+              alt={shop.name}
+              className="h-16 w-16 shrink-0 rounded-2xl border-2 border-white object-cover shadow-lg bg-white"
+            />
+          ) : (
+            <div
+              className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border-2 border-white text-2xl font-black text-white shadow-lg"
+              style={{ backgroundColor: primaryColor }}
+            >
+              {shop.name.slice(0, 1)}
+            </div>
+          )}
+          <div className="min-w-0 text-white">
+            <h1 className="truncate text-xl font-black tracking-tight drop-shadow-xs">
+              {shop.name}
+            </h1>
+            <p className="line-clamp-2 text-xs font-medium text-slate-200 mt-0.5">
+              {tField(shop.tagline_i18n, locale)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Micro-Website Body */}
+      <div className="p-4 space-y-4">
+        {/* Primary CTA to Menu / Price List */}
+        <Link
+          href={`/s/${shop.slug}/menu?src=door&lang=${locale}`}
+          style={{ backgroundColor: primaryColor }}
+          className="flex items-center justify-between rounded-2xl p-4 text-white shadow-lg transition-transform active:scale-98"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/20 backdrop-blur-xs">
+              <VerticalIcon className="h-6 w-6" />
+            </div>
+            <div>
+              <span className="block text-base font-black tracking-tight">
+                {mainCtaLabel}
+              </span>
+              <span className="block text-xs text-white/85">
+                🇻🇳 🇬🇧 🇰🇷 🇯🇵 🇨🇳 • AI Multi-language Menu
+              </span>
+            </div>
+          </div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-900 shadow-xs">
+            <ArrowRight className="h-5 w-5" />
+          </div>
+        </Link>
+
+        {/* 1-Tap Wi-Fi Badge */}
+        <WifiBadge
+          wifi={shop.wifi_info}
+          shopId={shop.id}
+          locale={locale}
+          primaryColor={primaryColor}
+        />
+
+        {/* Description & Address Card */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+          {tField(shop.description_i18n, locale) && (
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+              {tField(shop.description_i18n, locale)}
+            </p>
+          )}
+
+          {shop.address && (
+            <div className="flex items-start gap-2.5 pt-1 text-xs text-slate-700">
+              <MapPin className="h-4 w-4 shrink-0 text-emerald-600 mt-0.5" />
+              <span className="font-medium">{shop.address}</span>
+            </div>
+          )}
+
+          {/* Action Buttons: Google Maps Directions, Call/Zalo, 5-Star Google Review */}
+          <div className="grid grid-cols-2 gap-2.5 pt-2">
+            {shop.google_maps_url && (
+              <a
+                href={shop.google_maps_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-100 active:scale-98"
+              >
+                <MapPin className="h-4 w-4 text-rose-500" />
+                <span className="truncate">{labels.directions}</span>
+              </a>
+            )}
+
+            {shop.google_review_url && (
+              <a
+                href={shop.google_review_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900 hover:bg-amber-100 active:scale-98"
+              >
+                <Star className="h-4 w-4 fill-amber-400 text-amber-500" />
+                <span className="truncate">{labels.googleReview}</span>
+              </a>
+            )}
+          </div>
+
+          {shop.phone_contact && (
+            <a
+              href={`tel:${shop.phone_contact}`}
+              className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            >
+              <Phone className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Hotline / Zalo: {shop.phone_contact}</span>
+            </a>
+          )}
+        </div>
+
+        {/* Store Promotions & Announcements (posts) */}
+        {posts.length > 0 && (
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-1.5 px-1">
+              <Megaphone className="h-4 w-4 text-amber-500" />
+              <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                {labels.promotions}
+              </h2>
+            </div>
+
+            <div className="space-y-2.5">
+              {posts.map((post) => (
+                <div
+                  key={post.id}
+                  className={`rounded-2xl border p-4 shadow-xs ${
+                    post.is_pinned
+                      ? 'border-amber-300 bg-amber-50/60'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-slate-900">
+                      {tField(post.title_i18n, locale)}
+                    </h3>
+                    {post.is_pinned && (
+                      <span className="shrink-0 rounded-full bg-amber-400/30 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                        📌 Pinned
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600 leading-relaxed">
+                    {tField(post.content_i18n, locale)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Store Gallery Preview */}
+        {shop.cover_urls && shop.cover_urls.length > 1 && (
+          <div className="grid grid-cols-2 gap-2.5">
+            {shop.cover_urls.slice(0, 4).map((url, idx) => (
+              <img
+                key={idx}
+                src={url}
+                alt={`${shop.name} ${idx + 1}`}
+                className="h-32 w-full rounded-2xl object-cover border border-slate-200"
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Sticky Bottom Floating Button */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 flex justify-center p-3 pointer-events-none">
+        <div className="w-full max-w-md pointer-events-auto">
+          <Link
+            href={`/s/${shop.slug}/menu?src=door&lang=${locale}`}
+            style={{ backgroundColor: primaryColor }}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 px-5 text-sm font-black text-white shadow-xl ring-2 ring-white"
+          >
+            <Sparkles className="h-4 w-4" />
+            <span>{mainCtaLabel}</span>
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}

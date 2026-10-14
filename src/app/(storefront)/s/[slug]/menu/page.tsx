@@ -1,0 +1,417 @@
+'use client';
+
+import React, { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
+import { useParams, useSearchParams } from 'next/navigation';
+import {
+  ArrowLeft,
+  Search,
+  X,
+  ShoppingBag,
+  Sparkles,
+  Wifi,
+} from 'lucide-react';
+import {
+  CartSelection,
+  CatalogItem,
+  Category,
+  Shop,
+  SupportedLocale,
+} from '@/types/qlaok';
+import {
+  detectVisitorLocale,
+  formatCurrency,
+  tField,
+  UI_LABELS,
+} from '@/lib/i18n-helper';
+import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
+import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
+import { ItemDetailDrawer } from '@/components/storefront/ItemDetailDrawer';
+import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
+
+export default function StorefrontMenuPage() {
+  const params = useParams<{ slug: string }>();
+  const searchParams = useSearchParams();
+  const slug = params?.slug || 'pho-hoi-an';
+
+  const [shop, setShop] = useState<Shop | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [items, setItems] = useState<CatalogItem[]>([]);
+  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>([
+    'vi',
+    'en',
+    'ko',
+    'ja',
+    'zh',
+  ]);
+  const [locale, setLocale] = useState<SupportedLocale>('vi');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
+    'all'
+  );
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeItem, setActiveItem] = useState<CatalogItem | null>(null);
+  const [cart, setCart] = useState<CartSelection[]>([]);
+  const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const fetchCatalogData = useCallback(
+    async (isInitial = false) => {
+      try {
+        const res = await fetch(`/api/shops?slug=${encodeURIComponent(slug)}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          if (isInitial) setLoading(false);
+          return;
+        }
+        const data = await res.json();
+        const loadedShop: Shop = data.shop;
+        const planLangs = getAllowedLocalesForPlan(
+          data.ownerPlan || 'premium',
+          loadedShop.supported_langs
+        );
+
+        setShop(loadedShop);
+        setCategories(data.categories || []);
+        setItems(data.items || []);
+        setAllowedLangs(planLangs);
+
+        if (isInitial) {
+          const detected = detectVisitorLocale(
+            planLangs,
+            searchParams.get('lang')
+          );
+          setLocale(detected);
+          setLoading(false);
+
+          // Track QR Table Scan
+          fetch('/api/analytics/track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              shop_id: loadedShop.id,
+              event_type: 'scan_table',
+              visitor_lang: detected,
+            }),
+          }).catch(() => {});
+        }
+      } catch (err) {
+        console.error('Failed to fetch storefront menu:', err);
+        if (isInitial) setLoading(false);
+      }
+    },
+    [slug, searchParams]
+  );
+
+  useEffect(() => {
+    fetchCatalogData(true);
+
+    // Realtime sync via BroadcastChannel & lightweight polling so toggling "Sold Out" or price in CMS reflects immediately
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      bc = new BroadcastChannel('qlaok_realtime_sync');
+      bc.onmessage = () => {
+        fetchCatalogData(false);
+      };
+    }
+
+    const interval = setInterval(() => {
+      fetchCatalogData(false);
+    }, 4000);
+
+    return () => {
+      if (bc) bc.close();
+      clearInterval(interval);
+    };
+  }, [fetchCatalogData]);
+
+  const handleOpenItem = (item: CatalogItem) => {
+    setActiveItem(item);
+    if (shop) {
+      fetch('/api/analytics/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shop.id,
+          event_type: 'item_view',
+          item_id: item.id,
+          visitor_lang: locale,
+        }),
+      }).catch(() => {});
+    }
+  };
+
+  const handleQuickAdd = (item: CatalogItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    // If item has required option groups, open detail drawer so visitor can pick options
+    const hasRequired = item.options_json?.some((g) => g.required);
+    if (hasRequired) {
+      handleOpenItem(item);
+      return;
+    }
+
+    setCart((prev) => {
+      const existingIdx = prev.findIndex(
+        (entry) =>
+          entry.item.id === item.id &&
+          entry.selectedChoices.length === 0 &&
+          !entry.customNote &&
+          (!entry.quickTags || entry.quickTags.length === 0)
+      );
+      if (existingIdx !== -1) {
+        const updated = [...prev];
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          quantity: updated[existingIdx].quantity + 1,
+        };
+        return updated;
+      }
+      return [
+        ...prev,
+        {
+          item,
+          quantity: 1,
+          selectedChoices: [],
+          customNote: '',
+          quickTags: [],
+        },
+      ];
+    });
+  };
+
+  const handleAddFromDrawer = (selection: CartSelection) => {
+    setCart((prev) => [...prev, selection]);
+  };
+
+  const handleUpdateQuantity = (index: number, delta: number) => {
+    setCart((prev) => {
+      const updated = [...prev];
+      const nextQty = updated[index].quantity + delta;
+      if (nextQty <= 0) {
+        updated.splice(index, 1);
+      } else {
+        updated[index] = { ...updated[index], quantity: nextQty };
+      }
+      return updated;
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-8 space-y-3">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-xs font-semibold text-slate-500">
+          Đang tải thực đơn đa ngôn ngữ...
+        </p>
+      </div>
+    );
+  }
+
+  if (!shop) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-8 text-center space-y-3">
+        <h1 className="text-base font-bold text-slate-900">
+          Không tìm thấy thực đơn cửa hàng
+        </h1>
+        <Link
+          href="/explore"
+          className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white"
+        >
+          Quay lại trang khám phá
+        </Link>
+      </div>
+    );
+  }
+
+  const labels = UI_LABELS[locale] || UI_LABELS.vi;
+  const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+
+  const totalItemsCount = cart.reduce((sum, c) => sum + c.quantity, 0);
+  const totalCartAmount = cart.reduce((sum, entry) => {
+    const extra = entry.selectedChoices.reduce(
+      (s, c) => s + (c.extra_price || 0),
+      0
+    );
+    return sum + (entry.item.price + extra) * entry.quantity;
+  }, 0);
+
+  const bottomCtaText =
+    shop.vertical === 'service'
+      ? labels.bottomCtaService
+      : shop.vertical === 'retail'
+        ? labels.bottomCtaRetail
+        : labels.bottomCtaFnb;
+
+  return (
+    <div className="flex flex-1 flex-col min-h-screen">
+      {/* Top Header with Back to Store Info & 5-Flag Switcher */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-2xs">
+        <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
+          <Link
+            href={`/s/${shop.slug}?lang=${locale}`}
+            className="flex items-center gap-2 min-w-0"
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200">
+              <ArrowLeft className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-extrabold text-slate-900 leading-tight">
+                {shop.name}
+              </h1>
+              <p className="truncate text-[11px] font-medium text-slate-500">
+                {labels.backToStore}
+                {shop.wifi_info?.ssid ? ` • 📶 ${shop.wifi_info.ssid}` : ''}
+              </p>
+            </div>
+          </Link>
+
+          <LanguageSwitcher
+            currentLocale={locale}
+            supportedLangs={allowedLangs}
+            onChange={setLocale}
+            compact
+          />
+        </div>
+
+        {/* Search Input */}
+        <div className="px-3.5 pb-2.5">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={labels.searchPlaceholder}
+              className="w-full rounded-xl border border-slate-200 bg-slate-100/80 pl-9 pr-8 py-2 text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Sticky Horizontal Category Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3.5 pb-2.5">
+          <button
+            type="button"
+            onClick={() => setSelectedCategoryId('all')}
+            style={
+              selectedCategoryId === 'all'
+                ? { backgroundColor: primaryColor, color: '#ffffff' }
+                : undefined
+            }
+            className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
+              selectedCategoryId === 'all'
+                ? 'shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {labels.allCategories}
+          </button>
+
+          {categories.map((cat) => {
+            const active = selectedCategoryId === cat.id;
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setSelectedCategoryId(cat.id)}
+                style={
+                  active
+                    ? { backgroundColor: primaryColor, color: '#ffffff' }
+                    : undefined
+                }
+                className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
+                  active
+                    ? 'shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {tField(cat.name_i18n, locale)}
+              </button>
+            );
+          })}
+        </div>
+      </header>
+
+      {/* Main Catalog / Menu List by Vertical */}
+      <main className="flex-1 p-3.5">
+        <VerticalRenderer
+          vertical={shop.vertical}
+          categories={categories}
+          items={items}
+          locale={locale}
+          currency={shop.currency}
+          primaryColor={primaryColor}
+          selectedCategoryId={selectedCategoryId}
+          searchQuery={searchQuery}
+          onSelectItem={handleOpenItem}
+          onQuickAdd={handleQuickAdd}
+        />
+      </main>
+
+      {/* Floating Bottom Action Bar ("Show to Staff Card" trigger) */}
+      {totalItemsCount > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center p-3 pointer-events-none">
+          <div className="w-full max-w-md pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => setIsStaffModalOpen(true)}
+              style={{ backgroundColor: primaryColor }}
+              className="flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-white shadow-2xl ring-2 ring-white transition-transform active:scale-98"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-950/25 text-sm font-black">
+                  {totalItemsCount}
+                </div>
+                <div className="text-left">
+                  <span className="block text-xs sm:text-sm font-black leading-tight">
+                    {bottomCtaText}
+                  </span>
+                  <span className="block text-[10px] font-medium text-white/85">
+                    🇻🇳 Bật màn hình Tiếng Việt cỡ lớn cho nhân viên
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <span className="text-sm sm:text-base font-black">
+                  {formatCurrency(totalCartAmount, shop.currency)}
+                </span>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Item Detail Bottom Sheet Drawer */}
+      <ItemDetailDrawer
+        item={activeItem}
+        vertical={shop.vertical}
+        locale={locale}
+        currency={shop.currency}
+        primaryColor={primaryColor}
+        onClose={() => setActiveItem(null)}
+        onAddToCart={handleAddFromDrawer}
+      />
+
+      {/* Full-Screen Vietnamese "Show to Staff" Modal */}
+      <ShowToStaffModal
+        isOpen={isStaffModalOpen}
+        onClose={() => setIsStaffModalOpen(false)}
+        shop={shop}
+        locale={locale}
+        cart={cart}
+        onUpdateQuantity={handleUpdateQuantity}
+        onClearCart={() => setCart([])}
+      />
+    </div>
+  );
+}

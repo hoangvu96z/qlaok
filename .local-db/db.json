@@ -1,0 +1,1187 @@
+{
+  "profile": {
+    "id": "owner-demo-001",
+    "email": "chuquan@qlaok.vn",
+    "phone": "0905123456",
+    "full_name": "Nguyễn Văn Minh (Chủ Quán Demo)",
+    "plan": "premium",
+    "plan_expires_at": "2026-11-13T05:48:21.958Z"
+  },
+  "shops": [
+    {
+      "id": "shop-fnb-001",
+      "owner_id": "owner-demo-001",
+      "slug": "pho-hoi-an",
+      "name": "Phở & Cà Phê Phố Cổ",
+      "vertical": "fnb",
+      "tagline_i18n": {
+        "vi": "Phở bò truyền thống nấu xương 18 tiếng & Cà phê Phin Việt Nam",
+        "en": "18-Hour Slow-Simmered Traditional Beef Pho & Vietnamese Drip Coffee",
+        "ko": "18시간 우려낸 전통 베트남 소고기 쌀국수 & 연유 커피 전문점",
+        "ja": "18時間煮込んだ伝統の牛肉フォー＆ベトナム식ドリップコーヒー",
+        "zh": "18小时慢熬传统越南牛肉河粉 & 越式滴漏咖啡"
+      },
+      "description_i18n": {
+        "vi": "Quán gia truyền 3 đời tại trung tâm Đà Nẵng - Hội An. Nguyên liệu tươi mỗi sáng, nước dùng thanh ngọt tự nhiên không mì chính.",
+        "en": "3rd-generation family kitchen in central Da Nang. Fresh morning ingredients, naturally sweet bone broth with no MSG.",
+        "ko": "다낭 중심가에 위치한 3대째 내려오는 로컬 맛집. 매일 아침 신선한 재료로 조미료 없이 깊고 진한 육수를 만듭니다.",
+        "ja": "ダナン中心部にある創業3代目の老舗。毎朝仕入れる新鮮な食材と化学調味料不使用の優しいスープが自慢です。",
+        "zh": "位于岘港市中心的三代祖传老店。每日清晨新鲜采购食材，汤头自然清甜，不加味精。"
+      },
+      "logo_url": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?w=300&auto=format&fit=crop&q=80",
+      "cover_urls": [
+        "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?w=1000&auto=format&fit=crop&q=80",
+        "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=1000&auto=format&fit=crop&q=80"
+      ],
+      "address": "128 Trần Phú, Quận Hải Châu, Đà Nẵng",
+      "city": "Đà Nẵng",
+      "google_maps_url": "https://maps.google.com/?q=128+Tran+Phu+Da+Nang",
+      "google_review_url": "https://maps.google.com/?q=128+Tran+Phu+Da+Nang",
+      "phone_contact": "0905123456",
+      "zalo_phone": "0905123456",
+      "wifi_info": {
+        "ssid": "PhoPhoCo_Free5G",
+        "password": "phoungon123"
+      },
+      "opening_hours": {
+        "mon": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "tue": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "wed": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "thu": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "fri": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sat": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sun": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        }
+      },
+      "supported_langs": [
+        "vi",
+        "en",
+        "ko",
+        "ja",
+        "zh"
+      ],
+      "currency": "VND",
+      "theme_config": {
+        "primaryColor": "#10b981",
+        "layout": "list"
+      },
+      "is_published": true
+    },
+    {
+      "id": "shop-service-002",
+      "owner_id": "owner-demo-001",
+      "slug": "linh-spa-nail",
+      "name": "Linh Herbal Spa & Nail Studio",
+      "vertical": "service",
+      "tagline_i18n": {
+        "vi": "Gội đầu dưỡng sinh thảo mộc, Massage trị liệu & Nail Hàn Quốc",
+        "en": "Herbal Relaxing Head Spa, Therapeutic Massage & Korean Gel Nails",
+        "ko": "베트남식 힐링 두피 케어 샴푸, 아로마 마사지 & 한국식 젤네일 전문",
+        "ja": "ベトナム式ハーブヘッドスパ・本格マッサージ＆韓国風ジェルネイル",
+        "zh": "越式草本养生洗头、理疗按摩 & 韩式美甲沙龙"
+      },
+      "description_i18n": {
+        "vi": "Không gian yên tĩnh, tinh dầu sả chanh tự nhiên. Kỹ thuật viên tay nghề cao, giá niêm yết rõ ràng không phát sinh tip bắt buộc.",
+        "en": "Peaceful sanctuary with natural lemongrass essential oils. Skilled therapists, transparent pricing with no mandatory tips.",
+        "ko": "천연 레몬그라스 아로마 향이 가득한 아늑한 공간. 숙련된 테라피스트와 정찰제 운영으로 부담 없이 힐링하세요.",
+        "ja": "天然レモングラスが香る癒しの空間。熟練スタッフによる丁寧な施術、明朗会計で安心してお過ごしいただけます。",
+        "zh": "静谧舒适的香茅精油空间，资深技师专业服务，明码标价无强制小费。"
+      },
+      "logo_url": "https://images.unsplash.com/photo-1540555700478-4be289fbecef?w=300&auto=format&fit=crop&q=80",
+      "cover_urls": [
+        "https://images.unsplash.com/photo-1540555700478-4be289fbecef?w=1000&auto=format&fit=crop&q=80",
+        "https://images.unsplash.com/photo-1604654894610-df63bc536371?w=1000&auto=format&fit=crop&q=80"
+      ],
+      "address": "45 An Thượng 2, Quận Ngũ Hành Sơn, Đà Nẵng",
+      "city": "Đà Nẵng",
+      "google_maps_url": "https://maps.google.com/?q=45+An+Thuong+2+Da+Nang",
+      "google_review_url": "https://maps.google.com/?q=45+An+Thuong+2+Da+Nang",
+      "phone_contact": "0905888999",
+      "zalo_phone": "0905888999",
+      "wifi_info": {
+        "ssid": "LinhSpa_Guest",
+        "password": "relax2026"
+      },
+      "opening_hours": {
+        "mon": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "tue": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "wed": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "thu": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "fri": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sat": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sun": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        }
+      },
+      "supported_langs": [
+        "vi",
+        "en",
+        "ko",
+        "ja",
+        "zh"
+      ],
+      "currency": "VND",
+      "theme_config": {
+        "primaryColor": "#8b5cf6",
+        "layout": "list"
+      },
+      "is_published": true
+    },
+    {
+      "id": "shop-retail-003",
+      "owner_id": "owner-demo-001",
+      "slug": "dac-san-mien-trung",
+      "name": "Làng Quà Việt – Đặc Sản & Lưu Niệm",
+      "vertical": "retail",
+      "tagline_i18n": {
+        "vi": "Đặc sản Đà Nẵng - Hội An chính gốc & Quà tặng thủ công mỹ nghệ",
+        "en": "Authentic Central Vietnam Specialties, Coffee & Handcrafted Souvenirs",
+        "ko": "다낭·호이안 로컬 특산품, 베트남 커피 & 수공예 기념품 샵",
+        "ja": "ダナン・ホイアン名産品、ベトナムコーヒー＆伝統工芸お土産ショップ",
+        "zh": "岘港·会安正宗特产、越南咖啡与手工艺伴手礼专卖店"
+      },
+      "description_i18n": {
+        "vi": "Đóng gói chuẩn hành lý ký gửi máy bay cho khách du lịch. Cho thử miễn phí trà, bánh, cà phê tại quầy.",
+        "en": "Flight-ready vacuum packaging for tourists. Free tasting of local teas, coconut crackers, and coffee at the counter.",
+        "ko": "해외여행객을 위한 기내/수하물 반입용 진공 포장 무료 지원! 매장에서 커피와 과자 무료 시식 가능합니다.",
+        "ja": "飛行機持ち込み対応の真空パック包装無料！コーヒーやお菓子の無料試食もご用意しています。",
+        "zh": "提供符合航空托运标准的真空打包服务，店内免费试吃茶饮、椰子饼与咖啡。"
+      },
+      "logo_url": "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=300&auto=format&fit=crop&q=80",
+      "cover_urls": [
+        "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=1000&auto=format&fit=crop&q=80"
+      ],
+      "address": "88 Bạch Đằng, Phường Hải Châu 1, Đà Nẵng",
+      "city": "Đà Nẵng",
+      "google_maps_url": "https://maps.google.com/?q=88+Bach+Dang+Da+Nang",
+      "google_review_url": "https://maps.google.com/?q=88+Bach+Dang+Da+Nang",
+      "phone_contact": "0905777666",
+      "zalo_phone": "0905777666",
+      "wifi_info": {
+        "ssid": "LangQuaViet_Free",
+        "password": "vietnam2026"
+      },
+      "opening_hours": {
+        "mon": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "tue": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "wed": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "thu": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        },
+        "fri": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sat": {
+          "open": "07:00",
+          "close": "23:00",
+          "closed": false
+        },
+        "sun": {
+          "open": "07:00",
+          "close": "22:30",
+          "closed": false
+        }
+      },
+      "supported_langs": [
+        "vi",
+        "en",
+        "ko",
+        "ja",
+        "zh"
+      ],
+      "currency": "VND",
+      "theme_config": {
+        "primaryColor": "#f59e0b",
+        "layout": "grid"
+      },
+      "is_published": true
+    },
+    {
+      "name": "test",
+      "slug": "test",
+      "vertical": "fnb",
+      "tagline_i18n": {
+        "vi": "111",
+        "en": "Welcome to test",
+        "ko": "test에 오신 것을 환영합니다",
+        "ja": "testへようこそ",
+        "zh": "欢迎光临 test"
+      },
+      "description_i18n": {
+        "vi": "Menu & Bảng giá đa ngôn ngữ chính thức của test."
+      },
+      "logo_url": null,
+      "cover_urls": [],
+      "address": "111",
+      "city": "Đà Nẵng",
+      "google_maps_url": "https://maps.google.com/?q=test%20%C4%90%C3%A0%20N%E1%BA%B5ng",
+      "google_review_url": "https://maps.google.com/?q=test%20%C4%90%C3%A0%20N%E1%BA%B5ng",
+      "phone_contact": "0932222222",
+      "zalo_phone": "0932222222",
+      "wifi_info": {
+        "ssid": "111",
+        "password": "1111"
+      },
+      "opening_hours": {
+        "mon": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "tue": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "wed": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "thu": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "fri": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "sat": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        },
+        "sun": {
+          "open": "08:00",
+          "close": "22:00",
+          "closed": false
+        }
+      },
+      "supported_langs": [
+        "vi",
+        "en",
+        "ko",
+        "ja",
+        "zh"
+      ],
+      "currency": "VND",
+      "theme_config": {
+        "primaryColor": "#10b981",
+        "layout": "list"
+      },
+      "is_published": true,
+      "id": "shop-1791957017065",
+      "owner_id": "owner-demo-001"
+    }
+  ],
+  "categories": [
+    {
+      "id": "cat-fnb-1",
+      "shop_id": "shop-fnb-001",
+      "sort_order": 1,
+      "name_i18n": {
+        "vi": "Món Chính Truyền Thống",
+        "en": "Signature Noodles & Mains",
+        "ko": "대표 쌀국수 & 메인 요리",
+        "ja": "名物フォー＆メイン料理",
+        "zh": "招牌河粉与主食"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-fnb-2",
+      "shop_id": "shop-fnb-001",
+      "sort_order": 2,
+      "name_i18n": {
+        "vi": "Cà Phê Việt Nam & Giải Khát",
+        "en": "Vietnamese Coffee & Drinks",
+        "ko": "베트남 전통 커피 & 음료",
+        "ja": "ベトナムコーヒー＆ドリンク",
+        "zh": "越式特调咖啡与饮品"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-fnb-3",
+      "shop_id": "shop-fnb-001",
+      "sort_order": 3,
+      "name_i18n": {
+        "vi": "Món Ăn Kèm",
+        "en": "Crispy Sides & Snacks",
+        "ko": "사이드 메뉴 & 튀김",
+        "ja": "サイドメニュー・春巻き",
+        "zh": "特色小吃与配菜"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-srv-1",
+      "shop_id": "shop-service-002",
+      "sort_order": 1,
+      "name_i18n": {
+        "vi": "Gội Đầu Dưỡng Sinh Thảo Mộc",
+        "en": "Herbal Head Spa & Scalp Care",
+        "ko": "베트남식 힐링 두피 케어 샴푸",
+        "ja": "ハーブヘッドスパ＆頭皮ケア",
+        "zh": "草本养生洗头与头皮护理"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-srv-2",
+      "shop_id": "shop-service-002",
+      "sort_order": 2,
+      "name_i18n": {
+        "vi": "Massage Body & Cổ Vai Gáy",
+        "en": "Body & Neck-Shoulder Massage",
+        "ko": "전신 아로마 & 어깨·목 집중 마사지",
+        "ja": "全身アロマ＆首・肩こり解消マッサージ",
+        "zh": "全身精油与肩颈理疗按摩"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-srv-3",
+      "shop_id": "shop-service-002",
+      "sort_order": 3,
+      "name_i18n": {
+        "vi": "Chăm Sóc Móng & Sơn Gel Hàn Quốc",
+        "en": "Manicure, Pedicure & Korean Gel Art",
+        "ko": "케어 & 한국식 프리미엄 젤네일",
+        "ja": "ネイルケア＆韓国風ジェルネイル",
+        "zh": "手足护理与韩式美甲彩绘"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-ret-1",
+      "shop_id": "shop-retail-003",
+      "sort_order": 1,
+      "name_i18n": {
+        "vi": "Cà Phê & Trà Đặc Sản",
+        "en": "Specialty Coffee & Herbal Teas",
+        "ko": "베트남 원두커피 & 전통차",
+        "ja": "ベトナムコーヒー＆ハーブティー",
+        "zh": "精品越南咖啡与草本茶"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-ret-2",
+      "shop_id": "shop-retail-003",
+      "sort_order": 2,
+      "name_i18n": {
+        "vi": "Bánh Kẹo & Trái Cây Sấy",
+        "en": "Coconut Crackers & Dried Tropical Fruits",
+        "ko": "코코넛 크래커 & 열대 건과일",
+        "ja": "ココナッツ煎餅＆ドライフルーツ",
+        "zh": "烤椰子饼与热带果干"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-ret-3",
+      "shop_id": "shop-retail-003",
+      "sort_order": 3,
+      "name_i18n": {
+        "vi": "Quà Lưu Niệm Thủ Công",
+        "en": "Handcrafted Crafts & Souvenirs",
+        "ko": "베트남 전통 수공예 기념품",
+        "ja": "ベトナム伝統工芸・雑貨",
+        "zh": "越南传统手工艺纪念品"
+      },
+      "is_active": true
+    },
+    {
+      "id": "cat-1791957017114-31tm",
+      "shop_id": "shop-1791957017065",
+      "sort_order": 1,
+      "name_i18n": {
+        "vi": "Món Đặc Trưng",
+        "en": "Món Đặc Trưng (Menu)",
+        "ko": "추천 카테고리",
+        "ja": "おすすめカテゴリー",
+        "zh": "精选分类"
+      },
+      "is_active": true
+    }
+  ],
+  "items": [
+    {
+      "id": "item-fnb-1",
+      "shop_id": "shop-fnb-001",
+      "category_id": "cat-fnb-1",
+      "sort_order": 1,
+      "price": 65000,
+      "compare_at_price": 75000,
+      "unit_i18n": {
+        "vi": "tô",
+        "en": "bowl",
+        "ko": "그릇",
+        "ja": "杯",
+        "zh": "碗"
+      },
+      "image_url": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Phở Bò Tái Nạm Đặc Biệt",
+        "en": "Special Sliced Rare Beef & Brisket Noodle Soup (Pho Tai Nam)",
+        "ko": "특별 생안심 & 양지 소고기 쌀국수 (퍼 보 타이 남)",
+        "ja": "特製レア牛肉と牛バラ肉のフォー（フォー・ボー・タイ・ナム）",
+        "zh": "招牌鲜嫩生牛肉拼牛腩河粉 (Phở Bò Tái Nạm)"
+      },
+      "desc_i18n": {
+        "vi": "Nước dùng ninh xương ống 18 giờ thơm thảo quả, thịt bò tươi thái mỏng và nạm bò mềm ngọt.",
+        "en": "18-hour aromatic beef bone broth topped with tender rare beef slices and slow-cooked brisket.",
+        "ko": "18시간 푹 고아낸 진한 사골 육수에 부드러운 소고기 안심과 양지를 듬뿍 올린 대표 쌀국수.",
+        "ja": "18時間煮込んだ香り高い牛骨スープに、柔らかいレア牛肉と煮込みバラ肉をたっぷり乗せました。",
+        "zh": "18小时慢火熬制牛骨清汤，搭配鲜嫩现切生牛肉片与软烂牛腩。"
+      },
+      "options_json": [
+        {
+          "id": "opt-size",
+          "name_i18n": {
+            "vi": "Kích cỡ tô",
+            "en": "Bowl Size",
+            "ko": "사이즈 선택",
+            "ja": "サイズ選択",
+            "zh": "选择份量"
+          },
+          "required": true,
+          "choices": [
+            {
+              "id": "size-m",
+              "label_i18n": {
+                "vi": "Tô Vừa (Tiêu chuẩn)",
+                "en": "Regular Bowl",
+                "ko": "보통 (기본)",
+                "ja": "並盛（レギュラー）",
+                "zh": "标准碗"
+              },
+              "extra_price": 0
+            },
+            {
+              "id": "size-l",
+              "label_i18n": {
+                "vi": "Tô Đặc Biệt (Thêm thịt)",
+                "en": "Large Bowl (Extra Beef)",
+                "ko": "특대 사이즈 (고기 추가)",
+                "ja": "大盛（お肉増量）",
+                "zh": "加大碗（加肉）"
+              },
+              "extra_price": 20000
+            }
+          ]
+        }
+      ],
+      "view_count": 148
+    },
+    {
+      "id": "item-fnb-2",
+      "shop_id": "shop-fnb-001",
+      "category_id": "cat-fnb-1",
+      "sort_order": 2,
+      "price": 55000,
+      "unit_i18n": {
+        "vi": "tô",
+        "en": "bowl",
+        "ko": "그릇",
+        "ja": "杯",
+        "zh": "碗"
+      },
+      "image_url": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Mì Quảng Tôm Thịt Trứng Cút",
+        "en": "Quang-Style Turmeric Noodles with Pork, Shrimp & Quail Eggs",
+        "ko": "다낭 명물 미꽝 비빔쌀국수 (돼지고기, 새우, 메추리알)",
+        "ja": "ダナン名物ミークアン（豚肉・海老・うずら卵の汁なし麺）",
+        "zh": "广南特色姜黄粗米粉配鲜虾猪肉与鹌鹑蛋 (Mì Quảng)"
+      },
+      "desc_i18n": {
+        "vi": "Đặc sản xứ Quảng ăn kèm bánh tráng mè nướng giòn, đậu phộng rang và rau sống Trà Quế.",
+        "en": "Central Vietnam specialty served with crispy sesame rice crackers, roasted peanuts, and fresh herbs.",
+        "ko": "바삭한 참깨 라이스페이퍼, 고소한 땅콩, 신선한 허브와 함께 비벼 먹는 중부 지방 전통 면 요리.",
+        "ja": "香ばしい胡麻せんべいとピーナッツ、新鮮なハーブを混ぜて食べる中部地方の郷土麺。",
+        "zh": "配脆烤芝麻米饼、香脆花生与会安茶桂新鲜香草拌食。"
+      },
+      "options_json": [],
+      "view_count": 92
+    },
+    {
+      "id": "item-fnb-3",
+      "shop_id": "shop-fnb-001",
+      "category_id": "cat-fnb-2",
+      "sort_order": 1,
+      "price": 35000,
+      "unit_i18n": {
+        "vi": "ly",
+        "en": "glass",
+        "ko": "잔",
+        "ja": "杯",
+        "zh": "杯"
+      },
+      "image_url": "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Bạc Xỉu Đá Phố Cổ",
+        "en": "Vietnamese Sweetened Condensed Milk Iced Coffee (Bac Xiu)",
+        "ko": "연유가 듬뿍 들어간 베트남식 달콤한 연유 라떼 (박씨우)",
+        "ja": "ベトナム式練乳たっぷりアイスカフェオレ（バクシウ）",
+        "zh": "越式古镇冰炼乳奶咖 (Bạc Xỉu - 奶香浓郁少苦)"
+      },
+      "desc_i18n": {
+        "vi": "Nhiều sữa đặc béo ngậy kết hợp chút cà phê phin đậm đà, dễ uống cho cả người không quen cà phê mạnh.",
+        "en": "Creamy sweetened milk topped with a splash of bold Vietnamese phin coffee. Smooth and sweet!",
+        "ko": "진한 베트남 핀 커피에 달콤하고 부드러운 연유 우유 거품을 듬뿍 올린 인기 시그니처 커피.",
+        "ja": "濃厚な練乳ミルクに香り高いベトナムコーヒーを合わせた、甘くて飲みやすい人気ドリンク。",
+        "zh": "香甜顺滑的厚炼乳鲜奶搭配传统滴漏咖啡，口感柔和不苦涩。"
+      },
+      "options_json": [],
+      "view_count": 215
+    },
+    {
+      "id": "item-fnb-4",
+      "shop_id": "shop-fnb-001",
+      "category_id": "cat-fnb-2",
+      "sort_order": 2,
+      "price": 39000,
+      "unit_i18n": {
+        "vi": "ly",
+        "en": "glass",
+        "ko": "잔",
+        "ja": "杯",
+        "zh": "杯"
+      },
+      "image_url": "https://images.unsplash.com/photo-1461023058943-07fcbe16d735?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Cà Phê Muối Kem Béo",
+        "en": "Salted Cream Vietnamese Iced Coffee (Ca Phe Muoi)",
+        "ko": "단짠 매력의 베트남 솔트 크림 아인슈페너 (소금커피)",
+        "ja": "ベトナム名物 濃厚ソルトクリームコーヒー（塩コーヒー）",
+        "zh": "网红越式海盐奶盖冰咖啡 (咸甜醇厚)"
+      },
+      "desc_i18n": {
+        "vi": "Lớp kem muối mặn dịu quyện cùng cà phê Robusta nguyên chất và sữa đặc.",
+        "en": "Velvety sea-salt cream layered over bold Robusta phin coffee and condensed milk.",
+        "ko": "부드럽고 짭짤한 수제 소금 크림과 진한 베트남 커피가 어우러진 중독성 있는 맛.",
+        "ja": "ほんのり塩味の効いた濃厚クリームと香り高いベトナムコーヒーが絶妙にマッチ。",
+        "zh": "绵密微咸海盐奶盖融合醇厚罗布斯塔滴漏咖啡，咸甜交织。"
+      },
+      "options_json": [],
+      "view_count": 184
+    },
+    {
+      "id": "item-fnb-5",
+      "shop_id": "shop-fnb-001",
+      "category_id": "cat-fnb-3",
+      "sort_order": 1,
+      "price": 45000,
+      "unit_i18n": {
+        "vi": "đĩa",
+        "en": "plate",
+        "ko": "접시",
+        "ja": "皿",
+        "zh": "盘"
+      },
+      "image_url": "https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80",
+      "is_available": false,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Chả Giò Hải Sản Giòn Rụm (5 cuốn)",
+        "en": "Crispy Seafood Spring Rolls - 5 pcs (Cha Gio)",
+        "ko": "바삭한 수제 해산물 짜조 튀김만두 (5개)",
+        "ja": "海鮮入り揚げ春巻き 5本（チャーゾー）",
+        "zh": "酥脆海鲜炸春卷 5条 (Chả Giò)"
+      },
+      "desc_i18n": {
+        "vi": "Nhân tôm thịt cua tươi cuốn bánh tráng rế chiên vàng giòn, chấm nước mắm chua ngọt.",
+        "en": "Golden fried net-wrapper rolls stuffed with shrimp, crab, and pork, served with sweet chili fish sauce.",
+        "ko": "새우와 게살을 가득 넣어 바삭하게 튀겨낸 베트남 전통 스프링롤.",
+        "ja": "海老とカニ肉をたっぷり包んでサクサクに揚げたベトナム伝統の揚げ春巻き。",
+        "zh": "鲜虾蟹肉内馅裹网皮炸至金黄酥脆，配酸甜鱼露蘸汁。"
+      },
+      "options_json": [],
+      "view_count": 67
+    },
+    {
+      "id": "item-srv-1",
+      "shop_id": "shop-service-002",
+      "category_id": "cat-srv-1",
+      "sort_order": 1,
+      "price": 180000,
+      "compare_at_price": 220000,
+      "duration_mins": 65,
+      "unit_i18n": {
+        "vi": "liệu trình",
+        "en": "session",
+        "ko": "회",
+        "ja": "回",
+        "zh": "次"
+      },
+      "image_url": "https://images.unsplash.com/photo-1540555700478-4be289fbecef?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Gội Đầu Dưỡng Sinh Hoàng Gia + Massage Cổ Vai Gáy",
+        "en": "Royal Herbal Relaxing Head Spa + Neck & Shoulder Massage",
+        "ko": "베트남식 로얄 한방 두피 케어 힐링 샴푸 + 목·어깨 마사지",
+        "ja": "ロイヤルハーブヘッドスパ＋首・肩・デコルテマッサージ",
+        "zh": "皇家草本养生洗头 + 肩颈深度舒缓按摩套餐"
+      },
+      "desc_i18n": {
+        "vi": "Gội 2 nước thảo dược bồ kết sả chanh, rửa mặt nâng cơ, đắp mặt nạ dưa leo, massage cổ vai gáy và sấy tóc.",
+        "en": "Warm herbal hair wash, facial acupressure, cucumber mask, relaxing neck/shoulder massage & blow-dry.",
+        "ko": "천연 허브 워터 순환 케어, 페이셜 클렌징 & 오이팩, 목·어깨 지압 마사지 및 헤어 드라이 포함 풀코스.",
+        "ja": "温かいハーブ湯の掛け流し、フェイシャルツボ押し、キュウリパック、首肩マッサージ、ブロー込みの贅沢コース。",
+        "zh": "含温热草本水循环冲淋、面部提拉清洁、黄瓜面膜、肩颈穴位按摩及吹干造型。"
+      },
+      "options_json": [],
+      "view_count": 312
+    },
+    {
+      "id": "item-srv-2",
+      "shop_id": "shop-service-002",
+      "category_id": "cat-srv-2",
+      "sort_order": 1,
+      "price": 320000,
+      "duration_mins": 90,
+      "unit_i18n": {
+        "vi": "liệu trình",
+        "en": "session",
+        "ko": "회",
+        "ja": "回",
+        "zh": "次"
+      },
+      "image_url": "https://images.unsplash.com/photo-1519823551278-64ac92734fb1?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Massage Toàn Thân Đá Nóng Tinh Dầu Sả Chanh",
+        "en": "Full Body Hot Stone & Lemongrass Aroma Therapy Massage",
+        "ko": "전신 핫스톤 & 천연 레몬그라스 아로마 테라피 마사지",
+        "ja": "全身ホットストーン＆レモングラスアロマオイルマッサージ",
+        "zh": "全身火山热石 & 柠檬草精油理疗按摩"
+      },
+      "desc_i18n": {
+        "vi": "Giải tỏa căng cơ sau ngày dài đi bộ du lịch, kết hợp chườm đá nóng núi lửa và ngâm chân thảo dược.",
+        "en": "Relieve travel fatigue with volcanic hot stones, pure essential oils, and complimentary herbal foot soak.",
+        "ko": "여행의 피로를 풀어주는 따뜻한 현무암 핫스톤과 아로마 오일 마사지 (허브 족욕 서비스 포함).",
+        "ja": "旅の疲れを芯から癒す温石ホットストーンと天然アロマトリートメント（ハーブ足湯付き）。",
+        "zh": "使用温热火山石配合天然精油疏通经络，消除旅途疲劳（赠送草本泡脚）。"
+      },
+      "options_json": [],
+      "view_count": 198
+    },
+    {
+      "id": "item-srv-3",
+      "shop_id": "shop-service-002",
+      "category_id": "cat-srv-3",
+      "sort_order": 1,
+      "price": 150000,
+      "duration_mins": 45,
+      "unit_i18n": {
+        "vi": "bộ",
+        "en": "set",
+        "ko": "세트",
+        "ja": "セット",
+        "zh": "套"
+      },
+      "image_url": "https://images.unsplash.com/photo-1604654894610-df63bc536371?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Nhặt Da Chuyên Sâu + Sơn Gel Hàn Quốc Cao Cấp",
+        "en": "Cuticle Care + Premium Korean Gel Polish (Hands or Feet)",
+        "ko": "프리미엄 큐티클 케어 + 한국 정품 컬러 젤네일 (손 또는 발)",
+        "ja": "丁寧な甘皮ケア＋韓国製プレミアムジェルワンカラー（ハンドorフット）",
+        "zh": "深度死皮修护 + 韩国进口纯色凝胶美甲（手部或足部）"
+      },
+      "desc_i18n": {
+        "vi": "Bao gồm cắt da, tạo form móng, sơn gel bền màu trên 4 tuần và dưỡng viền móng.",
+        "en": "Includes shaping, cuticle removal, long-lasting Korean gel polish (4+ weeks), and cuticle oil.",
+        "ko": "손톱 모양 정리, 깔끔한 케어, 4주 이상 유지되는 고발색 한국 젤 컬러 시술 포함.",
+        "ja": "ファイリング、甘皮処理、4週間以上長持ちする韓国製高品質ジェルカラー、保湿オイル仕上げ。",
+        "zh": "包含修甲型、去死皮护理、持久度4周以上的韩国进口猫眼/纯色甲油胶及指缘营养油。"
+      },
+      "options_json": [],
+      "view_count": 140
+    },
+    {
+      "id": "item-ret-1",
+      "shop_id": "shop-retail-003",
+      "category_id": "cat-ret-1",
+      "sort_order": 1,
+      "price": 125000,
+      "compare_at_price": 150000,
+      "unit_i18n": {
+        "vi": "hộp 250g",
+        "en": "250g box",
+        "ko": "250g 박스",
+        "ja": "250g箱",
+        "zh": "250克盒装"
+      },
+      "image_url": "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Cà Phê Chồn Arabica Cầu Đất Rang Mộc (Kèm Phin Nhôm)",
+        "en": "Cau Dat Roasted Arabica Coffee Gift Box (Includes Vietnamese Phin Filter)",
+        "ko": "달랏 까우닷 프리미엄 아라비카 원두커피 선물세트 (전통 핀 드리퍼 포함)",
+        "ja": "ダラット産アラビカ焙煎コーヒーギフト箱（ベトナム式アルミフィルター付き）",
+        "zh": "大叻高山阿拉比卡醇香咖啡礼盒（内赠越式传统滴漏壶）"
+      },
+      "desc_i18n": {
+        "vi": "Hương thơm шоколад tự nhiên, vị êm hậu ngọt. Tặng kèm 1 phin pha cà phê truyền thống Việt Nam.",
+        "en": "Rich chocolatey aroma with smooth finish. Comes with a complimentary traditional aluminum Phin brewer.",
+        "ko": "은은한 초콜릿 향과 부드러운 산미가 일품인 고급 원두. 베트남 전통 커피 추출기(핀)가 무료로 들어있습니다.",
+        "ja": "チョコレートのような甘い香りとまろやかな味わい。本場のベトナムコーヒーが淹れられるフィルター付き。",
+        "zh": "带有天然巧克力坚果香气，回甘顺滑，礼盒附赠传统越式铝制滴漏滤杯。"
+      },
+      "options_json": [],
+      "view_count": 176
+    },
+    {
+      "id": "item-ret-2",
+      "shop_id": "shop-retail-003",
+      "category_id": "cat-ret-2",
+      "sort_order": 1,
+      "price": 45000,
+      "unit_i18n": {
+        "vi": "gói 180g",
+        "en": "180g pack",
+        "ko": "180g 팩",
+        "ja": "180g袋",
+        "zh": "180克袋装"
+      },
+      "image_url": "https://images.unsplash.com/photo-1590080875515-8a3a8dc5735e?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": true,
+      "name_i18n": {
+        "vi": "Bánh Dừa Nướng Quảng Nam Đặc Sản Giòn Thơm",
+        "en": "Quang Nam Crispy Toasted Coconut Crackers (Top Tourist Gift)",
+        "ko": "바삭하고 고소한 다낭 명물 코코넛 크래커 과자 (선물 1위)",
+        "ja": "ダナン定番お土産！香ばし焼きココナッツせんべい",
+        "zh": "广南特产香脆烤椰子饼（岘港伴手礼人气第一）"
+      },
+      "desc_i18n": {
+        "vi": "Làm từ cơm dừa tươi nguyên chất và bột nếp, nướng giòn rụm thơm lừng, rất hợp uống trà và cà phê.",
+        "en": "Made from fresh grated coconut and glutinous rice flour, baked to golden crispness.",
+        "ko": "신선한 코코넛 과육과 찹쌀가루로 구워내 남녀노소 누구나 좋아하는 바삭한 베트남 전통 과자.",
+        "ja": "新鮮なココナッツと餅米粉を香ばしく焼き上げた、コーヒーや緑茶にぴったりのサクサクお菓子。",
+        "zh": "选用新鲜椰肉与糯米粉烘烤而成，酥脆浓郁，配茶配咖啡皆宜。"
+      },
+      "options_json": [],
+      "view_count": 260
+    },
+    {
+      "id": "item-ret-3",
+      "shop_id": "shop-retail-003",
+      "category_id": "cat-ret-3",
+      "sort_order": 1,
+      "price": 85000,
+      "unit_i18n": {
+        "vi": "chiếc",
+        "en": "piece",
+        "ko": "개",
+        "ja": "個",
+        "zh": "顶"
+      },
+      "image_url": "https://images.unsplash.com/photo-1528127269322-539801943592?w=600&auto=format&fit=crop&q=80",
+      "is_available": true,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Nón Lá Lụa Hội An Vẽ Tay Hoa Sen",
+        "en": "Hand-Painted Lotus Silk Non La (Traditional Vietnamese Conical Hat)",
+        "ko": "수제 연꽃 그림 호이안 실크 논라 (베트남 전통 모자)",
+        "ja": "ホイアン手描き蓮の花シルクノンラー（ベトナム伝統菅笠）",
+        "zh": "会安手绘莲花真丝斗笠（越南传统纪念帽）"
+      },
+      "desc_i18n": {
+        "vi": "Nón lá bọc lụa tơ tằm vẽ tay hoa sen tinh xảo, có quai lụa mềm chụp ảnh cực đẹp.",
+        "en": "Artisan conical hat wrapped in silk with hand-painted lotus motifs, ideal for photos and home decor.",
+        "ko": "실크 원단 위에 장인이 직접 연꽃을 그려 넣은 고급 논라. 사진 촬영 소품 및 인테리어 선물로 인기.",
+        "ja": "シルク生地に職人が一つひとつ蓮の花を手描きした美しいノンラー。写真撮影やお部屋のインテリアに最適。",
+        "zh": "丝绸覆面配匠人手绘莲花图案，附柔滑丝带，拍照打卡与居家装饰佳品。"
+      },
+      "options_json": [],
+      "view_count": 112
+    },
+    {
+      "id": "item-1791956821841-ploe",
+      "shop_id": "shop-pho-hoi-an",
+      "category_id": "cat-fnb-1",
+      "sort_order": 1,
+      "price": 45000,
+      "compare_at_price": null,
+      "unit_i18n": {
+        "vi": "phần",
+        "en": "portion",
+        "ko": "인분",
+        "ja": "人前",
+        "zh": "份"
+      },
+      "duration_mins": null,
+      "image_url": null,
+      "is_available": true,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Món Vượt Giới Hạn Free"
+      },
+      "desc_i18n": {
+        "vi": ""
+      },
+      "options_json": [],
+      "view_count": 0
+    },
+    {
+      "id": "item-1791957017114-6ial",
+      "shop_id": "shop-1791957017065",
+      "category_id": "cat-1791957017114-31tm",
+      "sort_order": 1,
+      "price": 35000,
+      "duration_mins": null,
+      "unit_i18n": {
+        "vi": "phần",
+        "en": "portion",
+        "ko": "인분",
+        "ja": "人前",
+        "zh": "份"
+      },
+      "image_url": null,
+      "is_available": true,
+      "is_featured": false,
+      "name_i18n": {
+        "vi": "Bạc xỉu đá",
+        "en": "Vietnamese Sweetened Condensed Milk Coffee (Bac Xiu)",
+        "ko": "연유가 듬뿍 들어간 베트남식 달콤한 라떼 (박씨우)",
+        "ja": "ベトナム式練乳たっぷりアイスカフェオレ（バクシウ）",
+        "zh": "越式冰炼乳奶咖 (Bạc Xỉu - 奶香浓郁)"
+      },
+      "desc_i18n": {
+        "vi": "Sữa đặc béo ngậy hòa quyện cùng cà phê phin truyền thống đậm đà.",
+        "en": "Creamy sweetened milk topped with aromatic Vietnamese phin drip coffee.",
+        "ko": "진한 베트남 핀 커피와 달콤하고 부드러운 연유 우유가 어우러진 시그니처 커피.",
+        "ja": "濃厚な練乳ミルクに香り高いベトナムコーヒーを合わせた甘くて飲みやすい一杯。",
+        "zh": "香甜顺滑的厚炼乳鲜奶搭配传统越式滴漏咖啡，柔和不苦涩。"
+      },
+      "options_json": [],
+      "view_count": 0
+    }
+  ],
+  "posts": [
+    {
+      "id": "post-1791956706414-mlb5",
+      "shop_id": "shop-fnb-1",
+      "title_i18n": {
+        "vi": ""
+      },
+      "content_i18n": {
+        "vi": ""
+      },
+      "banner_url": null,
+      "is_pinned": false,
+      "is_active": true,
+      "created_at": "2026-10-14T05:45:06.414Z"
+    },
+    {
+      "id": "post-fnb-1",
+      "shop_id": "shop-fnb-001",
+      "title_i18n": {
+        "vi": "🎁 Tặng miễn phí 1 ly Trà Sâm Dứa khi đánh giá Google Maps!",
+        "en": "🎁 Free Pandan Herbal Iced Tea when leaving a Google Review!",
+        "ko": "🎁 구글 리뷰 작성 시 시원한 판단잎 허브티 1잔 무료 증정!",
+        "ja": "🎁 Googleマップのクチコミ投稿でパンダンハーブティー1杯無料！",
+        "zh": "🎁 在 Google 地图撰写评价即可免费获赠香兰草本冰茶一杯！"
+      },
+      "content_i18n": {
+        "vi": "Chỉ cần bấm nút Đánh giá bên dưới và đưa màn hình cho nhân viên xem để nhận ngay ly trà mát lạnh.",
+        "en": "Tap the Google Review button below and show our staff to claim your refreshing iced tea immediately.",
+        "ko": "아래 구글 리뷰 버튼을 눌러 별점을 남기신 후 직원에게 화면을 보여주시면 즉시 음료를 드립니다.",
+        "ja": "下のGoogleクチコミボタンから投稿し、スタッフに画面をお見せください。",
+        "zh": "点击下方评价按钮并向店员出示屏幕，即可立即领取清凉茶饮。"
+      },
+      "is_pinned": true,
+      "is_active": true,
+      "created_at": "2026-10-10T08:00:00Z"
+    },
+    {
+      "id": "post-srv-1",
+      "shop_id": "shop-service-002",
+      "title_i18n": {
+        "vi": "✨ Happy Hour 09:00 - 13:00: Giảm 15% toàn bộ gói Massage & Gội đầu",
+        "en": "✨ Happy Hour 09:00 - 13:00: 15% OFF All Head Spa & Massage Packages",
+        "ko": "✨ 해피아워 (09:00~13:00) 방문 고객 전 메뉴 15% 특별 할인!",
+        "ja": "✨ ハッピーアワー（9:00〜13:00）全スパ＆マッサージコース15%OFF！",
+        "zh": "✨ 欢享时段 09:00 - 13:00：全场养生洗头与按摩套餐享 85 折优惠！"
+      },
+      "content_i18n": {
+        "vi": "Áp dụng cho khách hàng đi từ 2 người trở lên. Miễn phí trà gừng ấm và bánh dừa nướng sau liệu trình.",
+        "en": "Valid for groups of 2+ guests. Includes free warm ginger tea and coconut crackers after your session.",
+        "ko": "2인 이상 방문 시 자동 적용됩니다. 관리 후 따뜻한 생강차와 코코넛 과자를 무료로 제공해 드립니다.",
+        "ja": "2名様以上でのご来店で適用。施術後に温かい生姜茶とココナッツ菓子のサービス付き。",
+        "zh": "两人及以上同行即可享受，疗程结束后免费赠送暖心姜茶与烤椰子饼。"
+      },
+      "is_pinned": true,
+      "is_active": true,
+      "created_at": "2026-10-11T08:00:00Z"
+    },
+    {
+      "id": "post-ret-1",
+      "shop_id": "shop-retail-003",
+      "title_i18n": {
+        "vi": "✈️ Mua 5 tặng 1 + Đóng thùng hút chân không miễn phí mang lên máy bay",
+        "en": "✈️ Buy 5 Get 1 Free + Free Airport Vacuum Box Packaging",
+        "ko": "✈️ 5+1 증정 이벤트 & 공항 수하물용 진공 박스 포장 무료 서비스!",
+        "ja": "✈️ 5個買うと1個無料＋空港預け荷物用の真空パック＆箱詰め無料！",
+        "zh": "✈️ 买五送一 + 免费提供机场托运标准真空装箱打包服务！"
+      },
+      "content_i18n": {
+        "vi": "Áp dụng cho toàn bộ Bánh dừa nướng, Cà phê và Trái cây sấy. Giao hàng miễn phí về khách sạn nội thành Đà Nẵng.",
+        "en": "Applies to all Coconut Crackers, Coffee, and Dried Fruits. Free delivery to hotels in Da Nang city center.",
+        "ko": "코코넛 과자, 커피, 건과일 전 품목 교차 선택 가능. 다낭 시내 호텔 무료 배달 지원.",
+        "ja": "ココナッツ煎餅・コーヒー・ドライフルーツ全品対象。ダナン市内ホテルへの無料配達も承ります。",
+        "zh": "烤椰子饼、咖啡、果干全场可混搭，满额免费配送至岘港市区酒店。"
+      },
+      "is_pinned": true,
+      "is_active": true,
+      "created_at": "2026-10-12T08:00:00Z"
+    }
+  ],
+  "analytics": [
+    {
+      "id": 17,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "item_id": null,
+      "visitor_lang": "ko",
+      "user_agent": "node",
+      "created_at": "2026-10-14T05:48:21.907Z"
+    },
+    {
+      "id": 16,
+      "shop_id": "shop-pho-hoi-an",
+      "event_type": "scan_table",
+      "item_id": null,
+      "visitor_lang": "ko",
+      "user_agent": "node",
+      "created_at": "2026-10-14T05:47:01.952Z"
+    },
+    {
+      "id": 1,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_door",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T08:10:00Z"
+    },
+    {
+      "id": 2,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T08:12:00Z"
+    },
+    {
+      "id": 3,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "visitor_lang": "en",
+      "created_at": "2026-10-14T08:30:00Z"
+    },
+    {
+      "id": 4,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "visitor_lang": "vi",
+      "created_at": "2026-10-14T09:00:00Z"
+    },
+    {
+      "id": 5,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_door",
+      "visitor_lang": "ja",
+      "created_at": "2026-10-14T09:15:00Z"
+    },
+    {
+      "id": 6,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "visitor_lang": "zh",
+      "created_at": "2026-10-14T09:20:00Z"
+    },
+    {
+      "id": 7,
+      "shop_id": "shop-fnb-001",
+      "event_type": "show_to_staff",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T09:25:00Z"
+    },
+    {
+      "id": 8,
+      "shop_id": "shop-fnb-001",
+      "event_type": "wifi_copy",
+      "visitor_lang": "en",
+      "created_at": "2026-10-14T09:30:00Z"
+    },
+    {
+      "id": 9,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_table",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T10:00:00Z"
+    },
+    {
+      "id": 10,
+      "shop_id": "shop-fnb-001",
+      "event_type": "scan_door",
+      "visitor_lang": "en",
+      "created_at": "2026-10-14T10:15:00Z"
+    },
+    {
+      "id": 11,
+      "shop_id": "shop-service-002",
+      "event_type": "scan_door",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T09:10:00Z"
+    },
+    {
+      "id": 12,
+      "shop_id": "shop-service-002",
+      "event_type": "scan_table",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T09:11:00Z"
+    },
+    {
+      "id": 13,
+      "shop_id": "shop-service-002",
+      "event_type": "show_to_staff",
+      "visitor_lang": "ja",
+      "created_at": "2026-10-14T10:05:00Z"
+    },
+    {
+      "id": 14,
+      "shop_id": "shop-retail-003",
+      "event_type": "scan_door",
+      "visitor_lang": "zh",
+      "created_at": "2026-10-14T10:20:00Z"
+    },
+    {
+      "id": 15,
+      "shop_id": "shop-retail-003",
+      "event_type": "scan_table",
+      "visitor_lang": "ko",
+      "created_at": "2026-10-14T10:40:00Z"
+    }
+  ],
+  "transactions": [
+    {
+      "id": "tx-1791956901940",
+      "user_id": "owner-demo-001",
+      "order_code": "QLAOKP50290",
+      "target_plan": "premium",
+      "amount": 69000,
+      "status": "completed",
+      "created_at": "2026-10-14T05:48:21.940Z",
+      "bank_ref_id": "FT2628799999",
+      "completed_at": "2026-10-14T05:48:21.958Z"
+    },
+    {
+      "id": "tx-1791956821989",
+      "user_id": "owner-demo-001",
+      "order_code": "QLAOKP28470",
+      "target_plan": "premium",
+      "amount": 69000,
+      "status": "completed",
+      "created_at": "2026-10-14T05:47:01.989Z",
+      "bank_ref_id": "FT2628799999",
+      "completed_at": "2026-10-14T05:47:02.010Z"
+    },
+    {
+      "id": "tx-demo-001",
+      "user_id": "owner-demo-001",
+      "order_code": "QLAOKP88219",
+      "target_plan": "premium",
+      "amount": 69000,
+      "status": "completed",
+      "bank_ref_id": "FT2628799102",
+      "created_at": "2026-10-01T09:00:00Z",
+      "completed_at": "2026-10-01T09:01:12Z"
+    }
+  ]
+}

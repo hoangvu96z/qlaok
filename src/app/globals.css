@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --brand-primary: #10b981;
+  }
+
+  body {
+    @apply bg-slate-50 font-sans text-slate-900 antialiased selection:bg-emerald-500 selection:text-white;
+  }
+}
+
+/* Hide scrollbars for horizontal category pills while keeping scroll functionality */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
