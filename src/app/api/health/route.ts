@@ -49,7 +49,9 @@ export async function GET() {
       supabaseMessage: sbStatus.error || 'Connected & seeded',
       r2Configured: isR2Configured(),
       geminiConfigured: Boolean(getGeminiClient()),
+      aiProvider: '9router (https://vunph.click/v1 • combo1)',
     },
     counts,
   });
 }
+

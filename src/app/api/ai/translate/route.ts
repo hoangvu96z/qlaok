@@ -1,21 +1,29 @@
 import { NextResponse } from 'next/server';
-import { getGeminiClient, smartFallbackTranslate, Type } from '@/lib/gemini';
-import { BusinessVertical } from '@/types/qlaok';
+import {
+  call9RouterJson,
+  getAiConfig,
+  smartFallbackTranslate,
+} from '@/lib/gemini';
+import { BusinessVertical, I18nText } from '@/types/qlaok';
+
+interface TranslationAiResponse {
+  category_i18n?: I18nText;
+  name_i18n: I18nText;
+  desc_i18n: I18nText;
+}
 
 export async function POST(req: Request) {
+  let vertical: BusinessVertical = 'fnb';
+  let categoryNameVi = 'Danh mục';
+  let itemNameVi = '';
+  let itemDescVi = '';
+
   try {
     const body = await req.json();
-    const {
-      vertical = 'fnb',
-      categoryNameVi = 'Danh mục',
-      itemNameVi = '',
-      itemDescVi = '',
-    } = body as {
-      vertical?: BusinessVertical;
-      categoryNameVi?: string;
-      itemNameVi: string;
-      itemDescVi?: string;
-    };
+    vertical = body.vertical || 'fnb';
+    categoryNameVi = body.categoryNameVi || 'Danh mục';
+    itemNameVi = body.itemNameVi || '';
+    itemDescVi = body.itemDescVi || '';
 
     if (!itemNameVi || !itemNameVi.trim()) {
       return NextResponse.json(
@@ -24,10 +32,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const ai = getGeminiClient();
-
-    if (!ai) {
-      // Local smart culinary/service fallback when GEMINI_API_KEY is not configured
+    const aiConfig = getAiConfig();
+    if (!aiConfig) {
       const fallbackResult = smartFallbackTranslate({
         vertical,
         categoryNameVi,
@@ -40,78 +46,46 @@ export async function POST(req: Request) {
       });
     }
 
-    const systemInstruction = `
-Bạn là chuyên gia bản địa hóa Menu Ẩm thực (F&B), Bảng giá Dịch vụ (Nail, Spa, Massage, Gym, Giặt sấy) và Danh mục Bán lẻ tại Việt Nam.
-Nhiệm vụ: Dịch nội dung Tiếng Việt sang 4 ngôn ngữ: Tiếng Anh (en), Tiếng Hàn (ko), Tiếng Nhật (ja), và Tiếng Trung Giản Thể (zh).
-Quy tắc dịch:
-1. Ngành hiện tại của cửa hàng là: "${vertical}".
-2. Với món ăn Việt Nam đặc trưng (VD: Bạc xỉu, Phở tái nạm, Bún chả, Bánh tráng trộn), hãy dịch tên món kèm giải thích ngắn gọn bản chất nguyên liệu để khách nước ngoài hiểu ngay (VD: "Bạc xỉu" -> en: "Vietnamese Sweetened Condensed Milk Coffee (Bac Xiu)", ko: "연유가 듬뿍 들어간 베트남식 달콤한 라떼 (박씨우)").
-3. Với ngành Dịch vụ (Nail, Spa, Gội đầu dưỡng sinh), dùng đúng thuật ngữ bản xứ mà khách Hàn/Nhật/Trung hay tìm kiếm (VD: "Gội đầu dưỡng sinh" -> ko: "베트남식 두피 케어 & 힐링 샴푸", en: "Herbal Relaxing Head Spa & Massage").
-4. Nếu mô tả tiếng Việt (itemDescVi) bị bỏ trống, hãy tự động viết một câu mô tả hấp dẫn ngắn gọn (dưới 18 từ) bằng cả 5 ngôn ngữ dựa trên tên món/dịch vụ.
-`;
+    const systemPrompt = `Bạn là chuyên gia bản địa hóa Menu Ẩm thực (F&B), Bảng giá Dịch vụ (Nail, Spa, Massage) và Danh mục Bán lẻ tại Việt Nam.
+Nhiệm vụ: Dịch nội dung Tiếng Việt sang đủ 5 ngôn ngữ: Tiếng Việt (vi), Tiếng Anh (en), Tiếng Hàn (ko), Tiếng Nhật (ja), và Tiếng Trung Giản Thể (zh).
+Quy tắc:
+1. Ngành của cửa hàng: "${vertical}".
+2. Với món ăn Việt Nam đặc trưng (VD: Bạc xỉu, Phở tái nạm, Bún chả), dịch tên món kèm giải thích ngắn gọn nguyên liệu để khách nước ngoài hiểu ngay.
+3. Nếu mô tả tiếng Việt (itemDescVi) trống, tự động viết 1 câu mô tả hấp dẫn ngắn gọn (dưới 18 từ) bằng cả 5 ngôn ngữ.
+4. CHỈ TRẢ VỀ ĐÚNG 1 OBJECT JSON hợp lệ theo cấu trúc:
+{
+  "category_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
+  "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
+  "desc_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." }
+}`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: JSON.stringify({ categoryNameVi, itemNameVi, itemDescVi }),
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            category_i18n: {
-              type: Type.OBJECT,
-              properties: {
-                vi: { type: Type.STRING },
-                en: { type: Type.STRING },
-                ko: { type: Type.STRING },
-                ja: { type: Type.STRING },
-                zh: { type: Type.STRING },
-              },
-              required: ['vi', 'en', 'ko', 'ja', 'zh'],
-            },
-            name_i18n: {
-              type: Type.OBJECT,
-              properties: {
-                vi: { type: Type.STRING },
-                en: { type: Type.STRING },
-                ko: { type: Type.STRING },
-                ja: { type: Type.STRING },
-                zh: { type: Type.STRING },
-              },
-              required: ['vi', 'en', 'ko', 'ja', 'zh'],
-            },
-            desc_i18n: {
-              type: Type.OBJECT,
-              properties: {
-                vi: { type: Type.STRING },
-                en: { type: Type.STRING },
-                ko: { type: Type.STRING },
-                ja: { type: Type.STRING },
-                zh: { type: Type.STRING },
-              },
-              required: ['vi', 'en', 'ko', 'ja', 'zh'],
-            },
-          },
-          required: ['name_i18n', 'desc_i18n'],
-        },
+    const parsed = await call9RouterJson<TranslationAiResponse>([
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: JSON.stringify({ categoryNameVi, itemNameVi, itemDescVi }),
       },
-    });
+    ]);
 
-    const parsed = JSON.parse(response.text || '{}');
+    if (!parsed?.name_i18n?.en || !parsed?.desc_i18n?.en) {
+      throw new Error('Incomplete translation fields from 9router');
+    }
+
     return NextResponse.json({
       ...parsed,
-      provider: 'gemini-2.5-flash',
+      provider: `9router-${aiConfig.model}`,
     });
   } catch (error) {
-    console.error('Translation Error, using smart fallback:', error);
+    console.error('9router Translation Error, using smart fallback:', error);
     const fallback = smartFallbackTranslate({
-      vertical: 'fnb',
-      itemNameVi: 'Món đặc trưng',
+      vertical,
+      categoryNameVi,
+      itemNameVi: itemNameVi || 'Món đặc trưng',
+      itemDescVi,
     });
     return NextResponse.json({
       ...fallback,
-      provider: 'local-smart-dictionary-fallback',
+      provider: '9router-smart-fallback',
     });
   }
 }

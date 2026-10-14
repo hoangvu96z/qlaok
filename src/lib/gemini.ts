@@ -1,12 +1,107 @@
-import { GoogleGenAI, Type } from '@google/genai';
 import { BusinessVertical, I18nText } from '@/types/qlaok';
 
-export function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_gemini')) {
+export interface NineRouterConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+export function getAiConfig(): NineRouterConfig | null {
+  const baseUrl = (
+    process.env.AI_BASE_URL || 'https://vunph.click/v1'
+  ).replace(/\/+$/, '');
+  const apiKey =
+    process.env.AI_API_KEY || 'sk-07c9f002b12e445e-luaxyd-d0592739';
+  const model = process.env.AI_MODEL || 'combo1';
+
+  if (!apiKey || apiKey.trim() === '') {
     return null;
   }
-  return new GoogleGenAI({ apiKey });
+
+  return { baseUrl, apiKey, model };
+}
+
+export function isAiConfigured(): boolean {
+  return Boolean(getAiConfig());
+}
+
+// Keep getGeminiClient alias for backwards compatibility in health checks
+export function getGeminiClient() {
+  return getAiConfig();
+}
+
+/**
+ * Calls 9router OpenAI-compatible /chat/completions endpoint (handling both SSE chunks and JSON)
+ * and parses the returned JSON payload.
+ */
+export async function call9RouterJson<T>(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }>
+): Promise<T> {
+  const config = getAiConfig();
+  if (!config) {
+    throw new Error('AI_NOT_CONFIGURED');
+  }
+
+  const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      temperature: 0.2,
+    }),
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`9router HTTP ${res.status}: ${errText}`);
+  }
+
+  const rawText = await res.text();
+  let fullContent = '';
+
+  if (rawText.trimStart().startsWith('data:')) {
+    const lines = rawText.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
+      if (!dataStr || dataStr === '[DONE]') continue;
+      try {
+        const chunk = JSON.parse(dataStr);
+        const delta =
+          chunk.choices?.[0]?.delta?.content ??
+          chunk.choices?.[0]?.message?.content ??
+          '';
+        fullContent += delta;
+      } catch {
+        // ignore partial SSE line
+      }
+    }
+  } else {
+    const parsedResp = JSON.parse(rawText);
+    fullContent =
+      parsedResp.choices?.[0]?.message?.content ??
+      parsedResp.choices?.[0]?.delta?.content ??
+      '';
+  }
+
+  // Extract JSON object from fullContent (strip markdown ```json ... ``` if present)
+  const fenceMatch = fullContent.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : fullContent.trim();
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
+
+  if (firstBrace === -1 || lastBrace === -1) {
+    throw new Error('9router response did not contain valid JSON object');
+  }
+
+  const jsonSlice = candidate.slice(firstBrace, lastBrace + 1);
+  return JSON.parse(jsonSlice) as T;
 }
 
 // Smart dictionary & culinary/service localization fallback when running without GEMINI_API_KEY
@@ -401,5 +496,3 @@ export function getDemoOcrResult(vertical: BusinessVertical) {
     ],
   };
 }
-
-export { Type };
