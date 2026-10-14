@@ -16,6 +16,7 @@ import {
 import { BusinessVertical, Shop } from '@/types/qlaok';
 import { checkShopOpenStatus, LOCALE_META } from '@/lib/i18n-helper';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 export default function ExploreDirectoryPage() {
   const [shops, setShops] = useState<Shop[]>([]);
@@ -200,11 +201,14 @@ export default function ExploreDirectoryPage() {
                       )}
 
                       <div className="flex items-center justify-between text-xs pt-1">
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1.5">
                           {shop.supported_langs.map((l) => (
-                            <span key={l} title={LOCALE_META[l]?.label}>
-                              {LOCALE_META[l]?.flag}
-                            </span>
+                            <FlagIcon
+                              key={l}
+                              locale={l}
+                              className="h-3.5 w-5"
+                              title={LOCALE_META[l]?.label}
+                            />
                           ))}
                         </div>
                         {shop.wifi_info?.ssid && (

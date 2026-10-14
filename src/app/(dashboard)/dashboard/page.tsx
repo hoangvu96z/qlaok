@@ -17,6 +17,7 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface AnalyticsSummary {
   scanDoorCount: number;
@@ -195,8 +196,8 @@ export default function DashboardOverviewPage() {
               return (
                 <div key={entry.lang} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span className="text-base">{meta.flag}</span>
+                    <span className="font-bold text-slate-800 flex items-center gap-2">
+                      <FlagIcon locale={entry.lang} className="h-4 w-5.5" />
                       <span>
                         {meta.label} ({meta.nativeName})
                       </span>

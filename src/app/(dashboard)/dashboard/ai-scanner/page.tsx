@@ -16,6 +16,7 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { I18nText } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface ExtractedItem {
   price: number;
@@ -314,10 +315,11 @@ export default function DashboardAiScannerPage() {
                 <h3 className="text-base font-black text-slate-900">
                   {cat.name_i18n.vi}
                 </h3>
-                <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-slate-500">
                   {ALL_LOCALES.filter((l) => l !== 'vi').map((loc) => (
-                    <span key={loc}>
-                      {LOCALE_META[loc].flag} {cat.name_i18n[loc]}
+                    <span key={loc} className="inline-flex items-center gap-1.5">
+                      <FlagIcon locale={loc} className="h-3.5 w-5" />
+                      <span>{cat.name_i18n[loc]}</span>
                     </span>
                   ))}
                 </div>
@@ -402,17 +404,29 @@ export default function DashboardAiScannerPage() {
 
                     {/* 4 Auto-Translated Languages Preview */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 text-[11px] text-slate-600">
-                      <div>
-                        🇬🇧 <strong>EN:</strong> {item.name_i18n.en}
+                      <div className="flex items-center gap-1.5">
+                        <FlagIcon locale="en" className="h-3.5 w-5" />
+                        <span>
+                          <strong>EN:</strong> {item.name_i18n.en}
+                        </span>
                       </div>
-                      <div>
-                        🇰🇷 <strong>KO:</strong> {item.name_i18n.ko}
+                      <div className="flex items-center gap-1.5">
+                        <FlagIcon locale="ko" className="h-3.5 w-5" />
+                        <span>
+                          <strong>KO:</strong> {item.name_i18n.ko}
+                        </span>
                       </div>
-                      <div>
-                        🇯🇵 <strong>JA:</strong> {item.name_i18n.ja}
+                      <div className="flex items-center gap-1.5">
+                        <FlagIcon locale="ja" className="h-3.5 w-5" />
+                        <span>
+                          <strong>JA:</strong> {item.name_i18n.ja}
+                        </span>
                       </div>
-                      <div>
-                        🇨🇳 <strong>ZH:</strong> {item.name_i18n.zh}
+                      <div className="flex items-center gap-1.5">
+                        <FlagIcon locale="zh" className="h-3.5 w-5" />
+                        <span>
+                          <strong>ZH:</strong> {item.name_i18n.zh}
+                        </span>
                       </div>
                     </div>
                   </div>

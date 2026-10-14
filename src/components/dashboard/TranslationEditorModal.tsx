@@ -19,6 +19,7 @@ import {
   SupportedLocale,
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface TranslationEditorModalProps {
   isOpen: boolean;
@@ -427,13 +428,13 @@ export function TranslationEditorModal({
                       key={loc}
                       type="button"
                       onClick={() => setActiveTab(loc)}
-                      className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
+                      className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold transition-all ${
                         activeTab === loc
                           ? 'bg-white text-slate-900 shadow-2xs'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      <span>{meta.flag}</span>
+                      <FlagIcon locale={loc} className="h-3.5 w-5" />
                       <span>{meta.short}</span>
                       {hasValue && (
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -446,9 +447,10 @@ export function TranslationEditorModal({
 
             <div className="space-y-2.5 pt-1">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  Tên hiển thị ({LOCALE_META[activeTab].flag}{' '}
-                  {LOCALE_META[activeTab].label})
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 mb-1">
+                  <span>Tên hiển thị (</span>
+                  <FlagIcon locale={activeTab} className="h-3 w-4" />
+                  <span>{LOCALE_META[activeTab].label})</span>
                 </label>
                 <input
                   type="text"
@@ -465,9 +467,10 @@ export function TranslationEditorModal({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  Mô tả ({LOCALE_META[activeTab].flag}{' '}
-                  {LOCALE_META[activeTab].label})
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 mb-1">
+                  <span>Mô tả (</span>
+                  <FlagIcon locale={activeTab} className="h-3 w-4" />
+                  <span>{LOCALE_META[activeTab].label})</span>
                 </label>
                 <textarea
                   rows={2}

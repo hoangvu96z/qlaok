@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface QuickItemRowProps {
   item: CatalogItem;
@@ -94,14 +95,15 @@ export function QuickItemRow({
             </div>
 
             {item.name_i18n.en && (
-              <p className="truncate text-xs text-slate-500">
-                🇬🇧 {item.name_i18n.en}
+              <p className="truncate text-xs text-slate-500 flex items-center gap-1.5">
+                <FlagIcon locale="en" className="h-3 w-4" />
+                <span className="truncate">{item.name_i18n.en}</span>
               </p>
             )}
 
             {/* Translation status flags & duration */}
             <div className="flex items-center gap-2 flex-wrap pt-0.5">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 {ALL_LOCALES.map((loc) => {
                   const hasTrans = translatedLangs.includes(loc);
                   return (
@@ -110,11 +112,11 @@ export function QuickItemRow({
                       title={`${LOCALE_META[loc].label}: ${
                         hasTrans ? item.name_i18n[loc] : 'Chưa dịch'
                       }`}
-                      className={`text-xs transition-opacity ${
+                      className={`inline-flex items-center transition-opacity ${
                         hasTrans ? 'opacity-100' : 'opacity-25 grayscale'
                       }`}
                     >
-                      {LOCALE_META[loc].flag}
+                      <FlagIcon locale={loc} className="h-3.5 w-5" />
                     </span>
                   );
                 })}

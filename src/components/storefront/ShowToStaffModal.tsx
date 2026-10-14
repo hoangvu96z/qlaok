@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { CartSelection, Shop, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META, tField, UI_LABELS } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface ShowToStaffModalProps {
   isOpen: boolean;
@@ -121,14 +122,16 @@ export function ShowToStaffModal({
             <div className="mx-auto max-w-md flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-amber-400 font-black text-lg">
-                  🇻🇳
+                  <FlagIcon locale="vi" className="h-5 w-7" />
                 </div>
                 <div>
                   <h2 className="text-sm sm:text-base font-black uppercase tracking-tight leading-tight">
                     {labels.showToStaffHeader}
                   </h2>
-                  <p className="text-xs font-bold text-slate-800">
-                    Xin chào nhân viên! Khách ({visitorMeta.flag} {visitorMeta.label}) muốn đặt các mục dưới đây:
+                  <p className="text-xs font-bold text-slate-800 flex items-center gap-1 flex-wrap">
+                    <span>Xin chào nhân viên! Khách (</span>
+                    <FlagIcon locale={locale} className="h-3.5 w-5" />
+                    <span>{visitorMeta.label}) muốn đặt các mục dưới đây:</span>
                   </p>
                 </div>
               </div>
@@ -205,9 +208,9 @@ export function ShowToStaffModal({
 
                             {/* Visitor's own language subtitle for reassurance */}
                             {locale !== 'vi' && (
-                              <p className="text-xs font-medium text-emerald-400">
-                                {visitorMeta.flag}{' '}
-                                {tField(entry.item.name_i18n, locale)}
+                              <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5">
+                                <FlagIcon locale={locale} className="h-3.5 w-5" />
+                                <span>{tField(entry.item.name_i18n, locale)}</span>
                               </p>
                             )}
 

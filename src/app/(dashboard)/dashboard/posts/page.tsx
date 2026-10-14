@@ -13,6 +13,7 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { I18nText, Post, SupportedLocale } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 export default function DashboardPostsPage() {
   const { activeShop } = useDashboard();
@@ -166,13 +167,13 @@ export default function DashboardPostsPage() {
               key={loc}
               type="button"
               onClick={() => setActiveTab(loc)}
-              className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold ${
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold ${
                 activeTab === loc
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600'
               }`}
             >
-              <span>{LOCALE_META[loc].flag}</span>
+              <FlagIcon locale={loc} className="h-3.5 w-5" />
               <span>{LOCALE_META[loc].short}</span>
             </button>
           ))}
@@ -261,9 +262,19 @@ export default function DashboardPostsPage() {
                 </h3>
               </div>
               <p className="text-xs text-slate-600">{post.content_i18n.vi}</p>
-              <div className="flex flex-wrap gap-2 pt-1 text-[11px] text-slate-500">
-                {post.title_i18n.en && <span>🇬🇧 {post.title_i18n.en}</span>}
-                {post.title_i18n.ko && <span>🇰🇷 {post.title_i18n.ko}</span>}
+              <div className="flex flex-wrap gap-3 pt-1 text-[11px] text-slate-500">
+                {post.title_i18n.en && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <FlagIcon locale="en" className="h-3.5 w-5" />
+                    <span>{post.title_i18n.en}</span>
+                  </span>
+                )}
+                {post.title_i18n.ko && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <FlagIcon locale="ko" className="h-3.5 w-5" />
+                    <span>{post.title_i18n.ko}</span>
+                  </span>
+                )}
               </div>
             </div>
 

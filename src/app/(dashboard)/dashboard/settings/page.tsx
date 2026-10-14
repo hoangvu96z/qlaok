@@ -19,6 +19,7 @@ import {
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 const DAYS_LIST: Array<{ key: keyof OpeningHours; label: string }> = [
   { key: 'mon', label: 'Thứ 2' },
@@ -311,13 +312,13 @@ export default function DashboardSettingsPage() {
                     key={loc}
                     type="button"
                     onClick={() => toggleLocale(loc)}
-                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold ${
+                    className={`inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-bold ${
                       active
                         ? 'border-emerald-600 bg-emerald-50 text-emerald-900'
                         : 'border-slate-200 bg-white text-slate-400'
                     }`}
                   >
-                    <span>{LOCALE_META[loc].flag}</span>
+                    <FlagIcon locale={loc} className="h-3.5 w-5" />
                     <span>{LOCALE_META[loc].label}</span>
                   </button>
                 );

@@ -3,6 +3,7 @@
 import React from 'react';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { SupportedLocale } from '@/types/qlaok';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface LanguageSwitcherProps {
   currentLocale: SupportedLocale;
@@ -45,14 +46,14 @@ export function LanguageSwitcher({
             key={loc}
             type="button"
             onClick={() => handleSelect(loc)}
-            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-all whitespace-nowrap ${
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition-all whitespace-nowrap ${
               isActive
                 ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
             title={meta.nativeName}
           >
-            <span className="text-sm leading-none">{meta.flag}</span>
+            <FlagIcon locale={loc} className="h-3.5 w-5" />
             <span>{compact ? meta.short : meta.nativeName}</span>
           </button>
         );

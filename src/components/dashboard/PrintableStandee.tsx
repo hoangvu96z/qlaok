@@ -5,6 +5,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { toPng } from 'html-to-image';
 import { Download, Wifi, ExternalLink, Copy, Check } from 'lucide-react';
 import { Shop } from '@/types/qlaok';
+import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface PrintableStandeeProps {
   shop: Shop;
@@ -89,21 +90,36 @@ export function PrintableStandee({
         </div>
 
         {/* 5-Language Scan Invitation */}
-        <div className="space-y-1 mb-4">
-          <p className="text-xs font-extrabold text-slate-900">
-            {qrType === 'door'
-              ? '🇻🇳 QUÉT MÃ XEM THÔNG TIN, WI-FI & MENU'
-              : '🇻🇳 QUÉT MÃ XEM MENU / BẢNG GIÁ ĐA NGÔN NGỮ'}
+        <div className="space-y-1.5 mb-4">
+          <p className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-slate-900">
+            <FlagIcon locale="vi" className="h-3.5 w-5" />
+            <span>
+              {qrType === 'door'
+                ? 'QUÉT MÃ XEM THÔNG TIN, WI-FI & MENU'
+                : 'QUÉT MÃ XEM MENU / BẢNG GIÁ ĐA NGÔN NGỮ'}
+            </span>
           </p>
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600">
-            <span>🇬🇧 Scan for English Menu</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="en" className="h-3 w-4" />
+              <span>Scan for English Menu</span>
+            </span>
             <span>•</span>
-            <span>🇰🇷 한국어 메뉴 스캔</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="ko" className="h-3 w-4" />
+              <span>한국어 메뉴 스캔</span>
+            </span>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600">
-            <span>🇯🇵 日本語メニュー</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="ja" className="h-3 w-4" />
+              <span>日本語メニュー</span>
+            </span>
             <span>•</span>
-            <span>🇨🇳 扫码查看中文菜单</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="zh" className="h-3 w-4" />
+              <span>扫码查看中文菜单</span>
+            </span>
           </div>
         </div>
 

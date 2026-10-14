@@ -2,13 +2,49 @@ import { BusinessVertical, I18nText, OpeningHours, SupportedLocale } from '@/typ
 
 export const LOCALE_META: Record<
   SupportedLocale,
-  { label: string; nativeName: string; flag: string; short: string }
+  {
+    label: string;
+    nativeName: string;
+    flag: string;
+    flagSrc: string;
+    short: string;
+  }
 > = {
-  vi: { label: 'Tiếng Việt', nativeName: 'Tiếng Việt', flag: '🇻🇳', short: 'VI' },
-  en: { label: 'Tiếng Anh', nativeName: 'English', flag: '🇬🇧', short: 'EN' },
-  ko: { label: 'Tiếng Hàn', nativeName: '한국어', flag: '🇰🇷', short: 'KO' },
-  ja: { label: 'Tiếng Nhật', nativeName: '日本語', flag: '🇯🇵', short: 'JA' },
-  zh: { label: 'Tiếng Trung', nativeName: '中文', flag: '🇨🇳', short: 'ZH' },
+  vi: {
+    label: 'Tiếng Việt',
+    nativeName: 'Tiếng Việt',
+    flag: '🇻🇳',
+    flagSrc: '/flags/vi.svg',
+    short: 'VI',
+  },
+  en: {
+    label: 'Tiếng Anh',
+    nativeName: 'English',
+    flag: '🇬🇧',
+    flagSrc: '/flags/en.svg',
+    short: 'EN',
+  },
+  ko: {
+    label: 'Tiếng Hàn',
+    nativeName: '한국어',
+    flag: '🇰🇷',
+    flagSrc: '/flags/ko.svg',
+    short: 'KO',
+  },
+  ja: {
+    label: 'Tiếng Nhật',
+    nativeName: '日本語',
+    flag: '🇯🇵',
+    flagSrc: '/flags/ja.svg',
+    short: 'JA',
+  },
+  zh: {
+    label: 'Tiếng Trung',
+    nativeName: '中文',
+    flag: '🇨🇳',
+    flagSrc: '/flags/zh.svg',
+    short: 'ZH',
+  },
 };
 
 export const ALL_LOCALES: SupportedLocale[] = ['vi', 'en', 'ko', 'ja', 'zh'];
