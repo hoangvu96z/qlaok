@@ -1,0 +1,41 @@
+name: 🚀 Deploy Qlaok to VPS (qlaok.vunph.click)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build & Deploy → qlaok.vunph.click
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Pull latest code & rebuild on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST || '43.128.116.69' }}
+          username: ${{ secrets.SSH_USER || 'ubuntu' }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd /var/www/qlaok.vunph.click
+            echo "📥 Pulling latest changes from GitHub..."
+            git fetch origin main
+            git reset --hard origin/main
+            echo "📦 Installing dependencies..."
+            npm ci --no-audit --no-fund
+            echo "🔨 Building Next.js production app..."
+            npm run build
+            echo "🔄 Restarting PM2 process (qlaok)..."
+            if pm2 describe qlaok > /dev/null 2>&1; then
+              pm2 restart qlaok --update-env
+            else
+              pm2 start npm --name "qlaok" -- run start -- --port 3005
+            fi
+            pm2 save
+            echo "✅ Deploy Qlaok thành công!"
+            pm2 show qlaok | grep -E "status|pid|uptime"
