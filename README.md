@@ -47,22 +47,29 @@ Ngay lần đầu tiên khởi động `npm run dev` (hoặc gọi `http://local
 
 ---
 
-## 🤖 3. Cấu hình AI Gemini & Cloudflare R2 (Tuỳ chọn)
+## 🤖 3. Cấu hình 9Router AI & Tesseract OCR + Cloudflare R2
 
-Trong file `.env.local`, bạn có thể bổ sung thêm:
+Trong file `.env.local`, hệ thống sử dụng cổng **9Router AI** (cấu hình tự do qua `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`) kết hợp **Tesseract.js (`vie+eng`)** để vừa dịch món ăn vừa đọc ảnh chụp Menu giấy thực tế với bất kỳ model AI nào:
 
 ```env
-# Google Gemini 2.5 Flash (Dịch tự động 5 ngôn ngữ & AI Vision đọc ảnh Menu giấy)
-GEMINI_API_KEY=AIzaSy...
+# 9Router AI Server (combo1 cho dịch văn bản, combo2 cho quét ảnh/OCR)
+AI_BASE_URL=https://vunph.click/v1
+AI_API_KEY=sk-07c9f002b12e445e-luaxyd-d0592739
+AI_MODEL=combo1
+AI_VISION_MODEL=combo2
 
-# Cloudflare R2 (Lưu trữ ảnh món ăn, logo, ảnh bìa đã nén WebP)
+# Cloudflare R2 (Tuỳ chọn - Lưu trữ ảnh món ăn, logo, ảnh bìa đã nén WebP)
 R2_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET_NAME=qlaok-assets
 NEXT_PUBLIC_R2_PUBLIC_URL=https://pub-xxx.r2.dev
 ```
-*(Nếu chưa điền `GEMINI_API_KEY` hoặc `R2_*`, hệ thống vẫn hoạt động đầy đủ với bộ từ điển AI thông minh tích hợp sẵn và bộ lưu trữ ảnh Base64/WebP nội bộ).*
+
+### Cơ chế hoạt động của Chụp Ảnh Menu Giấy (`/dashboard/ai-scanner` & `/api/ai/ocr-menu`):
+Hệ thống sử dụng `AI_VISION_MODEL` (`combo2`) kết hợp **Tesseract.js (`vie+eng`)** theo quy trình **Hybrid 2 lớp**:
+1. **Bước 1 – Quét chữ OCR Tiếng Việt (`tesseract.js`):** Nhận diện văn bản Tiếng Việt + Tiếng Anh (`vie+eng`) trực tiếp từ bức ảnh chụp menu giấy / bảng giá. Chủ quán có thể xem và chỉnh sửa lại văn bản thô ngay trên giao diện nếu ảnh chụp bị mờ.
+2. **Bước 2 – Phân tích ảnh + văn bản & Dịch 5 ngôn ngữ qua `AI_VISION_MODEL` (`combo2`):** Gửi cả hình ảnh (`image_url`) lẫn văn bản OCR qua `${AI_BASE_URL}/chat/completions` (`combo2`) để AI tự động đối chiếu, sửa lỗi chính tả, chia Danh mục (`categories`), tách Tên món (`items`), chuẩn hóa giá tiền (`35k` → `35000`) và dịch sang **Việt, Anh, Hàn, Nhật, Trung**.
 
 ---
 
@@ -84,11 +91,11 @@ qlaok/
 │   │       ├── catalog/route.ts      # CRUD Danh mục, Món ăn/Dịch vụ & Bulk Import
 │   │       ├── posts/route.ts        # CRUD Bài viết khuyến mãi / thông báo
 │   │       ├── analytics/track/      # Tracking lượt quét QR Cửa/Bàn, xem món, copy Wi-Fi
-│   │       ├── ai/translate/         # Dịch tự động 1 chạm sang 5 ngôn ngữ (VI, EN, KO, JA, ZH)
-│   │       ├── ai/ocr-menu/          # AI Vision bóc tách ảnh chụp thực đơn giấy
+│   │       ├── ai/translate/         # Dịch tự động 1 chạm sang 5 ngôn ngữ bằng 9Router AI (VI, EN, KO, JA, ZH)
+│   │       ├── ai/ocr-menu/          # Tesseract OCR (vie+eng) + 9Router AI bóc tách ảnh chụp thực đơn giấy
 │   │       ├── webhooks/payment/     # Tạo đơn VietQR & xử lý Webhook nâng cấp gói tự động
 │   │       ├── upload/route.ts       # Presigned URL upload ảnh Cloudflare R2
-│   │       └── health/route.ts       # Kiểm tra kết nối Supabase, R2, Gemini & số lượng bản ghi
+│   │       └── health/route.ts       # Kiểm tra kết nối Supabase, R2, 9Router AI & số lượng bản ghi
 │   ├── components/
 │   │   ├── dashboard/                # QuickItemRow, TranslationEditorModal, PrintableStandee (xuất PNG A6)
 │   │   └── storefront/               # VerticalRenderer (3 giao diện F&B/Spa/Retail), ShowToStaffModal, LanguageSwitcher, WifiBadge
@@ -98,7 +105,7 @@ qlaok/
 │       ├── vietnam-provinces.ts      # Danh sách chuẩn 34 Tỉnh / Thành phố Việt Nam
 │       ├── i18n-helper.ts            # Nhận diện ngôn ngữ máy khách, format tiền tệ, kiểm tra giờ đóng/mở cửa
 │       ├── plan-limits.ts            # Logic phân quyền gói Free (5 món) / Basic (25 món) / Premium (Không giới hạn)
-│       ├── gemini.ts                 # Tích hợp Google Gemini 2.5 Flash
+│       ├── gemini.ts                 # Tích hợp 9Router AI (cấu hình qua .env) & bộ parser OCR dự phòng
 │       └── r2.ts                     # Tích hợp Cloudflare R2 S3 SDK
 ```
 
@@ -111,7 +118,7 @@ qlaok/
 - **Đăng nhập / Tạo cửa hàng mới:** `http://localhost:3000/login` | `http://localhost:3000/onboarding`
 - **Trang Quản trị Chủ quán (Mobile-First CMS):** `http://localhost:3000/dashboard`
 - **Quản lý Danh mục & Món (Gạt Còn/Hết & Đổi giá 1 chạm):** `http://localhost:3000/dashboard/catalog`
-- **AI Vision Quét Ảnh Menu Giấy:** `http://localhost:3000/dashboard/ai-scanner`
+- **Quét Ảnh Menu Giấy (Tesseract OCR + 9Router AI):** `http://localhost:3000/dashboard/ai-scanner`
 - **Tạo & Tải mẫu in 2 Mã QR (Standee A6 300DPI):** `http://localhost:3000/dashboard/qr-studio`
 - **Nâng cấp gói cước qua VietQR & Test Webhook:** `http://localhost:3000/dashboard/billing`
 - **3 Cửa Hàng Mẫu (Luồng QR Cửa & QR Bàn):**

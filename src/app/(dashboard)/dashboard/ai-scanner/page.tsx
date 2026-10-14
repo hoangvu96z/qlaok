@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import imageCompression from 'browser-image-compression';
+import Tesseract from 'tesseract.js';
 import {
   ScanLine,
   Upload,
@@ -10,12 +11,12 @@ import {
   Check,
   Loader2,
   Trash2,
-  Clock,
   FileImage,
+  FileText,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import { I18nText } from '@/types/qlaok';
-import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface ExtractedItem {
@@ -37,6 +38,9 @@ export default function DashboardAiScannerPage() {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [compressedInfo, setCompressedInfo] = useState<string>('');
   const [scanning, setScanning] = useState(false);
+  const [scanStepText, setScanStepText] = useState<string>('');
+  const [rawOcrText, setRawOcrText] = useState<string>('');
+  const [aiProviderUsed, setAiProviderUsed] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [extractedCategories, setExtractedCategories] = useState<
     ExtractedCategory[]
@@ -46,25 +50,52 @@ export default function DashboardAiScannerPage() {
 
   if (!activeShop) return null;
 
+  const analyzeTextWithAi = async (
+    textToAnalyze: string,
+    imgBase64?: string | null
+  ) => {
+    setScanStepText(
+      'Bước 2/2: Đang gửi qua 9Router AI để phân loại món, chuẩn hóa giá & dịch 5 ngôn ngữ...'
+    );
+    const res = await fetch('/api/ai/ocr-menu', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: imgBase64 ?? previewImage ?? undefined,
+        mimeType: 'image/webp',
+        rawOcrText: textToAnalyze,
+        vertical: activeShop.vertical,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Không thể bóc tách menu bằng AI');
+    }
+    setExtractedCategories(data.categories || []);
+    setAiProviderUsed(data.provider || '9router-ai');
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setErrorMsg('');
     setSuccessMsg('');
     setScanning(true);
+    setExtractedCategories([]);
 
     try {
-      // Compress image client-side to .webp (max 800px, <150KB)
+      setScanStepText('Đang tối ưu độ nét ảnh để quét OCR Tiếng Việt...');
+      // Keep higher resolution (up to 1600px) so Tesseract reads Vietnamese diacritics accurately
       const compressed = await imageCompression(file, {
-        maxSizeMB: 0.14,
-        maxWidthOrHeight: 800,
+        maxSizeMB: 0.6,
+        maxWidthOrHeight: 1600,
         useWebWorker: true,
         fileType: 'image/webp',
       });
 
       const kb = Math.round(compressed.size / 1024);
       setCompressedInfo(
-        `Đã nén chuẩn WebP: ${kb} KB (Gốc: ${Math.round(file.size / 1024)} KB)`
+        `Đã chuẩn hóa ảnh OCR: ${kb} KB (Gốc: ${Math.round(file.size / 1024)} KB)`
       );
 
       const reader = new FileReader();
@@ -76,26 +107,54 @@ export default function DashboardAiScannerPage() {
 
       setPreviewImage(base64);
 
-      const res = await fetch('/api/ai/ocr-menu', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mimeType: 'image/webp',
-          vertical: activeShop.vertical,
-        }),
+      // Step 1: Extract real Vietnamese + English text from image using Tesseract.js
+      setScanStepText('Bước 1/2: Đang khởi tạo bộ đọc chữ OCR Tiếng Việt...');
+      const ocrResult = await Tesseract.recognize(compressed, 'vie+eng', {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            const pct = Math.round((m.progress || 0) * 100);
+            setScanStepText(
+              `Bước 1/2: Đang quét chữ OCR Tiếng Việt trên ảnh (${pct}%)...`
+            );
+          }
+        },
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Không thể bóc tách menu');
+
+      const recognizedText = (ocrResult.data.text || '').trim();
+      setRawOcrText(recognizedText);
+
+      if (!recognizedText) {
+        throw new Error(
+          'Không nhận diện được chữ nào trên ảnh. Vui lòng chọn ảnh rõ nét hơn hoặc gõ/dán thực đơn vào ô văn bản bên dưới.'
+        );
       }
-      setExtractedCategories(data.categories || []);
+
+      // Step 2: Send extracted text + image to AI (combo2) via /api/ai/ocr-menu
+      await analyzeTextWithAi(recognizedText, base64);
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Lỗi khi quét ảnh menu'
       );
     } finally {
       setScanning(false);
+      setScanStepText('');
+    }
+  };
+
+  const handleReanalyzeRawText = async () => {
+    if (!rawOcrText.trim()) return;
+    setErrorMsg('');
+    setSuccessMsg('');
+    setScanning(true);
+    try {
+      await analyzeTextWithAi(rawOcrText.trim());
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Lỗi khi phân tích văn bản bằng AI'
+      );
+    } finally {
+      setScanning(false);
+      setScanStepText('');
     }
   };
 
@@ -103,22 +162,26 @@ export default function DashboardAiScannerPage() {
     setErrorMsg('');
     setSuccessMsg('');
     setScanning(true);
-    setCompressedInfo('Chế độ Demo: Ảnh chụp thực đơn mẫu chuẩn 800px WebP (92 KB)');
+    const sampleTextByVertical =
+      activeShop.vertical === 'service'
+        ? `BẢNG GIÁ DỊCH VỤ SPA & NAIL\nGội đầu dưỡng sinh thảo dược 70 phút - 199k\nMassage cổ vai gáy đá nóng 60 phút - 250.000đ\nSơn gel Hàn Quốc cao cấp 45 phút - 150k`
+        : activeShop.vertical === 'retail'
+          ? `ĐẶC SẢN QUÀ BIẾU\nXoài sấy dẻo muối ớt (Hộp 300g) - 95k\nTrà sâm dứa hoa nhài Hội An (Gói 500g) - 110.000đ`
+          : `MÓN CHÍNH\nPhở bò tái nạm đặc biệt - 55k\nBánh mì thịt nướng sả ớt Hội An - 35.000đ\nĐỒ UỐNG\nCà phê muối Huế - 29k\nTrà đào cam sả - 35k`;
+
+    setRawOcrText(sampleTextByVertical);
+    setCompressedInfo(
+      'Đang gửi văn bản OCR thực đơn mẫu qua 9Router AI...'
+    );
     try {
-      const res = await fetch('/api/ai/ocr-menu', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          useDemo: true,
-          vertical: activeShop.vertical,
-        }),
-      });
-      const data = await res.json();
-      setExtractedCategories(data.categories || []);
-    } catch {
-      setErrorMsg('Không thể tải dữ liệu quét mẫu.');
+      await analyzeTextWithAi(sampleTextByVertical);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Không thể phân tích dữ liệu mẫu.'
+      );
     } finally {
       setScanning(false);
+      setScanStepText('');
     }
   };
 
@@ -193,13 +256,13 @@ export default function DashboardAiScannerPage() {
       <div>
         <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-extrabold text-emerald-800 mb-2">
           <Sparkles className="h-3.5 w-3.5" />
-          <span>AI Vision Menu Scanner • Gemini 2.5 Flash</span>
+          <span>Tesseract OCR (Việt/Anh) • 9Router AI</span>
         </div>
         <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-          Chụp Ảnh Menu Giấy → Tạo Menu 5 Ngôn Ngữ Trong 10 Giây
+          Chụp Ảnh Menu Giấy → Tạo Menu 5 Ngôn Ngữ Tự Động
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 mt-1">
-          Tải lên ảnh chụp thực đơn ép plastic, bảng giá tiệm Nail/Spa hoặc ảnh chụp màn hình GrabFood. AI tự động bóc tách Danh mục, Tên món, quy đổi giá tiền (<code className="font-mono">35k → 35.000đ</code>) và dịch sang Việt, Anh, Hàn, Nhật, Trung.
+          Tải lên ảnh chụp thực đơn ép plastic, bảng giá tiệm Nail/Spa hoặc ảnh chụp màn hình GrabFood. Hệ thống dùng <strong>Tesseract OCR</strong> đọc chữ Tiếng Việt trên ảnh, sau đó gửi qua <strong>AI</strong> để phân loại Danh mục, quy đổi giá tiền (<code className="font-mono">35k → 35.000đ</code>) và dịch sang Việt, Anh, Hàn, Nhật, Trung.
         </p>
       </div>
 
@@ -214,7 +277,7 @@ export default function DashboardAiScannerPage() {
             Tải lên ảnh chụp Menu / Bảng giá của quán ({activeShop.name})
           </h3>
           <p className="text-xs text-slate-500">
-            Ảnh được tự động nén sang chuẩn <code className="font-mono">.webp</code> (&le; 800px, &lt; 150KB) trước khi phân tích
+            Quét chữ trực tiếp bằng <code className="font-mono">tesseract.js (vie+eng)</code> kết hợp <code className="font-mono">9Router AI</code> chuẩn hóa &amp; dịch 5 thứ tiếng
           </p>
         </div>
 
@@ -237,7 +300,7 @@ export default function DashboardAiScannerPage() {
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-xs font-bold text-slate-800 shadow-2xs hover:bg-slate-50 active:scale-95"
           >
             <Sparkles className="h-4 w-4 text-amber-500" />
-            <span>Dùng Ảnh Menu Mẫu Để Test Nhanh</span>
+            <span>Test Nhanh Với Văn Bản Menu Mẫu (Gọi AI Thật)</span>
           </button>
         </div>
 
@@ -249,11 +312,60 @@ export default function DashboardAiScannerPage() {
         )}
       </div>
 
+      {/* Raw OCR Text Inspection & Manual Edit Box */}
+      {(rawOcrText || previewImage) && (
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-emerald-600" />
+              <h3 className="text-xs sm:text-sm font-black text-slate-900">
+                Văn bản OCR đọc được từ ảnh (Có thể sửa trực tiếp rồi bấm Phân tích lại)
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={handleReanalyzeRawText}
+              disabled={scanning || !rawOcrText.trim()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Phân Tích Lại Bằng AI</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {previewImage && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2 flex items-center justify-center">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={previewImage}
+                  alt="Ảnh menu đã chọn"
+                  className="max-h-48 w-auto rounded-xl object-contain"
+                />
+              </div>
+            )}
+            <div className={previewImage ? 'md:col-span-2' : 'md:col-span-3'}>
+              <textarea
+                rows={5}
+                value={rawOcrText}
+                onChange={(e) => setRawOcrText(e.target.value)}
+                placeholder="Văn bản quét từ ảnh sẽ hiện tại đây, hoặc bạn có thể dán trực tiếp danh sách món + giá vào đây..."
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {scanning && (
         <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center space-y-3">
           <Loader2 className="mx-auto h-9 w-9 animate-spin text-emerald-600" />
           <p className="text-sm font-bold text-slate-900">
-            AI đang đọc ảnh menu, chuẩn hóa giá VNĐ và dịch sang 5 ngôn ngữ...
+            {scanStepText ||
+              'Đang quét OCR và gửi văn bản qua AI để dịch sang 5 ngôn ngữ...'}
+          </p>
+          <p className="text-xs text-slate-500">
+            Quá trình AI suy luận và dịch toàn bộ thực đơn sang 5 thứ tiếng thường mất khoảng 15–35 giây.
           </p>
         </div>
       )}
@@ -275,9 +387,16 @@ export default function DashboardAiScannerPage() {
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl bg-slate-900 p-4 text-white">
             <div>
-              <h2 className="text-sm sm:text-base font-black">
-                📋 Kết quả bóc tách AI ({extractedCategories.reduce((s, c) => s + c.items.length, 0)} món/dịch vụ)
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm sm:text-base font-black">
+                  📋 Kết quả bóc tách AI ({extractedCategories.reduce((s, c) => s + c.items.length, 0)} món/dịch vụ)
+                </h2>
+                {aiProviderUsed && (
+                  <span className="rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                    Engine: {aiProviderUsed}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-300">
                 Kiểm tra lại tên và giá bên dưới trước khi lưu toàn bộ vào cửa hàng
               </p>

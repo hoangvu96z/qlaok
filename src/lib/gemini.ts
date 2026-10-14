@@ -4,6 +4,7 @@ export interface NineRouterConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  visionModel: string;
 }
 
 export function getAiConfig(): NineRouterConfig | null {
@@ -13,12 +14,13 @@ export function getAiConfig(): NineRouterConfig | null {
   const apiKey =
     process.env.AI_API_KEY || 'sk-07c9f002b12e445e-luaxyd-d0592739';
   const model = process.env.AI_MODEL || 'combo1';
+  const visionModel = process.env.AI_VISION_MODEL || 'combo2';
 
   if (!apiKey || apiKey.trim() === '') {
     return null;
   }
 
-  return { baseUrl, apiKey, model };
+  return { baseUrl, apiKey, model, visionModel };
 }
 
 export function isAiConfigured(): boolean {
@@ -35,12 +37,15 @@ export function getGeminiClient() {
  * and parses the returned JSON payload.
  */
 export async function call9RouterJson<T>(
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }>
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }>,
+  modelOverride?: string
 ): Promise<T> {
   const config = getAiConfig();
   if (!config) {
     throw new Error('AI_NOT_CONFIGURED');
   }
+
+  const targetModel = modelOverride || config.model;
 
   const res = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -49,11 +54,11 @@ export async function call9RouterJson<T>(
       Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify({
-      model: config.model,
+      model: targetModel,
       messages,
       temperature: 0.2,
     }),
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(65000),
   });
 
   if (!res.ok) {
@@ -496,3 +501,77 @@ export function getDemoOcrResult(vertical: BusinessVertical) {
     ],
   };
 }
+
+/**
+ * Parses actual OCR text lines extracted by Tesseract when 9Router is offline or times out,
+ * ensuring the user still gets the real items & prices read from their image rather than fake demo data.
+ */
+export function parseRawOcrTextFallback(
+  rawText: string,
+  vertical: BusinessVertical
+) {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/[|_~•·]+/g, ' ').trim())
+    .filter((l) => l.length >= 2);
+
+  const items: Array<{
+    price: number;
+    duration_mins: number | null;
+    name_i18n: I18nText;
+    desc_i18n: I18nText;
+  }> = [];
+
+  for (const line of lines) {
+    // Match lines ending with or containing price patterns like "35k", "35.000", "35,000", "150k", "35"
+    const priceMatch = line.match(
+      /^(.*?)\s*[-–.:]*\s*(\d{1,4}(?:[.,]\d{3})+|\d{1,4}\s*[kK]|\b\d{2,3}\b)\s*(?:đ|vnd|vnđ|d)?$/i
+    );
+
+    if (!priceMatch) continue;
+    const rawName = priceMatch[1].replace(/^\d+[.)\s-]+/, '').trim();
+    const rawPriceStr = priceMatch[2].trim().toLowerCase();
+
+    if (rawName.length < 2 || /^\d+$/.test(rawName)) continue;
+
+    let price = 0;
+    if (rawPriceStr.endsWith('k')) {
+      price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10) * 1000;
+    } else if (/[.,]\d{3}/.test(rawPriceStr)) {
+      price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10);
+    } else {
+      const n = parseInt(rawPriceStr, 10);
+      price = n > 0 && n < 1000 ? n * 1000 : n;
+    }
+
+    if (!price || price < 1000) continue;
+
+    const translated = smartFallbackTranslate({
+      vertical,
+      itemNameVi: rawName,
+    });
+
+    items.push({
+      price,
+      duration_mins: vertical === 'service' ? 60 : null,
+      name_i18n: translated.name_i18n,
+      desc_i18n: translated.desc_i18n,
+    });
+  }
+
+  return {
+    categories: [
+      {
+        name_i18n: {
+          vi: 'Thực Đơn Quét Từ Ảnh (OCR)',
+          en: 'Scanned Menu Items (OCR)',
+          ko: '이미지 스캔 메뉴 (OCR)',
+          ja: 'スキャンされたメニュー (OCR)',
+          zh: '图片扫描菜单 (OCR)',
+        },
+        items,
+      },
+    ],
+  };
+}
+
