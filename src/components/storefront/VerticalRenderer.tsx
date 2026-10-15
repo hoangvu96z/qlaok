@@ -140,6 +140,26 @@ export function VerticalRenderer({
                           </p>
                         )}
 
+                        {item.options_json && item.options_json.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                            {item.options_json.slice(0, 3).map((g) => (
+                              <span
+                                key={g.id}
+                                className="inline-flex items-center gap-0.5 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600"
+                              >
+                                <span>
+                                  {g.choices?.some((c) => c.extra_price > 0)
+                                    ? '🧋'
+                                    : '⚙️'}
+                                </span>
+                                <span className="truncate max-w-[120px]">
+                                  {tField(g.name_i18n, locale)}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="pt-1 flex items-baseline gap-2">
                           <span
                             className="text-sm font-extrabold"
@@ -273,6 +293,19 @@ export function VerticalRenderer({
                           {tField(item.desc_i18n, locale)}
                         </p>
                       )}
+
+                      {item.options_json && item.options_json.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          {item.options_json.map((g) => (
+                            <span
+                              key={g.id}
+                              className="inline-flex items-center gap-0.5 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600"
+                            >
+                              <span>⚙️ {tField(g.name_i18n, locale)}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -334,14 +367,31 @@ export function VerticalRenderer({
                       </div>
 
                       <div className="flex flex-1 flex-col justify-between p-3 space-y-2">
-                        <div>
+                        <div className="space-y-1">
                           <h3 className="line-clamp-2 text-xs font-bold text-slate-900 leading-snug">
                             {tField(item.name_i18n, locale)}
                           </h3>
                           {locale !== 'vi' && item.name_i18n.vi && (
-                            <p className="mt-0.5 truncate text-[10px] text-slate-400">
+                            <p className="truncate text-[10px] text-slate-400">
                               🇻🇳 {item.name_i18n.vi}
                             </p>
+                          )}
+                          {tField(item.desc_i18n, locale) && (
+                            <p className="line-clamp-2 text-[11px] text-slate-500 leading-snug">
+                              {tField(item.desc_i18n, locale)}
+                            </p>
+                          )}
+                          {item.options_json && item.options_json.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              {item.options_json.slice(0, 2).map((g) => (
+                                <span
+                                  key={g.id}
+                                  className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-600 truncate max-w-full"
+                                >
+                                  ⚙️ {tField(g.name_i18n, locale)}
+                                </span>
+                              ))}
+                            </div>
                           )}
                         </div>
 

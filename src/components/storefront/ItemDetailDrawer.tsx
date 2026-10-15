@@ -215,65 +215,111 @@ export function ItemDetailDrawer({
                 )}
               </div>
 
-              {/* Option Groups (e.g. Ice level, Size, Add-ons) */}
+              {/* Option Groups (e.g. Sugar level, Ice level, Size, Toppings) */}
               {item.options_json && item.options_json.length > 0 && (
                 <div className="space-y-4">
-                  {item.options_json.map((group) => (
-                    <div
-                      key={group.id}
-                      className="rounded-2xl border border-slate-200 p-3.5 space-y-2.5"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                          {tField(group.name_i18n, locale)}
-                        </span>
-                        {group.required && (
-                          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                            {labels.requiredBadge}
-                          </span>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-1 gap-2">
-                        {group.choices.map((choice) => {
-                          const isSelected = selectedChoices.some(
-                            (c) => c.id === choice.id
-                          );
-                          return (
-                            <button
-                              key={choice.id}
-                              type="button"
-                              onClick={() =>
-                                toggleChoice(group.id, choice, group.required)
-                              }
-                              className={`flex items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-all ${
-                                isSelected
-                                  ? 'border-emerald-600 bg-emerald-50/70 text-slate-900 font-semibold'
-                                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <div
-                                  className={`flex h-4 w-4 items-center justify-center rounded-full border ${
-                                    isSelected
-                                      ? 'border-emerald-600 bg-emerald-600 text-white'
-                                      : 'border-slate-300'
-                                  }`}
-                                >
-                                  {isSelected && <Check className="h-2.5 w-2.5" />}
+                  {item.options_json.map((group) => {
+                    const groupDesc = group.desc_i18n
+                      ? tField(group.desc_i18n, locale)
+                      : '';
+                    return (
+                      <div
+                        key={group.id}
+                        className="rounded-2xl border border-slate-200 bg-slate-50/40 p-3.5 space-y-2.5"
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-extrabold uppercase tracking-wide text-slate-800">
+                              {tField(group.name_i18n, locale)}
+                            </span>
+                            {group.required ? (
+                              <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                                {labels.requiredBadge}
+                              </span>
+                            ) : (
+                              <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                                {locale === 'vi'
+                                  ? 'Chọn thêm (Nhiều mục)'
+                                  : 'Optional / Add-ons'}
+                              </span>
+                            )}
+                          </div>
+                          {groupDesc && (
+                            <p className="text-[11px] text-slate-500">
+                              {groupDesc}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                          {group.choices.map((choice) => {
+                            const isSelected = selectedChoices.some(
+                              (c) => c.id === choice.id
+                            );
+                            const choiceDesc = choice.desc_i18n
+                              ? tField(choice.desc_i18n, locale)
+                              : '';
+                            return (
+                              <button
+                                key={choice.id}
+                                type="button"
+                                onClick={() =>
+                                  toggleChoice(group.id, choice, group.required)
+                                }
+                                className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-all ${
+                                  isSelected
+                                    ? 'border-emerald-600 bg-emerald-50 text-slate-900 font-semibold shadow-2xs'
+                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                }`}
+                              >
+                                <div className="flex items-start gap-2.5 min-w-0">
+                                  <div
+                                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${
+                                      group.required
+                                        ? 'rounded-full'
+                                        : 'rounded-md'
+                                    } border ${
+                                      isSelected
+                                        ? 'border-emerald-600 bg-emerald-600 text-white'
+                                        : 'border-slate-300 bg-white'
+                                    }`}
+                                  >
+                                    {isSelected && (
+                                      <Check className="h-2.5 w-2.5" />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="block text-xs font-bold text-slate-900">
+                                      {tField(choice.label_i18n, locale)}
+                                    </span>
+                                    {locale !== 'vi' && choice.label_i18n.vi && (
+                                      <span className="block text-[10px] text-slate-400">
+                                        🇻🇳 {choice.label_i18n.vi}
+                                      </span>
+                                    )}
+                                    {choiceDesc && (
+                                      <span className="mt-0.5 block text-[11px] font-normal text-slate-500 leading-snug">
+                                        {choiceDesc}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                                <span>{tField(choice.label_i18n, locale)}</span>
-                              </div>
-                              {choice.extra_price > 0 && (
-                                <span className="text-xs font-semibold text-slate-600">
-                                  +{formatCurrency(choice.extra_price, currency)}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
+                                {choice.extra_price > 0 ? (
+                                  <span className="shrink-0 rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-900">
+                                    +{formatCurrency(choice.extra_price, currency)}
+                                  </span>
+                                ) : (
+                                  <span className="shrink-0 text-[10px] font-semibold text-slate-400">
+                                    +0đ
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

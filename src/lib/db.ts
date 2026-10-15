@@ -325,9 +325,10 @@ export async function dbGetStorefrontBundle(slug: string) {
         ...(seedItem?.desc_i18n || {}),
         ...(i.desc_i18n || {}),
       },
-      options_json: seedItem?.options_json?.length
-        ? seedItem.options_json
-        : i.options_json,
+      options_json:
+        Array.isArray(i.options_json) && i.options_json.length > 0
+          ? i.options_json
+          : seedItem?.options_json || [],
     };
   }) as CatalogItem[];
 

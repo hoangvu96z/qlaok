@@ -16,14 +16,14 @@ import {
   XCircle,
   Banknote,
   ShoppingBag,
-  Sparkles,
-  Minus,
   Printer,
   Settings,
+  Monitor,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
   CatalogItem,
+  Category,
   OrderStatus,
   PaymentMethod,
   ShopOrder,
@@ -31,6 +31,7 @@ import {
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
+import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 
 // Synthesize a pleasant dual-tone POS counter chime using Web Audio API
@@ -70,8 +71,12 @@ function playOrderChime() {
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
   const [orders, setOrders] = useState<ShopOrder[]>([]);
+  const [catalogCategories, setCatalogCategories] = useState<Category[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [workspaceMode, setWorkspaceMode] = useState<
+    'kitchen_orders' | 'pos_terminal'
+  >('kitchen_orders');
   const [filterTab, setFilterTab] = useState<
     'active' | 'new' | 'preparing' | 'completed' | 'cancelled'
   >('active');
@@ -80,16 +85,6 @@ export default function CounterOrdersPage() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
   const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
-
-  // Quick Counter POS Modal state
-  const [isPosModalOpen, setIsPosModalOpen] = useState(false);
-  const [posTableLabel, setPosTableLabel] = useState('Mang về / Tại quầy');
-  const [posPaymentMethod, setPosPaymentMethod] =
-    useState<PaymentMethod>('cash');
-  const [posCart, setPosCart] = useState<
-    Record<string, { item: CatalogItem; quantity: number }>
-  >({});
-  const [posSubmitting, setPosSubmitting] = useState(false);
 
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
@@ -103,7 +98,7 @@ export default function CounterOrdersPage() {
           fetch(`/api/orders?shopId=${encodeURIComponent(activeShop.id)}`, {
             cache: 'no-store',
           }),
-          fetch(`/api/items?shopId=${encodeURIComponent(activeShop.id)}`, {
+          fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {
             cache: 'no-store',
           }),
         ]);
@@ -130,6 +125,7 @@ export default function CounterOrdersPage() {
 
         if (catRes.ok) {
           const catData = await catRes.json();
+          setCatalogCategories(catData.categories || []);
           setCatalogItems(catData.items || []);
         }
       } catch (err) {
@@ -216,57 +212,6 @@ export default function CounterOrdersPage() {
     }
   };
 
-  const handleCreateCounterPosOrder = async () => {
-    if (!activeShop || posSubmitting) return;
-    const entries = Object.values(posCart).filter((e) => e.quantity > 0);
-    if (entries.length === 0) return;
-
-    setPosSubmitting(true);
-    try {
-      const payloadItems = entries.map(({ item, quantity }) => ({
-        item_id: item.id,
-        name_vi: item.name_i18n.vi,
-        name_i18n: item.name_i18n,
-        quantity,
-        unit_price: item.price,
-        extra_price: 0,
-        selected_choices: [],
-        custom_note: '',
-        quick_tags: [],
-      }));
-
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop_id: activeShop.id,
-          table_label: posTableLabel.trim() || 'Tại quầy',
-          visitor_lang: 'vi',
-          payment_method: posPaymentMethod,
-          source: 'counter_pos',
-          items: payloadItems,
-        }),
-      });
-
-      if (res.ok) {
-        const resData = await res.json().catch(() => null);
-        setPosCart({});
-        setIsPosModalOpen(false);
-        await fetchOrdersAndCatalog(true);
-        if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-          const bc = new BroadcastChannel('qlaok_realtime_sync');
-          bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
-          bc.close();
-        }
-        if (autoPrintOnPay && resData?.order) {
-          setPrintingOrder(resData.order);
-        }
-      }
-    } finally {
-      setPosSubmitting(false);
-    }
-  };
-
   if (!activeShop) return null;
 
   const newOrders = orders.filter((o) => o.status === 'new');
@@ -287,34 +232,72 @@ export default function CounterOrdersPage() {
     return o.status === filterTab;
   });
 
-  const posTotalAmount = Object.values(posCart).reduce(
-    (sum, entry) => sum + entry.item.price * entry.quantity,
-    0
-  );
-
   return (
-    <div className="space-y-6">
-      {/* Header Banner */}
-      <div className="rounded-3xl bg-slate-900 text-white p-5 sm:p-6 shadow-md flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 px-3 py-1 text-[11px] font-bold text-emerald-300">
-            <BellRing className="h-3.5 w-3.5 animate-bounce" />
-            <span>Màn hình Quầy Thu Ngân &amp; Bếp (Realtime mPOS)</span>
+    <div className="space-y-4">
+      {/* Header Banner + Mode Switcher (POS Terminal vs Kitchen/Table Orders) */}
+      <div className="rounded-3xl bg-slate-900 text-white p-4 sm:p-5 shadow-md flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 min-w-0">
+          {/* Primary Workspace Mode Tabs */}
+          <div className="inline-flex rounded-2xl bg-slate-800 p-1 border border-slate-700 shrink-0">
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('pos_terminal')}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
+                workspaceMode === 'pos_terminal'
+                  ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <Monitor className="h-4 w-4" />
+              <span>Màn Hình POS Bán Hàng Tại Quầy</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('kitchen_orders')}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
+                workspaceMode === 'kitchen_orders'
+                  ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <BellRing
+                className={`h-4 w-4 ${
+                  newOrders.length > 0 ? 'animate-bounce text-amber-300' : ''
+                }`}
+              />
+              <span>
+                Đơn Bàn &amp; Bếp ({newOrders.length + preparingOrders.length})
+              </span>
+              {newOrders.length > 0 && (
+                <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-black text-white">
+                  {newOrders.length} mới
+                </span>
+              )}
+            </button>
           </div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight">
-            Đơn Hàng Tại Bàn &amp; Quầy • {activeShop.name}
-          </h1>
-          <p className="text-xs text-slate-300">
-            Khách quét QR tại bàn bấm gửi đơn sẽ tự động báo chuông và trừ số
-            lượng tồn kho món ngay lập tức.
-          </p>
+
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-black tracking-tight truncate">
+              {workspaceMode === 'pos_terminal'
+                ? `Máy POS Thu Ngân Tại Quầy • ${activeShop.name}`
+                : `Đơn Hàng Tại Bàn & Quầy • ${activeShop.name}`}
+            </h1>
+            <p className="text-[11px] text-slate-400 truncate">
+              Doanh thu hôm nay:{' '}
+              <strong className="text-emerald-400">
+                {formatCurrency(todayRevenue, activeShop.currency)}
+              </strong>{' '}
+              • Hoàn tất: {completedOrders.length} đơn
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setAutoPrintOnPay((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2.5 text-xs font-bold border transition-colors ${
+            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
               autoPrintOnPay
                 ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
                 : 'border-slate-700 bg-slate-800 text-slate-400'
@@ -332,7 +315,7 @@ export default function CounterOrdersPage() {
               setSoundEnabled(next);
               if (next) playOrderChime();
             }}
-            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2.5 text-xs font-bold border transition-colors ${
+            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
               soundEnabled
                 ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                 : 'border-slate-700 bg-slate-800 text-slate-400'
@@ -351,25 +334,72 @@ export default function CounterOrdersPage() {
             )}
           </button>
 
-          <button
-            type="button"
-            onClick={() => setIsPosModalOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Tạo đơn nhanh tại quầy (POS)</span>
-          </button>
+          {workspaceMode === 'kitchen_orders' && (
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('pos_terminal')}
+              className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Tạo đơn nhanh tại quầy (POS)</span>
+            </button>
+          )}
 
           <button
             type="button"
             onClick={() => fetchOrdersAndCatalog(false)}
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2.5 text-slate-300 hover:text-white"
+            className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white"
             title="Làm mới"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
       </div>
+
+      {/* Live Incoming Table Order Banner when cashier is inside POS Terminal */}
+      {workspaceMode === 'pos_terminal' && newOrders.length > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border-2 border-amber-400 bg-amber-50 px-4 py-2.5 shadow-sm">
+          <div className="flex items-center gap-2.5 text-xs font-black text-amber-950">
+            <BellRing className="h-4 w-4 text-amber-600 animate-bounce" />
+            <span>
+              Có {newOrders.length} đơn khách gọi tại bàn qua QR đang chờ xác
+              nhận báo bếp!
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setFilterTab('new');
+              setWorkspaceMode('kitchen_orders');
+            }}
+            className="rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-black text-white hover:bg-amber-500"
+          >
+            Xem &amp; Nhận đơn ngay →
+          </button>
+        </div>
+      )}
+
+      {/* MODE 1: DEDICATED SPLIT-SCREEN COUNTER POS TERMINAL */}
+      {workspaceMode === 'pos_terminal' ? (
+        <PosCounterWorkspace
+          shop={activeShop}
+          categories={catalogCategories}
+          items={catalogItems}
+          autoPrintOnPay={autoPrintOnPay}
+          onOrderCreated={async (createdOrder, shouldPrint) => {
+            await fetchOrdersAndCatalog(true);
+            if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+              const bc = new BroadcastChannel('qlaok_realtime_sync');
+              bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
+              bc.close();
+            }
+            if (shouldPrint) {
+              setPrintingOrder(createdOrder);
+            }
+          }}
+        />
+      ) : (
+        <>
 
       {/* 4 Live Counter KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
@@ -758,6 +788,8 @@ export default function CounterOrdersPage() {
           })}
         </div>
       )}
+        </>
+      )}
 
       {/* VietQR / Custom QR Table Bill Payment Modal */}
       {qrOrderModal &&
@@ -902,183 +934,6 @@ export default function CounterOrdersPage() {
             </div>
           );
         })()}
-
-      {/* Quick Counter POS Modal */}
-      {isPosModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-5 sm:p-6 shadow-2xl max-h-[90vh] flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h2 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-emerald-600" />
-                  <span>Tạo Đơn Nhanh Tại Quầy (Counter mPOS)</span>
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Dành cho khách gọi trực tiếp tại quầy thu ngân hoặc mua mang
-                  về — tự động trừ tồn kho
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsPosModalOpen(false)}
-                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Bàn / Loại đơn
-                </label>
-                <input
-                  type="text"
-                  value={posTableLabel}
-                  onChange={(e) => setPosTableLabel(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-900"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Hình thức thanh toán
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPosPaymentMethod('cash')}
-                    className={`rounded-xl py-2 text-xs font-bold border ${
-                      posPaymentMethod === 'cash'
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-800'
-                        : 'border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    💵 Tiền mặt
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPosPaymentMethod('vietqr')}
-                    className={`rounded-xl py-2 text-xs font-bold border ${
-                      posPaymentMethod === 'vietqr'
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-800'
-                        : 'border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    💳 Chuyển khoản QR
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Item Picker List */}
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-              {catalogItems.map((item) => {
-                const qty = posCart[item.id]?.quantity || 0;
-                const stock = item.stock_quantity;
-                const isSoldOut =
-                  !item.is_available ||
-                  (typeof stock === 'number' && stock <= 0);
-
-                return (
-                  <div
-                    key={item.id}
-                    className={`flex items-center justify-between gap-3 rounded-2xl border p-3 ${
-                      qty > 0
-                        ? 'border-emerald-500 bg-emerald-50/40'
-                        : 'border-slate-200 bg-white'
-                    } ${isSoldOut ? 'opacity-50' : ''}`}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-xs sm:text-sm font-extrabold text-slate-900 truncate">
-                        {item.name_i18n.vi}
-                      </p>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                        <span className="font-bold text-emerald-600">
-                          {formatCurrency(item.price, activeShop.currency)}
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Tồn kho:{' '}
-                          <strong className="text-slate-700">
-                            {stock === null || stock === undefined
-                              ? '∞'
-                              : stock}
-                          </strong>
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        disabled={qty <= 0}
-                        onClick={() =>
-                          setPosCart((prev) => ({
-                            ...prev,
-                            [item.id]: {
-                              item,
-                              quantity: Math.max(0, qty - 1),
-                            },
-                          }))
-                        }
-                        className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 disabled:opacity-40"
-                      >
-                        <Minus className="h-3.5 w-3.5" />
-                      </button>
-                      <span className="w-6 text-center text-xs font-black text-slate-900">
-                        {qty}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={
-                          isSoldOut ||
-                          (typeof stock === 'number' && qty >= stock)
-                        }
-                        onClick={() =>
-                          setPosCart((prev) => ({
-                            ...prev,
-                            [item.id]: {
-                              item,
-                              quantity: qty + 1,
-                            },
-                          }))
-                        }
-                        className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-600 text-white disabled:opacity-40"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="border-t border-slate-100 pt-3 flex items-center justify-between gap-3">
-              <div>
-                <span className="block text-[11px] text-slate-500">
-                  Tổng cộng tạm tính
-                </span>
-                <span className="text-lg font-black text-emerald-600">
-                  {formatCurrency(posTotalAmount, activeShop.currency)}
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={posTotalAmount <= 0 || posSubmitting}
-                onClick={handleCreateCounterPosOrder}
-                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-xs sm:text-sm font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
-              >
-                <Printer className="h-4 w-4" />
-                <span>
-                  {posSubmitting
-                    ? 'Đang tạo đơn...'
-                    : 'Tạo Đơn & In Hóa Đơn'}
-                </span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Thermal Receipt Print Modal */}
       {printingOrder && (

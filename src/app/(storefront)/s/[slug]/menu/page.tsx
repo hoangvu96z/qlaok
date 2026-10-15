@@ -190,8 +190,10 @@ export default function StorefrontMenuPage() {
     e.stopPropagation();
     const effItem =
       effectiveItems.find((ei) => ei.id === item.id) || item;
-    const hasRequired = effItem.options_json?.some((g) => g.required);
-    if (hasRequired) {
+    const hasOptions = Boolean(
+      effItem.options_json && effItem.options_json.length > 0
+    );
+    if (hasOptions) {
       handleOpenItem(effItem);
       return;
     }

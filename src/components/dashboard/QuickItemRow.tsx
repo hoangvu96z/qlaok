@@ -207,6 +207,50 @@ export function QuickItemRow({
               </p>
             )}
 
+            {item.desc_i18n?.vi && (
+              <p className="line-clamp-2 text-xs text-slate-600 bg-slate-50 rounded-lg px-2 py-1 border border-slate-100">
+                📝 {item.desc_i18n.vi}
+              </p>
+            )}
+
+            {/* Option Groups & Toppings Summary Badges */}
+            {item.options_json && item.options_json.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {item.options_json.map((group) => {
+                  const hasPaidChoice = group.choices?.some(
+                    (c) => (c.extra_price || 0) > 0
+                  );
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      onClick={() => onEditTranslations(item)}
+                      title={group.choices
+                        ?.map(
+                          (c) =>
+                            `${c.label_i18n.vi}${
+                              c.extra_price > 0
+                                ? ` (+${c.extra_price.toLocaleString('vi-VN')}đ)`
+                                : ''
+                            }`
+                        )
+                        .join(', ')}
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px] font-bold transition hover:opacity-80 ${
+                        hasPaidChoice
+                          ? 'border-amber-200 bg-amber-50 text-amber-900'
+                          : 'border-indigo-200 bg-indigo-50 text-indigo-800'
+                      }`}
+                    >
+                      <span>{hasPaidChoice ? '🧋' : '⚙️'}</span>
+                      <span>
+                        {group.name_i18n.vi} ({group.choices?.length || 0})
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Translation status flags & duration */}
             <div className="flex items-center gap-2.5 flex-wrap pt-0.5">
               <div className="flex items-center gap-1.5">
@@ -389,7 +433,7 @@ export function QuickItemRow({
             className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
           >
             <Languages className="h-3.5 w-3.5" />
-            <span>Sửa &amp; Dịch 8 ngôn ngữ</span>
+            <span>⚙️ Option / Topping &amp; Dịch</span>
           </button>
 
           <button

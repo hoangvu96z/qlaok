@@ -38,12 +38,14 @@ export type OpeningHours = Record<
 export interface ItemOptionChoice {
   id: string;
   label_i18n: I18nText;
+  desc_i18n?: I18nText;
   extra_price: number;
 }
 
 export interface ItemOptionGroup {
   id: string;
   name_i18n: I18nText; // VD: {"vi": "Mức đá", "en": "Ice Level", "ko": "얼음 양"}
+  desc_i18n?: I18nText;
   required: boolean;
   choices: ItemOptionChoice[];
 }
