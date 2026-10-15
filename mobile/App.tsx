@@ -891,82 +891,169 @@ export default function App() {
 
         {/* Phone Body */}
         <View style={{ padding: 10, gap: 8 }}>
-          {/* Promo Banner Preview */}
-          {promoBanner.enabled && (
-            <View
-              style={[
-                styles.previewBannerBox,
-                {
-                  backgroundColor:
-                    BANNER_GRADIENT_SWATCHES.find(
-                      (s) => s.id === promoBanner.bgGradient
-                    )?.hex || '#f97316',
-                },
-              ]}
-            >
-              <Text
-                style={{
-                  fontSize: 9,
-                  fontWeight: '900',
-                  color: '#fef08a',
-                }}
-              >
-                {promoBanner.badgeText || '🔥 ƯU ĐÃI'}
-                {promoBanner.voucherCode
-                  ? ` • MÃ: ${promoBanner.voucherCode}`
-                  : ''}
-              </Text>
-              <Text
-                style={{
-                  fontSize: 12,
-                  fontWeight: '900',
-                  color: '#ffffff',
-                  marginTop: 2,
-                }}
-              >
-                {promoBanner.title}
-              </Text>
-              {promoBanner.subtitle ? (
-                <Text
-                  style={{ fontSize: 10, color: '#ffedd5', marginTop: 1 }}
-                >
-                  {promoBanner.subtitle}
-                </Text>
-              ) : null}
-            </View>
-          )}
+          {(() => {
+            const MOBILE_PROMO_I18N: Record<
+              string,
+              {
+                promoBadge: string;
+                promoTitle: (val: string) => string;
+                promoSub: string;
+                flashTitle: string;
+                timePrefix: string;
+              }
+            > = {
+              vi: {
+                promoBadge: promoBanner.badgeText || '🔥 ƯU ĐÃI HÔM NAY',
+                promoTitle: () => promoBanner.title,
+                promoSub: promoBanner.subtitle,
+                flashTitle: flashSale.title || 'Giờ Vàng Giá Sốc',
+                timePrefix: 'Khung giờ',
+              },
+              en: {
+                promoBadge: '🔥 TODAY’S SPECIAL',
+                promoTitle: (v) => `Get ${v} OFF on your order`,
+                promoSub: 'Discount automatically applied at table checkout',
+                flashTitle: 'Golden Hour Flash Sale',
+                timePrefix: 'Time',
+              },
+              ko: {
+                promoBadge: '🔥 오늘의 프로모션',
+                promoTitle: (v) => `주문 시 ${v} 즉시 할인`,
+                promoSub: '테이블 주문 시 할인이 자동 적용됩니다',
+                flashTitle: '타임세일 한정 특가',
+                timePrefix: '시간',
+              },
+              ja: {
+                promoBadge: '🔥 本日のキャンペーン',
+                promoTitle: (v) => `ご注文で ${v} 割引`,
+                promoSub: 'ご注文時に割引が自動適用されます',
+                flashTitle: '時間限定タイムセール',
+                timePrefix: '時間',
+              },
+              zh: {
+                promoBadge: '🔥 今日特惠活动',
+                promoTitle: (v) => `扫码点餐立减 ${v}`,
+                promoSub: '点餐结算时系统自动减免',
+                flashTitle: '黄金时段限时秒杀',
+                timePrefix: '时段',
+              },
+              es: {
+                promoBadge: '🔥 OFERTA DE HOY',
+                promoTitle: (v) => `${v} de descuento en tu pedido`,
+                promoSub: 'Descuento aplicado automáticamente en mesa',
+                flashTitle: 'Oferta Flash Hora Dorada',
+                timePrefix: 'Horario',
+              },
+              it: {
+                promoBadge: '🔥 PROMO DI OGGI',
+                promoTitle: (v) => `Sconto di ${v} sul tuo ordine`,
+                promoSub: 'Lo sconto viene applicato automaticamente al tavolo',
+                flashTitle: 'Offerta Lampo Ora d’Oro',
+                timePrefix: 'Orario',
+              },
+              ru: {
+                promoBadge: '🔥 АКЦИЯ ДНЯ',
+                promoTitle: (v) => `Скидка ${v} на ваш заказ`,
+                promoSub: 'Скидка применяется автоматически при заказе',
+                flashTitle: 'Flash-акция Счастливые часы',
+                timePrefix: 'Время',
+              },
+            };
 
-          {/* Flash Sale Preview */}
-          {flashSale.enabled && (
-            <View style={styles.previewFlashBox}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                }}
-              >
-                <Text
-                  style={{ fontSize: 11, fontWeight: '900', color: '#ffffff' }}
-                >
-                  ⚡ {flashSale.title} (
-                  {flashSale.discountType === 'percent'
-                    ? `-${flashSale.discountValue}%`
-                    : `-${formatVnd(flashSale.discountValue)}`}
-                  )
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 10,
-                    fontWeight: '900',
-                    color: '#fde047',
-                  }}
-                >
-                  ⏱ {flashSale.startTime} - {flashSale.endTime}
-                </Text>
-              </View>
-            </View>
-          )}
+            const locText =
+              MOBILE_PROMO_I18N[previewLang] || MOBILE_PROMO_I18N.vi;
+            const discValStr =
+              promoBanner.discountType === 'percent'
+                ? `${promoBanner.discountValue || 15}%`
+                : formatVnd(promoBanner.discountValue || 20000);
+
+            return (
+              <>
+                {/* Promo Banner Preview */}
+                {promoBanner.enabled && (
+                  <View
+                    style={[
+                      styles.previewBannerBox,
+                      {
+                        backgroundColor:
+                          BANNER_GRADIENT_SWATCHES.find(
+                            (s) => s.id === promoBanner.bgGradient
+                          )?.hex || '#f97316',
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 9,
+                        fontWeight: '900',
+                        color: '#fef08a',
+                      }}
+                    >
+                      {locText.promoBadge}
+                      {promoBanner.voucherCode
+                        ? ` • ${promoBanner.voucherCode}`
+                        : ''}
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: '900',
+                        color: '#ffffff',
+                        marginTop: 2,
+                      }}
+                    >
+                      {locText.promoTitle(discValStr)}
+                    </Text>
+                    {locText.promoSub ? (
+                      <Text
+                        style={{ fontSize: 10, color: '#ffedd5', marginTop: 1 }}
+                      >
+                        {locText.promoSub}
+                      </Text>
+                    ) : null}
+                  </View>
+                )}
+
+                {/* Flash Sale Preview */}
+                {flashSale.enabled && (
+                  <View style={styles.previewFlashBox}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          fontWeight: '900',
+                          color: '#ffffff',
+                          flex: 1,
+                        }}
+                      >
+                        ⚡ {locText.flashTitle} (
+                        {flashSale.discountType === 'percent'
+                          ? `-${flashSale.discountValue}%`
+                          : `-${formatVnd(flashSale.discountValue)}`}
+                        )
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 10,
+                          fontWeight: '900',
+                          color: '#fde047',
+                        }}
+                      >
+                        ⏱ {locText.timePrefix}: {flashSale.startTime} -{' '}
+                        {flashSale.endTime}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </>
+            );
+          })()}
 
           {/* Sample Menu Items inside Phone Viewer */}
           <View

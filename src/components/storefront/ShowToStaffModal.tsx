@@ -33,7 +33,10 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
-import { calculateOrderPromoDiscount } from '@/components/storefront/StorefrontCustomDecor';
+import {
+  calculateOrderPromoDiscount,
+  PROMO_LOCALE_TEXT,
+} from '@/components/storefront/StorefrontCustomDecor';
 
 interface ShowToStaffModalProps {
   isOpen: boolean;
@@ -247,7 +250,8 @@ export function ShowToStaffModal({
         lineTotal: (entry.item.price + extraTotal) * entry.quantity,
       };
     }),
-    shop
+    shop,
+    locale
   );
 
   const grandTotal = Math.max(0, subtotal - promoCalc.discountAmount);
@@ -737,7 +741,10 @@ export function ShowToStaffModal({
                 {promoCalc.discountAmount > 0 && (
                   <div className="flex items-center justify-between rounded-xl bg-emerald-950/70 border border-emerald-700/60 px-3 py-2 text-xs">
                     <span className="font-bold text-emerald-300">
-                      🎁 {promoCalc.promoTitle || 'Ưu đãi khuyến mãi'}
+                      🎁{' '}
+                      {promoCalc.promoTitle ||
+                        (PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi)
+                          .promoBadge}
                       {promoCalc.voucherCode ? ` (${promoCalc.voucherCode})` : ''}
                     </span>
                     <span className="font-black text-emerald-400">
@@ -748,11 +755,12 @@ export function ShowToStaffModal({
 
                 {promoCalc.minOrderNeeded > 0 && (
                   <div className="rounded-xl bg-amber-950/60 border border-amber-700/50 px-3 py-1.5 text-[11px] font-semibold text-amber-300">
-                    💡 Chọn thêm{' '}
-                    <strong>
-                      {formatCurrency(promoCalc.minOrderNeeded, shop.currency)}
-                    </strong>{' '}
-                    để được áp dụng: {promoCalc.promoTitle}
+                    {(
+                      PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
+                    ).unlockHint(
+                      formatCurrency(promoCalc.minOrderNeeded, shop.currency),
+                      promoCalc.promoTitle || ''
+                    )}
                   </div>
                 )}
 

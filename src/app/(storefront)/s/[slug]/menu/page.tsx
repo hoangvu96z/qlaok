@@ -34,6 +34,7 @@ import {
   calculateOrderPromoDiscount,
   getItemEffectivePrice,
   getStorefrontBackgroundProps,
+  PROMO_LOCALE_TEXT,
   StorefrontFlashSaleSection,
   StorefrontPromoBanner,
   StorefrontWelcomePopup,
@@ -298,7 +299,8 @@ export default function StorefrontMenuPage() {
         lineTotal: (entry.item.price + extra) * entry.quantity,
       };
     }),
-    shop
+    shop,
+    locale
   );
   const totalCartAmount = Math.max(
     0,
@@ -467,6 +469,7 @@ export default function StorefrontMenuPage() {
         <div className="relative z-10 mx-3.5 mt-3">
           <StorefrontPromoBanner
             shop={shop}
+            locale={locale}
             onOpenPopup={
               hasActivePopup ? () => setIsPromoPopupOpen(true) : undefined
             }
@@ -525,7 +528,9 @@ export default function StorefrontMenuPage() {
                   </span>
                   <span className="block text-[10px] font-medium text-white/85">
                     {promoCalc.discountAmount > 0
-                      ? `🎁 Đã giảm ${formatCurrency(promoCalc.discountAmount, shop.currency)}`
+                      ? (PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi).savedDiscount(
+                          formatCurrency(promoCalc.discountAmount, shop.currency)
+                        )
                       : labels.bottomBarHint}
                   </span>
                 </div>
@@ -560,6 +565,7 @@ export default function StorefrontMenuPage() {
       {/* Welcome / Promo Popup Modal */}
       <StorefrontWelcomePopup
         shop={shop}
+        locale={locale}
         isOpen={isPromoPopupOpen}
         onClose={handleClosePopup}
       />

@@ -196,12 +196,323 @@ export function getItemEffectivePrice(
   };
 }
 
+export interface PromoLocaleText {
+  flashBadge: string;
+  flashTitle: string;
+  flashTimeSlot: (start: string, end: string) => string;
+  promoBadge: string;
+  discountOff: (val: string) => string;
+  minOrder: (amt: string) => string;
+  selectedItemsScope: (count: number) => string;
+  buildPromoTitle: (
+    valText: string,
+    minAmtText: string | null,
+    selectedCount: number | null
+  ) => string;
+  promoSubtitle: string;
+  copiedCode: string;
+  copyCode: string;
+  claimOffer: string;
+  popupBadge: string;
+  voucherLabel: string;
+  copiedFull: string;
+  copyFull: string;
+  popupCta: string;
+  savedDiscount: (amt: string) => string;
+  unlockHint: (amt: string, title: string) => string;
+}
+
+export const PROMO_LOCALE_TEXT: Record<SupportedLocale, PromoLocaleText> = {
+  vi: {
+    flashBadge: 'FLASH SALE GIỜ VÀNG',
+    flashTitle: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
+    flashTimeSlot: (s, e) => `Khung giờ: ${s} – ${e}`,
+    promoBadge: 'KHUYẾN MÃI HÔM NAY',
+    discountOff: (val) => `Giảm ${val}`,
+    minOrder: (amt) => `Đơn từ ${amt}`,
+    selectedItemsScope: (c) => `Áp dụng ${c} món chọn lọc`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? ` cho đơn từ ${minAmt}` : '';
+      const scopePart = count
+        ? ` (${count} món chọn lọc)`
+        : ' toàn bộ thực đơn';
+      return `Giảm ngay ${val}${minPart}${scopePart}`;
+    },
+    promoSubtitle: 'Ưu đãi tự động áp dụng khi đặt món tại bàn',
+    copiedCode: '✓ Đã lưu',
+    copyCode: '• Copy',
+    claimOffer: 'Nhận ưu đãi',
+    popupBadge: '🎁 ƯU ĐÃI ĐẶC BIỆT',
+    voucherLabel: 'Mã Voucher Ưu Đãi',
+    copiedFull: 'Đã lưu mã',
+    copyFull: 'Copy mã',
+    popupCta: 'Nhận ưu đãi & Xem Menu ngay',
+    savedDiscount: (amt) => `🎁 Đã giảm ${amt}`,
+    unlockHint: (amt, title) =>
+      `💡 Chọn thêm ${amt} để được áp dụng: ${title}`,
+  },
+  en: {
+    flashBadge: 'GOLDEN HOUR FLASH SALE',
+    flashTitle: 'Flash Sale - Limited Time Offer',
+    flashTimeSlot: (s, e) => `Time slot: ${s} – ${e}`,
+    promoBadge: 'TODAY’S SPECIAL',
+    discountOff: (val) => `${val} OFF`,
+    minOrder: (amt) => `Min. order ${amt}`,
+    selectedItemsScope: (c) => `Applies to ${c} selected items`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? ` on orders from ${minAmt}` : '';
+      const scopePart = count
+        ? ` (${count} selected items)`
+        : ' across the menu';
+      return `Get ${val} OFF${minPart}${scopePart}`;
+    },
+    promoSubtitle: 'Discount is automatically applied when ordering at table',
+    copiedCode: '✓ Copied',
+    copyCode: '• Copy',
+    claimOffer: 'View Offer',
+    popupBadge: '🎁 SPECIAL OFFER',
+    voucherLabel: 'Promo Voucher Code',
+    copiedFull: 'Copied',
+    copyFull: 'Copy Code',
+    popupCta: 'Claim Offer & View Menu',
+    savedDiscount: (amt) => `🎁 Saved ${amt}`,
+    unlockHint: (amt, title) => `💡 Add ${amt} more to unlock: ${title}`,
+  },
+  ko: {
+    flashBadge: '타임세일 특가',
+    flashTitle: '한정 수량 타임세일 특가',
+    flashTimeSlot: (s, e) => `진행 시간: ${s} – ${e}`,
+    promoBadge: '오늘의 프로모션',
+    discountOff: (val) => `${val} 할인`,
+    minOrder: (amt) => `최소 주문 ${amt}`,
+    selectedItemsScope: (c) => `선택 메뉴 ${c}개 적용`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? `${minAmt} 이상 주문 시 ` : '';
+      const scopePart = count ? `(선택 메뉴 ${count}개) ` : '전 메뉴 ';
+      return `${minPart}${scopePart}${val} 즉시 할인`;
+    },
+    promoSubtitle: '테이블 주문 시 할인이 자동으로 적용됩니다',
+    copiedCode: '✓ 복사됨',
+    copyCode: '• 복사',
+    claimOffer: '혜택 보기',
+    popupBadge: '🎁 특별 할인 혜택',
+    voucherLabel: '할인 쿠폰 코드',
+    copiedFull: '복사 완료',
+    copyFull: '코드 복사',
+    popupCta: '혜택 받고 메뉴 보기',
+    savedDiscount: (amt) => `🎁 ${amt} 할인 적용됨`,
+    unlockHint: (amt, title) => `💡 ${amt} 더 담으면 적용: ${title}`,
+  },
+  ja: {
+    flashBadge: 'タイムセール特価',
+    flashTitle: '時間限定タイムセール - 数量限定',
+    flashTimeSlot: (s, e) => `開催時間: ${s} – ${e}`,
+    promoBadge: '本日のキャンペーン',
+    discountOff: (val) => `${val} OFF`,
+    minOrder: (amt) => `${amt}以上のご注文`,
+    selectedItemsScope: (c) => `対象メニュー ${c}品`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? `${minAmt}以上のご注文で` : '';
+      const scopePart = count ? `（対象${count}品）` : '全メニュー';
+      return `${minPart}${scopePart} ${val} 割引`;
+    },
+    promoSubtitle: 'ご注文時に割引が自動的に適用されます',
+    copiedCode: '✓ コピー済',
+    copyCode: '• コピー',
+    claimOffer: '特典を見る',
+    popupBadge: '🎁 特別キャンペーン',
+    voucherLabel: 'クーポンコード',
+    copiedFull: 'コピー完了',
+    copyFull: 'コードをコピー',
+    popupCta: '特典を受け取ってメニューを見る',
+    savedDiscount: (amt) => `🎁 ${amt} 割引適用済`,
+    unlockHint: (amt, title) => `💡 あと${amt}追加で適用: ${title}`,
+  },
+  zh: {
+    flashBadge: '限时秒杀特惠',
+    flashTitle: '黄金时段限时特惠 - 数量有限',
+    flashTimeSlot: (s, e) => `活动时段: ${s} – ${e}`,
+    promoBadge: '今日特惠活动',
+    discountOff: (val) => `立减 ${val}`,
+    minOrder: (amt) => `满 ${amt} 可用`,
+    selectedItemsScope: (c) => `指定 ${c} 款菜品适用`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? `满 ${minAmt} ` : '全场点餐 ';
+      const scopePart = count ? `（指定 ${count} 款菜品）` : '';
+      return `${minPart}立减 ${val}${scopePart}`;
+    },
+    promoSubtitle: '扫码点餐结算时系统自动减免',
+    copiedCode: '✓ 已复制',
+    copyCode: '• 复制',
+    claimOffer: '查看优惠',
+    popupBadge: '🎁 专属特惠礼遇',
+    voucherLabel: '优惠券代码',
+    copiedFull: '已复制代码',
+    copyFull: '复制代码',
+    popupCta: '领取优惠并查看菜单',
+    savedDiscount: (amt) => `🎁 已减 ${amt}`,
+    unlockHint: (amt, title) => `💡 再加购 ${amt} 即可享受: ${title}`,
+  },
+  es: {
+    flashBadge: 'OFERTA FLASH',
+    flashTitle: 'Hora Dorada - Oferta por Tiempo Limitado',
+    flashTimeSlot: (s, e) => `Horario: ${s} – ${e}`,
+    promoBadge: 'OFERTA DE HOY',
+    discountOff: (val) => `-${val} DTO.`,
+    minOrder: (amt) => `Pedido mín. ${amt}`,
+    selectedItemsScope: (c) => `Válido en ${c} platos seleccionados`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? ` en pedidos desde ${minAmt}` : '';
+      const scopePart = count
+        ? ` (${cLabel(count, 'es')})`
+        : ' en todo el menú';
+      return `${val} de descuento${minPart}${scopePart}`;
+    },
+    promoSubtitle: 'El descuento se aplica automáticamente al pedir en mesa',
+    copiedCode: '✓ Copiado',
+    copyCode: '• Copiar',
+    claimOffer: 'Ver oferta',
+    popupBadge: '🎁 OFERTA ESPECIAL',
+    voucherLabel: 'Código de Cupón',
+    copiedFull: 'Código copiado',
+    copyFull: 'Copiar código',
+    popupCta: 'Recibir oferta y ver menú',
+    savedDiscount: (amt) => `🎁 Ahorras ${amt}`,
+    unlockHint: (amt, title) => `💡 Añade ${amt} más para activar: ${title}`,
+  },
+  it: {
+    flashBadge: 'OFFERTA LAMPO',
+    flashTitle: 'Ora d’Oro - Offerta a Tempo Limitato',
+    flashTimeSlot: (s, e) => `Orario: ${s} – ${e}`,
+    promoBadge: 'PROMO DI OGGI',
+    discountOff: (val) => `Sconto ${val}`,
+    minOrder: (amt) => `Ordine min. ${amt}`,
+    selectedItemsScope: (c) => `Valido su ${c} piatti selezionati`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? ` per ordini da ${minAmt}` : '';
+      const scopePart = count ? ` (${cLabel(count, 'it')})` : ' su tutto il menu';
+      return `Sconto di ${val}${minPart}${scopePart}`;
+    },
+    promoSubtitle: 'Lo sconto viene applicato automaticamente al tavolo',
+    copiedCode: '✓ Copiato',
+    copyCode: '• Copia',
+    claimOffer: 'Vedi offerta',
+    popupBadge: '🎁 OFFERTA SPECIALE',
+    voucherLabel: 'Codice Voucher',
+    copiedFull: 'Codice copiato',
+    copyFull: 'Copia codice',
+    popupCta: 'Ottieni offerta e vedi menu',
+    savedDiscount: (amt) => `🎁 Risparmi ${amt}`,
+    unlockHint: (amt, title) => `💡 Aggiungi ${amt} per sbloccare: ${title}`,
+  },
+  ru: {
+    flashBadge: 'FLASH-АКЦИЯ',
+    flashTitle: 'Счастливые часы — количество ограничено',
+    flashTimeSlot: (s, e) => `Время акции: ${s} – ${e}`,
+    promoBadge: 'АКЦИЯ ДНЯ',
+    discountOff: (val) => `Скидка ${val}`,
+    minOrder: (amt) => `От ${amt}`,
+    selectedItemsScope: (c) => `На ${c} выбр. блюд`,
+    buildPromoTitle: (val, minAmt, count) => {
+      const minPart = minAmt ? ` при заказе от ${minAmt}` : '';
+      const scopePart = count ? ` (${count} блюд)` : ' на всё меню';
+      return `Скидка ${val}${minPart}${scopePart}`;
+    },
+    promoSubtitle: 'Скидка применяется автоматически при заказе за столом',
+    copiedCode: '✓ Скопировано',
+    copyCode: '• Копировать',
+    claimOffer: 'Подробнее',
+    popupBadge: '🎁 СПЕЦПРЕДЛОЖЕНИЕ',
+    voucherLabel: 'Промокод на скидку',
+    copiedFull: 'Скопировано',
+    copyFull: 'Копировать код',
+    popupCta: 'Получить скидку и открыть меню',
+    savedDiscount: (amt) => `🎁 Скидка ${amt}`,
+    unlockHint: (amt, title) => `💡 Добавьте ещё на ${amt} для акции: ${title}`,
+  },
+};
+
+function cLabel(count: number, lang: 'es' | 'it') {
+  return lang === 'es'
+    ? `${count} platos seleccionados`
+    : `${count} piatti selezionati`;
+}
+
+export function getLocalizedPromoBannerStrings(
+  banner: ShopPromoBannerConfig,
+  currency = 'VND',
+  locale: SupportedLocale = 'vi'
+): {
+  badgeText: string;
+  title: string;
+  subtitle: string;
+  ctaText: string;
+  discountChip: string | null;
+  minOrderChip: string | null;
+  scopeChip: string | null;
+} {
+  const pt = PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi;
+  const hasDiscountRule = Boolean(
+    banner.discountValue && banner.discountValue > 0
+  );
+  const valStr = hasDiscountRule
+    ? banner.discountType === 'percent'
+      ? `${banner.discountValue}%`
+      : formatCurrency(banner.discountValue || 0, currency)
+    : '';
+
+  const minAmtStr =
+    banner.minOrderAmount && banner.minOrderAmount > 0
+      ? formatCurrency(banner.minOrderAmount, currency)
+      : null;
+
+  const selectedCount =
+    banner.applyScope === 'selected_items' &&
+    Array.isArray(banner.selectedItemIds) &&
+    banner.selectedItemIds.length > 0
+      ? banner.selectedItemIds.length
+      : null;
+
+  const discountChip = hasDiscountRule ? pt.discountOff(valStr) : null;
+  const minOrderChip = minAmtStr ? pt.minOrder(minAmtStr) : null;
+  const scopeChip = selectedCount ? pt.selectedItemsScope(selectedCount) : null;
+
+  if (locale === 'vi') {
+    return {
+      badgeText: banner.badgeText || pt.promoBadge,
+      title:
+        banner.title ||
+        (hasDiscountRule
+          ? pt.buildPromoTitle(valStr, minAmtStr, selectedCount)
+          : ''),
+      subtitle: banner.subtitle || pt.promoSubtitle,
+      ctaText: banner.ctaText || pt.claimOffer,
+      discountChip,
+      minOrderChip,
+      scopeChip,
+    };
+  }
+
+  return {
+    badgeText: pt.promoBadge,
+    title: hasDiscountRule
+      ? pt.buildPromoTitle(valStr, minAmtStr, selectedCount)
+      : banner.title,
+    subtitle: pt.promoSubtitle,
+    ctaText: pt.claimOffer,
+    discountChip,
+    minOrderChip,
+    scopeChip,
+  };
+}
+
 /**
  * Calculates order-level discount from ShopPromoBannerConfig
  */
 export function calculateOrderPromoDiscount(
   cartItems: Array<{ item: CatalogItem; quantity: number; lineTotal: number }>,
-  shop?: Shop | null
+  shop?: Shop | null,
+  locale: SupportedLocale = 'vi'
 ): {
   discountAmount: number;
   promoTitle: string | null;
@@ -223,6 +534,12 @@ export function calculateOrderPromoDiscount(
     };
   }
 
+  const localizedPromo = getLocalizedPromoBannerStrings(
+    promo,
+    shop?.currency || 'VND',
+    locale
+  );
+
   // If already applied per item (minOrderAmount === 0 && applyScope === 'selected_items'), don't double-deduct
   if (
     (!promo.minOrderAmount || promo.minOrderAmount <= 0) &&
@@ -230,7 +547,7 @@ export function calculateOrderPromoDiscount(
   ) {
     return {
       discountAmount: 0,
-      promoTitle: promo.title,
+      promoTitle: localizedPromo.title,
       voucherCode: promo.voucherCode || null,
       minOrderNeeded: 0,
     };
@@ -251,7 +568,7 @@ export function calculateOrderPromoDiscount(
   if (eligibleSubtotal < minReq || eligibleSubtotal <= 0) {
     return {
       discountAmount: 0,
-      promoTitle: promo.title,
+      promoTitle: localizedPromo.title,
       voucherCode: promo.voucherCode || null,
       minOrderNeeded: Math.max(0, minReq - eligibleSubtotal),
     };
@@ -266,7 +583,7 @@ export function calculateOrderPromoDiscount(
 
   return {
     discountAmount: Math.min(eligibleSubtotal, Math.max(0, rawDiscount)),
-    promoTitle: promo.title,
+    promoTitle: localizedPromo.title,
     voucherCode: promo.voucherCode || null,
     minOrderNeeded: 0,
   };
@@ -274,9 +591,11 @@ export function calculateOrderPromoDiscount(
 
 export function StorefrontPromoBanner({
   shop,
+  locale = 'vi',
   onOpenPopup,
 }: {
   shop: Shop;
+  locale?: SupportedLocale;
   onOpenPopup?: () => void;
 }) {
   const banner = shop.theme_config?.promoBanner;
@@ -284,29 +603,16 @@ export function StorefrontPromoBanner({
 
   if (!banner || !banner.enabled || !banner.title?.trim()) return null;
 
+  const pt = PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi;
+  const localized = getLocalizedPromoBannerStrings(
+    banner,
+    shop.currency,
+    locale
+  );
+
   const gradClass =
     BANNER_GRADIENT_MAP[banner.bgGradient || 'amber_rose'] ||
     BANNER_GRADIENT_MAP.amber_rose;
-
-  const hasDiscountRule =
-    banner.discountValue && banner.discountValue > 0;
-  const discountChip = hasDiscountRule
-    ? banner.discountType === 'percent'
-      ? `Giảm ${banner.discountValue}%`
-      : `Giảm ${formatCurrency(banner.discountValue || 0, shop.currency)}`
-    : null;
-
-  const minOrderChip =
-    banner.minOrderAmount && banner.minOrderAmount > 0
-      ? `Đơn từ ${formatCurrency(banner.minOrderAmount, shop.currency)}`
-      : null;
-
-  const scopeChip =
-    banner.applyScope === 'selected_items' &&
-    banner.selectedItemIds &&
-    banner.selectedItemIds.length > 0
-      ? `Áp dụng ${banner.selectedItemIds.length} món chọn lọc`
-      : null;
 
   const handleCopyCode = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -326,36 +632,36 @@ export function StorefrontPromoBanner({
         <div className="flex items-center justify-between gap-3">
           <div className="space-y-1.5 min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
-              {banner.badgeText && (
+              {localized.badgeText && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-black/25 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-white backdrop-blur-xs">
                   <Flame className="h-3 w-3 text-amber-300" />
-                  {banner.badgeText}
+                  {localized.badgeText.replace(/^🔥\s*/, '')}
                 </span>
               )}
-              {discountChip && (
+              {localized.discountChip && (
                 <span className="rounded-full bg-white px-2.5 py-0.5 text-[10px] font-black text-rose-600 shadow-2xs">
-                  {discountChip}
+                  {localized.discountChip}
                 </span>
               )}
-              {minOrderChip && (
+              {localized.minOrderChip && (
                 <span className="rounded-full bg-black/20 px-2 py-0.5 text-[10px] font-bold text-white">
-                  {minOrderChip}
+                  {localized.minOrderChip}
                 </span>
               )}
-              {scopeChip && (
+              {localized.scopeChip && (
                 <span className="rounded-full bg-black/20 px-2 py-0.5 text-[10px] font-bold text-amber-200">
-                  {scopeChip}
+                  {localized.scopeChip}
                 </span>
               )}
             </div>
 
             <h3 className="text-sm sm:text-base font-black leading-snug text-white">
-              {banner.title}
+              {localized.title}
             </h3>
 
-            {banner.subtitle && (
+            {localized.subtitle && (
               <p className="text-xs text-white/90 leading-relaxed">
-                {banner.subtitle}
+                {localized.subtitle}
               </p>
             )}
 
@@ -370,7 +676,7 @@ export function StorefrontPromoBanner({
                   <Tag className="h-3 w-3 text-rose-500" />
                   <span className="font-mono">{banner.voucherCode}</span>
                   <span className="text-[10px] text-emerald-600 font-bold">
-                    {copied ? '✓ Đã lưu' : '• Copy'}
+                    {copied ? pt.copiedCode : pt.copyCode}
                   </span>
                 </button>
               )}
@@ -382,7 +688,7 @@ export function StorefrontPromoBanner({
                   className="inline-flex items-center gap-1.5 rounded-xl bg-black/25 hover:bg-black/35 border border-white/30 px-3 py-1 text-[11px] font-bold text-white active:scale-95 transition"
                 >
                   <Gift className="h-3.5 w-3.5 text-amber-300" />
-                  <span>{banner.ctaText}</span>
+                  <span>{localized.ctaText}</span>
                 </button>
               )}
             </div>
@@ -391,7 +697,7 @@ export function StorefrontPromoBanner({
           {banner.imageUrl && (
             <img
               src={banner.imageUrl}
-              alt={banner.title}
+              alt={localized.title}
               className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 rounded-2xl object-cover border-2 border-white/40 shadow-md"
             />
           )}
@@ -459,10 +765,20 @@ export function StorefrontFlashSaleSection({
   const flashItems = items.filter((i) => flashSale.itemIds.includes(i.id));
   if (flashItems.length === 0) return null;
 
+  const pt = PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi;
+
   const badgeLabel =
     flashSale.discountType === 'percent'
       ? `-${flashSale.discountValue}%`
       : `-${formatCurrency(flashSale.discountValue, shop.currency)}`;
+
+  const displayBadgeText =
+    locale === 'vi'
+      ? (flashSale.badgeText || pt.flashBadge).replace(/^⚡\s*/, '')
+      : pt.flashBadge;
+
+  const displayTitleText =
+    locale === 'vi' ? flashSale.title || pt.flashTitle : pt.flashTitle;
 
   return (
     <div className="rounded-3xl bg-gradient-to-br from-rose-600 via-orange-500 to-amber-500 p-3.5 shadow-lg text-white space-y-3 border border-white/25">
@@ -471,15 +787,15 @@ export function StorefrontFlashSaleSection({
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1 rounded-xl bg-amber-300 px-2.5 py-1 text-xs font-black text-slate-950 shadow-xs">
             <Zap className="h-3.5 w-3.5 fill-slate-950" />
-            <span>{flashSale.badgeText || 'FLASH SALE'}</span>
+            <span>{displayBadgeText}</span>
           </span>
           <div>
             <h3 className="text-xs sm:text-sm font-black text-white leading-tight">
-              {flashSale.title || 'Giờ Vàng Giá Sốc'} ({badgeLabel})
+              {displayTitleText} ({badgeLabel})
             </h3>
             {flashSale.startTime && flashSale.endTime && (
               <p className="text-[10px] text-amber-100 font-semibold">
-                Khung giờ: {flashSale.startTime} – {flashSale.endTime}
+                {pt.flashTimeSlot(flashSale.startTime, flashSale.endTime)}
               </p>
             )}
           </div>
@@ -566,19 +882,39 @@ export function StorefrontFlashSaleSection({
 
 export function StorefrontWelcomePopup({
   shop,
+  locale = 'vi',
   isOpen,
   onClose,
 }: {
   shop: Shop;
+  locale?: SupportedLocale;
   isOpen: boolean;
   onClose: () => void;
 }) {
   const popup = shop.theme_config?.welcomePopup;
+  const banner = shop.theme_config?.promoBanner;
   const [copiedCode, setCopiedCode] = useState(false);
 
   if (!popup || !popup.enabled || !popup.title?.trim()) return null;
 
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const pt = PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi;
+  const localizedBanner = banner
+    ? getLocalizedPromoBannerStrings(banner, shop.currency, locale)
+    : null;
+
+  const displayBadge =
+    locale === 'vi' ? popup.badgeText || pt.popupBadge : pt.popupBadge;
+  const displayTitle =
+    locale === 'vi'
+      ? popup.title
+      : localizedBanner?.title || popup.title;
+  const displayContent =
+    locale === 'vi'
+      ? popup.content
+      : localizedBanner?.subtitle || popup.content;
+  const displayCta =
+    locale === 'vi' ? popup.ctaText || pt.popupCta : pt.popupCta;
 
   const handleCopyVoucher = async () => {
     if (!popup.voucherCode) return;
@@ -626,14 +962,14 @@ export function StorefrontWelcomePopup({
               <div className="relative h-44 w-full bg-slate-900">
                 <img
                   src={popup.imageUrl}
-                  alt={popup.title}
+                  alt={displayTitle}
                   className="h-full w-full object-cover"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
-                {popup.badgeText && (
+                {displayBadge && (
                   <span className="absolute bottom-3 left-4 inline-flex items-center gap-1 rounded-full bg-amber-400 px-3 py-1 text-[11px] font-black text-slate-950 shadow-sm">
                     <Sparkles className="h-3 w-3" />
-                    {popup.badgeText}
+                    {displayBadge}
                   </span>
                 )}
               </div>
@@ -646,7 +982,7 @@ export function StorefrontWelcomePopup({
               >
                 <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-white">
                   <Gift className="h-3.5 w-3.5 text-amber-300" />
-                  {popup.badgeText || '🎁 ƯU ĐÃI ĐẶC BIỆT'}
+                  {displayBadge}
                 </span>
               </div>
             )}
@@ -655,11 +991,11 @@ export function StorefrontWelcomePopup({
             <div className="p-5 space-y-4">
               <div>
                 <h3 className="text-lg font-black text-slate-900 leading-snug">
-                  {popup.title}
+                  {displayTitle}
                 </h3>
-                {popup.content && (
+                {displayContent && (
                   <p className="mt-1.5 text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    {popup.content}
+                    {displayContent}
                   </p>
                 )}
               </div>
@@ -669,7 +1005,7 @@ export function StorefrontWelcomePopup({
                 <div className="flex items-center justify-between rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50/80 px-3.5 py-2.5">
                   <div>
                     <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-800">
-                      Mã Voucher Ưu Đãi
+                      {pt.voucherLabel}
                     </span>
                     <span className="font-mono text-base font-black tracking-wider text-slate-900">
                       {popup.voucherCode}
@@ -683,12 +1019,12 @@ export function StorefrontWelcomePopup({
                     {copiedCode ? (
                       <>
                         <Check className="h-3.5 w-3.5" />
-                        <span>Đã lưu mã</span>
+                        <span>{pt.copiedFull}</span>
                       </>
                     ) : (
                       <>
                         <Copy className="h-3.5 w-3.5" />
-                        <span>Copy mã</span>
+                        <span>{pt.copyFull}</span>
                       </>
                     )}
                   </button>
@@ -701,7 +1037,7 @@ export function StorefrontWelcomePopup({
                 style={{ backgroundColor: primaryColor, color: '#ffffff' }}
                 className="w-full rounded-2xl py-3.5 text-sm font-black text-white shadow-lg transition hover:opacity-95 active:scale-98"
               >
-                {popup.ctaText || 'Nhận ưu đãi & Xem Menu ngay'}
+                {displayCta}
               </button>
             </div>
           </motion.div>
@@ -954,6 +1290,7 @@ export function StorefrontPhonePreview({
               {/* Promo Banner Preview */}
               <StorefrontPromoBanner
                 shop={shop}
+                locale={previewLocale}
                 onOpenPopup={onOpenPopupPreview}
               />
 

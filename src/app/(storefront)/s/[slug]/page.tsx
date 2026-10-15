@@ -311,6 +311,7 @@ export default function StorefrontDoorPage() {
         {/* Custom Owner Promo Banner (if enabled) */}
         <StorefrontPromoBanner
           shop={shop}
+          locale={locale}
           onOpenPopup={
             hasActivePopup ? () => setIsPromoPopupOpen(true) : undefined
           }
@@ -469,6 +470,7 @@ export default function StorefrontDoorPage() {
       {/* Welcome / Promo Popup Modal */}
       <StorefrontWelcomePopup
         shop={shop}
+        locale={locale}
         isOpen={isPromoPopupOpen}
         onClose={handleClosePopup}
       />
