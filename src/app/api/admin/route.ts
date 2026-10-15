@@ -257,6 +257,9 @@ export async function GET(req: Request) {
       ko: 0,
       ja: 0,
       zh: 0,
+      es: 0,
+      it: 0,
+      ru: 0,
     };
     for (const ev of events) {
       if (langCounts[ev.visitor_lang] !== undefined) {

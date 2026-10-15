@@ -317,7 +317,7 @@ export function ShowToStaffModal({
                   <span>{shop.name}</span>
                   <span className="text-emerald-200">•</span>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-black/20 px-2.5 py-0.5 text-xs font-bold">
-                    <FlagIcon locale={locale} size="sm" />
+                    <FlagIcon locale={locale} className="h-3.5 w-5 rounded-[2px]" />
                     <span>{visitorMeta.nativeName}</span>
                   </span>
                 </h2>
@@ -437,7 +437,9 @@ export function ShowToStaffModal({
                         <span className="font-bold text-white">
                           {locale === 'vi'
                             ? it.name_vi
-                            : it.name_visitor || it.name_vi}
+                            : it.name_i18n
+                              ? tField(it.name_i18n, locale)
+                              : it.name_vi}
                         </span>
                         {locale !== 'vi' && (
                           <span className="ml-1.5 text-xs text-slate-400">
@@ -627,7 +629,7 @@ export function ShowToStaffModal({
                               )}
 
                               {/* Quick Tags */}
-                              {entry.quickTags.length > 0 && (
+                              {entry.quickTags && entry.quickTags.length > 0 && (
                                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                                   {entry.quickTags.map((tagVi, tIdx) => {
                                     const matchedTag = quickTagsPool.find(

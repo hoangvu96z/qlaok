@@ -123,13 +123,13 @@ function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
   const seedMatch = SEED_SHOPS.find(
     (s) => s.id === rawShop.id || s.slug === rawShop.slug
   );
-  const currentLangs = Array.isArray(rawShop.supported_langs)
+  const currentLangs: SupportedLocale[] = Array.isArray(rawShop.supported_langs)
     ? rawShop.supported_langs
     : ['vi', 'en', 'ko', 'ja', 'zh'];
 
   // Upgrade legacy 5-lang shops to 8-lang automatically
-  const hasBase5 = ['vi', 'en', 'ko', 'ja', 'zh'].every((l) =>
-    currentLangs.includes(l as SupportedLocale)
+  const hasBase5 = (['vi', 'en', 'ko', 'ja', 'zh'] as SupportedLocale[]).every(
+    (l) => currentLangs.includes(l)
   );
   const nextLangs: SupportedLocale[] = hasBase5
     ? Array.from(
@@ -836,6 +836,9 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     ko: 0,
     ja: 0,
     zh: 0,
+    es: 0,
+    it: 0,
+    ru: 0,
   };
 
   for (const ev of events) {

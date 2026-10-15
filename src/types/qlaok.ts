@@ -122,7 +122,7 @@ export interface CatalogItem {
   compare_at_price?: number | null;
   unit_i18n?: I18nText;
   duration_mins?: number | null; // Dùng cho Tiệm Nail, Spa, Massage, Karaoke
-  image_url: string | null;
+  image_url?: string | null;
   is_available: boolean;
   is_featured: boolean;
   name_i18n: I18nText;
