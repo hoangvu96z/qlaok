@@ -43,6 +43,7 @@ import {
   stopAdminImpersonation,
   SUPER_ADMIN_EMAIL,
 } from '@/lib/auth-session';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { formatCurrency } from '@/lib/i18n-helper';
 import type {
   AnalyticsEvent,
@@ -611,7 +612,7 @@ export default function SuperAdminPortalPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-slate-950 text-slate-100 theme-surface-page flex flex-col md:flex-row">
       {/* Toast Notification */}
       {toast && (
         <div
@@ -743,11 +744,12 @@ export default function SuperAdminPortalPage() {
             </h1>
             <p className="text-xs text-slate-400">
               Quản trị toàn diện Chủ quán, Cửa hàng, Đơn mPOS, Doanh thu gói cước
-              &amp; Hạ tầng AI Qlaok
+              &amp; Hạ tầng Qlaok
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <ThemeToggle />
             <Link
               href="/explore"
               target="_blank"

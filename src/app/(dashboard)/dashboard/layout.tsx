@@ -29,6 +29,7 @@ import {
 } from '@/lib/auth-session';
 import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { ShopOrder } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
 
@@ -224,7 +225,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         : 'bg-slate-200 text-slate-700';
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 theme-surface-page flex flex-col md:flex-row">
       {/* Global Floating New Order Toast Notification */}
       {liveToastOrder && (
         <div className="fixed top-4 right-4 z-50 w-full max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce">
@@ -485,6 +486,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
           {activeShop && (
             <div className="flex items-center gap-1.5 shrink-0">
+              <ThemeToggle />
               <Link
                 href="/dashboard/orders"
                 className={`relative inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold border ${

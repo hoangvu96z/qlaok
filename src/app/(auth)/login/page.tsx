@@ -20,6 +20,7 @@ import {
   isSuperAdmin,
   setStoredAuthOwner,
 } from '@/lib/auth-session';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 
 type AuthMode = 'password_login' | 'register' | 'otp';
 
@@ -232,7 +233,10 @@ function LoginFormContent() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-center items-center p-4">
+    <div className="min-h-screen bg-slate-950 text-white theme-surface-page flex flex-col justify-center items-center p-4">
+      <div className="w-full max-w-md flex justify-end mb-2">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-2xl space-y-5">
         <div className="text-center space-y-2">
           <Link

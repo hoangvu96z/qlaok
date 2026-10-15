@@ -239,8 +239,8 @@ function buildInitialSeedStore(): MposStoreData {
         payment_status: 'paid',
         total_amount: 420000,
         source: 'qr_table',
-        created_at: daysAgo(3),
-        updated_at: daysAgo(3),
+        created_at: daysAgo(3, 4),
+        updated_at: daysAgo(3, 4),
         items: [
           {
             item_id: 'item-fnb-1',
@@ -256,6 +256,102 @@ function buildInitialSeedStore(): MposStoreData {
             quantity: 4,
             unit_price: 40000,
             extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      },
+      {
+        id: 'ord-seed-108',
+        order_code: 'ORD-088',
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn 08',
+        visitor_lang: 'vi',
+        status: 'completed',
+        payment_method: 'cash',
+        payment_status: 'paid',
+        total_amount: 310000,
+        source: 'counter_pos',
+        created_at: daysAgo(4, 6),
+        updated_at: daysAgo(4, 6),
+        items: [
+          {
+            item_id: 'item-fnb-2',
+            name_vi: 'Bún Chả Hà Nội Nướng Than Hoa',
+            quantity: 4,
+            unit_price: 55000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+          {
+            item_id: 'item-fnb-5',
+            name_vi: 'Nem Rán Hà Nội Giòn Rụm (4 cuốn)',
+            quantity: 2,
+            unit_price: 45000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      },
+      {
+        id: 'ord-seed-109',
+        order_code: 'ORD-084',
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn 02',
+        visitor_lang: 'ko',
+        status: 'completed',
+        payment_method: 'vietqr',
+        payment_status: 'paid',
+        total_amount: 495000,
+        source: 'qr_table',
+        created_at: daysAgo(5, 1),
+        updated_at: daysAgo(5, 1),
+        items: [
+          {
+            item_id: 'item-fnb-1',
+            name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
+            quantity: 5,
+            unit_price: 65000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+          {
+            item_id: 'item-fnb-4',
+            name_vi: 'Bạc Xỉu Đá Sữa Dừa Non',
+            quantity: 5,
+            unit_price: 34000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      },
+      {
+        id: 'ord-seed-110',
+        order_code: 'ORD-079',
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn 07',
+        visitor_lang: 'ja',
+        status: 'completed',
+        payment_method: 'vietqr',
+        payment_status: 'paid',
+        total_amount: 365000,
+        source: 'qr_table',
+        created_at: daysAgo(6, 3),
+        updated_at: daysAgo(6, 3),
+        items: [
+          {
+            item_id: 'item-fnb-1',
+            name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
+            quantity: 3,
+            unit_price: 65000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+          {
+            item_id: 'item-fnb-2',
+            name_vi: 'Bún Chả Hà Nội Nướng Than Hoa',
+            quantity: 2,
+            unit_price: 55000,
+            extra_price: 30000,
             selected_choices: [],
           },
         ],
@@ -706,6 +802,8 @@ export function computeShopRevenueAndInventoryStats(
     date: string;
     label: string;
     revenue: number;
+    cashRevenue: number;
+    vietqrRevenue: number;
     orders: number;
     orderCount: number;
   }> = [];
@@ -719,16 +817,114 @@ export function computeShopRevenueAndInventoryStats(
       return t >= dayStart && t < dayEnd;
     });
     const rev = dayOrders.reduce((s, o) => s + (o.total_amount || 0), 0);
+    const cashRev = dayOrders
+      .filter((o) => o.payment_method === 'cash')
+      .reduce((s, o) => s + (o.total_amount || 0), 0);
+    const vietqrRev = dayOrders
+      .filter((o) => o.payment_method !== 'cash')
+      .reduce((s, o) => s + (o.total_amount || 0), 0);
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     dailyRevenue7d.push({
       date: `${d.getFullYear()}-${mm}-${dd}`,
       label: i === 0 ? `Hôm nay` : `${dd}/${mm}`,
       revenue: rev,
+      cashRevenue: cashRev,
+      vietqrRevenue: vietqrRev,
       orders: dayOrders.length,
       orderCount: dayOrders.length,
     });
   }
+
+  // Payment method breakdown (VietQR vs Cash)
+  const vietqrOrders = validOrders.filter((o) => o.payment_method !== 'cash');
+  const cashOrders = validOrders.filter((o) => o.payment_method === 'cash');
+  const vietqrRevenueTotal = vietqrOrders.reduce(
+    (s, o) => s + (o.total_amount || 0),
+    0
+  );
+  const cashRevenueTotal = cashOrders.reduce(
+    (s, o) => s + (o.total_amount || 0),
+    0
+  );
+  const vietqrPct =
+    totalRevenue > 0 ? Math.round((vietqrRevenueTotal / totalRevenue) * 100) : 65;
+  const cashPct = totalRevenue > 0 ? Math.max(0, 100 - vietqrPct) : 35;
+
+  const paymentBreakdown = {
+    vietqr: {
+      count: vietqrOrders.length,
+      revenue: vietqrRevenueTotal,
+      percentage: vietqrPct,
+    },
+    cash: {
+      count: cashOrders.length,
+      revenue: cashRevenueTotal,
+      percentage: cashPct,
+    },
+  };
+
+  // Order source breakdown (QR Table vs Counter POS)
+  const qrTableOrders = validOrders.filter((o) => o.source !== 'counter_pos');
+  const counterPosOrders = validOrders.filter((o) => o.source === 'counter_pos');
+  const qrTableRevenue = qrTableOrders.reduce(
+    (s, o) => s + (o.total_amount || 0),
+    0
+  );
+  const counterPosRevenue = counterPosOrders.reduce(
+    (s, o) => s + (o.total_amount || 0),
+    0
+  );
+  const qrTablePct =
+    validOrders.length > 0
+      ? Math.round((qrTableOrders.length / validOrders.length) * 100)
+      : 75;
+  const counterPosPct =
+    validOrders.length > 0 ? Math.max(0, 100 - qrTablePct) : 25;
+
+  const sourceBreakdown = {
+    qr_table: {
+      count: qrTableOrders.length,
+      revenue: qrTableRevenue,
+      percentage: qrTablePct,
+    },
+    counter_pos: {
+      count: counterPosOrders.length,
+      revenue: counterPosRevenue,
+      percentage: counterPosPct,
+    },
+  };
+
+  // Peak hours breakdown (6 slots)
+  const slotsDef = [
+    { slot: '06h-09h', label: 'Sáng (6-9h)', minH: 6, maxH: 9 },
+    { slot: '09h-12h', label: 'Trưa (9-12h)', minH: 9, maxH: 12 },
+    { slot: '12h-15h', label: 'Chiều (12-15h)', minH: 12, maxH: 15 },
+    { slot: '15h-18h', label: 'Xế (15-18h)', minH: 15, maxH: 18 },
+    { slot: '18h-21h', label: 'Tối (18-21h)', minH: 18, maxH: 21 },
+    { slot: '21h-24h', label: 'Đêm (21-24h)', minH: 21, maxH: 24 },
+  ];
+
+  const rawHourly = slotsDef.map((s) => {
+    const matched = validOrders.filter((o) => {
+      const h = new Date(o.created_at).getHours();
+      return h >= s.minH && h < s.maxH;
+    });
+    const rev = matched.reduce((acc, o) => acc + (o.total_amount || 0), 0);
+    return {
+      slot: s.slot,
+      label: s.label,
+      orders: matched.length,
+      revenue: rev,
+    };
+  });
+
+  const maxSlotRev = Math.max(...rawHourly.map((h) => h.revenue), 1);
+  const hourlyBreakdown = rawHourly.map((h) => ({
+    ...h,
+    percentage:
+      h.revenue > 0 ? Math.max(14, Math.round((h.revenue / maxSlotRev) * 100)) : 8,
+  }));
 
   // Inventory summary
   const lowStockItems = enrichedItems.filter(
@@ -771,6 +967,9 @@ export function computeShopRevenueAndInventoryStats(
     lowStockItems,
     dailyRevenue7d,
     dailyRevenue7Days: dailyRevenue7d,
+    paymentBreakdown,
+    sourceBreakdown,
+    hourlyBreakdown,
     topSellingItems,
   };
 }

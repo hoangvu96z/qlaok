@@ -8,8 +8,84 @@
   }
 
   body {
-    @apply bg-slate-50 font-sans text-slate-900 antialiased selection:bg-emerald-500 selection:text-white;
+    @apply bg-slate-50 font-sans text-slate-900 antialiased selection:bg-emerald-500 selection:text-white transition-colors duration-200;
   }
+
+  html.dark body {
+    @apply bg-slate-950 text-slate-100;
+  }
+}
+
+/* Automatic Dark Mode adaptation for standard dashboard cards & surfaces */
+html.dark .bg-white {
+  background-color: #0f172a !important;
+}
+html.dark .bg-slate-50 {
+  background-color: #020617 !important;
+}
+html.dark .bg-slate-100 {
+  background-color: #1e293b !important;
+}
+html.dark .border-slate-200,
+html.dark .border-slate-100,
+html.dark .border-slate-300 {
+  border-color: #1e293b !important;
+}
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #1e293b !important;
+}
+html.dark .text-slate-900,
+html.dark .text-slate-800 {
+  color: #f8fafc !important;
+}
+html.dark .text-slate-700,
+html.dark .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+html.dark .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+/* Automatic Light Mode adaptation for pages that used slate-950/slate-900 dark containers (/admin, /login, /onboarding) */
+html:not(.dark) .theme-surface-page {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+html:not(.dark) .theme-surface-page .bg-slate-950 {
+  background-color: #f8fafc !important;
+}
+html:not(.dark) .theme-surface-page .bg-slate-900,
+html:not(.dark) .theme-surface-page .bg-slate-900\/90 {
+  background-color: #ffffff !important;
+}
+html:not(.dark) .theme-surface-page .bg-slate-800 {
+  background-color: #f1f5f9 !important;
+}
+html:not(.dark) .theme-surface-page .border-slate-800,
+html:not(.dark) .theme-surface-page .border-slate-700 {
+  border-color: #e2e8f0 !important;
+}
+html:not(.dark) .theme-surface-page .divide-slate-800\/70 > :not([hidden]) ~ :not([hidden]),
+html:not(.dark) .theme-surface-page .divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2e8f0 !important;
+}
+html:not(.dark) .theme-surface-page .text-white,
+html:not(.dark) .theme-surface-page .text-slate-100,
+html:not(.dark) .theme-surface-page .text-slate-200 {
+  color: #0f172a !important;
+}
+html:not(.dark) .theme-surface-page .text-slate-300,
+html:not(.dark) .theme-surface-page .text-slate-400 {
+  color: #475569 !important;
+}
+html:not(.dark) .theme-surface-page .text-emerald-300,
+html:not(.dark) .theme-surface-page .text-emerald-400 {
+  color: #059669 !important;
+}
+html:not(.dark) .theme-surface-page .text-amber-300,
+html:not(.dark) .theme-surface-page .text-amber-400 {
+  color: #d97706 !important;
 }
 
 /* Hide scrollbars for horizontal category pills while keeping scroll functionality */
