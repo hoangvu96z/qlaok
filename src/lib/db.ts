@@ -22,6 +22,8 @@ import {
 } from './seed-data';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
 import { canAddMoreItems } from './plan-limits';
+import { ALL_LOCALES } from './i18n-helper';
+import { smartFallbackTranslate } from './gemini';
 import {
   computeShopRevenueAndInventoryStats,
   enrichItemsWithInventory,
@@ -125,28 +127,58 @@ function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
   );
   const currentLangs: SupportedLocale[] = Array.isArray(rawShop.supported_langs)
     ? rawShop.supported_langs
-    : ['vi', 'en', 'ko', 'ja', 'zh'];
+    : ALL_LOCALES;
 
-  // Upgrade legacy 5-lang shops to 8-lang automatically
-  const hasBase5 = (['vi', 'en', 'ko', 'ja', 'zh'] as SupportedLocale[]).every(
-    (l) => currentLangs.includes(l)
-  );
-  const nextLangs: SupportedLocale[] = hasBase5
-    ? Array.from(
-        new Set<SupportedLocale>([...currentLangs, 'es', 'it', 'ru'])
-      )
-    : currentLangs;
+  // Ensure shops always support all 8 languages unless explicitly customized with >5 langs
+  const nextLangs: SupportedLocale[] =
+    currentLangs.length <= 5
+      ? ALL_LOCALES
+      : Array.from(new Set<SupportedLocale>([...currentLangs, ...ALL_LOCALES]));
+
+  const shopName = rawShop.name || 'Cửa hàng';
+  const taglineVi =
+    rawShop.tagline_i18n?.vi ||
+    seedMatch?.tagline_i18n?.vi ||
+    `Chào mừng quý khách đến với ${shopName}`;
+  const descVi =
+    rawShop.description_i18n?.vi ||
+    seedMatch?.description_i18n?.vi ||
+    `Menu & Bảng giá đa ngôn ngữ chính thức của ${shopName}.`;
+
+  const fallbackTagline = {
+    vi: taglineVi,
+    en: `Welcome to ${shopName} — Official Multi-language Menu`,
+    ko: `${shopName}에 오신 것을 환영합니다 — 다국어 공식 메뉴`,
+    ja: `${shopName}へようこそ — 多言語公式メニュー`,
+    zh: `欢迎光临 ${shopName} — 多语言官方菜单`,
+    es: `Bienvenido a ${shopName} — Menú oficial multilingüe`,
+    it: `Benvenuti da ${shopName} — Menu ufficiale multilingue`,
+    ru: `Добро пожаловать в ${shopName} — Официальное меню`,
+  };
+
+  const fallbackDesc = {
+    vi: descVi,
+    en: `Explore authentic products & services at ${shopName}. Order directly from your phone.`,
+    ko: `${shopName}의 대표 메뉴와 가격표를 확인하고 스마트폰으로 바로 주문하세요.`,
+    ja: `${shopName}のおすすめメニューと価格表。スマホから直接注文できます。`,
+    zh: `浏览 ${shopName} 的精选商品与价格表，手机直接下单。`,
+    es: `Explora los productos y precios de ${shopName}. Pide directamente desde tu móvil.`,
+    it: `Scopri i prodotti e il listino prezzi di ${shopName}. Ordina direttamente dal telefono.`,
+    ru: `Ознакомьтесь с меню и ценами ${shopName}. Заказывайте прямо со смартфона.`,
+  };
 
   return {
     ...rawShop,
     supported_langs: nextLangs,
     tagline_i18n: {
+      ...fallbackTagline,
       ...(seedMatch?.tagline_i18n || {}),
-      ...(rawShop.tagline_i18n || { vi: '' }),
+      ...(rawShop.tagline_i18n || {}),
     },
     description_i18n: {
+      ...fallbackDesc,
       ...(seedMatch?.description_i18n || {}),
-      ...(rawShop.description_i18n || { vi: '' }),
+      ...(rawShop.description_i18n || {}),
     },
     theme_config: {
       ...(seedMatch?.theme_config || { primaryColor: '#10b981', layout: 'list' }),
@@ -232,7 +264,6 @@ export async function dbGetStorefrontBundle(slug: string) {
     { data: categories },
     { data: items },
     { data: posts },
-    { data: ownerProfile },
   ] = await Promise.all([
     sb
       .from('categories')
@@ -251,18 +282,32 @@ export async function dbGetStorefrontBundle(slug: string) {
       .eq('shop_id', shop.id)
       .eq('is_active', true)
       .order('is_pinned', { ascending: false }),
-    sb.from('profiles').select('plan').eq('id', shop.owner_id).single(),
   ]);
 
   const normalizedCategories = ((categories || []) as Category[]).map((c) => {
     const seedCat = SEED_CATEGORIES.find((sc) => sc.id === c.id);
-    return seedCat
-      ? { ...c, name_i18n: { ...seedCat.name_i18n, ...c.name_i18n } }
-      : c;
+    const autoCat = smartFallbackTranslate({
+      vertical: shop.vertical,
+      categoryNameVi: c.name_i18n?.vi || 'Danh mục',
+      itemNameVi: c.name_i18n?.vi || 'Danh mục',
+    });
+    return {
+      ...c,
+      name_i18n: {
+        ...(autoCat.category_i18n || {}),
+        ...(seedCat?.name_i18n || {}),
+        ...(c.name_i18n || {}),
+      },
+    };
   });
 
   const normalizedItems = (items || []).map((i) => {
     const seedItem = SEED_ITEMS.find((si) => si.id === i.id);
+    const autoItem = smartFallbackTranslate({
+      vertical: shop.vertical,
+      itemNameVi: i.name_i18n?.vi || 'Sản phẩm',
+      itemDescVi: i.desc_i18n?.vi || '',
+    });
     return {
       ...i,
       price: Number(i.price),
@@ -270,12 +315,16 @@ export async function dbGetStorefrontBundle(slug: string) {
         i.compare_at_price !== null && i.compare_at_price !== undefined
           ? Number(i.compare_at_price)
           : null,
-      name_i18n: seedItem
-        ? { ...seedItem.name_i18n, ...i.name_i18n }
-        : i.name_i18n,
-      desc_i18n: seedItem
-        ? { ...seedItem.desc_i18n, ...i.desc_i18n }
-        : i.desc_i18n,
+      name_i18n: {
+        ...autoItem.name_i18n,
+        ...(seedItem?.name_i18n || {}),
+        ...(i.name_i18n || {}),
+      },
+      desc_i18n: {
+        ...autoItem.desc_i18n,
+        ...(seedItem?.desc_i18n || {}),
+        ...(i.desc_i18n || {}),
+      },
       options_json: seedItem?.options_json?.length
         ? seedItem.options_json
         : i.options_json,
@@ -298,7 +347,7 @@ export async function dbGetStorefrontBundle(slug: string) {
     categories: normalizedCategories,
     items: enrichItemsWithInventory(normalizedItems),
     posts: normalizedPosts,
-    ownerPlan: (ownerProfile?.plan as PlanTier) || 'premium',
+    ownerPlan: 'premium' as PlanTier,
   };
 }
 

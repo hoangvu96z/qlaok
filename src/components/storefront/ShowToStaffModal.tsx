@@ -33,6 +33,7 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { calculateOrderPromoDiscount } from '@/components/storefront/StorefrontCustomDecor';
 
 interface ShowToStaffModalProps {
   isOpen: boolean;
@@ -226,7 +227,7 @@ export function ShowToStaffModal({
     return () => bc.close();
   }, [activeOrder]);
 
-  const grandTotal = cart.reduce((sum, entry) => {
+  const subtotal = cart.reduce((sum, entry) => {
     const extraTotal = entry.selectedChoices.reduce(
       (s, c) => s + (c.extra_price || 0),
       0
@@ -234,17 +235,39 @@ export function ShowToStaffModal({
     return sum + (entry.item.price + extraTotal) * entry.quantity;
   }, 0);
 
+  const promoCalc = calculateOrderPromoDiscount(
+    cart.map((entry) => {
+      const extraTotal = entry.selectedChoices.reduce(
+        (s, c) => s + (c.extra_price || 0),
+        0
+      );
+      return {
+        item: entry.item,
+        quantity: entry.quantity,
+        lineTotal: (entry.item.price + extraTotal) * entry.quantity,
+      };
+    }),
+    shop
+  );
+
+  const grandTotal = Math.max(0, subtotal - promoCalc.discountAmount);
+
   const handleSendOrderToMpos = async () => {
     if (cart.length === 0 || submitting) return;
     setSubmitting(true);
     setSubmitError('');
 
     try {
+      const promoNoteSuffix =
+        promoCalc.discountAmount > 0
+          ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoCalc.discountAmount, shop.currency)}]`
+          : '';
       const payload = {
         shop_id: shop.id,
         table_label: tableNumber.trim() || 'Bàn khách QR',
         visitor_lang: locale,
-        customer_note: customerNote.trim() || undefined,
+        customer_note:
+          `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
         payment_method: paymentMethod,
         source: 'qr_table',
         items: cart.map((entry) => {
@@ -255,7 +278,7 @@ export function ShowToStaffModal({
           return {
             item_id: entry.item.id,
             name_vi: entry.item.name_i18n.vi,
-            name_visitor: tField(entry.item.name_i18n, locale),
+            name_i18n: entry.item.name_i18n,
             quantity: entry.quantity,
             unit_price: entry.item.price,
             extra_price: extraPrice,
@@ -710,14 +733,43 @@ export function ShowToStaffModal({
                   </div>
                 )}
 
+                {promoCalc.discountAmount > 0 && (
+                  <div className="flex items-center justify-between rounded-xl bg-emerald-950/70 border border-emerald-700/60 px-3 py-2 text-xs">
+                    <span className="font-bold text-emerald-300">
+                      🎁 {promoCalc.promoTitle || 'Ưu đãi khuyến mãi'}
+                      {promoCalc.voucherCode ? ` (${promoCalc.voucherCode})` : ''}
+                    </span>
+                    <span className="font-black text-emerald-400">
+                      -{formatCurrency(promoCalc.discountAmount, shop.currency)}
+                    </span>
+                  </div>
+                )}
+
+                {promoCalc.minOrderNeeded > 0 && (
+                  <div className="rounded-xl bg-amber-950/60 border border-amber-700/50 px-3 py-1.5 text-[11px] font-semibold text-amber-300">
+                    💡 Chọn thêm{' '}
+                    <strong>
+                      {formatCurrency(promoCalc.minOrderNeeded, shop.currency)}
+                    </strong>{' '}
+                    để được áp dụng: {promoCalc.promoTitle}
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-bold text-slate-300">
                     {labels.totalEstimated} (
                     {formatTableLabel(tableNumber || 'Bàn 01', locale)})
                   </span>
-                  <span className="text-2xl font-black text-emerald-400">
-                    {formatCurrency(grandTotal, shop.currency)}
-                  </span>
+                  <div className="text-right">
+                    {promoCalc.discountAmount > 0 && (
+                      <span className="block text-xs text-slate-500 line-through">
+                        {formatCurrency(subtotal, shop.currency)}
+                      </span>
+                    )}
+                    <span className="text-2xl font-black text-emerald-400">
+                      {formatCurrency(grandTotal, shop.currency)}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Primary Button: Send Directly to Counter mPOS */}

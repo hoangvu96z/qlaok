@@ -29,9 +29,11 @@ import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { WifiBadge } from '@/components/storefront/WifiBadge';
 import {
   getStorefrontBackgroundProps,
+  StorefrontFlashSaleSection,
   StorefrontPromoBanner,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
+import { CatalogItem } from '@/types/qlaok';
 
 export default function StorefrontDoorPage() {
   const params = useParams<{ slug: string }>();
@@ -39,6 +41,7 @@ export default function StorefrontDoorPage() {
   const slug = params?.slug || 'pho-hoi-an';
 
   const [shop, setShop] = useState<Shop | null>(null);
+  const [items, setItems] = useState<CatalogItem[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
   const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
@@ -57,12 +60,15 @@ export default function StorefrontDoorPage() {
         }
         const data = await res.json();
         const loadedShop: Shop = data.shop;
-        const planLangs = getAllowedLocalesForPlan(
+        const rawPlanLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
           loadedShop.supported_langs
         );
+        const planLangs =
+          rawPlanLangs.length > 1 ? rawPlanLangs : ALL_LOCALES;
 
         setShop(loadedShop);
+        setItems(data.items || []);
         setPosts(data.posts || []);
         setAllowedLangs(planLangs);
 
@@ -187,38 +193,47 @@ export default function StorefrontDoorPage() {
       {bgProps.backgroundLayer}
 
       {/* Top Language Bar */}
-      <div className="sticky top-0 z-30 flex items-center justify-between bg-white/90 px-3.5 py-2.5 backdrop-blur-md border-b border-slate-200/70">
-        <div className="flex items-center gap-2">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
-          >
-            <span
-              className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
-              style={{ backgroundColor: primaryColor }}
+      <div className="sticky top-0 z-30 bg-white/95 px-3.5 py-2 backdrop-blur-md border-b border-slate-200/70 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Link
+              href="/"
+              className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
             >
-              Q
-            </span>
-            <span>Qlaok</span>
-          </Link>
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
+                style={{ backgroundColor: primaryColor }}
+              >
+                Q
+              </span>
+              <span>Qlaok</span>
+            </Link>
 
-          {hasActivePopup && (
-            <button
-              type="button"
-              onClick={() => setIsPromoPopupOpen(true)}
-              className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
-            >
-              <Gift className="h-3 w-3 text-rose-600" />
-              <span>Voucher</span>
-            </button>
-          )}
+            {hasActivePopup && (
+              <button
+                type="button"
+                onClick={() => setIsPromoPopupOpen(true)}
+                className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
+              >
+                <Gift className="h-3 w-3 text-rose-600" />
+                <span>Voucher</span>
+              </button>
+            )}
+          </div>
+
+          <LanguageSwitcher
+            currentLocale={locale}
+            supportedLangs={allowedLangs}
+            onChange={setLocale}
+            compact
+          />
         </div>
 
+        {/* 1-Tap 8-Language Flag Strip */}
         <LanguageSwitcher
           currentLocale={locale}
           supportedLangs={allowedLangs}
           onChange={setLocale}
-          compact
         />
       </div>
 
@@ -299,6 +314,13 @@ export default function StorefrontDoorPage() {
           onOpenPopup={
             hasActivePopup ? () => setIsPromoPopupOpen(true) : undefined
           }
+        />
+
+        {/* Flash Sale Countdown Section (if enabled) */}
+        <StorefrontFlashSaleSection
+          shop={shop}
+          items={items}
+          locale={locale}
         />
 
         {/* Primary CTA to Menu / Price List */}

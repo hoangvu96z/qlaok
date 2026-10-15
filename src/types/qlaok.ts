@@ -56,6 +56,23 @@ export interface ShopPromoBannerConfig {
   imageUrl?: string;
   bgGradient?: 'amber_rose' | 'emerald_teal' | 'violet_fuchsia' | 'royal_gold';
   ctaText?: string;
+  discountType?: 'percent' | 'fixed_amount';
+  discountValue?: number;
+  minOrderAmount?: number;
+  applyScope?: 'all' | 'selected_items';
+  selectedItemIds?: string[];
+  voucherCode?: string;
+}
+
+export interface ShopFlashSaleConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  discountType: 'percent' | 'fixed_amount';
+  discountValue: number;
+  startTime?: string; // Format "HH:mm" e.g. "11:00"
+  endTime?: string;   // Format "HH:mm" e.g. "22:00"
+  itemIds: string[];
 }
 
 export interface ShopPopupConfig {
@@ -75,6 +92,7 @@ export interface ShopThemeConfig {
   backgroundImageUrl?: string;
   backgroundOverlayOpacity?: number;
   promoBanner?: ShopPromoBannerConfig;
+  flashSale?: ShopFlashSaleConfig;
   welcomePopup?: ShopPopupConfig;
 }
 

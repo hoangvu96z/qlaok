@@ -31,7 +31,10 @@ import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
 import { ItemDetailDrawer } from '@/components/storefront/ItemDetailDrawer';
 import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
 import {
+  calculateOrderPromoDiscount,
+  getItemEffectivePrice,
   getStorefrontBackgroundProps,
+  StorefrontFlashSaleSection,
   StorefrontPromoBanner,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
@@ -71,10 +74,12 @@ export default function StorefrontMenuPage() {
         }
         const data = await res.json();
         const loadedShop: Shop = data.shop;
-        const planLangs = getAllowedLocalesForPlan(
+        const rawPlanLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
           loadedShop.supported_langs
         );
+        const planLangs =
+          rawPlanLangs.length > 1 ? rawPlanLangs : ALL_LOCALES;
 
         setShop(loadedShop);
         setCategories(data.categories || []);
@@ -146,8 +151,26 @@ export default function StorefrontMenuPage() {
     }
   };
 
+  // Compute effective items with Flash Sale / Selected Item Discounts applied
+  const effectiveItems: CatalogItem[] = React.useMemo(() => {
+    if (!shop) return items;
+    return items.map((rawItem) => {
+      const eff = getItemEffectivePrice(rawItem, shop);
+      if (eff.finalPrice !== rawItem.price) {
+        return {
+          ...rawItem,
+          price: eff.finalPrice,
+          compare_at_price: eff.originalPrice || rawItem.price,
+        };
+      }
+      return rawItem;
+    });
+  }, [items, shop]);
+
   const handleOpenItem = (item: CatalogItem) => {
-    setActiveItem(item);
+    const effItem =
+      effectiveItems.find((ei) => ei.id === item.id) || item;
+    setActiveItem(effItem);
     if (shop) {
       fetch('/api/analytics/track', {
         method: 'POST',
@@ -164,16 +187,18 @@ export default function StorefrontMenuPage() {
 
   const handleQuickAdd = (item: CatalogItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    const hasRequired = item.options_json?.some((g) => g.required);
+    const effItem =
+      effectiveItems.find((ei) => ei.id === item.id) || item;
+    const hasRequired = effItem.options_json?.some((g) => g.required);
     if (hasRequired) {
-      handleOpenItem(item);
+      handleOpenItem(effItem);
       return;
     }
 
     setCart((prev) => {
       const existingIdx = prev.findIndex(
         (entry) =>
-          entry.item.id === item.id &&
+          entry.item.id === effItem.id &&
           entry.selectedChoices.length === 0 &&
           !entry.customNote &&
           (!entry.quickTags || entry.quickTags.length === 0)
@@ -182,6 +207,7 @@ export default function StorefrontMenuPage() {
         const updated = [...prev];
         updated[existingIdx] = {
           ...updated[existingIdx],
+          item: effItem,
           quantity: updated[existingIdx].quantity + 1,
         };
         return updated;
@@ -189,7 +215,7 @@ export default function StorefrontMenuPage() {
       return [
         ...prev,
         {
-          item,
+          item: effItem,
           quantity: 1,
           selectedChoices: [],
           customNote: '',
@@ -252,13 +278,32 @@ export default function StorefrontMenuPage() {
   );
 
   const totalItemsCount = cart.reduce((sum, c) => sum + c.quantity, 0);
-  const totalCartAmount = cart.reduce((sum, entry) => {
+  const subtotalCartAmount = cart.reduce((sum, entry) => {
     const extra = entry.selectedChoices.reduce(
       (s, c) => s + (c.extra_price || 0),
       0
     );
     return sum + (entry.item.price + extra) * entry.quantity;
   }, 0);
+
+  const promoCalc = calculateOrderPromoDiscount(
+    cart.map((entry) => {
+      const extra = entry.selectedChoices.reduce(
+        (s, c) => s + (c.extra_price || 0),
+        0
+      );
+      return {
+        item: entry.item,
+        quantity: entry.quantity,
+        lineTotal: (entry.item.price + extra) * entry.quantity,
+      };
+    }),
+    shop
+  );
+  const totalCartAmount = Math.max(
+    0,
+    subtotalCartAmount - promoCalc.discountAmount
+  );
 
   const bottomCtaText =
     shop.vertical === 'service'
@@ -271,9 +316,9 @@ export default function StorefrontMenuPage() {
     <div className={`flex flex-1 flex-col min-h-screen ${bgProps.containerClass}`}>
       {bgProps.backgroundLayer}
 
-      {/* Top Header with Back to Store Info & 8-Flag Switcher */}
+      {/* Top Header with Back to Store Info & 8-Language Switcher */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-2xs text-slate-900">
-        <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
+        <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-1.5">
           <div className="flex items-center gap-2 min-w-0">
             <Link
               href={`/s/${shop.slug}?lang=${locale}`}
@@ -310,6 +355,15 @@ export default function StorefrontMenuPage() {
             supportedLangs={allowedLangs}
             onChange={setLocale}
             compact
+          />
+        </div>
+
+        {/* 1-Tap 8-Language Flag Quick Bar */}
+        <div className="px-3.5 pb-2">
+          <LanguageSwitcher
+            currentLocale={locale}
+            supportedLangs={allowedLangs}
+            onChange={setLocale}
           />
         </div>
 
@@ -420,12 +474,25 @@ export default function StorefrontMenuPage() {
         </div>
       )}
 
+      {/* Live Flash Sale Countdown Section */}
+      {shop.theme_config?.flashSale?.enabled && (
+        <div className="relative z-10 mx-3.5 mt-3">
+          <StorefrontFlashSaleSection
+            shop={shop}
+            items={items}
+            locale={locale}
+            onSelectItem={handleOpenItem}
+            onQuickAdd={handleQuickAdd}
+          />
+        </div>
+      )}
+
       {/* Main Catalog / Menu List by Vertical */}
       <main className="relative z-10 flex-1 p-3.5">
         <VerticalRenderer
           vertical={shop.vertical}
           categories={categories}
-          items={items}
+          items={effectiveItems}
           locale={locale}
           currency={shop.currency}
           primaryColor={primaryColor}
@@ -457,12 +524,19 @@ export default function StorefrontMenuPage() {
                     {bottomCtaText}
                   </span>
                   <span className="block text-[10px] font-medium text-white/85">
-                    {labels.bottomBarHint}
+                    {promoCalc.discountAmount > 0
+                      ? `🎁 Đã giảm ${formatCurrency(promoCalc.discountAmount, shop.currency)}`
+                      : labels.bottomBarHint}
                   </span>
                 </div>
               </div>
 
               <div className="text-right">
+                {promoCalc.discountAmount > 0 && (
+                  <span className="block text-[10px] text-white/75 line-through">
+                    {formatCurrency(subtotalCartAmount, shop.currency)}
+                  </span>
+                )}
                 <span className="text-sm sm:text-base font-black">
                   {formatCurrency(totalCartAmount, shop.currency)}
                 </span>
