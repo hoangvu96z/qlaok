@@ -563,7 +563,10 @@ export function PosCounterWorkspace({
         setShowQrConfirmModal(false);
 
         if (createdOrder) {
-          onOrderCreated(createdOrder, autoPrintOnPay);
+          onOrderCreated(
+            createdOrder,
+            paymentMethod === 'vietqr' ? true : autoPrintOnPay
+          );
         }
       }
     } finally {
@@ -574,7 +577,8 @@ export function PosCounterWorkspace({
   const handlePaymentButtonClick = () => {
     if (lines.length === 0 || submitting) return;
     if (paymentMethod === 'vietqr') {
-      setShowQrConfirmModal(true);
+      // Create order immediately and open ReceiptPrintModal with QR printed on the bill
+      submitPosOrder(false);
       return;
     }
     submitPosOrder(true);
@@ -927,11 +931,15 @@ export function PosCounterWorkspace({
                 {submitting
                   ? 'Đang lưu...'
                   : paymentMethod === 'vietqr'
-                    ? 'Thanh Toán QR'
+                    ? 'In Bill Kèm QR'
                     : 'Thanh Toán'}
               </span>
               <span className="text-[11px] font-bold text-emerald-100 text-center">
-                {autoPrintOnPay ? '🖨️ Tự động in bill' : 'Lưu & Báo bếp'}
+                {paymentMethod === 'vietqr'
+                  ? '🖨️ In mã QR ra bill'
+                  : autoPrintOnPay
+                    ? '🖨️ Tự động in bill'
+                    : 'Lưu & Báo bếp'}
               </span>
             </button>
 

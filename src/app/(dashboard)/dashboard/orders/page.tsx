@@ -33,40 +33,16 @@ import { FlagIcon } from '@/components/ui/FlagIcon';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
-
-// Synthesize a pleasant dual-tone POS counter chime using Web Audio API
-function playOrderChime() {
-  if (typeof window === 'undefined') return;
-  try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-
-    const playTone = (freq: number, start: number, duration: number) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
-      gain.gain.setValueAtTime(0.22, ctx.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(
-        0.001,
-        ctx.currentTime + start + duration
-      );
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + duration);
-    };
-
-    playTone(659.25, 0, 0.18); // E5
-    playTone(880, 0.18, 0.35); // A5
-  } catch {
-    // ignore audio autoplay restrictions
-  }
-}
+import {
+  CHIME_SOUND_OPTIONS,
+  ChimeSoundId,
+  ChimeVolumePreset,
+  DEFAULT_CHIME_SETTINGS,
+  loadOrderChimeSettings,
+  OrderChimeSettings,
+  playOrderAlertChime,
+  saveOrderChimeSettings,
+} from '@/lib/order-chime';
 
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
@@ -80,7 +56,10 @@ export default function CounterOrdersPage() {
   const [filterTab, setFilterTab] = useState<
     'active' | 'new' | 'preparing' | 'completed' | 'cancelled'
   >('active');
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [chimeSettings, setChimeSettings] = useState<OrderChimeSettings>(
+    DEFAULT_CHIME_SETTINGS
+  );
+  const [isChimeModalOpen, setIsChimeModalOpen] = useState(false);
   const [autoPrintOnPay, setAutoPrintOnPay] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
@@ -88,6 +67,22 @@ export default function CounterOrdersPage() {
 
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
+  const chimeSettingsRef = useRef<OrderChimeSettings>(DEFAULT_CHIME_SETTINGS);
+
+  useEffect(() => {
+    const loaded = loadOrderChimeSettings();
+    setChimeSettings(loaded);
+    chimeSettingsRef.current = loaded;
+  }, []);
+
+  const updateChimeSettings = (patch: Partial<OrderChimeSettings>) => {
+    setChimeSettings((prev) => {
+      const next = { ...prev, ...patch };
+      chimeSettingsRef.current = next;
+      saveOrderChimeSettings(next);
+      return next;
+    });
+  };
 
   const fetchOrdersAndCatalog = useCallback(
     async (silent = false) => {
@@ -109,12 +104,15 @@ export default function CounterOrdersPage() {
 
           // Detect newly arrived orders to ring chime
           if (!isFirstLoadRef.current) {
-            const hasBrandNew = fetchedOrders.some(
+            const brandNewOrder = fetchedOrders.find(
               (o) =>
                 o.status === 'new' && !knownOrderIdsRef.current.has(o.id)
             );
-            if (hasBrandNew && soundEnabled) {
-              playOrderChime();
+            if (brandNewOrder && chimeSettingsRef.current.enabled) {
+              playOrderAlertChime(
+                chimeSettingsRef.current,
+                brandNewOrder.table_label
+              );
             }
           }
 
@@ -134,7 +132,7 @@ export default function CounterOrdersPage() {
         if (!silent) setLoading(false);
       }
     },
-    [activeShop, soundEnabled]
+    [activeShop]
   );
 
   useEffect(() => {
@@ -149,7 +147,9 @@ export default function CounterOrdersPage() {
           ev.data?.type === 'new_order_submitted' &&
           ev.data?.shopId === activeShop?.id
         ) {
-          if (soundEnabled) playOrderChime();
+          if (chimeSettingsRef.current.enabled) {
+            playOrderAlertChime(chimeSettingsRef.current);
+          }
         }
         fetchOrdersAndCatalog(true);
       };
@@ -163,7 +163,28 @@ export default function CounterOrdersPage() {
       if (bc) bc.close();
       clearInterval(interval);
     };
-  }, [fetchOrdersAndCatalog, activeShop?.id, soundEnabled]);
+  }, [fetchOrdersAndCatalog, activeShop?.id]);
+
+  // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders and remindUntilAccepted is enabled
+  useEffect(() => {
+    const pendingNewOrders = orders.filter((o) => o.status === 'new');
+    if (
+      !chimeSettings.enabled ||
+      !chimeSettings.remindUntilAccepted ||
+      pendingNewOrders.length === 0
+    ) {
+      return;
+    }
+
+    const reminderTimer = setInterval(() => {
+      playOrderAlertChime(
+        chimeSettingsRef.current,
+        pendingNewOrders[0]?.table_label
+      );
+    }, 10000);
+
+    return () => clearInterval(reminderTimer);
+  }, [orders, chimeSettings.enabled, chimeSettings.remindUntilAccepted]);
 
   const handleUpdateOrder = async (
     orderId: string,
@@ -308,31 +329,51 @@ export default function CounterOrdersPage() {
             <span>In bill khi thu tiền: {autoPrintOnPay ? 'BẬT' : 'TẮT'}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              const next = !soundEnabled;
-              setSoundEnabled(next);
-              if (next) playOrderChime();
-            }}
-            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
-              soundEnabled
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                : 'border-slate-700 bg-slate-800 text-slate-400'
-            }`}
-          >
-            {soundEnabled ? (
-              <>
-                <Volume2 className="h-4 w-4" />
-                <span>Chuông báo: BẬT</span>
-              </>
-            ) : (
-              <>
-                <VolumeX className="h-4 w-4" />
-                <span>Chuông báo: TẮT</span>
-              </>
-            )}
-          </button>
+          <div className="inline-flex items-center rounded-2xl border border-emerald-500/40 bg-slate-800/90 p-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                const nextEnabled = !chimeSettings.enabled;
+                const next = { ...chimeSettings, enabled: nextEnabled };
+                updateChimeSettings({ enabled: nextEnabled });
+                if (nextEnabled) playOrderAlertChime(next);
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
+                chimeSettings.enabled
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {chimeSettings.enabled ? (
+                <>
+                  <Volume2 className="h-4 w-4 text-emerald-400" />
+                  <span>
+                    Chuông:{' '}
+                    {chimeSettings.volumePreset === 'max_boost'
+                      ? 'SIÊU TO'
+                      : chimeSettings.volumePreset === 'loud'
+                        ? 'TO'
+                        : 'BẬT'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="h-4 w-4" />
+                  <span>Chuông: TẮT</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsChimeModalOpen(true)}
+              className="inline-flex items-center gap-1 rounded-xl bg-slate-700/80 px-2.5 py-1.5 text-[11px] font-black text-amber-300 hover:bg-slate-700"
+              title="Đổi kiểu chuông báo & kích âm lượng lớn cho bếp/quầy"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span>Kiểu chuông &amp; Độ lớn</span>
+            </button>
+          </div>
 
           {workspaceMode === 'kitchen_orders' && (
             <button
@@ -935,12 +976,263 @@ export default function CounterOrdersPage() {
           );
         })()}
 
+      {/* Chime Sound & Volume Booster Settings Modal */}
+      {isChimeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-600 text-white">
+                  <BellRing className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Cài Đặt Chuông Báo Đơn Mới &amp; Khuếch Đại Âm Lượng
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Tùy chỉnh kiểu chuông, giọng đọc Tiếng Việt và kích âm lượng
+                    cực đại cho quán đông
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsChimeModalOpen(false)}
+                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* 1. Master Volume / Loudness Boost */}
+            <div className="space-y-2">
+              <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
+                1. Độ lớn âm lượng (Khuếch đại âm thanh):
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    {
+                      id: 'normal',
+                      title: '🔈 Vừa (100%)',
+                      sub: 'Quán yên tĩnh',
+                    },
+                    {
+                      id: 'loud',
+                      title: '🔉 To (150%)',
+                      sub: 'Quầy thu ngân',
+                    },
+                    {
+                      id: 'max_boost',
+                      title: '🔊 CỰC ĐẠI (300%)',
+                      sub: 'Quán đông / Bếp ồn',
+                    },
+                  ] as Array<{
+                    id: ChimeVolumePreset;
+                    title: string;
+                    sub: string;
+                  }>
+                ).map((vol) => {
+                  const active = chimeSettings.volumePreset === vol.id;
+                  return (
+                    <button
+                      key={vol.id}
+                      type="button"
+                      onClick={() => {
+                        const next = {
+                          ...chimeSettings,
+                          enabled: true,
+                          volumePreset: vol.id,
+                        };
+                        updateChimeSettings({
+                          enabled: true,
+                          volumePreset: vol.id,
+                        });
+                        playOrderAlertChime(next, 'Bàn 01');
+                      }}
+                      className={`rounded-2xl border p-2.5 text-left transition ${
+                        active
+                          ? 'border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500/20'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="text-xs font-black text-slate-900">
+                        {vol.title}
+                      </div>
+                      <div className="text-[10px] font-medium text-slate-500 mt-0.5">
+                        {vol.sub}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 2. Select Chime Sound Style */}
+            <div className="space-y-2">
+              <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
+                2. Chọn kiểu chuông báo / Giọng đọc:
+              </label>
+              <div className="space-y-2">
+                {CHIME_SOUND_OPTIONS.map((opt) => {
+                  const active = chimeSettings.soundId === opt.id;
+                  return (
+                    <div
+                      key={opt.id}
+                      onClick={() => {
+                        const next = {
+                          ...chimeSettings,
+                          enabled: true,
+                          soundId: opt.id as ChimeSoundId,
+                        };
+                        updateChimeSettings({
+                          enabled: true,
+                          soundId: opt.id as ChimeSoundId,
+                        });
+                        playOrderAlertChime(next, 'Bàn 02');
+                      }}
+                      className={`flex items-center justify-between gap-3 rounded-2xl border p-3 cursor-pointer transition ${
+                        active
+                          ? 'border-emerald-600 bg-emerald-50/80 ring-2 ring-emerald-500/20'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs sm:text-sm font-black text-slate-900">
+                            {opt.label}
+                          </span>
+                          {opt.badge && (
+                            <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-900">
+                              {opt.badge}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {opt.desc}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playOrderAlertChime(
+                            {
+                              ...chimeSettings,
+                              enabled: true,
+                              soundId: opt.id as ChimeSoundId,
+                            },
+                            'Bàn 05'
+                          );
+                        }}
+                        className="shrink-0 inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-600"
+                      >
+                        <Volume2 className="h-3.5 w-3.5" />
+                        <span>Nghe thử</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. Repeat Count & Persistent Reminder */}
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-700">
+                  Số hồi chuông đổ mỗi lần có đơn:
+                </span>
+                <div className="inline-flex rounded-xl bg-white border border-slate-200 p-0.5">
+                  {([1, 2, 3] as Array<1 | 2 | 3>).map((cnt) => (
+                    <button
+                      key={cnt}
+                      type="button"
+                      onClick={() => updateChimeSettings({ repeatCount: cnt })}
+                      className={`rounded-lg px-3 py-1 text-xs font-black transition ${
+                        chimeSettings.repeatCount === cnt
+                          ? 'bg-emerald-600 text-white'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {cnt} hồi
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2.5 cursor-pointer pt-2 border-t border-slate-200/80">
+                <input
+                  type="checkbox"
+                  checked={chimeSettings.remindUntilAccepted}
+                  onChange={(e) =>
+                    updateChimeSettings({
+                      remindUntilAccepted: e.target.checked,
+                    })
+                  }
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600"
+                />
+                <div className="text-xs">
+                  <span className="font-black text-slate-900 block">
+                    🔁 Tự động đổ chuông nhắc lại mỗi 10 giây khi còn đơn Mới chưa
+                    nhận
+                  </span>
+                  <span className="text-slate-500 text-[11px]">
+                    Đảm bảo nhân viên không bao giờ bỏ sót đơn khách đặt qua QR
+                    khi đang bận pha chế
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() =>
+                  playOrderAlertChime(
+                    { ...chimeSettings, enabled: true },
+                    'Bàn 01'
+                  )
+                }
+                className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-200"
+              >
+                <Volume2 className="h-4 w-4 text-emerald-600" />
+                <span>Test thử âm thanh đang chọn</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsChimeModalOpen(false)}
+                className="rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-md hover:bg-emerald-500"
+              >
+                Lưu &amp; Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Thermal Receipt Print Modal */}
       {printingOrder && (
         <ReceiptPrintModal
           order={printingOrder}
           shop={activeShop}
           onClose={() => setPrintingOrder(null)}
+          onConfirmPaid={async (targetOrder) => {
+            await handleUpdateOrder(
+              targetOrder.id,
+              {
+                payment_status: 'paid',
+                status:
+                  targetOrder.status === 'new'
+                    ? 'preparing'
+                    : targetOrder.status,
+              },
+              false
+            );
+            setPrintingOrder((prev) =>
+              prev ? { ...prev, payment_status: 'paid' } : null
+            );
+          }}
         />
       )}
     </div>

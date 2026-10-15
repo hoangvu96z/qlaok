@@ -19,15 +19,18 @@ interface ReceiptPrintModalProps {
   order: ShopOrder | null;
   shop: Shop;
   onClose: () => void;
+  onConfirmPaid?: (order: ShopOrder) => Promise<void>;
 }
 
 export function ReceiptPrintModal({
   order,
   shop,
   onClose,
+  onConfirmPaid,
 }: ReceiptPrintModalProps) {
   const [paperSize, setPaperSize] = useState<'80mm' | '58mm'>('80mm');
   const [includeQrOnBill, setIncludeQrOnBill] = useState(true);
+  const [confirmingPaid, setConfirmingPaid] = useState(false);
   const receiptRef = useRef<HTMLDivElement>(null);
 
   if (!order) return null;
@@ -114,19 +117,17 @@ export function ReceiptPrintModal({
 
     const qrSectionHtml = includeQrOnBill
       ? `
-        <div style="margin-top:10px;text-align:center;border-top:1px dashed #94a3b8;padding-top:8px;">
-          <div style="font-size:10px;font-weight:700;margin-bottom:4px;">
-            ${
-              order.payment_status === 'paid'
-                ? 'ĐÃ THANH TOÁN ĐỦ • CẢM ƠN QUÝ KHÁCH'
-                : 'QUÉT MÃ VIETQR ĐỂ THANH TOÁN'
-            }
+        <div style="margin-top:10px;text-align:center;border-top:1px dashed #000;padding-top:8px;">
+          <div style="font-size:11px;font-weight:900;margin-bottom:4px;text-transform:uppercase;">
+            QUÉT MÃ QR ĐỂ CHUYỂN KHOẢN THANH TOÁN
           </div>
-          ${
-            order.payment_status !== 'paid'
-              ? `<img src="${vietQrUrl}" alt="VietQR" style="width:140px;height:140px;object-fit:contain;margin:0 auto;display:block;" />`
-              : ''
-          }
+          <img src="${vietQrUrl}" alt="VietQR" style="width:165px;height:165px;object-fit:contain;margin:4px auto;display:block;border:1px solid #cbd5e1;padding:4px;border-radius:6px;background:#fff;" />
+          <div style="font-size:10px;line-height:1.4;margin-top:4px;">
+            <div>Ngân hàng: <strong>${qrInfo.bankShortName}</strong></div>
+            ${qrInfo.accountNumber ? `<div>STK: <strong>${qrInfo.accountNumber}</strong></div>` : ''}
+            <div>Chủ TK: <strong>${qrInfo.accountName}</strong></div>
+            <div>Nội dung CK: <strong>${qrInfo.transferContent}</strong></div>
+          </div>
         </div>
       `
       : '';
@@ -193,7 +194,7 @@ export function ReceiptPrintModal({
 
           <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px;">
             <span>Hình thức: ${order.payment_method === 'vietqr' ? 'Chuyển khoản QR' : 'Tiền mặt'}</span>
-            <strong>${order.payment_status === 'paid' ? '✓ ĐÃ THU TIỀN' : 'CHƯA THU TIỀN'}</strong>
+            <strong>${order.payment_status === 'paid' ? '✓ ĐÃ THU TIỀN' : 'QUÉT QR / CHỜ THANH TOÁN'}</strong>
           </div>
 
           ${qrSectionHtml}
@@ -222,13 +223,41 @@ export function ReceiptPrintModal({
       doc.write(printHtml);
       doc.close();
 
-      setTimeout(() => {
+      let printed = false;
+      const triggerPrint = () => {
+        if (printed) return;
+        printed = true;
         iframe.contentWindow?.focus();
         iframe.contentWindow?.print();
         setTimeout(() => {
-          document.body.removeChild(iframe);
-        }, 1500);
-      }, 350);
+          if (document.body.contains(iframe)) {
+            document.body.removeChild(iframe);
+          }
+        }, 2000);
+      };
+
+      const imgs = Array.from(doc.images || []);
+      if (imgs.length === 0 || imgs.every((img) => img.complete)) {
+        setTimeout(triggerPrint, 250);
+      } else {
+        let loadedCount = 0;
+        const checkDone = () => {
+          loadedCount += 1;
+          if (loadedCount >= imgs.length) {
+            setTimeout(triggerPrint, 150);
+          }
+        };
+        imgs.forEach((img) => {
+          if (img.complete) {
+            checkDone();
+          } else {
+            img.addEventListener('load', checkDone, { once: true });
+            img.addEventListener('error', checkDone, { once: true });
+          }
+        });
+        // Fallback safety timeout if network is slow
+        setTimeout(triggerPrint, 1800);
+      }
     }
   };
 
@@ -422,25 +451,38 @@ export function ReceiptPrintModal({
               </div>
             </div>
 
-            {/* Optional QR on Bill */}
+            {/* QR Code on Bill (Always shown when includeQrOnBill is checked so customer can scan from printed paper bill) */}
             {includeQrOnBill && (
               <div className="border-t border-dashed border-slate-300 pt-2.5 text-center space-y-1.5">
-                {order.payment_status !== 'paid' ? (
-                  <>
-                    <p className="text-[10px] font-bold text-slate-700 flex items-center justify-center gap-1">
-                      <QrCode className="h-3 w-3 text-emerald-600" />
-                      <span>Quét VietQR để thanh toán</span>
+                <p className="text-[10px] font-black uppercase text-slate-900 flex items-center justify-center gap-1">
+                  <QrCode className="h-3 w-3 text-emerald-600" />
+                  <span>Quét Mã QR Để Chuyển Khoản</span>
+                </p>
+                <img
+                  src={vietQrUrl}
+                  alt="VietQR"
+                  className="mx-auto h-36 w-36 object-contain rounded-lg border border-slate-200 p-1 bg-white"
+                />
+                <div className="text-[10px] text-slate-700 leading-snug space-y-0.5">
+                  <p>
+                    NH: <strong>{qrInfo.bankShortName}</strong>
+                  </p>
+                  {qrInfo.accountNumber && (
+                    <p>
+                      STK: <strong>{qrInfo.accountNumber}</strong>
                     </p>
-                    <img
-                      src={vietQrUrl}
-                      alt="VietQR"
-                      className="mx-auto h-32 w-32 object-contain rounded-lg border border-slate-200 p-1 bg-white"
-                    />
-                  </>
-                ) : (
+                  )}
+                  <p>
+                    Chủ TK: <strong>{qrInfo.accountName}</strong>
+                  </p>
+                  <p>
+                    ND: <strong>{qrInfo.transferContent}</strong>
+                  </p>
+                </div>
+                {order.payment_status === 'paid' && (
                   <p className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-black text-emerald-800">
                     <CheckCircle2 className="h-3 w-3" />
-                    <span>Hóa đơn đã thanh toán hoàn tất</span>
+                    <span>Đã ghi nhận thanh toán</span>
                   </p>
                 )}
               </div>
@@ -471,22 +513,49 @@ export function ReceiptPrintModal({
         </div>
 
         {/* Print Action Buttons */}
-        <div className="flex items-center gap-2.5 pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-2xl border border-slate-200 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-100"
-          >
-            Đóng
-          </button>
-          <button
-            type="button"
-            onClick={handlePrintThermalReceipt}
-            className="flex-1 inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 px-5 text-xs sm:text-sm font-black text-white shadow-lg hover:bg-emerald-500 active:scale-98 transition"
-          >
-            <Printer className="h-4 w-4" />
-            <span>🖨️ In Hóa Đơn Ngay ({paperSize})</span>
-          </button>
+        <div className="space-y-2 pt-1">
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-slate-200 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-100"
+            >
+              Đóng
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintThermalReceipt}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 px-5 text-xs sm:text-sm font-black text-white shadow-lg hover:bg-emerald-500 active:scale-98 transition"
+            >
+              <Printer className="h-4 w-4" />
+              <span>
+                🖨️ In Hóa Đơn {includeQrOnBill ? 'Kèm Mã QR ' : ''}({paperSize})
+              </span>
+            </button>
+          </div>
+
+          {onConfirmPaid && order.payment_status !== 'paid' && (
+            <button
+              type="button"
+              disabled={confirmingPaid}
+              onClick={async () => {
+                setConfirmingPaid(true);
+                try {
+                  await onConfirmPaid(order);
+                } finally {
+                  setConfirmingPaid(false);
+                }
+              }}
+              className="w-full inline-flex items-center justify-center gap-1.5 rounded-2xl border border-emerald-300 bg-emerald-50 py-2.5 px-4 text-xs font-black text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+            >
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <span>
+                {confirmingPaid
+                  ? 'Đang xác nhận...'
+                  : '✓ Xác nhận khách đã chuyển khoản / Thu tiền xong'}
+              </span>
+            </button>
+          )}
         </div>
       </div>
     </div>
