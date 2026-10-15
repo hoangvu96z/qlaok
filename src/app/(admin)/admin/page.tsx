@@ -731,7 +731,7 @@ export default function SuperAdminPortalPage() {
 
       {/* Main Content Wrapper (md:pl-64 isolates sidebar offset from inner responsive padding) */}
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen min-w-0">
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+        <main className="flex-1 w-full p-4 sm:p-6 space-y-6">
           {/* Top Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
             <div>

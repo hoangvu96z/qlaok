@@ -402,7 +402,7 @@ export default function DashboardCatalogPage() {
       </div>
 
       {/* Quick Item List */}
-      <div className="space-y-3">
+      <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
         {filteredItems.map((item) => (
           <QuickItemRow
             key={item.id}
