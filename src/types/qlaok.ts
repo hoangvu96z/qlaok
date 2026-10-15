@@ -1,4 +1,4 @@
-export type SupportedLocale = 'vi' | 'en' | 'ko' | 'ja' | 'zh';
+export type SupportedLocale = 'vi' | 'en' | 'ko' | 'ja' | 'zh' | 'es' | 'it' | 'ru';
 export type PlanTier = 'free' | 'basic' | 'premium';
 export type BusinessVertical = 'fnb' | 'service' | 'retail';
 export type AnalyticsEventType =
@@ -14,6 +14,9 @@ export interface I18nText {
   ko?: string;
   ja?: string;
   zh?: string;
+  es?: string;
+  it?: string;
+  ru?: string;
 }
 
 export interface WifiInfo {
@@ -45,6 +48,36 @@ export interface ItemOptionGroup {
   choices: ItemOptionChoice[];
 }
 
+export interface ShopPromoBannerConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  subtitle?: string;
+  imageUrl?: string;
+  bgGradient?: 'amber_rose' | 'emerald_teal' | 'violet_fuchsia' | 'royal_gold';
+  ctaText?: string;
+}
+
+export interface ShopPopupConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  content: string;
+  imageUrl?: string;
+  voucherCode?: string;
+  ctaText?: string;
+}
+
+export interface ShopThemeConfig {
+  primaryColor: string;
+  layout: 'grid' | 'list';
+  backgroundStyle?: 'clean' | 'warm' | 'dark' | 'custom_image';
+  backgroundImageUrl?: string;
+  backgroundOverlayOpacity?: number;
+  promoBanner?: ShopPromoBannerConfig;
+  welcomePopup?: ShopPopupConfig;
+}
+
 export interface Shop {
   id: string;
   owner_id: string;
@@ -66,10 +99,7 @@ export interface Shop {
   opening_hours: OpeningHours;
   supported_langs: SupportedLocale[];
   currency: string;
-  theme_config: {
-    primaryColor: string;
-    layout: 'grid' | 'list';
-  };
+  theme_config: ShopThemeConfig;
   is_published?: boolean;
   created_at?: string;
   updated_at?: string;

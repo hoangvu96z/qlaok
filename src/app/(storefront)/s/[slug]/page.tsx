@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import {
@@ -10,15 +10,15 @@ import {
   Clock,
   ArrowRight,
   Sparkles,
-  QrCode,
-  ExternalLink,
   Megaphone,
   UtensilsCrossed,
   Scissors,
   ShoppingBag,
+  Gift,
 } from 'lucide-react';
 import { Post, Shop, SupportedLocale } from '@/types/qlaok';
 import {
+  ALL_LOCALES,
   checkShopOpenStatus,
   detectVisitorLocale,
   tField,
@@ -27,6 +27,11 @@ import {
 import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { WifiBadge } from '@/components/storefront/WifiBadge';
+import {
+  getStorefrontBackgroundProps,
+  StorefrontPromoBanner,
+  StorefrontWelcomePopup,
+} from '@/components/storefront/StorefrontCustomDecor';
 
 export default function StorefrontDoorPage() {
   const params = useParams<{ slug: string }>();
@@ -35,13 +40,13 @@ export default function StorefrontDoorPage() {
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
-  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(['vi', 'en', 'ko', 'ja', 'zh']);
+  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
   const [loading, setLoading] = useState(true);
+  const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    async function loadStorefront() {
+  const loadStorefront = useCallback(
+    async (isInitial = false) => {
       try {
         const res = await fetch(`/api/shops?slug=${encodeURIComponent(slug)}`, {
           cache: 'no-store',
@@ -51,8 +56,6 @@ export default function StorefrontDoorPage() {
           return;
         }
         const data = await res.json();
-        if (!mounted) return;
-
         const loadedShop: Shop = data.shop;
         const planLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
@@ -63,33 +66,67 @@ export default function StorefrontDoorPage() {
         setPosts(data.posts || []);
         setAllowedLangs(planLangs);
 
-        const detected = detectVisitorLocale(
-          planLangs,
-          searchParams.get('lang')
-        );
-        setLocale(detected);
-        setLoading(false);
+        if (isInitial) {
+          const detected = detectVisitorLocale(
+            planLangs,
+            searchParams.get('lang')
+          );
+          setLocale(detected);
+          setLoading(false);
 
-        // Track QR Door Scan
-        fetch('/api/analytics/track', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shop_id: loadedShop.id,
-            event_type: 'scan_door',
-            visitor_lang: detected,
-          }),
-        }).catch(() => {});
+          // Auto-open Welcome Popup if enabled and not dismissed in this session
+          const popupCfg = loadedShop.theme_config?.welcomePopup;
+          if (popupCfg?.enabled && popupCfg.title?.trim()) {
+            const seenKey = `qlaok_popup_seen_${loadedShop.id}`;
+            if (!sessionStorage.getItem(seenKey)) {
+              setIsPromoPopupOpen(true);
+            }
+          }
+
+          // Track QR Door Scan
+          fetch('/api/analytics/track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              shop_id: loadedShop.id,
+              event_type: 'scan_door',
+              visitor_lang: detected,
+            }),
+          }).catch(() => {});
+        }
       } catch (err) {
         console.error('Error loading storefront:', err);
-        if (mounted) setLoading(false);
+        setLoading(false);
       }
-    }
-    loadStorefront();
-    return () => {
-      mounted = false;
+    },
+    [slug, searchParams]
+  );
+
+  useEffect(() => {
+    loadStorefront(true);
+  }, [loadStorefront]);
+
+  // Listen for live theme / promotion updates from owner dashboard
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return;
+    const bc = new BroadcastChannel('qlaok_realtime_sync');
+    bc.onmessage = (ev) => {
+      if (
+        ev.data?.type === 'shop_updated' ||
+        ev.data?.type === 'catalog_changed'
+      ) {
+        loadStorefront(false);
+      }
     };
-  }, [slug, searchParams]);
+    return () => bc.close();
+  }, [loadStorefront]);
+
+  const handleClosePopup = () => {
+    setIsPromoPopupOpen(false);
+    if (shop && typeof window !== 'undefined') {
+      sessionStorage.setItem(`qlaok_popup_seen_${shop.id}`, '1');
+    }
+  };
 
   if (loading) {
     return (
@@ -125,6 +162,11 @@ export default function StorefrontDoorPage() {
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
   const openStatus = checkShopOpenStatus(shop.opening_hours);
+  const bgProps = getStorefrontBackgroundProps(shop);
+  const hasActivePopup = Boolean(
+    shop.theme_config?.welcomePopup?.enabled &&
+      shop.theme_config?.welcomePopup?.title?.trim()
+  );
 
   const mainCtaLabel =
     shop.vertical === 'service'
@@ -141,21 +183,36 @@ export default function StorefrontDoorPage() {
         : UtensilsCrossed;
 
   return (
-    <div className="flex flex-1 flex-col pb-24">
+    <div className={`flex flex-1 flex-col pb-24 ${bgProps.containerClass}`}>
+      {bgProps.backgroundLayer}
+
       {/* Top Language Bar */}
       <div className="sticky top-0 z-30 flex items-center justify-between bg-white/90 px-3.5 py-2.5 backdrop-blur-md border-b border-slate-200/70">
-        <Link
-          href="/"
-          className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
-        >
-          <span
-            className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
-            style={{ backgroundColor: primaryColor }}
+        <div className="flex items-center gap-2">
+          <Link
+            href="/"
+            className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
           >
-            Q
-          </span>
-          <span>Qlaok</span>
-        </Link>
+            <span
+              className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
+              style={{ backgroundColor: primaryColor }}
+            >
+              Q
+            </span>
+            <span>Qlaok</span>
+          </Link>
+
+          {hasActivePopup && (
+            <button
+              type="button"
+              onClick={() => setIsPromoPopupOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
+            >
+              <Gift className="h-3 w-3 text-rose-600" />
+              <span>Voucher</span>
+            </button>
+          )}
+        </div>
 
         <LanguageSwitcher
           currentLocale={locale}
@@ -166,7 +223,7 @@ export default function StorefrontDoorPage() {
       </div>
 
       {/* Hero Cover Image & Shop Identity */}
-      <div className="relative h-52 w-full bg-slate-900 overflow-hidden">
+      <div className="relative z-10 h-52 w-full bg-slate-900 overflow-hidden">
         {shop.cover_urls?.[0] ? (
           <img
             src={shop.cover_urls[0]}
@@ -235,7 +292,15 @@ export default function StorefrontDoorPage() {
       </div>
 
       {/* Main Micro-Website Body */}
-      <div className="p-4 space-y-4">
+      <div className="relative z-10 p-4 space-y-4">
+        {/* Custom Owner Promo Banner (if enabled) */}
+        <StorefrontPromoBanner
+          shop={shop}
+          onOpenPopup={
+            hasActivePopup ? () => setIsPromoPopupOpen(true) : undefined
+          }
+        />
+
         {/* Primary CTA to Menu / Price List */}
         <Link
           href={`/s/${shop.slug}/menu?src=door&lang=${locale}`}
@@ -251,7 +316,7 @@ export default function StorefrontDoorPage() {
                 {mainCtaLabel}
               </span>
               <span className="block text-xs text-white/85">
-                🇻🇳 🇬🇧 🇰🇷 🇯🇵 🇨🇳 • AI Multi-language Menu
+                🇻🇳 🇬🇧 🇰🇷 🇯🇵 🇨🇳 🇪🇸 🇮🇹 🇷🇺 • Multi-language Menu
               </span>
             </div>
           </div>
@@ -269,7 +334,7 @@ export default function StorefrontDoorPage() {
         />
 
         {/* Description & Address Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3 text-slate-900">
           {tField(shop.description_i18n, locale) && (
             <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
               {tField(shop.description_i18n, locale)}
@@ -326,7 +391,11 @@ export default function StorefrontDoorPage() {
           <div className="space-y-2.5">
             <div className="flex items-center gap-1.5 px-1">
               <Megaphone className="h-4 w-4 text-amber-500" />
-              <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+              <h2
+                className={`text-xs font-extrabold uppercase tracking-wider ${
+                  bgProps.isDarkTheme ? 'text-slate-200' : 'text-slate-600'
+                }`}
+              >
                 {labels.promotions}
               </h2>
             </div>
@@ -335,9 +404,9 @@ export default function StorefrontDoorPage() {
               {posts.map((post) => (
                 <div
                   key={post.id}
-                  className={`rounded-2xl border p-4 shadow-xs ${
+                  className={`rounded-2xl border p-4 shadow-xs text-slate-900 ${
                     post.is_pinned
-                      ? 'border-amber-300 bg-amber-50/60'
+                      ? 'border-amber-300 bg-amber-50/95'
                       : 'border-slate-200 bg-white'
                   }`}
                 >
@@ -374,6 +443,13 @@ export default function StorefrontDoorPage() {
           </div>
         )}
       </div>
+
+      {/* Welcome / Promo Popup Modal */}
+      <StorefrontWelcomePopup
+        shop={shop}
+        isOpen={isPromoPopupOpen}
+        onClose={handleClosePopup}
+      />
 
       {/* Sticky Bottom Floating Button */}
       <div className="fixed bottom-0 left-0 right-0 z-30 flex justify-center p-3 pointer-events-none">

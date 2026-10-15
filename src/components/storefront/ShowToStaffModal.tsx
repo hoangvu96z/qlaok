@@ -15,6 +15,7 @@ import {
   Loader2,
   Banknote,
   QrCode,
+  ShoppingBag,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -23,7 +24,14 @@ import {
   ShopOrder,
   SupportedLocale,
 } from '@/types/qlaok';
-import { formatCurrency, LOCALE_META, tField, UI_LABELS } from '@/lib/i18n-helper';
+import {
+  formatCurrency,
+  formatTableLabel,
+  LOCALE_META,
+  QUICK_TAGS_BY_VERTICAL,
+  tField,
+  UI_LABELS,
+} from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 
 interface ShowToStaffModalProps {
@@ -44,6 +52,7 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: string;
     sending: string;
     tablePrompt: string;
+    tableInputPlaceholder: string;
     notePlaceholder: string;
     trackerTitle: string;
     stepNew: string;
@@ -56,6 +65,7 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: '🚀 Gửi Đơn Xuống Quầy / Bếp Ngay',
     sending: 'Đang gửi đơn xuống quầy...',
     tablePrompt: 'Chọn Bàn / Vị trí ngồi:',
+    tableInputPlaceholder: 'Nhập số bàn khác (VD: Bàn 12, Phòng VIP 2...)',
     notePlaceholder: 'Ghi chú chung cho quầy (VD: mang ra cùng lúc, xin thêm chén...)',
     trackerTitle: 'Trạng Thái Đơn Hàng Trực Tiếp (Realtime)',
     stepNew: 'Chờ quầy xác nhận',
@@ -67,6 +77,7 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: '🚀 Send Order to Counter Now',
     sending: 'Sending order to counter...',
     tablePrompt: 'Select Table / Seat:',
+    tableInputPlaceholder: 'Or enter table / room number (e.g. Table 12, VIP 2...)',
     notePlaceholder: 'Note for counter (e.g. extra napkins, serve together...)',
     trackerTitle: 'Live Order Status Tracker',
     stepNew: 'Sent to Counter',
@@ -78,6 +89,7 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: '🚀 카운터로 바로 주문 전송',
     sending: '주문을 전송하는 중...',
     tablePrompt: '테이블 / 좌석 번호 선택:',
+    tableInputPlaceholder: '다른 테이블 번호 직접 입력 (예: 테이블 12, VIP 2...)',
     notePlaceholder: '요청사항 입력 (예: 앞접시 추가, 같이 서빙해주세요)',
     trackerTitle: '실시간 주문 진행 상태',
     stepNew: '주문 접수 대기',
@@ -89,6 +101,7 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: '🚀 レジ・厨房へ注文を送信',
     sending: '注文を送信中...',
     tablePrompt: 'テーブル / 座席番号:',
+    tableInputPlaceholder: 'その他のテーブル番号を入力（例：テーブル 12、VIP 2）',
     notePlaceholder: 'メモ（例：取り皿をお願いします、一緒に出してください）',
     trackerTitle: 'リアルタイム注文状況',
     stepNew: '受付待ち',
@@ -100,12 +113,49 @@ const SEND_ORDER_LABELS: Record<
     sendBtn: '🚀 立即发送订单到吧台/厨房',
     sending: '正在发送订单...',
     tablePrompt: '选择桌号 / 座位:',
+    tableInputPlaceholder: '或输入其他桌号/包厢（如：12号桌、VIP 2）',
     notePlaceholder: '备注（例如：多拿一个碗、一起上菜...）',
     trackerTitle: '实时订单状态追踪',
     stepNew: '等待吧台确认',
     stepPreparing: '正在制作/准备中',
     stepCompleted: '已上菜 / 已完成',
     orderMoreBtn: '关闭 / 继续加单',
+  },
+  es: {
+    sendBtn: '🚀 Enviar Pedido a Cocina Ahora',
+    sending: 'Enviando pedido al mostrador...',
+    tablePrompt: 'Selecciona Mesa / Ubicación:',
+    tableInputPlaceholder: 'O escribe otro número de mesa (ej. Mesa 12, VIP 2...)',
+    notePlaceholder: 'Nota para el mostrador (ej. servilletas extra, servir todo junto...)',
+    trackerTitle: 'Estado del Pedido en Tiempo Real',
+    stepNew: 'Enviado al mostrador',
+    stepPreparing: 'En preparación / cocina',
+    stepCompleted: 'Servido y completado',
+    orderMoreBtn: 'Cerrar / Pedir más platos',
+  },
+  it: {
+    sendBtn: '🚀 Invia Ordine in Cucina Ora',
+    sending: 'Invio ordine in corso...',
+    tablePrompt: 'Seleziona Tavolo / Posto:',
+    tableInputPlaceholder: 'Oppure inserisci numero tavolo (es. Tavolo 12, VIP 2...)',
+    notePlaceholder: 'Nota per la cassa (es. tovaglioli extra, servire insieme...)',
+    trackerTitle: 'Stato Ordine in Tempo Reale',
+    stepNew: 'Inviato alla cassa',
+    stepPreparing: 'In preparazione / cottura',
+    stepCompleted: 'Servito e completato',
+    orderMoreBtn: 'Chiudi / Ordina altri piatti',
+  },
+  ru: {
+    sendBtn: '🚀 Отправить заказ на кухню',
+    sending: 'Отправка заказа...',
+    tablePrompt: 'Выберите стол / место:',
+    tableInputPlaceholder: 'Или введите другой номер стола (напр. Стол 12, VIP 2...)',
+    notePlaceholder: 'Комментарий к заказу (напр. салфетки, подать всё вместе...)',
+    trackerTitle: 'Статус заказа в реальном времени',
+    stepNew: 'Отправлен на кассу',
+    stepPreparing: 'Готовится на кухне',
+    stepCompleted: 'Подано и завершено',
+    orderMoreBtn: 'Закрыть / Заказать ещё',
   },
 };
 
@@ -132,6 +182,7 @@ export function ShowToStaffModal({
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const orderText = SEND_ORDER_LABELS[locale] || SEND_ORDER_LABELS.vi;
   const visitorMeta = LOCALE_META[locale] || LOCALE_META.vi;
+  const quickTagsPool = QUICK_TAGS_BY_VERTICAL[shop.vertical] || [];
 
   useEffect(() => {
     if (initialTableLabel) {
@@ -158,85 +209,86 @@ export function ShowToStaffModal({
         // ignore network hiccup
       }
     };
+    const timer = setInterval(poll, 3500);
+    return () => clearInterval(timer);
+  }, [activeOrder]);
 
-    const interval = setInterval(poll, 2500);
-    return () => clearInterval(interval);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window) || !activeOrder) {
+      return;
+    }
+    const bc = new BroadcastChannel('qlaok_realtime_sync');
+    bc.onmessage = (ev) => {
+      if (ev.data?.type === 'order_updated' && ev.data?.order?.id === activeOrder.id) {
+        setActiveOrder(ev.data.order);
+      }
+    };
+    return () => bc.close();
   }, [activeOrder]);
 
   const grandTotal = cart.reduce((sum, entry) => {
-    const extra = entry.selectedChoices.reduce(
+    const extraTotal = entry.selectedChoices.reduce(
       (s, c) => s + (c.extra_price || 0),
       0
     );
-    return sum + (entry.item.price + extra) * entry.quantity;
+    return sum + (entry.item.price + extraTotal) * entry.quantity;
   }, 0);
 
-  const handleSubmitOrderToCounter = async () => {
+  const handleSendOrderToMpos = async () => {
     if (cart.length === 0 || submitting) return;
     setSubmitting(true);
     setSubmitError('');
 
     try {
-      const payloadItems = cart.map((entry) => {
-        const extra = entry.selectedChoices.reduce(
-          (s, c) => s + (c.extra_price || 0),
-          0
-        );
-        return {
-          item_id: entry.item.id,
-          name_vi: entry.item.name_i18n.vi,
-          name_i18n: entry.item.name_i18n,
-          quantity: entry.quantity,
-          unit_price: entry.item.price,
-          extra_price: extra,
-          selected_choices: entry.selectedChoices,
-          custom_note: entry.customNote,
-          quick_tags: entry.quickTags || [],
-        };
-      });
+      const payload = {
+        shop_id: shop.id,
+        table_label: tableNumber.trim() || 'Bàn khách QR',
+        visitor_lang: locale,
+        customer_note: customerNote.trim() || undefined,
+        payment_method: paymentMethod,
+        source: 'qr_table',
+        items: cart.map((entry) => {
+          const extraPrice = entry.selectedChoices.reduce(
+            (s, c) => s + (c.extra_price || 0),
+            0
+          );
+          return {
+            item_id: entry.item.id,
+            name_vi: entry.item.name_i18n.vi,
+            name_visitor: tField(entry.item.name_i18n, locale),
+            quantity: entry.quantity,
+            unit_price: entry.item.price,
+            extra_price: extraPrice,
+            selected_choices: entry.selectedChoices.map((c) => c.label_i18n.vi),
+            quick_tags: entry.quickTags,
+            custom_note: entry.customNote || undefined,
+          };
+        }),
+      };
 
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop_id: shop.id,
-          table_label: tableNumber.trim() || 'Bàn khách',
-          visitor_lang: locale,
-          customer_note: customerNote,
-          payment_method: paymentMethod,
-          source: 'qr_table',
-          items: payloadItems,
-        }),
+        body: JSON.stringify(payload),
       });
-
       const data = await res.json();
+
       if (!res.ok) {
-        throw new Error(data.error || 'Không thể gửi đơn hàng xuống quầy');
+        throw new Error(data.error || 'Failed to submit order');
       }
 
-      const createdOrder: ShopOrder = data.order;
-      setActiveOrder(createdOrder);
+      setActiveOrder(data.order);
+      onOrderCreated?.(data.order);
       onClearCart();
-      if (onOrderCreated) {
-        onOrderCreated(createdOrder);
-      }
 
-      // Broadcast instant notification to Counter mPOS tab
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('qlaok_realtime_sync');
-        bc.postMessage({
-          type: 'new_order_submitted',
-          shopId: shop.id,
-          orderId: createdOrder.id,
-          orderCode: createdOrder.order_code,
-          tableLabel: createdOrder.table_label,
-          totalAmount: createdOrder.total_amount,
-        });
+        bc.postMessage({ type: 'order_created', order: data.order });
         bc.close();
       }
     } catch (err) {
       setSubmitError(
-        err instanceof Error ? err.message : 'Lỗi khi gửi đơn hàng'
+        err instanceof Error ? err.message : 'Unable to send order'
       );
     } finally {
       setSubmitting(false);
@@ -251,422 +303,456 @@ export function ShowToStaffModal({
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white overflow-y-auto"
+          className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white"
         >
-          {/* High-Contrast Top Banner */}
-          <div className="bg-emerald-500 text-slate-950 px-4 py-3.5 shadow-md">
-            <div className="mx-auto max-w-md flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-emerald-400 font-black text-lg">
-                  <FlagIcon locale={locale} className="h-5 w-7" />
+          {/* Top Checkout Confirmation Banner */}
+          <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-4 shadow-lg">
+            <div className="mx-auto flex max-w-lg items-start justify-between gap-3">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-black/25 px-3 py-1 text-xs font-extrabold uppercase tracking-wider text-emerald-100">
+                  <ShoppingBag className="h-3.5 w-3.5" />
+                  <span>{labels.showToStaffHeader}</span>
                 </div>
-                <div>
-                  <h2 className="text-sm sm:text-base font-black uppercase tracking-tight leading-tight">
-                    {activeOrder
-                      ? `${orderText.trackerTitle} • #${activeOrder.order_code}`
-                      : labels.showToStaffHeader}
-                  </h2>
-                  <p className="text-xs font-bold text-slate-900 flex items-center gap-1 flex-wrap">
-                    <span>{shop.name} • Khách (</span>
-                    <FlagIcon locale={locale} className="h-3.5 w-5" />
-                    <span>{visitorMeta.label})</span>
-                  </p>
-                </div>
+                <h2 className="mt-2 flex flex-wrap items-center gap-1.5 text-lg font-black leading-tight text-white">
+                  <span>{shop.name}</span>
+                  <span className="text-emerald-200">•</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-black/20 px-2.5 py-0.5 text-xs font-bold">
+                    <FlagIcon locale={locale} size="sm" />
+                    <span>{visitorMeta.nativeName}</span>
+                  </span>
+                </h2>
+                <p className="mt-0.5 text-xs text-emerald-100/90">
+                  {labels.showToStaffSub}
+                </p>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  if (activeOrder && cart.length > 0) {
-                    setActiveOrder(null);
-                  }
+                  setActiveOrder(null);
                   onClose();
                 }}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-950/15 text-slate-950 hover:bg-slate-950/25"
+                aria-label="Close"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black/25 text-white hover:bg-black/40"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
           </div>
 
-          {/* VIEW 1: LIVE ORDER TRACKER AFTER SUBMITTING */}
-          {activeOrder && cart.length === 0 ? (
-            <div className="mx-auto w-full max-w-md flex-1 px-4 py-6 space-y-5">
-              <div className="rounded-3xl border-2 border-emerald-500/50 bg-slate-900 p-5 text-center space-y-3 shadow-xl">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400">
-                  <CheckCircle2 className="h-8 w-8" />
-                </div>
-                <div>
-                  <span className="inline-block rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black text-slate-950">
-                    {activeOrder.table_label} • #{activeOrder.order_code}
-                  </span>
-                  <h3 className="mt-2 text-lg font-black text-white">
-                    {activeOrder.status === 'new'
-                      ? orderText.stepNew
-                      : activeOrder.status === 'preparing'
-                        ? orderText.stepPreparing
-                        : orderText.stepCompleted}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Quầy thu ngân &amp; bếp đã nhận thông báo tự động
-                  </p>
+          {/* Main Content: Either Live Order Tracker OR Cart Selection */}
+          <div className="mx-auto w-full max-w-lg flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            {activeOrder ? (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-3xl border-2 border-emerald-500/40 bg-slate-900 p-5 shadow-2xl space-y-5"
+              >
+                <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+                  <div>
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {orderText.trackerTitle}
+                    </span>
+                    <h3 className="mt-2 text-2xl font-black text-white">
+                      {activeOrder.order_code} •{' '}
+                      <span className="text-emerald-400">
+                        {formatTableLabel(activeOrder.table_label, locale)}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {labels.autoNotifiedSub}
+                    </p>
+                  </div>
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400">
+                    {activeOrder.status === 'completed' ? (
+                      <CheckCircle2 className="h-8 w-8" />
+                    ) : activeOrder.status === 'preparing' ? (
+                      <ChefHat className="h-8 w-8 animate-bounce" />
+                    ) : (
+                      <Clock className="h-8 w-8 animate-pulse" />
+                    )}
+                  </div>
                 </div>
 
-                {/* 3-Step Live Progress */}
-                <div className="grid grid-cols-3 gap-2 pt-3">
-                  <div
-                    className={`rounded-2xl p-2.5 border text-center ${
-                      activeOrder.status === 'new'
-                        ? 'border-amber-400 bg-amber-400/15 text-amber-300'
-                        : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
-                    }`}
-                  >
-                    <Clock className="mx-auto h-4 w-4 mb-1" />
-                    <span className="block text-[10px] font-bold">
-                      1. {orderText.stepNew}
-                    </span>
-                  </div>
-                  <div
-                    className={`rounded-2xl p-2.5 border text-center ${
-                      activeOrder.status === 'preparing'
-                        ? 'border-blue-400 bg-blue-500/20 text-blue-300'
-                        : activeOrder.status === 'completed'
-                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
-                          : 'border-slate-800 bg-slate-800/60 text-slate-500'
-                    }`}
-                  >
-                    <ChefHat className="mx-auto h-4 w-4 mb-1" />
-                    <span className="block text-[10px] font-bold">
-                      2. {orderText.stepPreparing}
-                    </span>
-                  </div>
-                  <div
-                    className={`rounded-2xl p-2.5 border text-center ${
-                      activeOrder.status === 'completed'
-                        ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
-                        : 'border-slate-800 bg-slate-800/60 text-slate-500'
-                    }`}
-                  >
-                    <CheckCircle2 className="mx-auto h-4 w-4 mb-1" />
-                    <span className="block text-[10px] font-bold">
-                      3. {orderText.stepCompleted}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Submitted Order Items */}
-              <div className="rounded-3xl border border-slate-800 bg-slate-900 p-4 space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                  <span className="text-xs font-bold text-slate-400">
-                    Chi tiết món đã gửi xuống quầy
-                  </span>
-                  <span className="text-sm font-black text-amber-400">
-                    {formatCurrency(activeOrder.total_amount, shop.currency)}
-                  </span>
-                </div>
-                <div className="space-y-2.5">
-                  {activeOrder.items.map((line, i) => (
+                {/* 3-Step Visual Progress Bar */}
+                <div className="space-y-3">
+                  {[
+                    {
+                      key: 'new',
+                      title: orderText.stepNew,
+                      active:
+                        activeOrder.status === 'new' ||
+                        activeOrder.status === 'preparing' ||
+                        activeOrder.status === 'completed',
+                    },
+                    {
+                      key: 'preparing',
+                      title: orderText.stepPreparing,
+                      active:
+                        activeOrder.status === 'preparing' ||
+                        activeOrder.status === 'completed',
+                    },
+                    {
+                      key: 'completed',
+                      title: orderText.stepCompleted,
+                      active: activeOrder.status === 'completed',
+                    },
+                  ].map((step, i) => (
                     <div
-                      key={i}
-                      className="flex items-start justify-between gap-2 text-xs border-b border-slate-800/60 pb-2 last:border-none last:pb-0"
+                      key={step.key}
+                      className={`flex items-center gap-3 rounded-2xl border p-3.5 transition ${
+                        step.active
+                          ? 'border-emerald-500/40 bg-emerald-950/40 text-emerald-200'
+                          : 'border-slate-800 bg-slate-900/50 text-slate-500'
+                      }`}
+                    >
+                      <div
+                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-black ${
+                          step.active
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-500'
+                        }`}
+                      >
+                        {step.active ? '✓' : i + 1}
+                      </div>
+                      <span className="text-sm font-bold">{step.title}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Ordered Items Summary */}
+                <div className="rounded-2xl bg-slate-950/70 p-4 space-y-2 border border-slate-800">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    {labels.orderItemsSentHeading}
+                  </p>
+                  {activeOrder.items.map((it, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between text-sm py-1 border-b border-slate-800/60 last:border-none"
                     >
                       <div>
-                        <span className="font-black text-emerald-400 mr-1.5">
-                          x{line.quantity}
+                        <span className="font-black text-emerald-400 mr-2">
+                          {it.quantity}x
                         </span>
                         <span className="font-bold text-white">
-                          {line.name_vi}
+                          {locale === 'vi'
+                            ? it.name_vi
+                            : it.name_visitor || it.name_vi}
                         </span>
-                        {locale !== 'vi' && line.name_i18n?.[locale] && (
-                          <span className="block text-[11px] text-slate-400">
-                            {line.name_i18n[locale]}
+                        {locale !== 'vi' && (
+                          <span className="ml-1.5 text-xs text-slate-400">
+                            ({it.name_vi})
                           </span>
                         )}
                       </div>
-                      <span className="font-bold text-slate-200 shrink-0">
+                      <span className="font-bold text-slate-300">
                         {formatCurrency(
-                          (line.unit_price + line.extra_price) * line.quantity,
+                          (it.unit_price + it.extra_price) * it.quantity,
                           shop.currency
                         )}
                       </span>
                     </div>
                   ))}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3.5 text-sm font-black text-slate-950 shadow-lg hover:bg-emerald-400"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span>{orderText.orderMoreBtn}</span>
-              </button>
-            </div>
-          ) : (
-            /* VIEW 2: CART REVIEW & SEND TO COUNTER FORM */
-            <>
-              <div className="mx-auto w-full max-w-md flex-1 px-4 py-4 space-y-4">
-                {/* Table / Seat Selector */}
-                <div className="rounded-2xl bg-slate-900 border border-slate-800 p-3.5 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-300">
-                      📍 {orderText.tablePrompt}
+                  <div className="flex items-center justify-between pt-2 text-base font-black text-emerald-400">
+                    <span>{labels.totalEstimated}</span>
+                    <span>
+                      {formatCurrency(activeOrder.total_amount, shop.currency)}
                     </span>
-                    <input
-                      type="text"
-                      value={tableNumber}
-                      onChange={(e) => setTableNumber(e.target.value)}
-                      placeholder="VD: Bàn 05"
-                      className="w-32 rounded-xl bg-slate-800 border border-slate-700 px-3 py-1.5 text-right text-xs font-black text-amber-400 focus:outline-none focus:border-amber-400"
-                    />
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {QUICK_TABLES.map((tbl) => (
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveOrder(null);
+                    onClose();
+                  }}
+                  className="w-full rounded-2xl bg-slate-800 py-3.5 text-sm font-bold text-white hover:bg-slate-700"
+                >
+                  {orderText.orderMoreBtn}
+                </button>
+              </motion.div>
+            ) : (
+              <>
+                {/* Quick Table Selector & Payment Method */}
+                {cart.length > 0 && (
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
+                    <div>
+                      <label className="block text-xs font-extrabold uppercase tracking-wider text-emerald-400 mb-2">
+                        {orderText.tablePrompt}
+                      </label>
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {QUICK_TABLES.map((tb) => (
+                          <button
+                            key={tb}
+                            type="button"
+                            onClick={() => setTableNumber(tb)}
+                            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                              tableNumber === tb
+                                ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                            }`}
+                          >
+                            {formatTableLabel(tb, locale)}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="text"
+                        value={
+                          QUICK_TABLES.includes(tableNumber)
+                            ? formatTableLabel(tableNumber, locale)
+                            : tableNumber
+                        }
+                        onChange={(e) => setTableNumber(e.target.value)}
+                        placeholder={orderText.tableInputPlaceholder}
+                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-bold text-white focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Payment Method Toggle */}
+                    <div className="grid grid-cols-2 gap-2 pt-1">
                       <button
-                        key={tbl}
                         type="button"
-                        onClick={() => setTableNumber(tbl)}
-                        className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-colors ${
-                          tableNumber === tbl
-                            ? 'bg-amber-400 text-slate-950'
-                            : 'bg-slate-800 text-slate-400 hover:text-white'
+                        onClick={() => setPaymentMethod('cash')}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-bold transition ${
+                          paymentMethod === 'cash'
+                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+                            : 'border-slate-800 bg-slate-950 text-slate-400'
                         }`}
                       >
-                        {tbl}
+                        <Banknote className="h-4 w-4" />
+                        <span>{labels.cashPayment}</span>
                       </button>
-                    ))}
-                  </div>
-                </div>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('vietqr')}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-bold transition ${
+                          paymentMethod === 'vietqr'
+                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+                            : 'border-slate-800 bg-slate-950 text-slate-400'
+                        }`}
+                      >
+                        <QrCode className="h-4 w-4" />
+                        <span>{labels.qrPayment}</span>
+                      </button>
+                    </div>
 
-                {/* Payment Method & General Note */}
-                <div className="rounded-2xl bg-slate-900 border border-slate-800 p-3.5 space-y-2.5">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethod('cash')}
-                      className={`flex items-center justify-center gap-1.5 rounded-xl py-2 px-3 text-xs font-bold border ${
-                        paymentMethod === 'cash'
-                          ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
-                          : 'border-slate-800 bg-slate-800/60 text-slate-400'
-                      }`}
-                    >
-                      <Banknote className="h-4 w-4" />
-                      <span>Tiền mặt (Cash)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPaymentMethod('vietqr')}
-                      className={`flex items-center justify-center gap-1.5 rounded-xl py-2 px-3 text-xs font-bold border ${
-                        paymentMethod === 'vietqr'
-                          ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
-                          : 'border-slate-800 bg-slate-800/60 text-slate-400'
-                      }`}
-                    >
-                      <QrCode className="h-4 w-4" />
-                      <span>Chuyển khoản QR</span>
-                    </button>
-                  </div>
-
-                  <input
-                    type="text"
-                    value={customerNote}
-                    onChange={(e) => setCustomerNote(e.target.value)}
-                    placeholder={orderText.notePlaceholder}
-                    className="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
-
-                {submitError && (
-                  <div className="rounded-2xl border border-rose-500/50 bg-rose-500/15 p-3 text-xs font-bold text-rose-300">
-                    ⚠️ {submitError}
+                    {/* General Order Note */}
+                    <input
+                      type="text"
+                      value={customerNote}
+                      onChange={(e) => setCustomerNote(e.target.value)}
+                      placeholder={orderText.notePlaceholder}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
                   </div>
                 )}
 
+                {locale !== 'vi' && cart.length > 0 && (
+                  <p className="px-1 text-[11px] font-medium text-slate-400">
+                    ℹ️ {labels.kitchenBilingualNote}
+                  </p>
+                )}
+
+                {/* Cart Items List */}
                 {cart.length === 0 ? (
-                  <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-10 text-center space-y-3">
-                    <p className="text-base font-semibold text-slate-300">
-                      Chưa có món / dịch vụ nào được chọn
+                  <div className="py-16 text-center text-slate-400">
+                    <p className="text-base font-medium">
+                      {labels.emptyCartTitle}
                     </p>
                     <button
                       type="button"
                       onClick={onClose}
-                      className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950"
+                      className="mt-4 rounded-xl bg-slate-800 px-5 py-2.5 text-sm font-bold text-white"
                     >
-                      Quay lại chọn món
+                      {labels.backToMenuBtn}
                     </button>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {cart.map((entry, index) => {
-                      const extra = entry.selectedChoices.reduce(
-                        (s, c) => s + (c.extra_price || 0),
-                        0
-                      );
-                      const lineTotal =
-                        (entry.item.price + extra) * entry.quantity;
+                  cart.map((entry, idx) => {
+                    const extraTotal = entry.selectedChoices.reduce(
+                      (s, c) => s + (c.extra_price || 0),
+                      0
+                    );
+                    const unitWithExtra = entry.item.price + extraTotal;
+                    const lineTotal = unitWithExtra * entry.quantity;
+                    const primaryName = tField(entry.item.name_i18n, locale);
 
-                      return (
-                        <div
-                          key={`${entry.item.id}-${index}`}
-                          className="rounded-2xl border-2 border-slate-800 bg-slate-900 p-4 shadow-lg"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-start gap-3">
-                              <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black">
-                                <span className="text-[10px] uppercase leading-none font-bold">
-                                  SL
-                                </span>
-                                <span className="text-xl leading-tight">
-                                  x{entry.quantity}
-                                </span>
-                              </div>
-
-                              <div className="space-y-1">
-                                <h3 className="text-base sm:text-lg font-black text-white leading-snug">
-                                  {entry.item.name_i18n.vi}
-                                </h3>
-
-                                {locale !== 'vi' && (
-                                  <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5">
-                                    <FlagIcon
-                                      locale={locale}
-                                      className="h-3.5 w-5"
-                                    />
-                                    <span>
-                                      {tField(entry.item.name_i18n, locale)}
-                                    </span>
-                                  </p>
-                                )}
-
-                                {entry.selectedChoices.length > 0 && (
-                                  <div className="flex flex-wrap gap-1.5 pt-1">
-                                    {entry.selectedChoices.map((c) => (
-                                      <span
-                                        key={c.id}
-                                        className="rounded-lg bg-amber-400/20 border border-amber-400/40 px-2.5 py-0.5 text-xs font-bold text-amber-300"
-                                      >
-                                        • {c.label_i18n.vi}
-                                        {locale !== 'vi' &&
-                                          c.label_i18n[locale] &&
-                                          ` (${c.label_i18n[locale]})`}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-
-                                {entry.quickTags &&
-                                  entry.quickTags.length > 0 && (
-                                    <div className="flex flex-wrap gap-1.5 pt-1">
-                                      {entry.quickTags.map((tagVi, idx) => (
-                                        <span
-                                          key={idx}
-                                          className="rounded-lg bg-rose-500/20 border border-rose-400/40 px-2.5 py-0.5 text-xs font-bold text-rose-300"
-                                        >
-                                          ⚠️ {tagVi}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                {entry.customNote && (
-                                  <p className="mt-1 rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-semibold text-amber-200">
-                                    📝 Ghi chú: &ldquo;{entry.customNote}&rdquo;
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="text-right shrink-0">
-                              <div className="text-base font-black text-emerald-400">
-                                {formatCurrency(lineTotal, shop.currency)}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5">
-                            <span className="text-[11px] text-slate-400">
-                              Đơn giá:{' '}
-                              {formatCurrency(
-                                entry.item.price + extra,
-                                shop.currency
-                              )}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => onUpdateQuantity(index, -1)}
-                                className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700"
-                              >
-                                <Minus className="h-3.5 w-3.5" />
-                              </button>
-                              <span className="w-5 text-center text-xs font-bold">
+                    return (
+                      <div
+                        key={`${entry.item.id}-${idx}`}
+                        className="rounded-3xl border-2 border-slate-800 bg-slate-900 p-4 shadow-md"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3">
+                            {/* Giant Quantity Badge */}
+                            <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black shadow-md">
+                              <span className="text-[10px] uppercase leading-none font-extrabold">
+                                {labels.qtyShort}
+                              </span>
+                              <span className="text-xl leading-tight">
                                 {entry.quantity}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => onUpdateQuantity(index, 1)}
-                                className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700"
-                              >
-                                <Plus className="h-3.5 w-3.5" />
-                              </button>
+                            </div>
+
+                            <div>
+                              {/* Primary Item Name in Customer's Selected Language */}
+                              <h3 className="text-lg font-black leading-snug text-white">
+                                {primaryName}
+                              </h3>
+
+                              {/* Secondary Vietnamese Name for Kitchen/Counter Accuracy */}
+                              {locale !== 'vi' && (
+                                <p className="mt-0.5 text-xs font-semibold text-emerald-300/90">
+                                  🇻🇳 {entry.item.name_i18n.vi}
+                                </p>
+                              )}
+
+                              {/* Selected Options */}
+                              {entry.selectedChoices.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {entry.selectedChoices.map((c) => (
+                                    <span
+                                      key={c.id}
+                                      className="rounded-lg bg-emerald-950/90 border border-emerald-700/60 px-2.5 py-1 text-xs font-bold text-emerald-300"
+                                    >
+                                      • {tField(c.label_i18n, locale)}
+                                      {c.extra_price > 0
+                                        ? ` (+${formatCurrency(c.extra_price, shop.currency)})`
+                                        : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Quick Tags */}
+                              {entry.quickTags.length > 0 && (
+                                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                  {entry.quickTags.map((tagVi, tIdx) => {
+                                    const matchedTag = quickTagsPool.find(
+                                      (t) => t.i18n.vi === tagVi
+                                    );
+                                    const displayTag = matchedTag
+                                      ? tField(matchedTag.i18n, locale)
+                                      : tagVi;
+                                    return (
+                                      <span
+                                        key={tIdx}
+                                        className="rounded-lg bg-amber-500/20 border border-amber-500/40 px-2.5 py-0.5 text-xs font-bold text-amber-300"
+                                      >
+                                        ⚠️ {displayTag}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Custom Note */}
+                              {entry.customNote && (
+                                <p className="mt-2 rounded-xl bg-rose-950/60 border border-rose-700/50 px-3 py-1.5 text-xs font-bold text-rose-200">
+                                  📝 {labels.notePrefix}: &ldquo;{entry.customNote}&rdquo;
+                                </p>
+                              )}
                             </div>
                           </div>
                         </div>
-                      );
-                    })}
+
+                        {/* Bottom Line: Price & Quantity Adjuster */}
+                        <div className="mt-4 flex items-center justify-between border-t border-slate-800 pt-3">
+                          <div>
+                            <span className="text-xs text-slate-400">
+                              {labels.unitPriceLabel}:{' '}
+                              {formatCurrency(unitWithExtra, shop.currency)}
+                            </span>
+                            <p className="text-base font-black text-emerald-400">
+                              {formatCurrency(lineTotal, shop.currency)}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onUpdateQuantity(idx, -1)}
+                              className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700"
+                            >
+                              <Minus className="h-4 w-4" />
+                            </button>
+                            <span className="w-6 text-center text-sm font-black">
+                              {entry.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onUpdateQuantity(idx, 1)}
+                              className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700"
+                            >
+                              <Plus className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Sticky Footer: Total & Direct mPOS Order Action */}
+          {!activeOrder && cart.length > 0 && (
+            <div className="border-t border-slate-800 bg-slate-900 px-4 pt-4 pb-6">
+              <div className="mx-auto max-w-lg space-y-3">
+                {submitError && (
+                  <div className="rounded-xl bg-rose-950/80 border border-rose-700 px-3 py-2 text-xs font-bold text-rose-200">
+                    ⚠️ {submitError}
                   </div>
                 )}
-              </div>
 
-              {/* Sticky Footer: Send Order to Counter Button */}
-              {cart.length > 0 && (
-                <div className="sticky bottom-0 border-t border-slate-800 bg-slate-900/95 p-4 backdrop-blur-md">
-                  <div className="mx-auto max-w-md space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs font-medium text-slate-400">
-                          {labels.totalEstimated} ({tableNumber})
-                        </p>
-                        <p className="text-2xl font-black text-amber-400">
-                          {formatCurrency(grandTotal, shop.currency)}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClearCart();
-                          onClose();
-                        }}
-                        className="flex items-center gap-1.5 rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-rose-400" />
-                        <span>{labels.clearSelection}</span>
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleSubmitOrderToCounter}
-                      disabled={submitting}
-                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-5 py-4 text-sm sm:text-base font-black text-slate-950 shadow-xl hover:bg-emerald-400 active:scale-98 disabled:opacity-60"
-                    >
-                      {submitting ? (
-                        <>
-                          <Loader2 className="h-5 w-5 animate-spin" />
-                          <span>{orderText.sending}</span>
-                        </>
-                      ) : (
-                        <>
-                          <Send className="h-5 w-5" />
-                          <span>{orderText.sendBtn}</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-slate-300">
+                    {labels.totalEstimated} (
+                    {formatTableLabel(tableNumber || 'Bàn 01', locale)})
+                  </span>
+                  <span className="text-2xl font-black text-emerald-400">
+                    {formatCurrency(grandTotal, shop.currency)}
+                  </span>
                 </div>
-              )}
-            </>
+
+                {/* Primary Button: Send Directly to Counter mPOS */}
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={handleSendOrderToMpos}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-4 text-base font-black text-slate-950 shadow-lg shadow-emerald-500/25 transition hover:bg-emerald-400 active:scale-[0.99] disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <span>{orderText.sending}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-5 w-5" />
+                      <span>{orderText.sendBtn}</span>
+                    </>
+                  )}
+                </button>
+
+                <div className="flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearCart();
+                      onClose();
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-300 hover:bg-slate-700"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                    <span>{labels.clearSelection}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </motion.div>
       )}

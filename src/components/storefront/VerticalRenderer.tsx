@@ -17,6 +17,8 @@ interface VerticalRendererProps {
   locale: SupportedLocale;
   currency?: string;
   primaryColor?: string;
+  layoutMode?: 'list' | 'grid';
+  isDarkTheme?: boolean;
   selectedCategoryId: string | 'all';
   searchQuery: string;
   onSelectItem: (item: CatalogItem) => void;
@@ -30,6 +32,8 @@ export function VerticalRenderer({
   locale,
   currency = 'VND',
   primaryColor = '#10b981',
+  layoutMode,
+  isDarkTheme = false,
   selectedCategoryId,
   searchQuery,
   onSelectItem,
@@ -37,6 +41,7 @@ export function VerticalRenderer({
 }: VerticalRendererProps) {
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const q = searchQuery.trim().toLowerCase();
+  const useGridLayout = layoutMode === 'grid' || (layoutMode !== 'list' && vertical === 'retail');
 
   const visibleCategories =
     selectedCategoryId === 'all'
@@ -66,17 +71,17 @@ export function VerticalRenderer({
 
         return (
           <section key={category.id} id={`cat-${category.id}`} className="space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200/80 pb-1.5">
-              <h2 className="text-base font-extrabold tracking-tight text-slate-900">
+            <div className={`flex items-center justify-between border-b pb-1.5 ${isDarkTheme ? 'border-slate-700/80' : 'border-slate-200/80'}`}>
+              <h2 className={`text-base font-extrabold tracking-tight ${isDarkTheme ? 'text-white drop-shadow-xs' : 'text-slate-900'}`}>
                 {tField(category.name_i18n, locale)}
               </h2>
-              <span className="text-xs font-medium text-slate-400">
+              <span className={`text-xs font-medium ${isDarkTheme ? 'text-slate-300' : 'text-slate-400'}`}>
                 {catItems.length}
               </span>
             </div>
 
-            {/* 1. F&B Layout: Horizontal row cards with 80x80 rounded square image on right & '+' button */}
-            {vertical === 'fnb' && (
+            {/* 1. F&B List Layout: Horizontal row cards with 80x80 rounded square image on right & '+' button */}
+            {!useGridLayout && vertical === 'fnb' && (
               <div className="space-y-2.5">
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
@@ -114,9 +119,7 @@ export function VerticalRenderer({
                                 }`}
                               >
                                 {item.stock_quantity <= 5 ? '🔥 ' : ''}
-                                {locale === 'vi'
-                                  ? `Còn ${item.stock_quantity}`
-                                  : `${item.stock_quantity} left`}
+                                {`${labels.stockLeftPrefix}${item.stock_quantity}${labels.stockLeftSuffix}`}
                               </span>
                             )}
                         </div>
@@ -184,7 +187,7 @@ export function VerticalRenderer({
             )}
 
             {/* 2. Service Layout (Spa, Nail, Massage, Salon): Elegant Price List with Duration & Dotted Leaders */}
-            {vertical === 'service' && (
+            {!useGridLayout && vertical === 'service' && (
               <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 shadow-xs overflow-hidden">
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
@@ -223,9 +226,7 @@ export function VerticalRenderer({
                                     : 'bg-slate-100 text-slate-600'
                                 }`}
                               >
-                                {locale === 'vi'
-                                  ? `Còn ${item.stock_quantity} suất`
-                                  : `${item.stock_quantity} slots`}
+                                {`${labels.stockLeftPrefix}${item.stock_quantity}${labels.stockLeftSuffix}`}
                               </span>
                             )}
                         </div>
@@ -278,8 +279,8 @@ export function VerticalRenderer({
               </div>
             )}
 
-            {/* 3. Retail Layout (Shop, Souvenirs, Local Specialties): 2-Column Grid with 1:1 square image */}
-            {vertical === 'retail' && (
+            {/* 3. Grid Layout (Retail default or when owner chooses Grid Layout): 2-Column Grid with 1:1 square image */}
+            {useGridLayout && (
               <div className="grid grid-cols-2 gap-3">
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
@@ -302,7 +303,7 @@ export function VerticalRenderer({
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center text-3xl">
-                            🛍️
+                            {vertical === 'fnb' ? '🍜' : vertical === 'service' ? '💆‍♀️' : '🛍️'}
                           </div>
                         )}
                         {item.is_featured && (
@@ -320,9 +321,7 @@ export function VerticalRenderer({
                                   : 'bg-slate-900/75'
                               }`}
                             >
-                              {locale === 'vi'
-                                ? `Còn ${item.stock_quantity}`
-                                : `${item.stock_quantity} left`}
+                              {`${labels.stockLeftPrefix}${item.stock_quantity}${labels.stockLeftSuffix}`}
                             </span>
                           )}
                         {unavailable && (

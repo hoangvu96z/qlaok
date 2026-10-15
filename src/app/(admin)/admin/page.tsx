@@ -151,6 +151,9 @@ const LANG_LABELS: Record<SupportedLocale, string> = {
   ko: '🇰🇷 한국어',
   ja: '🇯🇵 日本語',
   zh: '🇨🇳 中文',
+  es: '🇪🇸 Español',
+  it: '🇮🇹 Italiano',
+  ru: '🇷🇺 Русский',
 };
 
 export default function SuperAdminPortalPage() {

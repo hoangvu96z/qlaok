@@ -56,6 +56,9 @@ export function TranslationEditorModal({
     ko: '',
     ja: '',
     zh: '',
+    es: '',
+    it: '',
+    ru: '',
   });
   const [descI18n, setDescI18n] = useState<I18nText>({
     vi: '',
@@ -63,6 +66,9 @@ export function TranslationEditorModal({
     ko: '',
     ja: '',
     zh: '',
+    es: '',
+    it: '',
+    ru: '',
   });
 
   const [activeTab, setActiveTab] = useState<SupportedLocale>('vi');
@@ -91,6 +97,9 @@ export function TranslationEditorModal({
         ko: editingItem.name_i18n?.ko || '',
         ja: editingItem.name_i18n?.ja || '',
         zh: editingItem.name_i18n?.zh || '',
+        es: editingItem.name_i18n?.es || '',
+        it: editingItem.name_i18n?.it || '',
+        ru: editingItem.name_i18n?.ru || '',
       });
       setDescI18n({
         vi: editingItem.desc_i18n?.vi || '',
@@ -98,6 +107,9 @@ export function TranslationEditorModal({
         ko: editingItem.desc_i18n?.ko || '',
         ja: editingItem.desc_i18n?.ja || '',
         zh: editingItem.desc_i18n?.zh || '',
+        es: editingItem.desc_i18n?.es || '',
+        it: editingItem.desc_i18n?.it || '',
+        ru: editingItem.desc_i18n?.ru || '',
       });
     } else {
       setCategoryId(defaultCategoryId || categories[0]?.id || '');
@@ -107,8 +119,8 @@ export function TranslationEditorModal({
       setImageUrl('');
       setIsFeatured(false);
       setIsAvailable(true);
-      setNameI18n({ vi: '', en: '', ko: '', ja: '', zh: '' });
-      setDescI18n({ vi: '', en: '', ko: '', ja: '', zh: '' });
+      setNameI18n({ vi: '', en: '', ko: '', ja: '', zh: '', es: '', it: '', ru: '' });
+      setDescI18n({ vi: '', en: '', ko: '', ja: '', zh: '', es: '', it: '', ru: '' });
     }
     setActiveTab('vi');
   }, [editingItem, defaultCategoryId, categories, vertical, isOpen]);
@@ -369,12 +381,12 @@ export function TranslationEditorModal({
                 {translating ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Đang dịch 4 ngôn ngữ...</span>
+                    <span>Đang dịch 8 ngôn ngữ...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-3.5 w-3.5" />
-                    <span>✨ Dịch tự động 5 ngôn ngữ bằng AI</span>
+                    <span>✨ Dịch tự động 8 ngôn ngữ bằng AI</span>
                   </>
                 )}
               </button>
@@ -413,13 +425,13 @@ export function TranslationEditorModal({
             </div>
           </div>
 
-          {/* 5-Language Tabs Editor */}
+          {/* 8-Language Tabs Editor */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-bold text-slate-700">
-                Kiểm tra & Chỉnh sửa tay bản dịch 5 ngôn ngữ:
+                Kiểm tra &amp; Chỉnh sửa tay bản dịch 8 ngôn ngữ:
               </span>
-              <div className="flex items-center gap-1 rounded-xl bg-slate-100 p-1">
+              <div className="flex flex-wrap items-center gap-1 rounded-xl bg-slate-100 p-1">
                 {ALL_LOCALES.map((loc) => {
                   const meta = LOCALE_META[loc];
                   const hasValue = Boolean(nameI18n[loc]?.trim());

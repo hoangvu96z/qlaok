@@ -133,33 +133,46 @@ Yêu cầu bắt buộc:
       throw new Error('Invalid OCR categories structure');
     }
 
-    // Ensure every extracted item has complete 5-language desc_i18n
+    // Ensure every extracted item has complete 8-language name_i18n and desc_i18n
     const enrichedCategories = parsed.categories
-      .map((cat) => ({
-        name_i18n: cat.name_i18n,
-        items: (cat.items || []).map((item) => {
-          const fallback = smartFallbackTranslate({
-            vertical,
-            itemNameVi: item.name_i18n?.vi || 'Món đặc trưng',
-          });
-          return {
-            price: Number(item.price) || 0,
-            duration_mins:
-              item.duration_mins ?? (vertical === 'service' ? 60 : null),
-            name_i18n: {
-              vi: item.name_i18n?.vi || fallback.name_i18n.vi,
-              en: item.name_i18n?.en || fallback.name_i18n.en,
-              ko: item.name_i18n?.ko || fallback.name_i18n.ko,
-              ja: item.name_i18n?.ja || fallback.name_i18n.ja,
-              zh: item.name_i18n?.zh || fallback.name_i18n.zh,
-            },
-            desc_i18n:
-              item.desc_i18n && item.desc_i18n.vi
-                ? item.desc_i18n
-                : fallback.desc_i18n,
-          };
-        }),
-      }))
+      .map((cat) => {
+        const catFallback = smartFallbackTranslate({
+          vertical,
+          categoryNameVi: cat.name_i18n?.vi || 'Thực đơn',
+          itemNameVi: 'Món',
+        });
+        return {
+          name_i18n: {
+            ...catFallback.category_i18n,
+            ...cat.name_i18n,
+          },
+          items: (cat.items || []).map((item) => {
+            const fallback = smartFallbackTranslate({
+              vertical,
+              itemNameVi: item.name_i18n?.vi || 'Món đặc trưng',
+            });
+            return {
+              price: Number(item.price) || 0,
+              duration_mins:
+                item.duration_mins ?? (vertical === 'service' ? 60 : null),
+              name_i18n: {
+                vi: item.name_i18n?.vi || fallback.name_i18n.vi,
+                en: item.name_i18n?.en || fallback.name_i18n.en,
+                ko: item.name_i18n?.ko || fallback.name_i18n.ko,
+                ja: item.name_i18n?.ja || fallback.name_i18n.ja,
+                zh: item.name_i18n?.zh || fallback.name_i18n.zh,
+                es: item.name_i18n?.es || fallback.name_i18n.es,
+                it: item.name_i18n?.it || fallback.name_i18n.it,
+                ru: item.name_i18n?.ru || fallback.name_i18n.ru,
+              },
+              desc_i18n:
+                item.desc_i18n && item.desc_i18n.vi
+                  ? { ...fallback.desc_i18n, ...item.desc_i18n }
+                  : fallback.desc_i18n,
+            };
+          }),
+        };
+      })
       .filter((c) => c.items.length > 0);
 
     if (enrichedCategories.length === 0) {

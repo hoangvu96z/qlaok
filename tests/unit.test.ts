@@ -118,8 +118,17 @@ describe('Suite 1: Vietnam 34 Provinces & Cities (vietnam-provinces.ts)', () => 
 // SUITE 2: MULTILINGUAL I18N, CURRENCY, OPENING HOURS & QUICK TAGS
 // ============================================================================
 describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () => {
-  test('2.1 ALL_LOCALES & LOCALE_META support all 5 languages (vi, en, ko, ja, zh)', () => {
-    assert.deepEqual(ALL_LOCALES, ['vi', 'en', 'ko', 'ja', 'zh']);
+  test('2.1 ALL_LOCALES & LOCALE_META support all 8 languages (vi, en, ko, ja, zh, es, it, ru)', () => {
+    assert.deepEqual(ALL_LOCALES, [
+      'vi',
+      'en',
+      'ko',
+      'ja',
+      'zh',
+      'es',
+      'it',
+      'ru',
+    ]);
     for (const loc of ALL_LOCALES) {
       const meta = LOCALE_META[loc];
       assert.ok(meta, `Missing LOCALE_META for ${loc}`);
@@ -137,9 +146,15 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
       ko: '소고기 쌀국수',
       ja: '牛肉フォー',
       zh: '牛肉河粉',
+      es: 'Pho de ternera',
+      it: 'Pho di manzo',
+      ru: 'Фо с говядиной',
     };
     assert.equal(tField(fullText, 'ko'), '소고기 쌀국수');
     assert.equal(tField(fullText, 'ja'), '牛肉フォー');
+    assert.equal(tField(fullText, 'es'), 'Pho de ternera');
+    assert.equal(tField(fullText, 'it'), 'Pho di manzo');
+    assert.equal(tField(fullText, 'ru'), 'Фо с говядиной');
 
     const onlyViEn = { vi: 'Bánh Mì', en: 'Baguette' };
     assert.equal(
@@ -163,10 +178,13 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
   });
 
   test('2.4 detectVisitorLocale prioritizes valid queryLang if allowed by shop', () => {
-    const all5 = ALL_LOCALES;
-    assert.equal(detectVisitorLocale(all5, 'ko'), 'ko');
-    assert.equal(detectVisitorLocale(all5, 'ja'), 'ja');
-    assert.equal(detectVisitorLocale(all5, 'zh'), 'zh');
+    const all8 = ALL_LOCALES;
+    assert.equal(detectVisitorLocale(all8, 'ko'), 'ko');
+    assert.equal(detectVisitorLocale(all8, 'ja'), 'ja');
+    assert.equal(detectVisitorLocale(all8, 'zh'), 'zh');
+    assert.equal(detectVisitorLocale(all8, 'es'), 'es');
+    assert.equal(detectVisitorLocale(all8, 'it'), 'it');
+    assert.equal(detectVisitorLocale(all8, 'ru'), 'ru');
   });
 
   test('2.5 detectVisitorLocale rejects queryLang not in shop supportedLangs', () => {
@@ -225,11 +243,14 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
     assert.equal(openResult.isOpen, true);
   });
 
-  test('2.10 UI_LABELS & QUICK_TAGS_BY_VERTICAL have complete 5-locale translations', () => {
+  test('2.10 UI_LABELS & QUICK_TAGS_BY_VERTICAL have complete 8-locale translations', () => {
     for (const loc of ALL_LOCALES) {
       assert.ok(UI_LABELS[loc].openNow.length > 0);
       assert.ok(UI_LABELS[loc].soldOut.length > 0);
       assert.ok(UI_LABELS[loc].bottomCtaFnb.length > 0);
+      assert.ok(UI_LABELS[loc].cashPayment.length > 0);
+      assert.ok(UI_LABELS[loc].qrPayment.length > 0);
+      assert.ok(UI_LABELS[loc].tablePrefix.length > 0);
     }
 
     for (const vertical of ['fnb', 'service', 'retail'] as const) {
@@ -268,11 +289,11 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
     assert.equal(basic.allowCustomTheme, true);
   });
 
-  test('3.3 Premium plan config unlocks unlimited items, 5 languages, AI OCR, 69,000đ monthly', () => {
+  test('3.3 Premium plan config unlocks unlimited items, 8 languages, AI OCR, 69,000đ monthly', () => {
     const premium = PLAN_CONFIGS.premium;
     assert.equal(premium.priceMonthly, 69000);
     assert.ok(premium.maxItems >= 999999);
-    assert.equal(premium.maxLangs, 5);
+    assert.equal(premium.maxLangs, 8);
     assert.equal(premium.allowAiOcr, true);
     assert.equal(premium.allowCustomTheme, true);
   });
@@ -303,19 +324,22 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
   });
 
   test('3.7 getAllowedLocalesForPlan slices languages according to plan tier', () => {
-    const all5 = ALL_LOCALES;
-    assert.deepEqual(getAllowedLocalesForPlan('free', all5), ['vi']);
-    assert.deepEqual(getAllowedLocalesForPlan('basic', all5), [
+    const all8 = ALL_LOCALES;
+    assert.deepEqual(getAllowedLocalesForPlan('free', all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan('basic', all8), [
       'vi',
       'en',
       'ko',
     ]);
-    assert.deepEqual(getAllowedLocalesForPlan('premium', all5), [
+    assert.deepEqual(getAllowedLocalesForPlan('premium', all8), [
       'vi',
       'en',
       'ko',
       'ja',
       'zh',
+      'es',
+      'it',
+      'ru',
     ]);
   });
 

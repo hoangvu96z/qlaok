@@ -7,9 +7,7 @@ import {
   ArrowLeft,
   Search,
   X,
-  ShoppingBag,
-  Sparkles,
-  Wifi,
+  Gift,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -20,8 +18,10 @@ import {
   SupportedLocale,
 } from '@/types/qlaok';
 import {
+  ALL_LOCALES,
   detectVisitorLocale,
   formatCurrency,
+  formatTableLabel,
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
@@ -30,6 +30,11 @@ import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
 import { ItemDetailDrawer } from '@/components/storefront/ItemDetailDrawer';
 import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
+import {
+  getStorefrontBackgroundProps,
+  StorefrontPromoBanner,
+  StorefrontWelcomePopup,
+} from '@/components/storefront/StorefrontCustomDecor';
 
 export default function StorefrontMenuPage() {
   const params = useParams<{ slug: string }>();
@@ -40,13 +45,8 @@ export default function StorefrontMenuPage() {
   const [shop, setShop] = useState<Shop | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
-  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>([
-    'vi',
-    'en',
-    'ko',
-    'ja',
-    'zh',
-  ]);
+  const [allowedLangs, setAllowedLangs] =
+    useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
@@ -55,6 +55,7 @@ export default function StorefrontMenuPage() {
   const [activeItem, setActiveItem] = useState<CatalogItem | null>(null);
   const [cart, setCart] = useState<CartSelection[]>([]);
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+  const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -87,6 +88,15 @@ export default function StorefrontMenuPage() {
           );
           setLocale(detected);
           setLoading(false);
+
+          // Auto-open Welcome Popup if enabled and not dismissed in this session
+          const popupCfg = loadedShop.theme_config?.welcomePopup;
+          if (popupCfg?.enabled && popupCfg.title?.trim()) {
+            const seenKey = `qlaok_popup_seen_${loadedShop.id}`;
+            if (!sessionStorage.getItem(seenKey)) {
+              setIsPromoPopupOpen(true);
+            }
+          }
 
           // Track QR Table Scan
           fetch('/api/analytics/track', {
@@ -129,6 +139,13 @@ export default function StorefrontMenuPage() {
     };
   }, [fetchCatalogData]);
 
+  const handleClosePopup = () => {
+    setIsPromoPopupOpen(false);
+    if (shop && typeof window !== 'undefined') {
+      sessionStorage.setItem(`qlaok_popup_seen_${shop.id}`, '1');
+    }
+  };
+
   const handleOpenItem = (item: CatalogItem) => {
     setActiveItem(item);
     if (shop) {
@@ -147,7 +164,6 @@ export default function StorefrontMenuPage() {
 
   const handleQuickAdd = (item: CatalogItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    // If item has required option groups, open detail drawer so visitor can pick options
     const hasRequired = item.options_json?.some((g) => g.required);
     if (hasRequired) {
       handleOpenItem(item);
@@ -229,6 +245,11 @@ export default function StorefrontMenuPage() {
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const bgProps = getStorefrontBackgroundProps(shop);
+  const hasActivePopup = Boolean(
+    shop.theme_config?.welcomePopup?.enabled &&
+      shop.theme_config?.welcomePopup?.title?.trim()
+  );
 
   const totalItemsCount = cart.reduce((sum, c) => sum + c.quantity, 0);
   const totalCartAmount = cart.reduce((sum, entry) => {
@@ -247,27 +268,42 @@ export default function StorefrontMenuPage() {
         : labels.bottomCtaFnb;
 
   return (
-    <div className="flex flex-1 flex-col min-h-screen">
-      {/* Top Header with Back to Store Info & 5-Flag Switcher */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-2xs">
+    <div className={`flex flex-1 flex-col min-h-screen ${bgProps.containerClass}`}>
+      {bgProps.backgroundLayer}
+
+      {/* Top Header with Back to Store Info & 8-Flag Switcher */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-2xs text-slate-900">
         <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
-          <Link
-            href={`/s/${shop.slug}?lang=${locale}`}
-            className="flex items-center gap-2 min-w-0"
-          >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200">
-              <ArrowLeft className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-extrabold text-slate-900 leading-tight">
-                {shop.name}
-              </h1>
-              <p className="truncate text-[11px] font-medium text-slate-500">
-                {labels.backToStore}
-                {shop.wifi_info?.ssid ? ` • 📶 ${shop.wifi_info.ssid}` : ''}
-              </p>
-            </div>
-          </Link>
+          <div className="flex items-center gap-2 min-w-0">
+            <Link
+              href={`/s/${shop.slug}?lang=${locale}`}
+              className="flex items-center gap-2 min-w-0"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200">
+                <ArrowLeft className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-extrabold text-slate-900 leading-tight">
+                  {shop.name}
+                </h1>
+                <p className="truncate text-[11px] font-medium text-slate-500">
+                  {labels.backToStore}
+                  {shop.wifi_info?.ssid ? ` • 📶 ${shop.wifi_info.ssid}` : ''}
+                </p>
+              </div>
+            </Link>
+
+            {hasActivePopup && (
+              <button
+                type="button"
+                onClick={() => setIsPromoPopupOpen(true)}
+                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
+              >
+                <Gift className="h-3 w-3 text-rose-600" />
+                <span>Ưu đãi</span>
+              </button>
+            )}
+          </div>
 
           <LanguageSwitcher
             currentLocale={locale}
@@ -346,7 +382,7 @@ export default function StorefrontMenuPage() {
 
       {/* Active Order Realtime Banner if Guest Just Sent an Order */}
       {lastOrder && (
-        <div className="mx-3.5 mt-3">
+        <div className="relative z-10 mx-3.5 mt-3">
           <button
             type="button"
             onClick={() => setIsStaffModalOpen(true)}
@@ -356,22 +392,36 @@ export default function StorefrontMenuPage() {
               <span className="flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400 animate-ping" />
               <div className="min-w-0">
                 <p className="truncate text-xs font-extrabold text-emerald-400">
-                  Đơn #{lastOrder.order_code} • {lastOrder.table_label} đã gửi xuống quầy
+                  {labels.liveOrderSentPrefix}#{lastOrder.order_code} •{' '}
+                  {formatTableLabel(lastOrder.table_label, locale)}
+                  {labels.liveOrderSentSuffix}
                 </p>
                 <p className="truncate text-[11px] text-slate-300">
-                  Chạm để xem tiến độ chế biến &amp; phục vụ trực tiếp
+                  {labels.liveOrderBannerSub}
                 </p>
               </div>
             </div>
             <span className="shrink-0 rounded-xl bg-emerald-500 px-2.5 py-1 text-[11px] font-black text-slate-950">
-              Xem đơn
+              {labels.viewOrderBtn}
             </span>
           </button>
         </div>
       )}
 
+      {/* Owner Custom Promo Banner */}
+      {shop.theme_config?.promoBanner?.enabled && (
+        <div className="relative z-10 mx-3.5 mt-3">
+          <StorefrontPromoBanner
+            shop={shop}
+            onOpenPopup={
+              hasActivePopup ? () => setIsPromoPopupOpen(true) : undefined
+            }
+          />
+        </div>
+      )}
+
       {/* Main Catalog / Menu List by Vertical */}
-      <main className="flex-1 p-3.5">
+      <main className="relative z-10 flex-1 p-3.5">
         <VerticalRenderer
           vertical={shop.vertical}
           categories={categories}
@@ -379,6 +429,8 @@ export default function StorefrontMenuPage() {
           locale={locale}
           currency={shop.currency}
           primaryColor={primaryColor}
+          layoutMode={shop.theme_config?.layout}
+          isDarkTheme={bgProps.isDarkTheme}
           selectedCategoryId={selectedCategoryId}
           searchQuery={searchQuery}
           onSelectItem={handleOpenItem}
@@ -386,7 +438,7 @@ export default function StorefrontMenuPage() {
         />
       </main>
 
-      {/* Floating Bottom Action Bar (Send Order to Counter mPOS trigger) */}
+      {/* Floating Bottom Action Bar (Review & Send Order to Kitchen) */}
       {totalItemsCount > 0 && (
         <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center p-3 pointer-events-none">
           <div className="w-full max-w-md pointer-events-auto">
@@ -405,7 +457,7 @@ export default function StorefrontMenuPage() {
                     {bottomCtaText}
                   </span>
                   <span className="block text-[10px] font-medium text-white/85">
-                    🚀 Gửi đơn trực tiếp xuống quầy mPOS &amp; báo bếp tự động
+                    {labels.bottomBarHint}
                   </span>
                 </div>
               </div>
@@ -431,18 +483,27 @@ export default function StorefrontMenuPage() {
         onAddToCart={handleAddFromDrawer}
       />
 
-      {/* Full-Screen mPOS Order Submission & Live Status Tracker Modal */}
+      {/* Welcome / Promo Popup Modal */}
+      <StorefrontWelcomePopup
+        shop={shop}
+        isOpen={isPromoPopupOpen}
+        onClose={handleClosePopup}
+      />
+
+      {/* Order Confirmation & Live Order Tracker Modal */}
       <ShowToStaffModal
         isOpen={isStaffModalOpen}
-        onClose={() => setIsStaffModalOpen(false)}
+        onClose={() => {
+          setIsStaffModalOpen(false);
+        }}
         shop={shop}
         locale={locale}
         cart={cart}
         initialTableLabel={initialTableParam}
         onUpdateQuantity={handleUpdateQuantity}
         onClearCart={() => setCart([])}
-        onOrderCreated={(order) => {
-          setLastOrder(order);
+        onOrderCreated={(createdOrder) => {
+          setLastOrder(createdOrder);
           fetchCatalogData(false);
         }}
       />

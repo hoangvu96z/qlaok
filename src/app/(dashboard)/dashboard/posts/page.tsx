@@ -120,13 +120,23 @@ export default function DashboardPostsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-black text-slate-900">
-          Tin Khuyến Mãi & Thông Báo Quán ({activeShop.name})
-        </h1>
-        <p className="text-xs text-slate-500">
-          Các thông báo ưu đãi sẽ hiển thị nổi bật trên trang <strong>QR Cửa (/s/{activeShop.slug})</strong> bằng ngôn ngữ của khách
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-slate-900">
+            Tin Khuyến Mãi &amp; Thông Báo Quán ({activeShop.name})
+          </h1>
+          <p className="text-xs text-slate-500">
+            Các thông báo ưu đãi sẽ hiển thị nổi bật trên trang <strong>QR Cửa (/s/{activeShop.slug})</strong> bằng 8 ngôn ngữ của khách
+          </p>
+        </div>
+
+        <a
+          href="/dashboard/settings"
+          className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-amber-500 to-rose-500 px-4 py-2.5 text-xs font-black text-white shadow-sm hover:opacity-95"
+        >
+          <Sparkles className="h-4 w-4" />
+          <span>Cài Đặt Banner, Popup Voucher &amp; Hình Nền Quán</span>
+        </a>
       </div>
 
       {/* Create New Promotion Form */}
@@ -149,19 +159,19 @@ export default function DashboardPostsPage() {
             {translating ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>Đang dịch 5 thứ tiếng...</span>
+                <span>Đang dịch 8 thứ tiếng...</span>
               </>
             ) : (
               <>
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>✨ Dịch tự động 5 ngôn ngữ bằng AI</span>
+                <span>✨ Dịch tự động 8 ngôn ngữ bằng AI</span>
               </>
             )}
           </button>
         </div>
 
         {/* Language Tabs */}
-        <div className="flex items-center gap-1 rounded-xl bg-slate-100 p-1 w-fit">
+        <div className="flex flex-wrap items-center gap-1 rounded-xl bg-slate-100 p-1 w-fit">
           {ALL_LOCALES.map((loc) => (
             <button
               key={loc}

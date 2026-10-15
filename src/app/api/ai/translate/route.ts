@@ -47,16 +47,16 @@ export async function POST(req: Request) {
     }
 
     const systemPrompt = `Bạn là chuyên gia bản địa hóa Menu Ẩm thực (F&B), Bảng giá Dịch vụ (Nail, Spa, Massage) và Danh mục Bán lẻ tại Việt Nam.
-Nhiệm vụ: Dịch nội dung Tiếng Việt sang đủ 5 ngôn ngữ: Tiếng Việt (vi), Tiếng Anh (en), Tiếng Hàn (ko), Tiếng Nhật (ja), và Tiếng Trung Giản Thể (zh).
+Nhiệm vụ: Dịch nội dung Tiếng Việt sang đủ 8 ngôn ngữ: Tiếng Việt (vi), Tiếng Anh (en), Tiếng Hàn (ko), Tiếng Nhật (ja), Tiếng Trung Giản Thể (zh), Tiếng Tây Ban Nha (es), Tiếng Ý (it), và Tiếng Nga (ru).
 Quy tắc:
 1. Ngành của cửa hàng: "${vertical}".
 2. Với món ăn Việt Nam đặc trưng (VD: Bạc xỉu, Phở tái nạm, Bún chả), dịch tên món kèm giải thích ngắn gọn nguyên liệu để khách nước ngoài hiểu ngay.
-3. Nếu mô tả tiếng Việt (itemDescVi) trống, tự động viết 1 câu mô tả hấp dẫn ngắn gọn (dưới 18 từ) bằng cả 5 ngôn ngữ.
+3. Nếu mô tả tiếng Việt (itemDescVi) trống, tự động viết 1 câu mô tả hấp dẫn ngắn gọn (dưới 18 từ) bằng cả 8 ngôn ngữ.
 4. CHỈ TRẢ VỀ ĐÚNG 1 OBJECT JSON hợp lệ theo cấu trúc:
 {
-  "category_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
-  "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
-  "desc_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." }
+  "category_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "...", "es": "...", "it": "...", "ru": "..." },
+  "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "...", "es": "...", "it": "...", "ru": "..." },
+  "desc_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "...", "es": "...", "it": "...", "ru": "..." }
 }`;
 
     const parsed = await call9RouterJson<TranslationAiResponse>([

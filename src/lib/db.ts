@@ -119,6 +119,42 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
 
 // ================= SHOP HELPERS =================
 
+function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
+  const seedMatch = SEED_SHOPS.find(
+    (s) => s.id === rawShop.id || s.slug === rawShop.slug
+  );
+  const currentLangs = Array.isArray(rawShop.supported_langs)
+    ? rawShop.supported_langs
+    : ['vi', 'en', 'ko', 'ja', 'zh'];
+
+  // Upgrade legacy 5-lang shops to 8-lang automatically
+  const hasBase5 = ['vi', 'en', 'ko', 'ja', 'zh'].every((l) =>
+    currentLangs.includes(l as SupportedLocale)
+  );
+  const nextLangs: SupportedLocale[] = hasBase5
+    ? Array.from(
+        new Set<SupportedLocale>([...currentLangs, 'es', 'it', 'ru'])
+      )
+    : currentLangs;
+
+  return {
+    ...rawShop,
+    supported_langs: nextLangs,
+    tagline_i18n: {
+      ...(seedMatch?.tagline_i18n || {}),
+      ...(rawShop.tagline_i18n || { vi: '' }),
+    },
+    description_i18n: {
+      ...(seedMatch?.description_i18n || {}),
+      ...(rawShop.description_i18n || { vi: '' }),
+    },
+    theme_config: {
+      ...(seedMatch?.theme_config || { primaryColor: '#10b981', layout: 'list' }),
+      ...(rawShop.theme_config || {}),
+    },
+  };
+}
+
 export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
   shops: Shop[];
   profile: Profile;
@@ -143,7 +179,7 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
     }
 
     return {
-      shops: (shops || []) as Shop[],
+      shops: ((shops || []) as Shop[]).map(hydrateShopWithSeedDefaults),
       profile:
         (ownerProfile as Profile) || {
           ...SEED_PROFILE,
@@ -165,7 +201,7 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
   }
 
   return {
-    shops: (shops || []) as Shop[],
+    shops: ((shops || []) as Shop[]).map(hydrateShopWithSeedDefaults),
     profile: (profiles?.[0] as Profile) || SEED_PROFILE,
     source: 'supabase',
   };
@@ -176,20 +212,21 @@ export async function dbGetShopById(shopId: string): Promise<Shop | undefined> {
   const sb = getSupabaseDbClient();
 
   const { data } = await sb.from('shops').select('*').eq('id', shopId).single();
-  return (data as Shop) || undefined;
+  return data ? hydrateShopWithSeedDefaults(data as Shop) : undefined;
 }
 
 export async function dbGetStorefrontBundle(slug: string) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { data: shop } = await sb
+  const { data: rawShop } = await sb
     .from('shops')
     .select('*')
     .eq('slug', slug)
     .single();
 
-  if (!shop) return null;
+  if (!rawShop) return null;
+  const shop = hydrateShopWithSeedDefaults(rawShop as Shop);
 
   const [
     { data: categories },
@@ -217,20 +254,50 @@ export async function dbGetStorefrontBundle(slug: string) {
     sb.from('profiles').select('plan').eq('id', shop.owner_id).single(),
   ]);
 
-  const normalizedItems = (items || []).map((i) => ({
-    ...i,
-    price: Number(i.price),
-    compare_at_price:
-      i.compare_at_price !== null && i.compare_at_price !== undefined
-        ? Number(i.compare_at_price)
-        : null,
-  })) as CatalogItem[];
+  const normalizedCategories = ((categories || []) as Category[]).map((c) => {
+    const seedCat = SEED_CATEGORIES.find((sc) => sc.id === c.id);
+    return seedCat
+      ? { ...c, name_i18n: { ...seedCat.name_i18n, ...c.name_i18n } }
+      : c;
+  });
+
+  const normalizedItems = (items || []).map((i) => {
+    const seedItem = SEED_ITEMS.find((si) => si.id === i.id);
+    return {
+      ...i,
+      price: Number(i.price),
+      compare_at_price:
+        i.compare_at_price !== null && i.compare_at_price !== undefined
+          ? Number(i.compare_at_price)
+          : null,
+      name_i18n: seedItem
+        ? { ...seedItem.name_i18n, ...i.name_i18n }
+        : i.name_i18n,
+      desc_i18n: seedItem
+        ? { ...seedItem.desc_i18n, ...i.desc_i18n }
+        : i.desc_i18n,
+      options_json: seedItem?.options_json?.length
+        ? seedItem.options_json
+        : i.options_json,
+    };
+  }) as CatalogItem[];
+
+  const normalizedPosts = ((posts || []) as Post[]).map((p) => {
+    const seedPost = SEED_POSTS.find((sp) => sp.id === p.id);
+    return seedPost
+      ? {
+          ...p,
+          title_i18n: { ...seedPost.title_i18n, ...p.title_i18n },
+          content_i18n: { ...seedPost.content_i18n, ...p.content_i18n },
+        }
+      : p;
+  });
 
   return {
-    shop: shop as Shop,
-    categories: (categories || []) as Category[],
+    shop,
+    categories: normalizedCategories,
     items: enrichItemsWithInventory(normalizedItems),
-    posts: (posts || []) as Post[],
+    posts: normalizedPosts,
     ownerPlan: (ownerProfile?.plan as PlanTier) || 'premium',
   };
 }
