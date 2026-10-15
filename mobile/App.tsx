@@ -23,13 +23,52 @@ import {
   MobileCatalogItem,
   MobileAnalyticsEvent,
   MobileShopOrder,
+  MobilePromoBannerConfig,
+  MobileFlashSaleConfig,
+  MobilePopupConfig,
+  MobileShopThemeConfig,
   formatVnd,
 } from './src/lib/supabase';
 
-type TabType = 'orders' | 'overview' | 'catalog' | 'settings';
+type TabType = 'orders' | 'overview' | 'catalog' | 'promotions' | 'settings';
+
+// Pure color swatches — no text labels needed
+const BRAND_COLOR_SWATCHES = [
+  '#10b981',
+  '#f59e0b',
+  '#f43f5e',
+  '#ef4444',
+  '#8b5cf6',
+  '#0ea5e9',
+  '#ec4899',
+  '#92400e',
+  '#1e293b',
+];
+
+const BANNER_GRADIENT_SWATCHES: Array<{
+  id: NonNullable<MobilePromoBannerConfig['bgGradient']>;
+  hex: string;
+}> = [
+  { id: 'amber_rose', hex: '#f97316' },
+  { id: 'emerald_teal', hex: '#0d9488' },
+  { id: 'violet_fuchsia', hex: '#9333ea' },
+  { id: 'royal_gold', hex: '#b45309' },
+];
+
+const ALL_8_LANGS = [
+  { code: 'vi', short: 'VN', flag: '🇻🇳' },
+  { code: 'en', short: 'EN', flag: '🇬🇧' },
+  { code: 'ko', short: 'KO', flag: '🇰🇷' },
+  { code: 'ja', short: 'JA', flag: '🇯🇵' },
+  { code: 'zh', short: 'ZH', flag: '🇨🇳' },
+  { code: 'es', short: 'ES', flag: '🇪🇸' },
+  { code: 'it', short: 'IT', flag: '🇮🇹' },
+  { code: 'ru', short: 'RU', flag: '🇷🇺' },
+];
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [email, setEmail] = useState('chuquan@qlaok.vn');
   const [password, setPassword] = useState('qlaok123456');
   const [authLoading, setAuthLoading] = useState(false);
@@ -63,15 +102,128 @@ export default function App() {
   const [newItemStock, setNewItemStock] = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
 
-  // Settings form state
+  // Storefront Theme & Basic Settings state
   const [editShopName, setEditShopName] = useState('');
   const [editCity, setEditCity] = useState('');
   const [editPhone, setEditPhone] = useState('');
   const [editWifiSsid, setEditWifiSsid] = useState('');
   const [editWifiPass, setEditWifiPass] = useState('');
+  const [primaryColor, setPrimaryColor] = useState('#10b981');
+  const [layoutMode, setLayoutMode] = useState<'list' | 'grid'>('list');
+  const [backgroundStyle, setBackgroundStyle] = useState<
+    'clean' | 'warm' | 'dark' | 'custom_image'
+  >('clean');
+  const [previewLang, setPreviewLang] = useState<string>('vi');
+
+  // Promotions & Flash Sale Studio state
+  const [promoSubTab, setPromoSubTab] = useState<'discount' | 'flash_sale'>(
+    'discount'
+  );
+  const [promoBanner, setPromoBanner] = useState<MobilePromoBannerConfig>({
+    enabled: true,
+    badgeText: '🔥 ƯU ĐÃI ĐẶC BIỆT',
+    title: 'Giảm ngay 15% cho đơn từ 100.000đ',
+    subtitle: 'Áp dụng toàn thực đơn khi đặt món qua QR',
+    bgGradient: 'amber_rose',
+    discountType: 'percent',
+    discountValue: 15,
+    minOrderAmount: 100000,
+    applyScope: 'all',
+    selectedItemIds: [],
+    voucherCode: 'QLAOK15',
+  });
+  const [welcomePopup, setWelcomePopup] = useState<MobilePopupConfig>({
+    enabled: false,
+    badgeText: '🎁 VOUCHER CHÀO MỪNG',
+    title: 'Giảm ngay 15% cho đơn từ 100.000đ',
+    content: 'Áp dụng trực tiếp khi chọn món trên Menu QR',
+    voucherCode: 'QLAOK15',
+  });
+  const [flashSale, setFlashSale] = useState<MobileFlashSaleConfig>({
+    enabled: false,
+    badgeText: '⚡ FLASH SALE GIỜ VÀNG',
+    title: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
+    discountType: 'percent',
+    discountValue: 25,
+    startTime: '11:00',
+    endTime: '22:00',
+    itemIds: [],
+  });
 
   const activeShop =
     shops.find((s) => s.id === activeShopId) || shops[0] || null;
+
+  const hydrateThemeAndPromoState = useCallback(
+    (shop: MobileShop, loadedItems: MobileCatalogItem[]) => {
+      const tc = shop.theme_config;
+      setPrimaryColor(tc?.primaryColor || '#10b981');
+      setLayoutMode(
+        tc?.layout || (shop.vertical === 'retail' ? 'grid' : 'list')
+      );
+      setBackgroundStyle(tc?.backgroundStyle || 'clean');
+
+      if (tc?.promoBanner) {
+        setPromoBanner({
+          enabled: Boolean(tc.promoBanner.enabled),
+          badgeText: tc.promoBanner.badgeText || '🔥 ƯU ĐÃI ĐẶC BIỆT',
+          title:
+            tc.promoBanner.title || 'Giảm ngay 15% cho đơn từ 100.000đ',
+          subtitle:
+            tc.promoBanner.subtitle ||
+            'Áp dụng toàn thực đơn khi đặt món qua QR',
+          bgGradient: tc.promoBanner.bgGradient || 'amber_rose',
+          discountType: tc.promoBanner.discountType || 'percent',
+          discountValue:
+            typeof tc.promoBanner.discountValue === 'number'
+              ? tc.promoBanner.discountValue
+              : 15,
+          minOrderAmount:
+            typeof tc.promoBanner.minOrderAmount === 'number'
+              ? tc.promoBanner.minOrderAmount
+              : 0,
+          applyScope: tc.promoBanner.applyScope || 'all',
+          selectedItemIds: tc.promoBanner.selectedItemIds || [],
+          voucherCode: tc.promoBanner.voucherCode || '',
+        });
+      }
+
+      if (tc?.welcomePopup) {
+        setWelcomePopup({
+          enabled: Boolean(tc.welcomePopup.enabled),
+          badgeText: tc.welcomePopup.badgeText || '🎁 VOUCHER CHÀO MỪNG',
+          title: tc.welcomePopup.title || '',
+          content: tc.welcomePopup.content || '',
+          voucherCode: tc.welcomePopup.voucherCode || '',
+        });
+      }
+
+      if (tc?.flashSale) {
+        setFlashSale({
+          enabled: Boolean(tc.flashSale.enabled),
+          badgeText: tc.flashSale.badgeText || '⚡ FLASH SALE GIỜ VÀNG',
+          title:
+            tc.flashSale.title || 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
+          discountType: tc.flashSale.discountType || 'percent',
+          discountValue:
+            typeof tc.flashSale.discountValue === 'number'
+              ? tc.flashSale.discountValue
+              : 25,
+          startTime: tc.flashSale.startTime || '11:00',
+          endTime: tc.flashSale.endTime || '22:00',
+          itemIds:
+            tc.flashSale.itemIds?.length > 0
+              ? tc.flashSale.itemIds
+              : loadedItems.slice(0, 3).map((i) => i.id),
+        });
+      } else if (loadedItems.length > 0) {
+        setFlashSale((prev) => ({
+          ...prev,
+          itemIds: loadedItems.slice(0, 3).map((i) => i.id),
+        }));
+      }
+    },
+    []
+  );
 
   const fetchOrdersFromApi = useCallback(
     async (shopId: string, silent = false) => {
@@ -111,7 +263,7 @@ export default function App() {
         }
       } catch {
         if (!silent) {
-          // Fallback if local Next.js API server is not reachable
+          // Fallback if local API server is not reachable
         }
       }
     },
@@ -160,20 +312,21 @@ export default function App() {
               .order('created_at', { ascending: false }),
           ]);
 
+          const normalizedItems = (itemsRes.data || []).map((i) => ({
+            ...i,
+            price: Number(i.price),
+          })) as MobileCatalogItem[];
+
           setCategories((catsRes.data || []) as MobileCategory[]);
-          setItems(
-            (itemsRes.data || []).map((i) => ({
-              ...i,
-              price: Number(i.price),
-            })) as MobileCatalogItem[]
-          );
+          setItems(normalizedItems);
           setEvents((eventsRes.data || []) as MobileAnalyticsEvent[]);
+          hydrateThemeAndPromoState(currentShop, normalizedItems);
 
           await fetchOrdersFromApi(currentShop.id, true);
         }
       } catch (err) {
         Alert.alert(
-          'Lỗi kết nối Supabase',
+          'Lỗi kết nối mạng',
           err instanceof Error ? err.message : 'Không thể tải dữ liệu cửa hàng'
         );
       } finally {
@@ -181,7 +334,7 @@ export default function App() {
         setRefreshing(false);
       }
     },
-    [activeShopId, fetchOrdersFromApi]
+    [activeShopId, fetchOrdersFromApi, hydrateThemeAndPromoState]
   );
 
   useEffect(() => {
@@ -299,7 +452,11 @@ export default function App() {
     nextStock: number | null
   ) => {
     const nextAvail =
-      nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
+      nextStock === 0
+        ? false
+        : nextStock && nextStock > 0
+          ? true
+          : item.is_available;
 
     setItems((prev) =>
       prev.map((i) =>
@@ -378,7 +535,7 @@ export default function App() {
         return;
       }
     } catch {
-      // fallback direct to supabase
+      // fallback direct to database
     }
 
     const payload = {
@@ -414,8 +571,93 @@ export default function App() {
     setNewItemStock('');
   };
 
-  const handleSaveShopSettings = async () => {
+  // Auto-generate friendly banner text when discount rules change
+  const syncBannerRule = (next: MobilePromoBannerConfig) => {
+    const valStr =
+      next.discountType === 'percent'
+        ? `${next.discountValue || 0}%`
+        : formatVnd(next.discountValue || 0);
+    const minStr =
+      (next.minOrderAmount || 0) > 0
+        ? ` cho đơn từ ${formatVnd(next.minOrderAmount || 0)}`
+        : '';
+    const scopeStr =
+      next.applyScope === 'selected_items'
+        ? ` (${(next.selectedItemIds || []).length} món ưu đãi)`
+        : ' toàn thực đơn';
+
+    const autoTitle = `Giảm ngay ${valStr}${minStr}`;
+    const autoSub = `Áp dụng${scopeStr} khi đặt món qua QR`;
+
+    setPromoBanner({
+      ...next,
+      title: autoTitle,
+      subtitle: autoSub,
+    });
+    setWelcomePopup((prev) => ({
+      ...prev,
+      title: autoTitle,
+      voucherCode: next.voucherCode || prev.voucherCode,
+    }));
+  };
+
+  const toggleBannerSelectedItem = (itemId: string) => {
+    const curr = promoBanner.selectedItemIds || [];
+    const nextIds = curr.includes(itemId)
+      ? curr.filter((id) => id !== itemId)
+      : [...curr, itemId];
+    syncBannerRule({
+      ...promoBanner,
+      selectedItemIds: nextIds,
+    });
+  };
+
+  const toggleFlashSaleItem = (itemId: string) => {
+    const curr = flashSale.itemIds || [];
+    const nextIds = curr.includes(itemId)
+      ? curr.filter((id) => id !== itemId)
+      : [...curr, itemId];
+    setFlashSale((prev) => ({
+      ...prev,
+      itemIds: nextIds,
+    }));
+  };
+
+  const handleSaveShopAndTheme = async () => {
     if (!activeShop) return;
+    const nextThemeConfig: MobileShopThemeConfig = {
+      ...activeShop.theme_config,
+      primaryColor,
+      layout: layoutMode,
+      backgroundStyle,
+      promoBanner,
+      welcomePopup: {
+        ...welcomePopup,
+        voucherCode: promoBanner.voucherCode || welcomePopup.voucherCode,
+      },
+      flashSale,
+    };
+
+    try {
+      await fetch(`${API_BASE_URL}/api/shops`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeShop.id,
+          name: editShopName.trim(),
+          city: editCity.trim(),
+          phone_contact: editPhone.trim(),
+          wifi_info: {
+            ssid: editWifiSsid.trim(),
+            password: editWifiPass.trim(),
+          },
+          theme_config: nextThemeConfig,
+        }),
+      });
+    } catch {
+      // also persist directly via Supabase client
+    }
+
     const { error } = await supabase
       .from('shops')
       .update({
@@ -426,6 +668,7 @@ export default function App() {
           ssid: editWifiSsid.trim(),
           password: editWifiPass.trim(),
         },
+        theme_config: nextThemeConfig,
         updated_at: new Date().toISOString(),
       })
       .eq('id', activeShop.id);
@@ -435,7 +678,10 @@ export default function App() {
       return;
     }
 
-    Alert.alert('Thành công', 'Đã đồng bộ cài đặt cửa hàng lên Supabase!');
+    Alert.alert(
+      'Đã lưu thành công',
+      'Giao diện, khuyến mãi, Flash Sale và cài đặt quán đã được áp dụng ngay!'
+    );
     loadShopsAndData(activeShop.id);
   };
 
@@ -450,15 +696,20 @@ export default function App() {
           </View>
           <Text style={styles.authTitle}>Qlaok mPOS Mobile</Text>
           <Text style={styles.authSubtitle}>
-            Ứng dụng Chủ quán &amp; Thu ngân nhận đơn QR tại bàn, quản lý tồn
-            kho &amp; doanh thu trực tiếp
+            Ứng dụng Chủ quán &amp; Thu ngân nhận đơn QR tại bàn, quản lý khuyến
+            mãi, Flash Sale &amp; doanh thu trực tiếp
           </Text>
 
           <TouchableOpacity
             style={styles.demoButton}
             onPress={() => handleLogin(true)}
           >
-            <Ionicons name="flash" size={16} color="#020617" style={{ marginRight: 6 }} />
+            <Ionicons
+              name="flash"
+              size={16}
+              color="#020617"
+              style={{ marginRight: 6 }}
+            />
             <Text style={styles.demoButtonText}>
               Vào Nhanh Quầy Thu Ngân mPOS Demo (1 Chạm)
             </Text>
@@ -491,7 +742,7 @@ export default function App() {
             disabled={authLoading}
           >
             <Text style={styles.primaryAuthBtnText}>
-              {authLoading ? 'Đang kết nối Supabase...' : 'Đăng nhập Supabase'}
+              {authLoading ? 'Đang đăng nhập...' : 'Đăng nhập Quản lý Quán'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -510,6 +761,19 @@ export default function App() {
     .filter((o) => o.created_at.startsWith(todayPrefix))
     .reduce((sum, o) => sum + o.total_amount, 0);
   const totalRevenue = validOrders.reduce((sum, o) => sum + o.total_amount, 0);
+
+  // Build 7-Day Revenue Series for Mobile Chart
+  const sevenDayBars = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    const dateKey = d.toISOString().slice(0, 10);
+    const label = `${d.getDate()}/${d.getMonth() + 1}`;
+    const dayRev = validOrders
+      .filter((o) => o.created_at.startsWith(dateKey))
+      .reduce((s, o) => s + o.total_amount, 0);
+    return { dateKey, label, revenue: dayRev };
+  });
+  const maxDayRev = Math.max(...sevenDayBars.map((b) => b.revenue), 100000);
 
   const lowStockCount = items.filter(
     (i) =>
@@ -535,36 +799,363 @@ export default function App() {
     return o.status === orderFilter;
   });
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="dark" />
+  // Dynamic Light / Dark Mode palette
+  const theme = {
+    bg: isDarkMode ? '#020617' : '#f8fafc',
+    card: isDarkMode ? '#0f172a' : '#ffffff',
+    subCard: isDarkMode ? '#1e293b' : '#f8fafc',
+    border: isDarkMode ? '#1e293b' : '#e2e8f0',
+    text: isDarkMode ? '#f8fafc' : '#0f172a',
+    subText: isDarkMode ? '#94a3b8' : '#64748b',
+  };
 
-      {/* Top Header & Store Switcher */}
-      <View style={styles.header}>
+  // Interactive Phone Viewer Component inside Mobile App (for Promotions & Settings tabs)
+  const renderLivePhoneViewer = () => {
+    const previewSurfaceBg =
+      backgroundStyle === 'dark'
+        ? '#0f172a'
+        : backgroundStyle === 'warm'
+          ? '#fdf8ee'
+          : '#ffffff';
+    const previewTextCol =
+      backgroundStyle === 'dark' ? '#f8fafc' : '#0f172a';
+
+    return (
+      <View
+        style={[
+          styles.phoneViewerFrame,
+          { backgroundColor: previewSurfaceBg, borderColor: '#0f172a' },
+        ]}
+      >
+        {/* Top Notch + Header */}
+        <View style={styles.phoneViewerHeader}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View
+              style={[
+                styles.phoneViewerLogo,
+                { backgroundColor: primaryColor },
+              ]}
+            >
+              <Text style={{ color: '#fff', fontSize: 10, fontWeight: '900' }}>
+                Q
+              </Text>
+            </View>
+            <Text
+              style={{ fontSize: 12, fontWeight: '900', color: '#0f172a' }}
+              numberOfLines={1}
+            >
+              {editShopName || activeShop?.name || 'Tên Quán'}
+            </Text>
+          </View>
+          <Text style={{ fontSize: 10, fontWeight: '800', color: '#10b981' }}>
+            📱 Xem trước trực tiếp
+          </Text>
+        </View>
+
+        {/* 1-Tap 8-Language Flag Strip inside Viewer */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            backgroundColor: '#ffffff',
+            borderBottomWidth: 1,
+            borderBottomColor: '#e2e8f0',
+          }}
+        >
+          {ALL_8_LANGS.map((l) => {
+            const active = previewLang === l.code;
+            return (
+              <TouchableOpacity
+                key={l.code}
+                onPress={() => setPreviewLang(l.code)}
+                style={[
+                  styles.langPreviewPill,
+                  active && { backgroundColor: primaryColor },
+                ]}
+              >
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '800',
+                    color: active ? '#ffffff' : '#334155',
+                  }}
+                >
+                  {l.flag} {l.short}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* Phone Body */}
+        <View style={{ padding: 10, gap: 8 }}>
+          {/* Promo Banner Preview */}
+          {promoBanner.enabled && (
+            <View
+              style={[
+                styles.previewBannerBox,
+                {
+                  backgroundColor:
+                    BANNER_GRADIENT_SWATCHES.find(
+                      (s) => s.id === promoBanner.bgGradient
+                    )?.hex || '#f97316',
+                },
+              ]}
+            >
+              <Text
+                style={{
+                  fontSize: 9,
+                  fontWeight: '900',
+                  color: '#fef08a',
+                }}
+              >
+                {promoBanner.badgeText || '🔥 ƯU ĐÃI'}
+                {promoBanner.voucherCode
+                  ? ` • MÃ: ${promoBanner.voucherCode}`
+                  : ''}
+              </Text>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: '900',
+                  color: '#ffffff',
+                  marginTop: 2,
+                }}
+              >
+                {promoBanner.title}
+              </Text>
+              {promoBanner.subtitle ? (
+                <Text
+                  style={{ fontSize: 10, color: '#ffedd5', marginTop: 1 }}
+                >
+                  {promoBanner.subtitle}
+                </Text>
+              ) : null}
+            </View>
+          )}
+
+          {/* Flash Sale Preview */}
+          {flashSale.enabled && (
+            <View style={styles.previewFlashBox}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <Text
+                  style={{ fontSize: 11, fontWeight: '900', color: '#ffffff' }}
+                >
+                  ⚡ {flashSale.title} (
+                  {flashSale.discountType === 'percent'
+                    ? `-${flashSale.discountValue}%`
+                    : `-${formatVnd(flashSale.discountValue)}`}
+                  )
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '900',
+                    color: '#fde047',
+                  }}
+                >
+                  ⏱ {flashSale.startTime} - {flashSale.endTime}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Sample Menu Items inside Phone Viewer */}
+          <View
+            style={
+              layoutMode === 'grid'
+                ? { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }
+                : { gap: 6 }
+            }
+          >
+            {items.slice(0, 2).map((it) => {
+              const isFs =
+                flashSale.enabled && flashSale.itemIds.includes(it.id);
+              const isPromoSelected =
+                promoBanner.enabled &&
+                promoBanner.applyScope === 'selected_items' &&
+                (promoBanner.selectedItemIds || []).includes(it.id);
+              let effPrice = it.price;
+              if (isFs) {
+                effPrice =
+                  flashSale.discountType === 'percent'
+                    ? Math.round(
+                        (it.price * (100 - flashSale.discountValue)) / 100
+                      )
+                    : Math.max(0, it.price - flashSale.discountValue);
+              } else if (isPromoSelected) {
+                effPrice =
+                  promoBanner.discountType === 'percent'
+                    ? Math.round(
+                        (it.price *
+                          (100 - (promoBanner.discountValue || 0))) /
+                          100
+                      )
+                    : Math.max(
+                        0,
+                        it.price - (promoBanner.discountValue || 0)
+                      );
+              }
+
+              return (
+                <View
+                  key={it.id}
+                  style={[
+                    styles.previewItemRow,
+                    layoutMode === 'grid' && { width: '48%' },
+                    {
+                      backgroundColor:
+                        backgroundStyle === 'dark' ? '#1e293b' : '#ffffff',
+                      borderColor:
+                        backgroundStyle === 'dark' ? '#334155' : '#e2e8f0',
+                    },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '800',
+                        color: previewTextCol,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {it.name_i18n?.[previewLang] || it.name_i18n?.vi}
+                    </Text>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 6,
+                        marginTop: 2,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          fontWeight: '900',
+                          color: primaryColor,
+                        }}
+                      >
+                        {formatVnd(effPrice)}
+                      </Text>
+                      {effPrice < it.price && (
+                        <Text
+                          style={{
+                            fontSize: 9,
+                            color: '#94a3b8',
+                            textDecorationLine: 'line-through',
+                          }}
+                        >
+                          {formatVnd(it.price)}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                  <View
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 7,
+                      backgroundColor: primaryColor,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: '#ffffff',
+                        fontSize: 13,
+                        fontWeight: '900',
+                      }}
+                    >
+                      +
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
+      <StatusBar style={isDarkMode ? 'light' : 'dark'} />
+
+      {/* Top Header & Store Switcher + Light/Dark Toggle */}
+      <View
+        style={[
+          styles.header,
+          { backgroundColor: theme.card, borderBottomColor: theme.border },
+        ]}
+      >
         <View style={styles.headerTopRow}>
           <View style={styles.brandRow}>
-            <View style={styles.smallLogo}>
+            <View
+              style={[styles.smallLogo, { backgroundColor: primaryColor }]}
+            >
               <Text style={styles.smallLogoText}>Q</Text>
             </View>
             <View>
-              <Text style={styles.headerTitle}>
+              <Text style={[styles.headerTitle, { color: theme.text }]}>
                 {activeShop?.name || 'Qlaok mPOS'}
               </Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                <Ionicons name="location" size={12} color="#10b981" style={{ marginRight: 3 }} />
-                <Text style={styles.headerSub}>
-                  {activeShop?.city || 'Đà Nẵng'} • Realtime mPOS
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  marginTop: 2,
+                }}
+              >
+                <Ionicons
+                  name="location"
+                  size={12}
+                  color="#10b981"
+                  style={{ marginRight: 3 }}
+                />
+                <Text style={[styles.headerSub, { color: theme.subText }]}>
+                  {activeShop?.city || 'Đà Nẵng'} • 8 Ngôn Ngữ • mPOS
                 </Text>
               </View>
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.logoutBtn}
-            onPress={() => setIsLoggedIn(false)}
-          >
-            <Text style={styles.logoutBtnText}>Thoát</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {/* Light / Dark Mode Button */}
+            <TouchableOpacity
+              style={[
+                styles.themeToggleBtn,
+                { backgroundColor: theme.subCard, borderColor: theme.border },
+              ]}
+              onPress={() => setIsDarkMode((prev) => !prev)}
+            >
+              <Ionicons
+                name={isDarkMode ? 'sunny' : 'moon'}
+                size={15}
+                color={isDarkMode ? '#fbbf24' : '#475569'}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.logoutBtn, { backgroundColor: theme.subCard }]}
+              onPress={() => setIsLoggedIn(false)}
+            >
+              <Text style={[styles.logoutBtnText, { color: theme.subText }]}>
+                Thoát
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Horizontal Shop Selector Pills */}
@@ -579,7 +1170,11 @@ export default function App() {
               <TouchableOpacity
                 key={shop.id}
                 onPress={() => loadShopsAndData(shop.id)}
-                style={[styles.shopPill, active && styles.shopPillActive]}
+                style={[
+                  styles.shopPill,
+                  { backgroundColor: theme.subCard },
+                  active && { backgroundColor: primaryColor },
+                ]}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Ionicons
@@ -591,12 +1186,13 @@ export default function App() {
                           : 'bag-handle'
                     }
                     size={13}
-                    color={active ? '#ffffff' : '#64748b'}
+                    color={active ? '#ffffff' : theme.subText}
                     style={{ marginRight: 5 }}
                   />
                   <Text
                     style={[
                       styles.shopPillText,
+                      { color: theme.subText },
                       active && styles.shopPillTextActive,
                     ]}
                   >
@@ -621,7 +1217,12 @@ export default function App() {
         >
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Ionicons name="notifications" size={13} color="#ffffff" style={{ marginRight: 4 }} />
+              <Ionicons
+                name="notifications"
+                size={13}
+                color="#ffffff"
+                style={{ marginRight: 4 }}
+              />
               <Text style={styles.liveAlertBadge}>
                 KHÁCH VỪA GỬI ĐƠN MỚI TẠI BÀN!
               </Text>
@@ -640,7 +1241,9 @@ export default function App() {
       {loading ? (
         <View style={styles.centerBox}>
           <ActivityIndicator size="large" color="#10b981" />
-          <Text style={styles.loadingText}>Đang đồng bộ mPOS &amp; Supabase...</Text>
+          <Text style={[styles.loadingText, { color: theme.subText }]}>
+            Đang tải dữ liệu cửa hàng &amp; mPOS...
+          </Text>
         </View>
       ) : (
         <ScrollView
@@ -680,11 +1283,19 @@ export default function App() {
                           f.id as 'active' | 'new' | 'preparing' | 'completed'
                         )
                       }
-                      style={[styles.catChip, active && styles.catChipActive]}
+                      style={[
+                        styles.catChip,
+                        {
+                          backgroundColor: theme.card,
+                          borderColor: theme.border,
+                        },
+                        active && styles.catChipActive,
+                      ]}
                     >
                       <Text
                         style={[
                           styles.catChipText,
+                          { color: theme.subText },
                           active && styles.catChipTextActive,
                         ]}
                       >
@@ -696,11 +1307,16 @@ export default function App() {
               </ScrollView>
 
               {visibleOrders.length === 0 ? (
-                <View style={styles.card}>
-                  <Text style={styles.cardHeading}>
+                <View
+                  style={[
+                    styles.card,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Text style={[styles.cardHeading, { color: theme.text }]}>
                     Chưa có đơn hàng nào trong mục này
                   </Text>
-                  <Text style={styles.itemSub}>
+                  <Text style={[styles.itemSub, { color: theme.subText }]}>
                     Khi khách quét mã QR tại bàn và bấm gửi đơn, điện thoại sẽ
                     rung và hiện phiếu gọi món ngay tại đây.
                   </Text>
@@ -715,16 +1331,30 @@ export default function App() {
                       key={order.id}
                       style={[
                         styles.orderTicketCard,
+                        {
+                          backgroundColor: theme.card,
+                          borderColor: theme.border,
+                        },
                         isNew && styles.orderTicketNew,
                         isPreparing && styles.orderTicketPreparing,
                       ]}
                     >
                       <View style={styles.orderHeaderRow}>
                         <View>
-                          <Text style={styles.orderTableBadge}>
+                          <Text
+                            style={[
+                              styles.orderTableBadge,
+                              { color: isNew ? '#0f172a' : theme.text },
+                            ]}
+                          >
                             {order.table_label} • #{order.order_code}
                           </Text>
-                          <Text style={styles.itemSub}>
+                          <Text
+                            style={[
+                              styles.itemSub,
+                              { color: isNew ? '#475569' : theme.subText },
+                            ]}
+                          >
                             Ngôn ngữ khách: {order.visitor_lang.toUpperCase()} •{' '}
                             {order.payment_method === 'vietqr'
                               ? 'Chuyển khoản QR'
@@ -736,19 +1366,43 @@ export default function App() {
                         </Text>
                       </View>
 
-                      <View style={styles.orderItemsBox}>
+                      <View
+                        style={[
+                          styles.orderItemsBox,
+                          {
+                            backgroundColor: theme.subCard,
+                            borderColor: theme.border,
+                          },
+                        ]}
+                      >
                         {order.items.map((line, idx) => (
                           <View key={idx} style={styles.orderLineRow}>
                             <Text style={styles.orderLineQty}>
                               x{line.quantity}
                             </Text>
                             <View style={{ flex: 1 }}>
-                              <Text style={styles.itemTitle}>
+                              <Text
+                                style={[
+                                  styles.itemTitle,
+                                  { color: theme.text },
+                                ]}
+                              >
                                 {line.name_vi}
                               </Text>
                               {line.custom_note ? (
-                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                                  <Ionicons name="create-outline" size={11} color="#64748b" style={{ marginRight: 3 }} />
+                                <View
+                                  style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  <Ionicons
+                                    name="create-outline"
+                                    size={11}
+                                    color="#64748b"
+                                    style={{ marginRight: 3 }}
+                                  />
                                   <Text style={styles.orderNoteText}>
                                     {line.custom_note}
                                   </Text>
@@ -766,8 +1420,19 @@ export default function App() {
                       </View>
 
                       {order.customer_note ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                          <Ionicons name="chatbubble-ellipses-outline" size={12} color="#64748b" style={{ marginRight: 4 }} />
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            marginTop: 4,
+                          }}
+                        >
+                          <Ionicons
+                            name="chatbubble-ellipses-outline"
+                            size={12}
+                            color="#64748b"
+                            style={{ marginRight: 4 }}
+                          />
                           <Text style={styles.orderNoteText}>
                             Ghi chú bàn: {order.customer_note}
                           </Text>
@@ -784,8 +1449,19 @@ export default function App() {
                                 handleUpdateOrderStatus(order.id, 'preparing')
                               }
                             >
-                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-                                <Ionicons name="restaurant" size={13} color="#ffffff" style={{ marginRight: 4 }} />
+                              <View
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <Ionicons
+                                  name="restaurant"
+                                  size={13}
+                                  color="#ffffff"
+                                  style={{ marginRight: 4 }}
+                                />
                                 <Text style={styles.btnPrepareText}>
                                   Nhận đơn &amp; Báo bếp
                                 </Text>
@@ -814,8 +1490,19 @@ export default function App() {
                                 )
                               }
                             >
-                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
-                                <Ionicons name="checkmark-circle" size={14} color="#ffffff" style={{ marginRight: 4 }} />
+                              <View
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <Ionicons
+                                  name="checkmark-circle"
+                                  size={14}
+                                  color="#ffffff"
+                                  style={{ marginRight: 4 }}
+                                />
                                 <Text style={styles.btnCompleteText}>
                                   Đã phục vụ &amp; Thu tiền
                                 </Text>
@@ -839,12 +1526,12 @@ export default function App() {
             </View>
           )}
 
-          {/* ================= TAB 2: OVERVIEW, REVENUE & INVENTORY ================= */}
+          {/* ================= TAB 2: OVERVIEW, 7-DAY CHART & INVENTORY ================= */}
           {activeTab === 'overview' && (
             <View style={styles.sectionStack}>
               <View style={styles.revenueHeroCard}>
                 <Text style={styles.revenueLabel}>
-                  DOANH THU HÔM NAY (TỰ ĐỘNG TỪ QUẦY mPOS &amp; QR BÀN)
+                  DOANH THU HÔM NAY (QUẦY mPOS &amp; ĐƠN QR BÀN)
                 </Text>
                 <Text style={styles.revenueValue}>
                   {formatVnd(todayRevenue)}
@@ -856,48 +1543,157 @@ export default function App() {
                 </Text>
               </View>
 
+              {/* 7-Day Revenue Bar Chart */}
+              <View
+                style={[
+                  styles.card,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
+              >
+                <Text style={[styles.cardHeading, { color: theme.text }]}>
+                  📊 Biểu Đồ Doanh Thu 7 Ngày Gần Nhất
+                </Text>
+                <View style={styles.chartBarsContainer}>
+                  {sevenDayBars.map((bar) => {
+                    const heightPct = Math.max(
+                      12,
+                      Math.round((bar.revenue / maxDayRev) * 100)
+                    );
+                    return (
+                      <View key={bar.dateKey} style={styles.chartBarColumn}>
+                        <Text
+                          style={{
+                            fontSize: 9,
+                            fontWeight: '700',
+                            color: theme.subText,
+                            marginBottom: 4,
+                          }}
+                        >
+                          {bar.revenue > 0
+                            ? `${Math.round(bar.revenue / 1000)}k`
+                            : '0'}
+                        </Text>
+                        <View style={styles.chartBarTrack}>
+                          <View
+                            style={{
+                              width: '100%',
+                              height: `${heightPct}%`,
+                              backgroundColor: primaryColor,
+                              borderRadius: 6,
+                            }}
+                          />
+                        </View>
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            fontWeight: '700',
+                            color: theme.text,
+                            marginTop: 4,
+                          }}
+                        >
+                          {bar.label}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+
               <View style={styles.kpiGrid}>
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>
+                <View
+                  style={[
+                    styles.kpiCard,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Text style={[styles.kpiNumber, { color: theme.text }]}>
                     {newOrdersCount + preparingOrdersCount}
                   </Text>
-                  <Text style={styles.kpiTitle}>Đơn đang phục vụ</Text>
+                  <Text style={[styles.kpiTitle, { color: theme.text }]}>
+                    Đơn đang phục vụ
+                  </Text>
                   <Text style={styles.kpiHint}>
                     Mới: {newOrdersCount} • Đang làm: {preparingOrdersCount}
                   </Text>
                 </View>
 
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>{lowStockCount}</Text>
-                  <Text style={styles.kpiTitle}>Món sắp hết (&lt;=5)</Text>
+                <View
+                  style={[
+                    styles.kpiCard,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Text style={[styles.kpiNumber, { color: theme.text }]}>
+                    {lowStockCount}
+                  </Text>
+                  <Text style={[styles.kpiTitle, { color: theme.text }]}>
+                    Món sắp hết (&lt;=5)
+                  </Text>
                   <Text style={styles.kpiHint}>
                     Đã hết hàng: {outOfStockCount} món
                   </Text>
                 </View>
 
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>
+                <View
+                  style={[
+                    styles.kpiCard,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Text style={[styles.kpiNumber, { color: theme.text }]}>
                     {scanDoorCount + scanTableCount}
                   </Text>
-                  <Text style={styles.kpiTitle}>Tổng lượt quét QR</Text>
+                  <Text style={[styles.kpiTitle, { color: theme.text }]}>
+                    Tổng lượt quét QR
+                  </Text>
                   <Text style={styles.kpiHint}>
                     Cửa: {scanDoorCount} • Bàn: {scanTableCount}
                   </Text>
                 </View>
 
-                <View style={styles.kpiCard}>
-                  <Text style={styles.kpiNumber}>
-                    {activeShop?.supported_langs?.length || 5}
+                <View
+                  style={[
+                    styles.kpiCard,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Text style={[styles.kpiNumber, { color: theme.text }]}>
+                    8
                   </Text>
-                  <Text style={styles.kpiTitle}>Ngôn ngữ Menu AI</Text>
-                  <Text style={styles.kpiHint}>VI • EN • KO • JA • ZH</Text>
+                  <Text style={[styles.kpiTitle, { color: theme.text }]}>
+                    Ngôn ngữ Quốc tế
+                  </Text>
+                  <Text style={styles.kpiHint}>
+                    VN • EN • KO • JA • ZH • ES • IT • RU
+                  </Text>
                 </View>
               </View>
 
-              <View style={styles.card}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                  <Ionicons name="flame" size={16} color="#f97316" style={{ marginRight: 6 }} />
-                  <Text style={[styles.cardHeading, { marginBottom: 0 }]}>
+              <View
+                style={[
+                  styles.card,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
+              >
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 12,
+                  }}
+                >
+                  <Ionicons
+                    name="flame"
+                    size={16}
+                    color="#f97316"
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={[
+                      styles.cardHeading,
+                      { marginBottom: 0, color: theme.text },
+                    ]}
+                  >
                     Top món bán chạy &amp; Số lượng tồn kho
                   </Text>
                 </View>
@@ -905,13 +1701,21 @@ export default function App() {
                   .sort((a, b) => (b.sold_count || 0) - (a.sold_count || 0))
                   .slice(0, 6)
                   .map((item, idx) => (
-                    <View key={item.id} style={styles.topItemRow}>
+                    <View
+                      key={item.id}
+                      style={[
+                        styles.topItemRow,
+                        { borderBottomColor: theme.border },
+                      ]}
+                    >
                       <Text style={styles.rankBadge}>#{idx + 1}</Text>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.itemTitle}>
+                        <Text style={[styles.itemTitle, { color: theme.text }]}>
                           {item.name_i18n?.vi}
                         </Text>
-                        <Text style={styles.itemSub}>
+                        <Text
+                          style={[styles.itemSub, { color: theme.subText }]}
+                        >
                           {formatVnd(item.price)} • Đã bán:{' '}
                           {item.sold_count || 0}
                         </Text>
@@ -933,27 +1737,59 @@ export default function App() {
           {activeTab === 'catalog' && (
             <View style={styles.sectionStack}>
               {/* Quick Add Bar */}
-              <View style={styles.card}>
-                <Text style={styles.cardHeading}>
+              <View
+                style={[
+                  styles.card,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
+              >
+                <Text style={[styles.cardHeading, { color: theme.text }]}>
                   + Thêm nhanh món &amp; Số lượng tồn
                 </Text>
                 <View style={styles.quickAddRow}>
                   <TextInput
-                    style={[styles.input, { flex: 1.3 }]}
+                    style={[
+                      styles.input,
+                      {
+                        flex: 1.3,
+                        backgroundColor: theme.subCard,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
                     placeholder="Tên món (VD: Phở tái)"
+                    placeholderTextColor={theme.subText}
                     value={newItemName}
                     onChangeText={setNewItemName}
                   />
                   <TextInput
-                    style={[styles.input, { flex: 0.8 }]}
+                    style={[
+                      styles.input,
+                      {
+                        flex: 0.8,
+                        backgroundColor: theme.subCard,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
                     placeholder="Giá (35000)"
+                    placeholderTextColor={theme.subText}
                     keyboardType="numeric"
                     value={newItemPrice}
                     onChangeText={setNewItemPrice}
                   />
                   <TextInput
-                    style={[styles.input, { flex: 0.6 }]}
+                    style={[
+                      styles.input,
+                      {
+                        flex: 0.6,
+                        backgroundColor: theme.subCard,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
                     placeholder="Tồn (∞)"
+                    placeholderTextColor={theme.subText}
                     keyboardType="numeric"
                     value={newItemStock}
                     onChangeText={setNewItemStock}
@@ -977,12 +1813,14 @@ export default function App() {
                   onPress={() => setSelectedCategoryId('all')}
                   style={[
                     styles.catChip,
+                    { backgroundColor: theme.card, borderColor: theme.border },
                     selectedCategoryId === 'all' && styles.catChipActive,
                   ]}
                 >
                   <Text
                     style={[
                       styles.catChipText,
+                      { color: theme.subText },
                       selectedCategoryId === 'all' && styles.catChipTextActive,
                     ]}
                   >
@@ -995,11 +1833,19 @@ export default function App() {
                     <TouchableOpacity
                       key={cat.id}
                       onPress={() => setSelectedCategoryId(cat.id)}
-                      style={[styles.catChip, active && styles.catChipActive]}
+                      style={[
+                        styles.catChip,
+                        {
+                          backgroundColor: theme.card,
+                          borderColor: theme.border,
+                        },
+                        active && styles.catChipActive,
+                      ]}
                     >
                       <Text
                         style={[
                           styles.catChipText,
+                          { color: theme.subText },
                           active && styles.catChipTextActive,
                         ]}
                       >
@@ -1021,12 +1867,18 @@ export default function App() {
                     key={item.id}
                     style={[
                       styles.itemCard,
+                      {
+                        backgroundColor: theme.card,
+                        borderColor: theme.border,
+                      },
                       !item.is_available && styles.itemCardSoldOut,
                     ]}
                   >
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.itemTitle}>{item.name_i18n?.vi}</Text>
-                      <Text style={styles.itemSub}>
+                      <Text style={[styles.itemTitle, { color: theme.text }]}>
+                        {item.name_i18n?.vi}
+                      </Text>
+                      <Text style={[styles.itemSub, { color: theme.subText }]}>
                         EN: {item.name_i18n?.en || '—'} • Đã bán:{' '}
                         {item.sold_count || 0}
                       </Text>
@@ -1037,29 +1889,62 @@ export default function App() {
                           {formatVnd(item.price)}
                         </Text>
                         <TouchableOpacity
-                          style={styles.priceStepBtn}
+                          style={[
+                            styles.priceStepBtn,
+                            { backgroundColor: theme.subCard },
+                          ]}
                           onPress={() => handleUpdateItemPrice(item, -5000)}
                         >
-                          <Text style={styles.priceStepText}>-5k</Text>
+                          <Text
+                            style={[
+                              styles.priceStepText,
+                              { color: theme.text },
+                            ]}
+                          >
+                            -5k
+                          </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={styles.priceStepBtn}
+                          style={[
+                            styles.priceStepBtn,
+                            { backgroundColor: theme.subCard },
+                          ]}
                           onPress={() => handleUpdateItemPrice(item, 5000)}
                         >
-                          <Text style={styles.priceStepText}>+5k</Text>
+                          <Text
+                            style={[
+                              styles.priceStepText,
+                              { color: theme.text },
+                            ]}
+                          >
+                            +5k
+                          </Text>
                         </TouchableOpacity>
                       </View>
 
                       {/* Stock Quantity Row */}
                       <View style={styles.priceRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Ionicons name="cube-outline" size={12} color="#0f766e" style={{ marginRight: 4 }} />
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Ionicons
+                            name="cube-outline"
+                            size={12}
+                            color="#0f766e"
+                            style={{ marginRight: 4 }}
+                          />
                           <Text style={styles.stockBadgeText}>
                             Tồn kho: {stock === null ? '∞' : stock}
                           </Text>
                         </View>
                         <TouchableOpacity
-                          style={styles.priceStepBtn}
+                          style={[
+                            styles.priceStepBtn,
+                            { backgroundColor: theme.subCard },
+                          ]}
                           onPress={() =>
                             handleUpdateItemStock(
                               item,
@@ -1067,21 +1952,48 @@ export default function App() {
                             )
                           }
                         >
-                          <Text style={styles.priceStepText}>-1</Text>
+                          <Text
+                            style={[
+                              styles.priceStepText,
+                              { color: theme.text },
+                            ]}
+                          >
+                            -1
+                          </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={styles.priceStepBtn}
+                          style={[
+                            styles.priceStepBtn,
+                            { backgroundColor: theme.subCard },
+                          ]}
                           onPress={() =>
                             handleUpdateItemStock(item, (stock ?? 0) + 5)
                           }
                         >
-                          <Text style={styles.priceStepText}>+5</Text>
+                          <Text
+                            style={[
+                              styles.priceStepText,
+                              { color: theme.text },
+                            ]}
+                          >
+                            +5
+                          </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={styles.priceStepBtn}
+                          style={[
+                            styles.priceStepBtn,
+                            { backgroundColor: theme.subCard },
+                          ]}
                           onPress={() => handleUpdateItemStock(item, null)}
                         >
-                          <Text style={styles.priceStepText}>∞</Text>
+                          <Text
+                            style={[
+                              styles.priceStepText,
+                              { color: theme.text },
+                            ]}
+                          >
+                            ∞
+                          </Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -1107,60 +2019,824 @@ export default function App() {
             </View>
           )}
 
-          {/* ================= TAB 4: STORE & WI-FI SETTINGS ================= */}
+          {/* ================= TAB 4: PROMOTIONS, DISCOUNTS & FLASH SALE STUDIO ================= */}
+          {activeTab === 'promotions' && (
+            <View style={styles.sectionStack}>
+              {/* Live Phone Viewer at Top */}
+              {renderLivePhoneViewer()}
+
+              {/* Sub-tab Switcher: Discount Banner vs Flash Sale */}
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => setPromoSubTab('discount')}
+                  style={[
+                    styles.subTabBtn,
+                    promoSubTab === 'discount' && {
+                      backgroundColor: '#0f172a',
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: '900',
+                      color:
+                        promoSubTab === 'discount' ? '#ffffff' : '#475569',
+                    }}
+                  >
+                    🔥 Giảm Giá &amp; Banner
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setPromoSubTab('flash_sale')}
+                  style={[
+                    styles.subTabBtn,
+                    promoSubTab === 'flash_sale' && {
+                      backgroundColor: '#e11d48',
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: '900',
+                      color:
+                        promoSubTab === 'flash_sale' ? '#ffffff' : '#475569',
+                    }}
+                  >
+                    ⚡ Flash Sale Giờ Vàng
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {promoSubTab === 'discount' ? (
+                <View
+                  style={[
+                    styles.card,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Text style={[styles.cardHeading, { color: theme.text }]}>
+                      🔥 Giảm Giá Hóa Đơn / Theo Món
+                    </Text>
+                    <Switch
+                      value={promoBanner.enabled}
+                      onValueChange={(v: boolean) =>
+                        setPromoBanner((prev) => ({ ...prev, enabled: v }))
+                      }
+                      trackColor={{ false: '#cbd5e1', true: '#10b981' }}
+                    />
+                  </View>
+
+                  {/* Discount Type: % vs VND */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Hình thức giảm giá
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        syncBannerRule({
+                          ...promoBanner,
+                          discountType: 'percent',
+                          discountValue: 15,
+                        })
+                      }
+                      style={[
+                        styles.choiceBtn,
+                        promoBanner.discountType !== 'fixed_amount' &&
+                          styles.choiceBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          promoBanner.discountType !== 'fixed_amount' &&
+                            styles.choiceBtnTextActive,
+                        ]}
+                      >
+                        Giảm theo %
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        syncBannerRule({
+                          ...promoBanner,
+                          discountType: 'fixed_amount',
+                          discountValue: 20000,
+                        })
+                      }
+                      style={[
+                        styles.choiceBtn,
+                        promoBanner.discountType === 'fixed_amount' &&
+                          styles.choiceBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          promoBanner.discountType === 'fixed_amount' &&
+                            styles.choiceBtnTextActive,
+                        ]}
+                      >
+                        Giảm số tiền (đ)
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Quick Discount Value Chips */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Mức giảm nhanh
+                  </Text>
+                  <View
+                    style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}
+                  >
+                    {(promoBanner.discountType === 'fixed_amount'
+                      ? [10000, 20000, 30000, 50000]
+                      : [10, 15, 20, 30]
+                    ).map((val) => {
+                      const active = promoBanner.discountValue === val;
+                      return (
+                        <TouchableOpacity
+                          key={val}
+                          onPress={() =>
+                            syncBannerRule({
+                              ...promoBanner,
+                              discountValue: val,
+                            })
+                          }
+                          style={[
+                            styles.miniChip,
+                            active && { backgroundColor: '#10b981' },
+                          ]}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '800',
+                              color: active ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            {promoBanner.discountType === 'fixed_amount'
+                              ? `-${val / 1000}k`
+                              : `-${val}%`}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Min Order Chips */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Đơn tối thiểu
+                  </Text>
+                  <View
+                    style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}
+                  >
+                    {[
+                      { label: '0đ (Mọi đơn)', val: 0 },
+                      { label: 'Từ 50k', val: 50000 },
+                      { label: 'Từ 100k', val: 100000 },
+                      { label: 'Từ 200k', val: 200000 },
+                    ].map((chip) => {
+                      const active =
+                        (promoBanner.minOrderAmount || 0) === chip.val;
+                      return (
+                        <TouchableOpacity
+                          key={chip.val}
+                          onPress={() =>
+                            syncBannerRule({
+                              ...promoBanner,
+                              minOrderAmount: chip.val,
+                            })
+                          }
+                          style={[
+                            styles.miniChip,
+                            active && { backgroundColor: '#0f172a' },
+                          ]}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '800',
+                              color: active ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            {chip.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Apply Scope: All vs Selected Items */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Phạm vi áp dụng
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        syncBannerRule({ ...promoBanner, applyScope: 'all' })
+                      }
+                      style={[
+                        styles.choiceBtn,
+                        promoBanner.applyScope !== 'selected_items' &&
+                          styles.choiceBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          promoBanner.applyScope !== 'selected_items' &&
+                            styles.choiceBtnTextActive,
+                        ]}
+                      >
+                        Toàn bộ Menu
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        syncBannerRule({
+                          ...promoBanner,
+                          applyScope: 'selected_items',
+                        })
+                      }
+                      style={[
+                        styles.choiceBtn,
+                        promoBanner.applyScope === 'selected_items' &&
+                          styles.choiceBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          promoBanner.applyScope === 'selected_items' &&
+                            styles.choiceBtnTextActive,
+                        ]}
+                      >
+                        Chọn món ({(promoBanner.selectedItemIds || []).length})
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {promoBanner.applyScope === 'selected_items' && (
+                    <View style={{ gap: 6, marginTop: 8 }}>
+                      {items.map((it) => {
+                        const checked = (
+                          promoBanner.selectedItemIds || []
+                        ).includes(it.id);
+                        return (
+                          <TouchableOpacity
+                            key={it.id}
+                            onPress={() => toggleBannerSelectedItem(it.id)}
+                            style={[
+                              styles.selectableItemRow,
+                              checked && {
+                                borderColor: '#10b981',
+                                backgroundColor: '#ecfdf5',
+                              },
+                            ]}
+                          >
+                            <Ionicons
+                              name={
+                                checked ? 'checkbox' : 'square-outline'
+                              }
+                              size={18}
+                              color={checked ? '#10b981' : '#94a3b8'}
+                            />
+                            <Text
+                              style={{
+                                flex: 1,
+                                fontSize: 12,
+                                fontWeight: '700',
+                                color: '#0f172a',
+                              }}
+                            >
+                              {it.name_i18n?.vi}
+                            </Text>
+                            <Text
+                              style={{
+                                fontSize: 11,
+                                fontWeight: '800',
+                                color: '#059669',
+                              }}
+                            >
+                              {formatVnd(it.price)}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+
+                  {/* Pure Round Banner Color Swatches (No Cluttered Titles) */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Màu Banner
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
+                    {BANNER_GRADIENT_SWATCHES.map((sw) => {
+                      const active = promoBanner.bgGradient === sw.id;
+                      return (
+                        <TouchableOpacity
+                          key={sw.id}
+                          onPress={() =>
+                            setPromoBanner((prev) => ({
+                              ...prev,
+                              bgGradient: sw.id,
+                            }))
+                          }
+                          style={[
+                            styles.colorCircle,
+                            { backgroundColor: sw.hex },
+                            active && styles.colorCircleActive,
+                          ]}
+                        >
+                          {active && (
+                            <Ionicons
+                              name="checkmark"
+                              size={16}
+                              color="#ffffff"
+                            />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Welcome Popup Toggle */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginTop: 14,
+                      paddingTop: 10,
+                      borderTopWidth: 1,
+                      borderTopColor: theme.border,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: '800',
+                        color: theme.text,
+                        flex: 1,
+                      }}
+                    >
+                      🎁 Bật thêm Popup Chào Mừng khi khách quét QR
+                    </Text>
+                    <Switch
+                      value={welcomePopup.enabled}
+                      onValueChange={(v: boolean) =>
+                        setWelcomePopup((prev) => ({ ...prev, enabled: v }))
+                      }
+                      trackColor={{ false: '#cbd5e1', true: '#10b981' }}
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.saveSettingsBtn}
+                    onPress={handleSaveShopAndTheme}
+                  >
+                    <Text style={styles.saveSettingsBtnText}>
+                      Lưu &amp; Áp Dụng Khuyến Mãi
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View
+                  style={[
+                    styles.card,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Text style={[styles.cardHeading, { color: theme.text }]}>
+                      ⚡ Flash Sale Giờ Vàng
+                    </Text>
+                    <Switch
+                      value={flashSale.enabled}
+                      onValueChange={(v: boolean) =>
+                        setFlashSale((prev) => ({ ...prev, enabled: v }))
+                      }
+                      trackColor={{ false: '#cbd5e1', true: '#e11d48' }}
+                    />
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Mức giảm Flash Sale (%)
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    {[15, 20, 25, 30, 50].map((pct) => {
+                      const active =
+                        flashSale.discountType === 'percent' &&
+                        flashSale.discountValue === pct;
+                      return (
+                        <TouchableOpacity
+                          key={pct}
+                          onPress={() =>
+                            setFlashSale((prev) => ({
+                              ...prev,
+                              discountType: 'percent',
+                              discountValue: pct,
+                            }))
+                          }
+                          style={[
+                            styles.miniChip,
+                            active && { backgroundColor: '#e11d48' },
+                          ]}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '800',
+                              color: active ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            -{pct}%
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[styles.fieldLabel, { color: theme.subText }]}
+                      >
+                        Giờ bắt đầu
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: theme.subCard,
+                            borderColor: theme.border,
+                            color: theme.text,
+                          },
+                        ]}
+                        value={flashSale.startTime}
+                        onChangeText={(t: string) =>
+                          setFlashSale((prev) => ({ ...prev, startTime: t }))
+                        }
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[styles.fieldLabel, { color: theme.subText }]}
+                      >
+                        Giờ kết thúc
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: theme.subCard,
+                            borderColor: theme.border,
+                            color: theme.text,
+                          },
+                        ]}
+                        value={flashSale.endTime}
+                        onChangeText={(t: string) =>
+                          setFlashSale((prev) => ({ ...prev, endTime: t }))
+                        }
+                      />
+                    </View>
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    Tích chọn sản phẩm chạy Flash Sale ({flashSale.itemIds.length}{' '}
+                    món):
+                  </Text>
+                  <View style={{ gap: 6, marginTop: 6 }}>
+                    {items.map((it) => {
+                      const checked = flashSale.itemIds.includes(it.id);
+                      const salePrice = Math.max(
+                        0,
+                        Math.round(
+                          (it.price * (100 - flashSale.discountValue)) / 100
+                        )
+                      );
+                      return (
+                        <TouchableOpacity
+                          key={it.id}
+                          onPress={() => toggleFlashSaleItem(it.id)}
+                          style={[
+                            styles.selectableItemRow,
+                            checked && {
+                              borderColor: '#e11d48',
+                              backgroundColor: '#fff1f2',
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name={checked ? 'checkbox' : 'square-outline'}
+                            size={18}
+                            color={checked ? '#e11d48' : '#94a3b8'}
+                          />
+                          <Text
+                            style={{
+                              flex: 1,
+                              fontSize: 12,
+                              fontWeight: '700',
+                              color: '#0f172a',
+                            }}
+                          >
+                            {it.name_i18n?.vi}
+                          </Text>
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '900',
+                              color: '#e11d48',
+                            }}
+                          >
+                            ⚡ {formatVnd(salePrice)}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.saveSettingsBtn,
+                      { backgroundColor: '#e11d48' },
+                    ]}
+                    onPress={handleSaveShopAndTheme}
+                  >
+                    <Text style={styles.saveSettingsBtnText}>
+                      Lưu &amp; Kích Hoạt Flash Sale
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* ================= TAB 5: THEME DESIGNER & STORE SETTINGS ================= */}
           {activeTab === 'settings' && (
             <View style={styles.sectionStack}>
-              <View style={styles.card}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                  <Ionicons name="storefront" size={16} color="#10b981" style={{ marginRight: 6 }} />
-                  <Text style={[styles.cardHeading, { marginBottom: 0 }]}>
-                    Cài đặt Cửa hàng &amp; Wi-Fi (Đồng bộ Supabase)
+              {/* Live Phone Viewer */}
+              {renderLivePhoneViewer()}
+
+              {/* Theme & Color Customizer (No Cluttered Text Titles) */}
+              <View
+                style={[
+                  styles.card,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
+              >
+                <Text style={[styles.cardHeading, { color: theme.text }]}>
+                  🎨 Giao Diện &amp; Màu Sắc Màn Hình Quán
+                </Text>
+
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Màu chủ đạo
+                </Text>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    marginTop: 6,
+                  }}
+                >
+                  {BRAND_COLOR_SWATCHES.map((hex) => {
+                    const selected =
+                      primaryColor.toLowerCase() === hex.toLowerCase();
+                    return (
+                      <TouchableOpacity
+                        key={hex}
+                        onPress={() => setPrimaryColor(hex)}
+                        style={[
+                          styles.colorCircle,
+                          { backgroundColor: hex },
+                          selected && styles.colorCircleActive,
+                        ]}
+                      >
+                        {selected && (
+                          <Ionicons
+                            name="checkmark"
+                            size={16}
+                            color="#ffffff"
+                          />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Nền màn hình khách
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                  {[
+                    { id: 'clean', label: '☀️ Sáng' },
+                    { id: 'warm', label: '🏮 Kem Ấm' },
+                    { id: 'dark', label: '🌙 Tối' },
+                  ].map((bg) => {
+                    const active = backgroundStyle === bg.id;
+                    return (
+                      <TouchableOpacity
+                        key={bg.id}
+                        onPress={() =>
+                          setBackgroundStyle(
+                            bg.id as 'clean' | 'warm' | 'dark'
+                          )
+                        }
+                        style={[
+                          styles.choiceBtn,
+                          active && styles.choiceBtnActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.choiceBtnText,
+                            active && styles.choiceBtnTextActive,
+                          ]}
+                        >
+                          {bg.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Bố cục hiển thị món
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                  <TouchableOpacity
+                    onPress={() => setLayoutMode('list')}
+                    style={[
+                      styles.choiceBtn,
+                      layoutMode === 'list' && styles.choiceBtnActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceBtnText,
+                        layoutMode === 'list' && styles.choiceBtnTextActive,
+                      ]}
+                    >
+                      Danh sách ngang
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => setLayoutMode('grid')}
+                    style={[
+                      styles.choiceBtn,
+                      layoutMode === 'grid' && styles.choiceBtnActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceBtnText,
+                        layoutMode === 'grid' && styles.choiceBtnTextActive,
+                      ]}
+                    >
+                      Lưới ảnh 2 cột
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Basic Store Info & Wi-Fi */}
+              <View
+                style={[
+                  styles.card,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
+              >
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 12,
+                  }}
+                >
+                  <Ionicons
+                    name="storefront"
+                    size={16}
+                    color="#10b981"
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={[
+                      styles.cardHeading,
+                      { marginBottom: 0, color: theme.text },
+                    ]}
+                  >
+                    Thông Tin Quán &amp; Wi-Fi 1 Chạm
                   </Text>
                 </View>
 
-                <Text style={styles.fieldLabel}>Tên cửa hàng</Text>
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Tên cửa hàng
+                </Text>
                 <TextInput
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.subCard,
+                      borderColor: theme.border,
+                      color: theme.text,
+                    },
+                  ]}
                   value={editShopName}
                   onChangeText={setEditShopName}
                 />
 
-                <Text style={styles.fieldLabel}>
-                  Tỉnh / Thành phố (34 tỉnh thành)
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Tỉnh / Thành phố
                 </Text>
                 <TextInput
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.subCard,
+                      borderColor: theme.border,
+                      color: theme.text,
+                    },
+                  ]}
                   value={editCity}
                   onChangeText={setEditCity}
                 />
 
-                <Text style={styles.fieldLabel}>Số điện thoại / Zalo</Text>
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Số điện thoại / Zalo
+                </Text>
                 <TextInput
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.subCard,
+                      borderColor: theme.border,
+                      color: theme.text,
+                    },
+                  ]}
                   value={editPhone}
                   onChangeText={setEditPhone}
                 />
 
-                <Text style={styles.fieldLabel}>Tên Wi-Fi (SSID)</Text>
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Tên Wi-Fi (SSID)
+                </Text>
                 <TextInput
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.subCard,
+                      borderColor: theme.border,
+                      color: theme.text,
+                    },
+                  ]}
                   value={editWifiSsid}
                   onChangeText={setEditWifiSsid}
                 />
 
-                <Text style={styles.fieldLabel}>Mật khẩu Wi-Fi</Text>
+                <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                  Mật khẩu Wi-Fi
+                </Text>
                 <TextInput
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.subCard,
+                      borderColor: theme.border,
+                      color: theme.text,
+                    },
+                  ]}
                   value={editWifiPass}
                   onChangeText={setEditWifiPass}
                 />
 
                 <TouchableOpacity
                   style={styles.saveSettingsBtn}
-                  onPress={handleSaveShopSettings}
+                  onPress={handleSaveShopAndTheme}
                 >
                   <Text style={styles.saveSettingsBtnText}>
-                    Lưu Thay Đổi Lên Supabase
+                    Lưu Tất Cả Cài Đặt
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1169,24 +2845,30 @@ export default function App() {
         </ScrollView>
       )}
 
-      {/* Bottom Tab Navigation */}
-      <View style={styles.bottomNav}>
+      {/* Bottom Tab Navigation (5 Tabs including Khuyến mãi & Flash Sale) */}
+      <View
+        style={[
+          styles.bottomNav,
+          { backgroundColor: theme.card, borderTopColor: theme.border },
+        ]}
+      >
         <TouchableOpacity
           style={styles.navTab}
           onPress={() => setActiveTab('orders')}
         >
           <Ionicons
             name={activeTab === 'orders' ? 'receipt' : 'receipt-outline'}
-            size={22}
-            color={activeTab === 'orders' ? '#10b981' : '#64748b'}
+            size={20}
+            color={activeTab === 'orders' ? '#10b981' : theme.subText}
           />
           <Text
             style={[
               styles.navTabText,
+              { color: theme.subText },
               activeTab === 'orders' && styles.navTabTextActive,
             ]}
           >
-            Đơn mPOS ({newOrdersCount})
+            Đơn ({newOrdersCount})
           </Text>
         </TouchableOpacity>
 
@@ -1196,12 +2878,13 @@ export default function App() {
         >
           <Ionicons
             name={activeTab === 'overview' ? 'bar-chart' : 'bar-chart-outline'}
-            size={22}
-            color={activeTab === 'overview' ? '#10b981' : '#64748b'}
+            size={20}
+            color={activeTab === 'overview' ? '#10b981' : theme.subText}
           />
           <Text
             style={[
               styles.navTabText,
+              { color: theme.subText },
               activeTab === 'overview' && styles.navTabTextActive,
             ]}
           >
@@ -1215,12 +2898,13 @@ export default function App() {
         >
           <Ionicons
             name={activeTab === 'catalog' ? 'restaurant' : 'restaurant-outline'}
-            size={22}
-            color={activeTab === 'catalog' ? '#10b981' : '#64748b'}
+            size={20}
+            color={activeTab === 'catalog' ? '#10b981' : theme.subText}
           />
           <Text
             style={[
               styles.navTabText,
+              { color: theme.subText },
               activeTab === 'catalog' && styles.navTabTextActive,
             ]}
           >
@@ -1230,20 +2914,43 @@ export default function App() {
 
         <TouchableOpacity
           style={styles.navTab}
-          onPress={() => setActiveTab('settings')}
+          onPress={() => setActiveTab('promotions')}
         >
           <Ionicons
-            name={activeTab === 'settings' ? 'settings' : 'settings-outline'}
-            size={22}
-            color={activeTab === 'settings' ? '#10b981' : '#64748b'}
+            name={activeTab === 'promotions' ? 'flash' : 'flash-outline'}
+            size={20}
+            color={activeTab === 'promotions' ? '#f59e0b' : theme.subText}
           />
           <Text
             style={[
               styles.navTabText,
+              { color: theme.subText },
+              activeTab === 'promotions' && { color: '#f59e0b', fontWeight: '900' },
+            ]}
+          >
+            Khuyến mãi
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navTab}
+          onPress={() => setActiveTab('settings')}
+        >
+          <Ionicons
+            name={
+              activeTab === 'settings' ? 'color-palette' : 'color-palette-outline'
+            }
+            size={20}
+            color={activeTab === 'settings' ? '#10b981' : theme.subText}
+          />
+          <Text
+            style={[
+              styles.navTabText,
+              { color: theme.subText },
               activeTab === 'settings' && styles.navTabTextActive,
             ]}
           >
-            Cài đặt
+            Giao diện
           </Text>
         </TouchableOpacity>
       </View>
@@ -1384,6 +3091,14 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748b',
   },
+  themeToggleBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   logoutBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -1404,9 +3119,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#f1f5f9',
     marginRight: 8,
-  },
-  shopPillActive: {
-    backgroundColor: '#0f172a',
   },
   shopPillText: {
     fontSize: 12,
@@ -1583,6 +3295,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#94a3b8',
   },
+  chartBarsContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    height: 120,
+    paddingTop: 12,
+  },
+  chartBarColumn: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  chartBarTrack: {
+    width: 22,
+    height: 75,
+    backgroundColor: '#e2e8f0',
+    borderRadius: 6,
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
   kpiGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1611,7 +3342,7 @@ const styles = StyleSheet.create({
   kpiHint: {
     fontSize: 10,
     color: '#64748b',
-    marginTop: 2,
+    marginTop: 4,
   },
   card: {
     backgroundColor: '#ffffff',
@@ -1629,64 +3360,74 @@ const styles = StyleSheet.create({
   topItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
   },
   rankBadge: {
+    width: 28,
     fontSize: 12,
     fontWeight: '900',
     color: '#10b981',
-    width: 24,
+  },
+  itemTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  itemSub: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
   },
   viewCountText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#0f172a',
+    color: '#0f766e',
   },
   quickAddRow: {
     flexDirection: 'row',
-    gap: 6,
-    alignItems: 'center',
+    gap: 8,
   },
   input: {
     backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 12,
-    color: '#0f172a',
-    marginBottom: 8,
-  },
-  addBtn: {
-    backgroundColor: '#10b981',
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 10,
-    marginBottom: 8,
+    fontSize: 12,
+    color: '#0f172a',
+  },
+  addBtn: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   addBtnText: {
     color: '#ffffff',
-    fontWeight: '800',
     fontSize: 12,
+    fontWeight: '800',
   },
   catChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
     marginRight: 8,
   },
   catChipActive: {
     backgroundColor: '#10b981',
+    borderColor: '#10b981',
   },
   catChipText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#334155',
+    color: '#475569',
   },
   catChipTextActive: {
     color: '#ffffff',
@@ -1703,24 +3444,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   itemCardSoldOut: {
-    backgroundColor: '#fff1f2',
-    borderColor: '#fecdd3',
-  },
-  itemTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#0f172a',
-  },
-  itemSub: {
-    fontSize: 11,
-    color: '#64748b',
-    marginTop: 2,
+    opacity: 0.6,
   },
   priceRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 6,
+    marginTop: 8,
   },
   priceBadge: {
     fontSize: 13,
@@ -1736,7 +3466,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f1f5f9',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
+    borderRadius: 8,
   },
   priceStepText: {
     fontSize: 11,
@@ -1745,53 +3475,154 @@ const styles = StyleSheet.create({
   },
   switchColumn: {
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 4,
   },
   stockStatusText: {
     fontSize: 10,
     fontWeight: '800',
-    marginTop: 4,
   },
   fieldLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: '#475569',
+    marginTop: 10,
     marginBottom: 4,
-    marginTop: 4,
   },
   saveSettingsBtn: {
     backgroundColor: '#10b981',
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 16,
   },
   saveSettingsBtnText: {
     color: '#ffffff',
-    fontWeight: '900',
     fontSize: 13,
+    fontWeight: '900',
+  },
+  phoneViewerFrame: {
+    borderRadius: 26,
+    borderWidth: 4,
+    overflow: 'hidden',
+  },
+  phoneViewerHeader: {
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  phoneViewerLogo: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  langPreviewPill: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    marginRight: 6,
+  },
+  previewBannerBox: {
+    borderRadius: 14,
+    padding: 10,
+  },
+  previewFlashBox: {
+    backgroundColor: '#e11d48',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  previewItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  subTabBtn: {
+    flex: 1,
+    backgroundColor: '#e2e8f0',
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  choiceBtn: {
+    flex: 1,
+    backgroundColor: '#f1f5f9',
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+  },
+  choiceBtnActive: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#10b981',
+  },
+  choiceBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  choiceBtnTextActive: {
+    color: '#065f46',
+  },
+  miniChip: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  selectableItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+  },
+  colorCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colorCircleActive: {
+    borderWidth: 3,
+    borderColor: '#0f172a',
   },
   bottomNav: {
-    flexDirection: 'row',
     backgroundColor: '#ffffff',
     borderTopWidth: 1,
     borderTopColor: '#e2e8f0',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    flexDirection: 'row',
+    paddingVertical: 8,
   },
   navTab: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 4,
+    justifyContent: 'center',
+    gap: 3,
   },
   navTabText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#64748b',
-    marginTop: 4,
   },
   navTabTextActive: {
     color: '#10b981',
-    fontWeight: '900',
+    fontWeight: '800',
   },
 });

@@ -18,6 +18,53 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   },
 });
 
+export interface MobilePromoBannerConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  subtitle?: string;
+  bgGradient?: 'amber_rose' | 'emerald_teal' | 'violet_fuchsia' | 'royal_gold';
+  ctaText?: string;
+  discountType?: 'percent' | 'fixed_amount';
+  discountValue?: number;
+  minOrderAmount?: number;
+  applyScope?: 'all' | 'selected_items';
+  selectedItemIds?: string[];
+  voucherCode?: string;
+}
+
+export interface MobileFlashSaleConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  discountType: 'percent' | 'fixed_amount';
+  discountValue: number;
+  startTime?: string;
+  endTime?: string;
+  itemIds: string[];
+}
+
+export interface MobilePopupConfig {
+  enabled: boolean;
+  badgeText?: string;
+  title: string;
+  content: string;
+  imageUrl?: string;
+  voucherCode?: string;
+  ctaText?: string;
+}
+
+export interface MobileShopThemeConfig {
+  primaryColor?: string;
+  layout?: 'list' | 'grid';
+  backgroundStyle?: 'clean' | 'warm' | 'dark' | 'custom_image';
+  backgroundImageUrl?: string;
+  backgroundOverlayOpacity?: number;
+  promoBanner?: MobilePromoBannerConfig;
+  flashSale?: MobileFlashSaleConfig;
+  welcomePopup?: MobilePopupConfig;
+}
+
 export interface MobileShop {
   id: string;
   owner_id: string;
@@ -32,6 +79,7 @@ export interface MobileShop {
     ssid: string;
     password?: string;
   };
+  theme_config?: MobileShopThemeConfig;
   supported_langs: string[];
   is_published: boolean;
 }
