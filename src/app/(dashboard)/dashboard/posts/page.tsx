@@ -30,12 +30,14 @@ import {
   ShopThemeConfig,
   SupportedLocale,
 } from '@/types/qlaok';
-import { ALL_LOCALES, LOCALE_META, formatVnd } from '@/lib/i18n-helper';
+import { ALL_LOCALES, LOCALE_META, formatCurrency } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import {
   StorefrontPhonePreview,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
+
+const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
 type StudioTab = 'discount_banner' | 'flash_sale' | 'posts';
 
@@ -774,13 +776,13 @@ export default function DashboardPostsPage() {
                           promoBanner.discountType === 'fixed_amount'
                             ? Math.max(
                                 0,
-                                item.price_vnd -
+                                item.price -
                                   (promoBanner.discountValue || 0)
                               )
                             : Math.max(
                                 0,
                                 Math.round(
-                                  (item.price_vnd *
+                                  (item.price *
                                     (100 - (promoBanner.discountValue || 0))) /
                                     100
                                 )
@@ -816,7 +818,7 @@ export default function DashboardPostsPage() {
                                   {formatVnd(newPrice)}
                                 </span>
                                 <span className="line-through text-slate-400 text-[10px]">
-                                  {formatVnd(item.price_vnd)}
+                                  {formatVnd(item.price)}
                                 </span>
                               </div>
                             </div>
@@ -1139,11 +1141,11 @@ export default function DashboardPostsPage() {
                     const checked = flashSale.itemIds.includes(item.id);
                     const salePrice =
                       flashSale.discountType === 'fixed_amount'
-                        ? Math.max(0, item.price_vnd - flashSale.discountValue)
+                        ? Math.max(0, item.price - flashSale.discountValue)
                         : Math.max(
                             0,
                             Math.round(
-                              (item.price_vnd *
+                              (item.price *
                                 (100 - flashSale.discountValue)) /
                                 100
                             )
@@ -1180,7 +1182,7 @@ export default function DashboardPostsPage() {
                               ⚡ {formatVnd(salePrice)}
                             </span>
                             <span className="text-[10px] line-through text-slate-400">
-                              {formatVnd(item.price_vnd)}
+                              {formatVnd(item.price)}
                             </span>
                           </div>
                         </div>
@@ -1353,11 +1355,11 @@ export default function DashboardPostsPage() {
         </div>
 
         {/* Right 5 Columns: Sticky Interactive Smartphone Viewer */}
-        <div className="lg:col-span-5 lg:sticky lg:top-6 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 flex flex-col items-center">
+        <div id="live-phone-preview" className="lg:col-span-5 lg:sticky lg:top-6 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 flex flex-col items-center">
           <StorefrontPhonePreview
             shop={previewShop}
             items={shopItems}
-            onOpenPopup={() => setPreviewPopupOpen(true)}
+            onOpenPopupPreview={() => setPreviewPopupOpen(true)}
           />
         </div>
       </div>

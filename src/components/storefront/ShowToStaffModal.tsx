@@ -270,6 +270,7 @@ export function ShowToStaffModal({
           `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
         payment_method: paymentMethod,
         source: 'qr_table',
+        discount_amount: promoCalc.discountAmount,
         items: cart.map((entry) => {
           const extraPrice = entry.selectedChoices.reduce(
             (s, c) => s + (c.extra_price || 0),

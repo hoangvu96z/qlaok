@@ -619,11 +619,11 @@ export default function DashboardSettingsPage() {
           </div>
 
           {/* Right 5 Columns: Live Interactive Phone Viewer */}
-          <div className="lg:col-span-5 flex flex-col items-center justify-center rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+          <div id="live-phone-preview" className="lg:col-span-5 flex flex-col items-center justify-center rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
             <StorefrontPhonePreview
               shop={previewShop}
               items={shopItems}
-              onOpenPopup={() => setPreviewPopupOpen(true)}
+              onOpenPopupPreview={() => setPreviewPopupOpen(true)}
             />
           </div>
         </div>

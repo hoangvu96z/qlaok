@@ -65,6 +65,7 @@ export async function POST(req: Request) {
       payment_method = 'cash',
       source = 'qr_table',
       markCompletedImmediately = false,
+      discount_amount = 0,
       items = [],
     } = body as {
       shop_id: string;
@@ -74,6 +75,7 @@ export async function POST(req: Request) {
       payment_method?: PaymentMethod;
       source?: 'qr_table' | 'counter_pos';
       markCompletedImmediately?: boolean;
+      discount_amount?: number;
       items: OrderLineItem[];
     };
 
@@ -92,6 +94,7 @@ export async function POST(req: Request) {
       payment_method,
       source,
       markCompletedImmediately,
+      discount_amount,
       items,
     });
 

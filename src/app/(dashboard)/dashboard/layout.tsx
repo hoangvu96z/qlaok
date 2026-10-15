@@ -523,9 +523,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation Bar */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 px-1 py-1.5 flex items-center justify-around shadow-lg">
-        {NAV_ITEMS.slice(0, 6).map((item) => {
+      {/* Mobile Bottom Navigation Bar (Full 8-tab scrollable bar so Cài đặt & Gói cước are always accessible on mobile) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 py-1.5 flex items-center gap-1 overflow-x-auto no-scrollbar shadow-lg">
+        {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const active =
             item.href === '/dashboard'
@@ -536,14 +536,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl px-2 py-1 text-[10px] font-bold transition-colors ${
+              className={`relative shrink-0 flex flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 py-1.5 text-[10px] font-bold transition-colors ${
                 active
-                  ? 'text-emerald-600'
-                  : 'text-slate-500 hover:text-slate-900'
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               <Icon className="h-4 w-4" />
-              <span className="truncate max-w-[60px]">{item.label}</span>
+              <span className="whitespace-nowrap">{item.label}</span>
               {item.isOrders && newOrdersCount > 0 && (
                 <span className="absolute -top-0.5 right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-slate-950">
                   {newOrdersCount}

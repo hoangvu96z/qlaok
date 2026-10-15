@@ -557,6 +557,7 @@ export async function dbCreateOrder(params: {
   payment_method?: PaymentMethod;
   source?: 'qr_table' | 'counter_pos';
   markCompletedImmediately?: boolean;
+  discount_amount?: number;
   items: OrderLineItem[];
 }): Promise<ShopOrder> {
   const store = readStore();
@@ -619,11 +620,13 @@ export async function dbCreateOrder(params: {
     }
   }
 
-  const totalAmount = params.items.reduce(
+  const subtotalAmount = params.items.reduce(
     (sum, line) =>
       sum + (Number(line.unit_price || 0) + Number(line.extra_price || 0)) * line.quantity,
     0
   );
+  const discountAmount = Math.max(0, Number(params.discount_amount || 0));
+  const totalAmount = Math.max(0, subtotalAmount - discountAmount);
 
   const nowIso = new Date().toISOString();
   const randomCode = Math.floor(100 + Math.random() * 900);

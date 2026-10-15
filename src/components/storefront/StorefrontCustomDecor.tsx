@@ -82,14 +82,16 @@ export function getStorefrontBackgroundProps(shop: Shop): {
   if (style === 'warm') {
     return {
       isDarkTheme: false,
-      containerClass: 'relative min-h-screen bg-amber-50/70 text-slate-900',
+      containerClass:
+        'qr-light-surface relative min-h-screen !bg-[#fdf8ee] text-slate-900',
       backgroundLayer: null,
     };
   }
 
   return {
     isDarkTheme: false,
-    containerClass: 'relative min-h-screen bg-slate-50 text-slate-900',
+    containerClass:
+      'qr-light-surface relative min-h-screen !bg-slate-50 text-slate-900',
     backgroundLayer: null,
   };
 }
@@ -996,7 +998,7 @@ export function StorefrontPhonePreview({
                         style={{ backgroundColor: primaryColor, color: '#ffffff' }}
                         className="rounded-lg px-2 py-0.5 text-[9px] font-bold"
                       >
-                        {labels.tapToCopyWifi}
+                        {labels.copyPassword}
                       </span>
                     </div>
                   )}
@@ -1015,7 +1017,7 @@ export function StorefrontPhonePreview({
                       style={{ backgroundColor: '#ffffff', color: '#475569' }}
                       className="qr-light-surface rounded-full border border-slate-200 px-2.5 py-1 text-[10px] font-bold"
                     >
-                      ⭐ {labels.featured}
+                      ⭐ {labels.bestSeller}
                     </span>
                   </div>
 
@@ -1183,7 +1185,7 @@ export function StorefrontPhonePreview({
               style={{ backgroundColor: primaryColor, color: '#ffffff' }}
               className="rounded-xl px-3 py-2 text-[11px] font-black flex items-center justify-between shadow-lg"
             >
-              <span>🛒 2 {labels.selectedCount}</span>
+              <span>🛒 2 ({labels.qtyShort})</span>
               <span>{labels.bottomCtaFnb} →</span>
             </div>
           </div>
