@@ -37,6 +37,7 @@ export type OpeningHours = Record<
 
 export interface ItemOptionChoice {
   id: string;
+  label_vi?: string;
   label_i18n: I18nText;
   desc_i18n?: I18nText;
   extra_price: number;
@@ -166,6 +167,7 @@ export interface CatalogItem {
   view_count: number;
   stock_quantity?: number | null; // null = không giới hạn, >= 0 = số lượng tồn kho
   sold_count?: number; // tổng số lượng đã bán
+  created_at?: string;
 }
 
 export type OrderStatus = 'new' | 'preparing' | 'completed' | 'cancelled';

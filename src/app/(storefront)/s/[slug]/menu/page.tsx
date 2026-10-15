@@ -258,12 +258,12 @@ export default function StorefrontMenuPage() {
         shop_id: order.shop_id,
         category_id: categories[0]?.id || 'default',
         name_i18n: li.name_i18n || { vi: li.name_vi },
-        description_i18n: { vi: '' },
+        desc_i18n: { vi: '' },
         price: Number(li.unit_price) || 0,
-        images: [],
-        tags: [],
         options_json: [],
-        in_stock: true,
+        is_available: true,
+        is_featured: false,
+        view_count: 0,
         sort_order: 999,
       };
 
