@@ -87,6 +87,18 @@ export interface ShopPopupConfig {
   ctaText?: string;
 }
 
+export interface ShopPaymentConfig {
+  mode: 'vietqr_auto' | 'custom_qr';
+  bankId?: string;          // VietQR bank code, e.g. 'MB', 'VCB', 'TCB', 'ACB', 'BIDV', 'ICB', 'VPB', 'TPB', 'STB', 'VBA'
+  bankName?: string;        // Readable bank name, e.g. 'MB Bank (Quân Đội)'
+  accountNumber?: string;   // Bank account number
+  accountName?: string;     // Account holder name (uppercase, non-accented)
+  template?: 'compact2' | 'compact' | 'qr_only' | 'print';
+  transferPrefix?: string;  // Prefix for transfer description, e.g. 'QLAOK'
+  customQrUrl?: string;     // Custom uploaded/pasted QR image URL (MoMo, ZaloPay, static bank QR)
+  paymentNote?: string;     // Optional note shown below QR
+}
+
 export interface ShopThemeConfig {
   primaryColor: string;
   layout: 'grid' | 'list';
@@ -96,6 +108,7 @@ export interface ShopThemeConfig {
   promoBanner?: ShopPromoBannerConfig;
   flashSale?: ShopFlashSaleConfig;
   welcomePopup?: ShopPopupConfig;
+  paymentConfig?: ShopPaymentConfig;
 }
 
 export interface Shop {

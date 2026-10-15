@@ -33,6 +33,7 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
   calculateOrderPromoDiscount,
   PROMO_LOCALE_TEXT,
@@ -490,6 +491,49 @@ export function ShowToStaffModal({
                     </span>
                   </div>
                 </div>
+
+                {/* Live Shop Payment QR when customer selected VietQR */}
+                {activeOrder.payment_method === 'vietqr' &&
+                  activeOrder.payment_status !== 'paid' &&
+                  (() => {
+                    const qrInfo = getShopPaymentQrInfo(
+                      shop,
+                      activeOrder.total_amount,
+                      activeOrder.order_code
+                    );
+                    return (
+                      <div className="rounded-2xl border border-emerald-500/40 bg-slate-900 p-4 text-center space-y-2.5">
+                        <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
+                          <QrCode className="h-3.5 w-3.5" />
+                          <span>{labels.vietqrPayment}</span>
+                        </div>
+                        <div
+                          style={{ backgroundColor: '#ffffff' }}
+                          className="qr-light-surface mx-auto h-48 w-48 rounded-2xl bg-white p-2 shadow-lg flex items-center justify-center"
+                        >
+                          <img
+                            src={qrInfo.qrImageUrl}
+                            alt="VietQR Payment"
+                            className="h-full w-full object-contain"
+                          />
+                        </div>
+                        <div className="text-xs text-slate-300 space-y-0.5">
+                          <p className="font-bold text-white">
+                            {qrInfo.bankShortName}{' '}
+                            {qrInfo.accountNumber
+                              ? `• ${qrInfo.accountNumber}`
+                              : ''}
+                          </p>
+                          <p className="text-[11px] text-slate-400 uppercase">
+                            {qrInfo.accountName}
+                          </p>
+                          <p className="text-[11px] font-mono text-amber-300">
+                            {qrInfo.transferContent}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                 <button
                   type="button"

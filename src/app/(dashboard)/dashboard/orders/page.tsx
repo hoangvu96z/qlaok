@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import {
   BellRing,
   CheckCircle2,
@@ -18,6 +19,7 @@ import {
   Sparkles,
   Minus,
   Printer,
+  Settings,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -29,6 +31,7 @@ import {
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
+import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 
 // Synthesize a pleasant dual-tone POS counter chime using Web Audio API
 function playOrderChime() {
@@ -756,99 +759,149 @@ export default function CounterOrdersPage() {
         </div>
       )}
 
-      {/* VietQR Table Bill Payment Modal */}
-      {qrOrderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl space-y-4 text-center">
-            <div className="flex items-center justify-between">
-              <span className="rounded-xl bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
-                {qrOrderModal.table_label} • #{qrOrderModal.order_code}
-              </span>
-              <button
-                type="button"
-                onClick={() => setQrOrderModal(null)}
-                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+      {/* VietQR / Custom QR Table Bill Payment Modal */}
+      {qrOrderModal &&
+        (() => {
+          const qrInfo = getShopPaymentQrInfo(
+            activeShop,
+            qrOrderModal.total_amount,
+            qrOrderModal.order_code
+          );
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs">
+              <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl space-y-4 text-center">
+                <div className="flex items-center justify-between">
+                  <span className="rounded-xl bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
+                    {qrOrderModal.table_label} • #{qrOrderModal.order_code}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setQrOrderModal(null)}
+                    className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
 
-            <div>
-              <h3 className="text-base font-black text-slate-900">
-                Quét VietQR Thanh Toán Đơn Hàng
-              </h3>
-              <p className="text-xs text-slate-500">
-                Số tiền và nội dung chuyển khoản đã điền sẵn tự động
-              </p>
-            </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Quét Mã QR Thanh Toán Đơn Hàng
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {qrInfo.mode === 'custom_qr'
+                      ? 'Mã QR thanh toán do quán cài đặt'
+                      : 'Số tiền và nội dung chuyển khoản đã điền sẵn tự động'}
+                  </p>
+                </div>
 
-            <div
-              style={{ backgroundColor: '#ffffff' }}
-              className="qr-light-surface mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center"
-            >
-              <img
-                src={`https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${qrOrderModal.total_amount}&addInfo=${encodeURIComponent(`QLAOK ${qrOrderModal.order_code}`)}&accountName=${encodeURIComponent(activeShop.name)}`}
-                alt="VietQR Order Payment"
-                className="w-full h-full object-contain"
-              />
-            </div>
+                {!qrInfo.isConfigured && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] font-bold text-amber-800">
+                    ⚠️ Quán chưa cài đặt Số Tài Khoản / Mã QR riêng.{' '}
+                    <Link
+                      href="/dashboard/settings#payment-qr-settings"
+                      className="underline font-black text-emerald-700"
+                    >
+                      Cài đặt ngay →
+                    </Link>
+                  </div>
+                )}
 
-            <div className="rounded-2xl bg-slate-50 p-3 text-xs space-y-1">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Tổng thanh toán:</span>
-                <span className="font-black text-emerald-600 text-sm">
-                  {formatCurrency(
-                    qrOrderModal.total_amount,
-                    activeShop.currency
+                <div
+                  style={{ backgroundColor: '#ffffff' }}
+                  className="qr-light-surface mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center"
+                >
+                  <img
+                    src={qrInfo.qrImageUrl}
+                    alt="VietQR Order Payment"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+
+                <div className="rounded-2xl bg-slate-50 p-3 text-xs space-y-1 text-left">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Ngân hàng / Ví:</span>
+                    <span className="font-bold text-slate-900">
+                      {qrInfo.bankShortName}
+                    </span>
+                  </div>
+                  {qrInfo.accountNumber && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Số tài khoản:</span>
+                      <span className="font-mono font-black text-slate-900">
+                        {qrInfo.accountNumber}
+                      </span>
+                    </div>
                   )}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Nội dung CK:</span>
-                <span className="font-mono font-bold text-slate-900">
-                  QLAOK {qrOrderModal.order_code}
-                </span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Chủ tài khoản:</span>
+                    <span className="font-bold text-slate-900 uppercase">
+                      {qrInfo.accountName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between pt-1 border-t border-slate-200/80">
+                    <span className="text-slate-500">Tổng thanh toán:</span>
+                    <span className="font-black text-emerald-600 text-sm">
+                      {formatCurrency(
+                        qrOrderModal.total_amount,
+                        activeShop.currency
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Nội dung CK:</span>
+                    <span className="font-mono font-bold text-slate-900">
+                      {qrInfo.transferContent}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const targetOrder = qrOrderModal;
+                      setQrOrderModal(null);
+                      await handleUpdateOrder(
+                        targetOrder.id,
+                        {
+                          payment_status: 'paid',
+                          payment_method: 'vietqr',
+                          status: 'completed',
+                        },
+                        true
+                      );
+                    }}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetOrder = qrOrderModal;
+                      setQrOrderModal(null);
+                      setPrintingOrder(targetOrder);
+                    }}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                  >
+                    <Printer className="h-4 w-4 text-slate-700" />
+                    <span>In phiếu tạm tính kèm mã QR cho khách</span>
+                  </button>
+
+                  <Link
+                    href="/dashboard/settings#payment-qr-settings"
+                    className="inline-flex items-center justify-center gap-1 pt-1 text-[11px] font-bold text-slate-500 hover:text-emerald-600"
+                  >
+                    <Settings className="h-3 w-3" />
+                    <span>Đổi Số Tài Khoản / Mã QR trong Cài đặt quán</span>
+                  </Link>
+                </div>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={async () => {
-                  const targetOrder = qrOrderModal;
-                  setQrOrderModal(null);
-                  await handleUpdateOrder(
-                    targetOrder.id,
-                    {
-                      payment_status: 'paid',
-                      payment_method: 'vietqr',
-                      status: 'completed',
-                    },
-                    true
-                  );
-                }}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const targetOrder = qrOrderModal;
-                  setQrOrderModal(null);
-                  setPrintingOrder(targetOrder);
-                }}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
-              >
-                <Printer className="h-4 w-4 text-slate-700" />
-                <span>In phiếu tạm tính kèm mã QR cho khách</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          );
+        })()}
 
       {/* Quick Counter POS Modal */}
       {isPosModalOpen && (

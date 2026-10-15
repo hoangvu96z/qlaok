@@ -18,6 +18,7 @@ import {
   Banknote,
   Clock,
   ShoppingBag,
+  Smartphone,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -32,10 +33,8 @@ import {
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META, formatCurrency } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
-import {
-  StorefrontPhonePreview,
-  StorefrontWelcomePopup,
-} from '@/components/storefront/StorefrontCustomDecor';
+import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
+import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
@@ -72,6 +71,7 @@ export default function DashboardPostsPage() {
   const [savingPromo, setSavingPromo] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
+  const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
 
   // 1. Discount & Banner Config
   const [promoBanner, setPromoBanner] = useState<ShopPromoBannerConfig>({
@@ -403,7 +403,11 @@ export default function DashboardPostsPage() {
   };
 
   return (
-    <div className="space-y-5 pb-12">
+    <div
+      className={`space-y-5 pb-12 transition-all duration-300 ${
+        isPreviewSidebarOpen ? 'xl:pr-[385px]' : ''
+      }`}
+    >
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -411,11 +415,26 @@ export default function DashboardPostsPage() {
             Khuyến Mãi, Giảm Giá &amp; Flash Sale ({activeShop.name})
           </h1>
           <p className="text-xs text-slate-500">
-            Thiết lập giảm giá theo % hoặc số tiền, chọn món ưu đãi, bật Flash Sale giờ vàng và xem trực tiếp trên màn hình mẫu
+            Thiết lập giảm giá theo % hoặc số tiền, chọn món ưu đãi, bật Flash Sale giờ vàng và xem trực tiếp trên Slide-bar bên phải
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsPreviewSidebarOpen((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-bold transition ${
+              isPreviewSidebarOpen
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <Smartphone className="h-3.5 w-3.5 text-emerald-600" />
+            <span>
+              {isPreviewSidebarOpen ? 'Ẩn Slide-bar Xem Trước' : 'Mở Slide-bar Xem Trước'}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={() => setPreviewPopupOpen(true)}
@@ -498,9 +517,9 @@ export default function DashboardPostsPage() {
         </button>
       </div>
 
-      {/* Main 12-Col Grid: Left 7 Cols Controls + Right 5 Cols Live Phone Viewer */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        <div className="lg:col-span-7 space-y-5">
+      {/* Main Controls Area (Full Width alongside Right Slide-Bar Preview) */}
+      <div className="space-y-5">
+        <div className="space-y-5">
           {/* TAB 1: DISCOUNT & BANNER / POPUP */}
           {studioTab === 'discount_banner' && (
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5">
@@ -1332,14 +1351,24 @@ export default function DashboardPostsPage() {
           )}
         </div>
 
-        {/* Right 5 Columns: Sticky Interactive Smartphone Viewer */}
-        <div id="live-phone-preview" className="lg:col-span-5 lg:sticky lg:top-6 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 flex flex-col items-center">
-          <StorefrontPhonePreview
-            shop={previewShop}
-            items={shopItems}
-            onOpenPopupPreview={() => setPreviewPopupOpen(true)}
-          />
-        </div>
+        {/* Right Slide-Bar Interactive Smartphone Viewer */}
+        <RightPreviewSidebar
+          shop={previewShop}
+          items={shopItems}
+          isOpen={isPreviewSidebarOpen}
+          onToggle={() => setIsPreviewSidebarOpen((prev) => !prev)}
+          onOpenPopupPreview={() => setPreviewPopupOpen(true)}
+          subtitle="Xem trực tiếp Banner, Giảm giá & Flash Sale trên màn hình khách"
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewPopupOpen(true)}
+            className="w-full rounded-2xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 flex items-center justify-center gap-1.5 transition"
+          >
+            <Eye className="h-3.5 w-3.5 text-amber-600" />
+            <span>Mở thử Popup Chào Mừng toàn màn hình</span>
+          </button>
+        </RightPreviewSidebar>
       </div>
 
       {/* Welcome Popup Preview Modal */}

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { Shop, ShopOrder } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
+import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 
 interface ReceiptPrintModalProps {
   order: ShopOrder | null;
@@ -39,7 +40,12 @@ export function ReceiptPrintModal({
   const discount =
     order.discount_amount || Math.max(0, subtotal - order.total_amount);
 
-  const vietQrUrl = `https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${order.total_amount}&addInfo=${encodeURIComponent(`QLAOK ${order.order_code}`)}&accountName=${encodeURIComponent(shop.name)}`;
+  const qrInfo = getShopPaymentQrInfo(
+    shop,
+    order.total_amount,
+    order.order_code
+  );
+  const vietQrUrl = qrInfo.qrImageUrl;
 
   const formattedDate = new Date(order.created_at).toLocaleString('vi-VN', {
     day: '2-digit',
