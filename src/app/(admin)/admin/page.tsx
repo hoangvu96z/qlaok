@@ -635,17 +635,17 @@ export default function SuperAdminPortalPage() {
       )}
 
       {/* Left Sidebar */}
-      <aside className="w-full md:w-64 md:fixed md:inset-y-0 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col z-30">
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-400 text-slate-950 font-black shadow-md">
+      <aside className="w-full md:w-64 md:shrink-0 md:fixed md:inset-y-0 md:left-0 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col z-30">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-slate-950 font-black shadow-md">
               <ShieldCheck className="h-6 w-6" />
             </div>
-            <div>
-              <span className="block text-sm font-black text-white tracking-tight">
+            <div className="min-w-0">
+              <span className="block text-xs font-black text-white tracking-tight truncate">
                 QLAOK SUPER ADMIN
               </span>
-              <span className="block text-[10px] font-bold text-amber-400">
+              <span className="block text-[10px] font-bold text-amber-400 truncate">
                 {SUPER_ADMIN_EMAIL}
               </span>
             </div>
@@ -655,7 +655,7 @@ export default function SuperAdminPortalPage() {
             onClick={fetchAdminData}
             disabled={loading || actionBusy}
             title="Làm mới dữ liệu"
-            className="rounded-xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white hover:border-amber-400"
+            className="shrink-0 rounded-xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white hover:border-amber-400"
           >
             <RefreshCw
               className={`h-4 w-4 ${loading ? 'animate-spin text-amber-400' : ''}`}
@@ -664,7 +664,7 @@ export default function SuperAdminPortalPage() {
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="flex md:flex-col gap-1 p-2.5 overflow-x-auto md:overflow-y-auto flex-1">
+        <nav className="flex md:flex-col gap-1 p-2.5 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto no-scrollbar flex-1">
           {NAV_TABS.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -673,19 +673,19 @@ export default function SuperAdminPortalPage() {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold whitespace-nowrap transition-all ${
+                className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-bold whitespace-nowrap transition-all ${
                   active
                     ? 'bg-amber-400 text-slate-950 shadow-md font-black'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2.5 min-w-0">
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span>{tab.label}</span>
+                  <span className="truncate">{tab.label}</span>
                 </div>
                 {tab.badge !== undefined && (
                   <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${
                       active
                         ? 'bg-slate-950 text-amber-400'
                         : 'bg-slate-800 text-slate-300'
@@ -729,74 +729,75 @@ export default function SuperAdminPortalPage() {
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 md:pl-64 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
-        {/* Top Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 border border-amber-400/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
-                👑 Super Admin Control Center
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
-                ● Hệ thống Trực tuyến
-              </span>
-            </div>
-            <h1 className="mt-1.5 text-xl sm:text-2xl font-black text-white">
-              {NAV_TABS.find((t) => t.id === activeTab)?.label}
-            </h1>
-            <p className="text-xs text-slate-400">
-              Quản trị toàn diện Chủ quán, Cửa hàng, Đơn mPOS, Doanh thu gói cước
-              &amp; Hạ tầng Qlaok
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <ThemeToggle />
-            <Link
-              href="/explore"
-              target="_blank"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200 hover:border-slate-600"
-            >
-              <Globe className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Danh bạ Quán (/explore)</span>
-            </Link>
-            <button
-              type="button"
-              onClick={fetchAdminData}
-              disabled={loading || actionBusy}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-black text-slate-950 hover:bg-amber-300 disabled:opacity-50"
-            >
-              <RefreshCw
-                className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
-              />
-              <span>Đồng bộ Dữ liệu</span>
-            </button>
-          </div>
-        </div>
-
-        {/* ==================== TAB 1: EXECUTIVE OVERVIEW ==================== */}
-        {activeTab === 'overview' && kpis && (
-          <div className="space-y-6">
-            {/* 4 Primary Executive KPI Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="rounded-3xl border border-amber-500/30 bg-gradient-to-br from-slate-900 to-slate-900/70 p-5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-400">
-                    Doanh thu Gói SaaS &amp; MRR
-                  </span>
-                  <CreditCard className="h-5 w-5 text-amber-400" />
-                </div>
-                <p className="text-2xl font-black text-amber-400">
-                  {formatCurrency(kpis.totalSaasRevenue, 'VND')}
-                </p>
-                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
-                  <span>MRR ước tính:</span>
-                  <strong className="text-white">
-                    {formatCurrency(kpis.estimatedMrr, 'VND')}/tháng
-                  </strong>
-                </div>
+      {/* Main Content Wrapper (md:pl-64 isolates sidebar offset from inner responsive padding) */}
+      <div className="flex-1 md:pl-64 flex flex-col min-h-screen min-w-0">
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {/* Top Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 border border-amber-400/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
+                  👑 Super Admin Control Center
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                  ● Hệ thống Trực tuyến
+                </span>
               </div>
+              <h1 className="mt-1.5 text-xl sm:text-2xl font-black text-white">
+                {NAV_TABS.find((t) => t.id === activeTab)?.label}
+              </h1>
+              <p className="text-xs text-slate-400">
+                Quản trị toàn diện Chủ quán, Cửa hàng, Đơn mPOS, Doanh thu gói cước
+                &amp; Hạ tầng Qlaok
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <ThemeToggle />
+              <Link
+                href="/explore"
+                target="_blank"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200 hover:border-slate-600"
+              >
+                <Globe className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Danh bạ Quán (/explore)</span>
+              </Link>
+              <button
+                type="button"
+                onClick={fetchAdminData}
+                disabled={loading || actionBusy}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-black text-slate-950 hover:bg-amber-300 disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
+                />
+                <span>Đồng bộ Dữ liệu</span>
+              </button>
+            </div>
+          </div>
+
+          {/* ==================== TAB 1: EXECUTIVE OVERVIEW ==================== */}
+          {activeTab === 'overview' && kpis && (
+            <div className="space-y-6">
+              {/* 4 Primary Executive KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="rounded-3xl border border-amber-500/30 bg-slate-900 p-5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400">
+                      Doanh thu Gói SaaS &amp; MRR
+                    </span>
+                    <CreditCard className="h-5 w-5 text-amber-400" />
+                  </div>
+                  <p className="text-2xl font-black text-amber-400">
+                    {formatCurrency(kpis.totalSaasRevenue, 'VND')}
+                  </p>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
+                    <span>MRR ước tính:</span>
+                    <strong className="text-white">
+                      {formatCurrency(kpis.estimatedMrr, 'VND')}/tháng
+                    </strong>
+                  </div>
+                </div>
 
               <div className="rounded-3xl border border-emerald-500/30 bg-slate-900 p-5 space-y-2">
                 <div className="flex items-center justify-between">
@@ -2026,7 +2027,8 @@ export default function SuperAdminPortalPage() {
             </div>
           </div>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
