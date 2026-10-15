@@ -1477,7 +1477,6 @@ export default function OrdersReportAndExportPage() {
 
       {/* Thermal Receipt Print Modal */}
       <ReceiptPrintModal
-        isOpen={Boolean(printingOrder)}
         onClose={() => setPrintingOrder(null)}
         order={printingOrder}
         shop={activeShop}
