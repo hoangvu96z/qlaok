@@ -238,6 +238,14 @@ export default function DashboardOverviewPage() {
             </span>
           </Link>
           <Link
+            href="/dashboard/reports"
+            style={{ backgroundColor: '#ffffff', color: '#064e3b' }}
+            className="keep-white-bg keep-dark-text inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-950 shadow-md hover:bg-emerald-50 border border-emerald-200 transition-transform active:scale-95"
+          >
+            <BarChart3 className="h-4 w-4 text-emerald-700" />
+            <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
+          </Link>
+          <Link
             href="/dashboard/ai-scanner"
             style={{ backgroundColor: '#ffffff', color: '#064e3b' }}
             className="keep-white-bg keep-dark-text inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-950 shadow-md hover:bg-emerald-50 border border-emerald-200 transition-transform active:scale-95"

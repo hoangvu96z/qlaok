@@ -798,6 +798,14 @@ export function PosCounterWorkspace({
           </button>
 
           <Link
+            href="/dashboard/reports"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-slate-700"
+            title="Tra cứu sổ đơn theo ngày & xuất file Excel / CSV"
+          >
+            <span>📊 Sổ đơn &amp; Xuất Excel</span>
+          </Link>
+
+          <Link
             href="/dashboard/catalog"
             className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-700"
           >

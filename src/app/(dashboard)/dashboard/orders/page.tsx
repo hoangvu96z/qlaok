@@ -437,6 +437,13 @@ export default function CounterOrdersPage() {
             </button>
           </div>
 
+          <Link
+            href="/dashboard/reports"
+            className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
+          >
+            <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
+          </Link>
+
           {workspaceMode === 'kitchen_orders' && (
             <button
               type="button"

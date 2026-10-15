@@ -19,6 +19,7 @@ import {
   UserCheck,
   X,
   ShieldCheck,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import {
@@ -44,6 +45,11 @@ const NAV_ITEMS = [
     label: 'Đơn hàng mPOS',
     icon: BellRing,
     isOrders: true,
+  },
+  {
+    href: '/dashboard/reports',
+    label: 'Báo cáo & Xuất đơn',
+    icon: FileSpreadsheet,
   },
   {
     href: '/dashboard/catalog',
