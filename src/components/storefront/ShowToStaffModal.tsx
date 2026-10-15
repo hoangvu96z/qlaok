@@ -16,6 +16,7 @@ import {
   Banknote,
   QrCode,
   ShoppingBag,
+  Edit3,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -46,6 +47,10 @@ interface ShowToStaffModalProps {
   locale: SupportedLocale;
   cart: CartSelection[];
   initialTableLabel?: string;
+  activeOrderProp?: ShopOrder | null;
+  editingOrder?: ShopOrder | null;
+  onEditOrder?: (order: ShopOrder) => void;
+  onCancelEditOrder?: () => void;
   onUpdateQuantity: (index: number, delta: number) => void;
   onClearCart: () => void;
   onOrderCreated?: (order: ShopOrder) => void;
@@ -55,6 +60,8 @@ const SEND_ORDER_LABELS: Record<
   SupportedLocale,
   {
     sendBtn: string;
+    updateBtn: string;
+    editOrderBtn: string;
     sending: string;
     tablePrompt: string;
     tableInputPlaceholder: string;
@@ -68,6 +75,8 @@ const SEND_ORDER_LABELS: Record<
 > = {
   vi: {
     sendBtn: '🚀 Gửi Đơn Xuống Quầy / Bếp Ngay',
+    updateBtn: '💾 Lưu Cập Nhật Đơn Hàng',
+    editOrderBtn: '✏️ Sửa đơn / Đổi hoặc thêm món',
     sending: 'Đang gửi đơn xuống quầy...',
     tablePrompt: 'Chọn Bàn / Vị trí ngồi:',
     tableInputPlaceholder: 'Nhập số bàn khác (VD: Bàn 12, Phòng VIP 2...)',
@@ -76,10 +85,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: 'Chờ quầy xác nhận',
     stepPreparing: 'Đang chuẩn bị / chế biến',
     stepCompleted: 'Đã phục vụ & Hoàn tất',
-    orderMoreBtn: 'Đóng / Đặt thêm món khác',
+    orderMoreBtn: 'Đóng / Xem thêm thực đơn',
   },
   en: {
     sendBtn: '🚀 Send Order to Counter Now',
+    updateBtn: '💾 Save Order Changes',
+    editOrderBtn: '✏️ Edit Order / Change Items',
     sending: 'Sending order to counter...',
     tablePrompt: 'Select Table / Seat:',
     tableInputPlaceholder: 'Or enter table / room number (e.g. Table 12, VIP 2...)',
@@ -88,10 +99,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: 'Sent to Counter',
     stepPreparing: 'Preparing / Cooking',
     stepCompleted: 'Served & Completed',
-    orderMoreBtn: 'Close / Order More Items',
+    orderMoreBtn: 'Close / Browse Menu',
   },
   ko: {
     sendBtn: '🚀 카운터로 바로 주문 전송',
+    updateBtn: '💾 주문 변경사항 저장',
+    editOrderBtn: '✏️ 주문 수정 / 메뉴 변경·추가',
     sending: '주문을 전송하는 중...',
     tablePrompt: '테이블 / 좌석 번호 선택:',
     tableInputPlaceholder: '다른 테이블 번호 직접 입력 (예: 테이블 12, VIP 2...)',
@@ -100,10 +113,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: '주문 접수 대기',
     stepPreparing: '조리 및 준비 중',
     stepCompleted: '제공 및 완료',
-    orderMoreBtn: '닫기 / 추가 주문하기',
+    orderMoreBtn: '닫기 / 메뉴 더 보기',
   },
   ja: {
     sendBtn: '🚀 レジ・厨房へ注文を送信',
+    updateBtn: '💾 注文の変更を保存',
+    editOrderBtn: '✏️ 注文内容を変更・追加する',
     sending: '注文を送信中...',
     tablePrompt: 'テーブル / 座席番号:',
     tableInputPlaceholder: 'その他のテーブル番号を入力（例：テーブル 12、VIP 2）',
@@ -112,10 +127,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: '受付待ち',
     stepPreparing: '調理・準備中',
     stepCompleted: '提供完了',
-    orderMoreBtn: '閉じる / 追加注文する',
+    orderMoreBtn: '閉じる / メニューを見る',
   },
   zh: {
     sendBtn: '🚀 立即发送订单到吧台/厨房',
+    updateBtn: '💾 保存订单修改',
+    editOrderBtn: '✏️ 修改订单 / 增减菜品',
     sending: '正在发送订单...',
     tablePrompt: '选择桌号 / 座位:',
     tableInputPlaceholder: '或输入其他桌号/包厢（如：12号桌、VIP 2）',
@@ -124,10 +141,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: '等待吧台确认',
     stepPreparing: '正在制作/准备中',
     stepCompleted: '已上菜 / 已完成',
-    orderMoreBtn: '关闭 / 继续加单',
+    orderMoreBtn: '关闭 / 返回菜单',
   },
   es: {
     sendBtn: '🚀 Enviar Pedido a Cocina Ahora',
+    updateBtn: '💾 Guardar Cambios del Pedido',
+    editOrderBtn: '✏️ Editar Pedido / Cambiar Platos',
     sending: 'Enviando pedido al mostrador...',
     tablePrompt: 'Selecciona Mesa / Ubicación:',
     tableInputPlaceholder: 'O escribe otro número de mesa (ej. Mesa 12, VIP 2...)',
@@ -136,10 +155,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: 'Enviado al mostrador',
     stepPreparing: 'En preparación / cocina',
     stepCompleted: 'Servido y completado',
-    orderMoreBtn: 'Cerrar / Pedir más platos',
+    orderMoreBtn: 'Cerrar / Ver Menú',
   },
   it: {
     sendBtn: '🚀 Invia Ordine in Cucina Ora',
+    updateBtn: '💾 Salva Modifiche Ordine',
+    editOrderBtn: '✏️ Modifica Ordine / Cambia Piatti',
     sending: 'Invio ordine in corso...',
     tablePrompt: 'Seleziona Tavolo / Posto:',
     tableInputPlaceholder: 'Oppure inserisci numero tavolo (es. Tavolo 12, VIP 2...)',
@@ -148,10 +169,12 @@ const SEND_ORDER_LABELS: Record<
     stepNew: 'Inviato alla cassa',
     stepPreparing: 'In preparazione / cottura',
     stepCompleted: 'Servito e completato',
-    orderMoreBtn: 'Chiudi / Ordina altri piatti',
+    orderMoreBtn: 'Chiudi / Torna al Menu',
   },
   ru: {
     sendBtn: '🚀 Отправить заказ на кухню',
+    updateBtn: '💾 Сохранить изменения заказа',
+    editOrderBtn: '✏️ Изменить заказ / Добавить блюда',
     sending: 'Отправка заказа...',
     tablePrompt: 'Выберите стол / место:',
     tableInputPlaceholder: 'Или введите другой номер стола (напр. Стол 12, VIP 2...)',
@@ -160,7 +183,7 @@ const SEND_ORDER_LABELS: Record<
     stepNew: 'Отправлен на кассу',
     stepPreparing: 'Готовится на кухне',
     stepCompleted: 'Подано и завершено',
-    orderMoreBtn: 'Закрыть / Заказать ещё',
+    orderMoreBtn: 'Закрыть / Вернуться в меню',
   },
 };
 
@@ -173,6 +196,10 @@ export function ShowToStaffModal({
   locale,
   cart,
   initialTableLabel = 'Bàn 01',
+  activeOrderProp = null,
+  editingOrder = null,
+  onEditOrder,
+  onCancelEditOrder,
   onUpdateQuantity,
   onClearCart,
   onOrderCreated,
@@ -195,6 +222,19 @@ export function ShowToStaffModal({
     }
   }, [initialTableLabel]);
 
+  // Sync activeOrder when modal opens with an existing activeOrderProp (and not currently editing cart)
+  useEffect(() => {
+    if (isOpen && cart.length === 0 && activeOrderProp && !editingOrder) {
+      setActiveOrder(activeOrderProp);
+    }
+    if (editingOrder) {
+      setActiveOrder(null);
+      setTableNumber(editingOrder.table_label || initialTableLabel || 'Bàn 01');
+      setPaymentMethod(editingOrder.payment_method || 'cash');
+      setCustomerNote(editingOrder.customer_note || '');
+    }
+  }, [isOpen, cart.length, activeOrderProp, editingOrder, initialTableLabel]);
+
   // Poll live order status when an order has been submitted
   useEffect(() => {
     if (!activeOrder) return;
@@ -208,6 +248,7 @@ export function ShowToStaffModal({
           const data = await res.json();
           if (data.order) {
             setActiveOrder(data.order);
+            onOrderCreated?.(data.order);
           }
         }
       } catch {
@@ -216,7 +257,7 @@ export function ShowToStaffModal({
     };
     const timer = setInterval(poll, 3500);
     return () => clearInterval(timer);
-  }, [activeOrder]);
+  }, [activeOrder, onOrderCreated]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('BroadcastChannel' in window) || !activeOrder) {
@@ -267,38 +308,60 @@ export function ShowToStaffModal({
         promoCalc.discountAmount > 0
           ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoCalc.discountAmount, shop.currency)}]`
           : '';
-      const payload = {
-        shop_id: shop.id,
-        table_label: tableNumber.trim() || 'Bàn khách QR',
-        visitor_lang: locale,
-        customer_note:
-          `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
-        payment_method: paymentMethod,
-        source: 'qr_table',
-        discount_amount: promoCalc.discountAmount,
-        items: cart.map((entry) => {
-          const extraPrice = entry.selectedChoices.reduce(
-            (s, c) => s + (c.extra_price || 0),
-            0
-          );
-          return {
-            item_id: entry.item.id,
-            name_vi: entry.item.name_i18n.vi,
-            name_i18n: entry.item.name_i18n,
-            quantity: entry.quantity,
-            unit_price: entry.item.price,
-            extra_price: extraPrice,
-            selected_choices: entry.selectedChoices.map((c) => c.label_i18n.vi),
-            quick_tags: entry.quickTags,
-            custom_note: entry.customNote || undefined,
-          };
-        }),
-      };
+      const mappedItems = cart.map((entry) => {
+        const extraPrice = entry.selectedChoices.reduce(
+          (s, c) => s + (c.extra_price || 0),
+          0
+        );
+        return {
+          item_id: entry.item.id,
+          name_vi: entry.item.name_i18n.vi,
+          name_i18n: entry.item.name_i18n,
+          quantity: entry.quantity,
+          unit_price: entry.item.price,
+          extra_price: extraPrice,
+          selected_choices: entry.selectedChoices.map((c) => ({
+            id: c.id,
+            label_vi: c.label_i18n.vi,
+            label_i18n: c.label_i18n,
+            extra_price: c.extra_price || 0,
+          })),
+          quick_tags: entry.quickTags,
+          custom_note: entry.customNote || undefined,
+        };
+      });
+
+      const isEditingExisting = Boolean(
+        editingOrder && editingOrder.payment_status !== 'paid'
+      );
 
       const res = await fetch('/api/orders', {
-        method: 'POST',
+        method: isEditingExisting ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(
+          isEditingExisting && editingOrder
+            ? {
+                order_id: editingOrder.id,
+                table_label:
+                  tableNumber.trim() || editingOrder.table_label || 'Bàn khách QR',
+                customer_note:
+                  `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
+                payment_method: paymentMethod,
+                discount_amount: promoCalc.discountAmount,
+                items: mappedItems,
+              }
+            : {
+                shop_id: shop.id,
+                table_label: tableNumber.trim() || 'Bàn khách QR',
+                visitor_lang: locale,
+                customer_note:
+                  `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
+                payment_method: paymentMethod,
+                source: 'qr_table',
+                discount_amount: promoCalc.discountAmount,
+                items: mappedItems,
+              }
+        ),
       });
       const data = await res.json();
 
@@ -308,11 +371,16 @@ export function ShowToStaffModal({
 
       setActiveOrder(data.order);
       onOrderCreated?.(data.order);
+      onCancelEditOrder?.();
       onClearCart();
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('qlaok_realtime_sync');
-        bc.postMessage({ type: 'order_created', order: data.order });
+        bc.postMessage({
+          type: isEditingExisting ? 'order_updated' : 'order_created',
+          order: data.order,
+          shopId: shop.id,
+        });
         bc.close();
       }
     } catch (err) {
@@ -535,6 +603,24 @@ export function ShowToStaffModal({
                     );
                   })()}
 
+                {/* Allow Customer to Edit Order / Change Dishes before Payment */}
+                {activeOrder.payment_status !== 'paid' &&
+                  activeOrder.status !== 'cancelled' &&
+                  onEditOrder && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = activeOrder;
+                        setActiveOrder(null);
+                        onEditOrder(target);
+                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-amber-400 bg-amber-400/20 py-3.5 text-sm font-black text-amber-300 hover:bg-amber-400/30 transition"
+                    >
+                      <Edit3 className="h-4 w-4" />
+                      <span>{orderText.editOrderBtn}</span>
+                    </button>
+                  )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -548,6 +634,29 @@ export function ShowToStaffModal({
               </motion.div>
             ) : (
               <>
+                {editingOrder && (
+                  <div className="flex items-center justify-between gap-2 rounded-2xl border-2 border-amber-400 bg-amber-500/15 px-3.5 py-2.5 text-amber-200">
+                    <div className="min-w-0">
+                      <p className="text-xs font-black text-amber-300">
+                        ✏️ #{editingOrder.order_code} •{' '}
+                        {formatTableLabel(editingOrder.table_label, locale)}
+                      </p>
+                      <p className="text-[11px] text-amber-100/90">
+                        {locale === 'vi'
+                          ? 'Bạn có thể tăng/giảm món tại đây hoặc đóng cửa sổ này để chọn thêm món ngoài thực đơn.'
+                          : 'Adjust quantities here or close this sheet to add more dishes from the menu.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="shrink-0 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
+                    >
+                      {locale === 'vi' ? '+ Chọn thêm món' : '+ Add Items'}
+                    </button>
+                  </div>
+                )}
+
                 {/* Quick Table Selector & Payment Method */}
                 {cart.length > 0 && (
                   <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
@@ -840,7 +949,9 @@ export function ShowToStaffModal({
                   ) : (
                     <>
                       <Send className="h-5 w-5" />
-                      <span>{orderText.sendBtn}</span>
+                      <span>
+                        {editingOrder ? orderText.updateBtn : orderText.sendBtn}
+                      </span>
                     </>
                   )}
                 </button>

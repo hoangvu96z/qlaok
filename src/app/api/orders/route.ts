@@ -133,12 +133,20 @@ export async function PATCH(req: Request) {
       status,
       payment_method,
       payment_status,
+      table_label,
+      customer_note,
+      items,
+      discount_amount,
     } = body as {
       orderId?: string;
       order_id?: string;
       status?: OrderStatus;
       payment_method?: PaymentMethod;
       payment_status?: 'unpaid' | 'paid';
+      table_label?: string;
+      customer_note?: string;
+      items?: OrderLineItem[];
+      discount_amount?: number;
     };
 
     const resolvedOrderId = orderId || order_id;
@@ -153,6 +161,10 @@ export async function PATCH(req: Request) {
       status,
       payment_method,
       payment_status,
+      table_label,
+      customer_note,
+      items,
+      discount_amount,
     });
 
     return NextResponse.json({ order: updated });

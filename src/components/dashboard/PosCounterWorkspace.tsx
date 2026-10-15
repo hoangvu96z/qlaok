@@ -50,8 +50,10 @@ interface PosCounterWorkspaceProps {
   categories: Category[];
   items: CatalogItem[];
   orders?: ShopOrder[];
+  editingOrder?: ShopOrder | null;
   autoPrintOnPay: boolean;
   onOrderCreated: (order: ShopOrder, shouldPrint: boolean) => void;
+  onCancelEditOrder?: () => void;
   onPrintOrder?: (order: ShopOrder) => void;
   onUpdateOrder?: (
     orderId: string,
@@ -84,13 +86,99 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
   return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
+function hydratePosLinesFromOrder(
+  order: ShopOrder,
+  catalogItems: CatalogItem[],
+  shopId: string
+): PosOrderLine[] {
+  return (order.items || []).map((line, idx) => {
+    const matched = catalogItems.find((i) => i.id === line.item_id);
+    const fallbackItem: CatalogItem = matched || {
+      id: line.item_id || `custom-${idx}`,
+      shop_id: shopId,
+      category_id: catalogItems[0]?.category_id || 'cat-default',
+      sort_order: idx + 1,
+      price: Number(line.unit_price || 0),
+      compare_at_price: null,
+      unit_i18n: { vi: 'phần', en: 'portion', ko: '인분', ja: '人前', zh: '份' },
+      duration_mins: null,
+      image_url: null,
+      is_available: true,
+      is_featured: false,
+      name_i18n: line.name_i18n || {
+        vi: line.name_vi,
+        en: line.name_vi,
+        ko: line.name_vi,
+        ja: line.name_vi,
+        zh: line.name_vi,
+      },
+      desc_i18n: { vi: '', en: '', ko: '', ja: '', zh: '' },
+      options_json: [],
+      view_count: 0,
+      created_at: new Date().toISOString(),
+    };
+
+    const normalizedChoices: ItemOptionChoice[] = (
+      line.selected_choices || []
+    ).map((rawChoice, cIdx) => {
+      if (typeof rawChoice === 'string') {
+        return {
+          id: `ch_${cIdx}_${rawChoice}`,
+          label_i18n: {
+            vi: rawChoice,
+            en: rawChoice,
+            ko: rawChoice,
+            ja: rawChoice,
+            zh: rawChoice,
+          },
+          extra_price: 0,
+        };
+      }
+      const labelVi =
+        rawChoice.label_i18n?.vi ||
+        (rawChoice as { label_vi?: string }).label_vi ||
+        'Tùy chọn';
+      return {
+        id: rawChoice.id || `ch_${cIdx}_${labelVi}`,
+        label_i18n: rawChoice.label_i18n || {
+          vi: labelVi,
+          en: labelVi,
+          ko: labelVi,
+          ja: labelVi,
+          zh: labelVi,
+        },
+        extra_price: Number(rawChoice.extra_price || 0),
+      };
+    });
+
+    const lineUnitPrice = Number(line.unit_price ?? fallbackItem.price);
+    const hasCustomPrice = lineUnitPrice !== Number(fallbackItem.price);
+
+    return {
+      lineId: `edit_${order.id}_${idx}_${Date.now()}`,
+      item: fallbackItem,
+      quantity: Math.max(1, Number(line.quantity || 1)),
+      customUnitPrice: hasCustomPrice ? lineUnitPrice : undefined,
+      discountPercent: 0,
+      selectedChoices: normalizedChoices,
+      quickTags: Array.isArray(line.quick_tags) ? [...line.quick_tags] : [],
+      customNote: (line.custom_note || '').replace(
+        /\s*•?\s*Giảm \d+% \(-[^)]+\)/g,
+        ''
+      ),
+    };
+  });
+}
+
 export function PosCounterWorkspace({
   shop,
   categories,
   items,
   orders = [],
+  editingOrder = null,
   autoPrintOnPay,
   onOrderCreated,
+  onCancelEditOrder,
   onPrintOrder,
   onUpdateOrder,
 }: PosCounterWorkspaceProps) {
@@ -100,12 +188,46 @@ export function PosCounterWorkspace({
   const [searchQuery, setSearchQuery] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Active order currently being edited inside POS Terminal
+  const [activeEditingOrder, setActiveEditingOrder] =
+    useState<ShopOrder | null>(editingOrder);
+
   // Ticket State
   const [tableLabel, setTableLabel] = useState('Mang về / Tại quầy');
   const [showTablePicker, setShowTablePicker] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [lines, setLines] = useState<PosOrderLine[]>([]);
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
+
+  // Load editingOrder prop into POS ticket whenever editingOrder changes
+  const loadOrderIntoPos = (targetOrder: ShopOrder) => {
+    setActiveEditingOrder(targetOrder);
+    setTableLabel(targetOrder.table_label || 'Mang về / Tại quầy');
+    setPaymentMethod(targetOrder.payment_method || 'cash');
+    const hydrated = hydratePosLinesFromOrder(targetOrder, items, shop.id);
+    setLines(hydrated);
+    setSelectedLineId(hydrated[0]?.lineId || null);
+    setShowTodayOrdersModal(false);
+    setSubmitError(null);
+  };
+
+  const clearEditingOrder = () => {
+    setActiveEditingOrder(null);
+    setLines([]);
+    setSelectedLineId(null);
+    setTableLabel('Mang về / Tại quầy');
+    setSubmitError(null);
+    onCancelEditOrder?.();
+  };
+
+  useEffect(() => {
+    if (editingOrder) {
+      loadOrderIntoPos(editingOrder);
+    } else {
+      setActiveEditingOrder(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOrder?.id]);
 
   // Numpad State ('qty' | 'disc' | 'price')
   const [numpadMode, setNumpadMode] = useState<'qty' | 'disc' | 'price'>('qty');
@@ -514,8 +636,11 @@ export function PosCounterWorkspace({
     });
   };
 
-  // Submit Counter POS Order
-  const submitPosOrder = async (markPaidImmediately = true) => {
+  // Submit Counter POS Order (Creates new order OR updates existing unpaid order)
+  const submitPosOrder = async (
+    markPaidImmediately = true,
+    shouldOpenReceipt?: boolean
+  ) => {
     if (lines.length === 0 || submitting) return;
     setSubmitting(true);
     try {
@@ -562,39 +687,58 @@ export function PosCounterWorkspace({
       });
 
       setSubmitError(null);
-      const createRes = await fetch('/api/orders', {
-        method: 'POST',
+
+      const isEditing = Boolean(activeEditingOrder);
+      const res = await fetch('/api/orders', {
+        method: isEditing ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop_id: shop.id,
-          table_label: tableLabel.trim() || 'Tại quầy',
-          visitor_lang: 'vi',
-          payment_method: paymentMethod,
-          payment_status: markPaidImmediately ? 'paid' : 'unpaid',
-          source: 'counter_pos',
-          items: payloadItems,
-        }),
+        body: JSON.stringify(
+          isEditing && activeEditingOrder
+            ? {
+                order_id: activeEditingOrder.id,
+                table_label: tableLabel.trim() || activeEditingOrder.table_label || 'Tại quầy',
+                payment_method: paymentMethod,
+                payment_status: markPaidImmediately
+                  ? 'paid'
+                  : activeEditingOrder.payment_status,
+                items: payloadItems,
+              }
+            : {
+                shop_id: shop.id,
+                table_label: tableLabel.trim() || 'Tại quầy',
+                visitor_lang: 'vi',
+                payment_method: paymentMethod,
+                payment_status: markPaidImmediately ? 'paid' : 'unpaid',
+                source: 'counter_pos',
+                items: payloadItems,
+              }
+        ),
       });
 
-      const createData = await createRes.json().catch(() => null);
-      if (!createRes.ok) {
+      const resData = await res.json().catch(() => null);
+      if (!res.ok) {
         setSubmitError(
-          createData?.error || 'Không thể lưu đơn hàng. Vui lòng thử lại.'
+          resData?.error || 'Không thể lưu đơn hàng. Vui lòng thử lại.'
         );
         return;
       }
 
-      const createdOrder: ShopOrder | null = createData?.order || null;
+      const savedOrder: ShopOrder | null = resData?.order || null;
 
       setLines([]);
       setSelectedLineId(null);
       setShowQrConfirmModal(false);
+      setActiveEditingOrder(null);
+      if (onCancelEditOrder) onCancelEditOrder();
 
-      if (createdOrder) {
-        onOrderCreated(
-          createdOrder,
-          paymentMethod === 'vietqr' ? true : autoPrintOnPay
-        );
+      if (savedOrder) {
+        const shouldPrint =
+          typeof shouldOpenReceipt === 'boolean'
+            ? shouldOpenReceipt
+            : paymentMethod === 'vietqr'
+              ? true
+              : autoPrintOnPay;
+        onOrderCreated(savedOrder, shouldPrint);
       }
     } catch {
       setSubmitError('Lỗi kết nối máy chủ khi lưu đơn hàng.');
@@ -606,8 +750,8 @@ export function PosCounterWorkspace({
   const handlePaymentButtonClick = () => {
     if (lines.length === 0 || submitting) return;
     if (paymentMethod === 'vietqr') {
-      // Create order immediately and open ReceiptPrintModal with QR printed on the bill
-      submitPosOrder(false);
+      // Create/Update order immediately and open ReceiptPrintModal with QR printed on the bill
+      submitPosOrder(false, true);
       return;
     }
     submitPosOrder(true);
@@ -698,6 +842,30 @@ export function PosCounterWorkspace({
       <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
         {/* ================= LEFT PANE: ORDER TICKET + NUMPAD + PAYMENT ================= */}
         <div className="w-full lg:w-[410px] xl:w-[450px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-300 flex flex-col min-h-0">
+          {/* Active Editing Order Banner */}
+          {activeEditingOrder && (
+            <div className="flex items-center justify-between gap-2 bg-amber-500 px-3.5 py-2 text-slate-950 shrink-0 border-b border-amber-600">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-black">
+                  <Edit3 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">
+                    ĐANG SỬA ĐƠN #{activeEditingOrder.order_code} ({activeEditingOrder.table_label})
+                  </span>
+                </div>
+                <p className="text-[10px] font-bold text-slate-900 truncate">
+                  Thêm/bớt món, đổi Option hoặc bấm Lưu cập nhật đơn trước khi thanh toán
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={clearEditingOrder}
+                className="shrink-0 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-black text-white hover:bg-slate-800"
+              >
+                Thoát sửa
+              </button>
+            </div>
+          )}
+
           {/* Ticket Top Header: Table / Order Type & Clear Button */}
           <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3.5 py-2 shrink-0">
             <div className="relative flex-1 min-w-0">
@@ -755,7 +923,7 @@ export function PosCounterWorkspace({
                 className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Xóa đơn</span>
+                <span>Xóa hết món</span>
               </button>
             )}
           </div>
@@ -973,6 +1141,23 @@ export function PosCounterWorkspace({
             </button>
           </div>
 
+          {/* Save Edited Order Without Marking Paid Button (Only when editing an unpaid order) */}
+          {activeEditingOrder && (
+            <div className="border-t border-amber-300 bg-amber-50 p-1.5 shrink-0">
+              <button
+                type="button"
+                disabled={lines.length === 0 || submitting}
+                onClick={() => submitPosOrder(false, false)}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-amber-500 py-2 px-3 text-xs font-black text-slate-950 shadow-xs hover:bg-amber-400 disabled:opacity-50"
+              >
+                <Check className="h-4 w-4 stroke-[2.5]" />
+                <span>
+                  Lưu cập nhật đơn #{activeEditingOrder.order_code} (Chưa thu tiền)
+                </span>
+              </button>
+            </div>
+          )}
+
           {/* Bottom POS Dock: Left Big Payment CTA + Right 4x4 Interactive Numpad */}
           <div className="grid grid-cols-12 bg-slate-300 gap-[1px] border-t border-slate-300 shrink-0 select-none">
             {/* Left Payment CTA Column (4 cols) */}
@@ -989,8 +1174,12 @@ export function PosCounterWorkspace({
                 {submitting
                   ? 'Đang lưu...'
                   : paymentMethod === 'vietqr'
-                    ? 'In Bill Kèm QR'
-                    : 'Thanh Toán'}
+                    ? activeEditingOrder
+                      ? 'Lưu & In Bill QR'
+                      : 'In Bill Kèm QR'
+                    : activeEditingOrder
+                      ? 'Lưu & Thu Tiền'
+                      : 'Thanh Toán'}
               </span>
               <span className="text-[11px] font-bold text-emerald-100 text-center">
                 {paymentMethod === 'vietqr'
@@ -1769,10 +1958,22 @@ export function PosCounterWorkspace({
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                    <div className="flex items-center justify-between sm:justify-end gap-2 flex-wrap shrink-0">
                       <span className="text-sm font-black text-emerald-700 mr-1">
                         {formatCurrency(ord.total_amount, shop.currency)}
                       </span>
+
+                      {ord.payment_status !== 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() => loadOrderIntoPos(ord)}
+                          className="inline-flex items-center gap-1 rounded-xl border border-amber-400 bg-amber-100 px-2.5 py-1.5 text-[11px] font-black text-amber-950 hover:bg-amber-200"
+                          title="Mở đơn này vào màn hình POS để thêm/bớt món hoặc đổi Option"
+                        >
+                          <Edit3 className="h-3.5 w-3.5 text-amber-700" />
+                          <span>Sửa món (Mở POS)</span>
+                        </button>
+                      )}
 
                       {onUpdateOrder && ord.payment_status !== 'paid' && (
                         <button

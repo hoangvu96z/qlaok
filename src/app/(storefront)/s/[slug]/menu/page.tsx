@@ -61,6 +61,7 @@ export default function StorefrontMenuPage() {
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
   const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
+  const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchCatalogData = useCallback(
@@ -243,6 +244,59 @@ export default function StorefrontMenuPage() {
       }
       return updated;
     });
+  };
+
+  const handleHydrateOrderIntoCart = (order: ShopOrder) => {
+    setEditingOrder(order);
+    const hydratedCart: CartSelection[] = (order.items || []).map((li, idx) => {
+      const matchedItem =
+        effectiveItems.find((it) => it.id === li.item_id) ||
+        effectiveItems.find((it) => it.name_i18n.vi === li.name_vi);
+
+      const fallbackItem: CatalogItem = matchedItem || {
+        id: li.item_id || `custom-${idx}`,
+        shop_id: order.shop_id,
+        category_id: categories[0]?.id || 'default',
+        name_i18n: li.name_i18n || { vi: li.name_vi },
+        description_i18n: { vi: '' },
+        price: Number(li.unit_price) || 0,
+        images: [],
+        tags: [],
+        options_json: [],
+        in_stock: true,
+        sort_order: 999,
+      };
+
+      const rawChoices = Array.isArray(li.selected_choices)
+        ? li.selected_choices
+        : [];
+      const selectedChoices = rawChoices.map((raw, cIdx) => {
+        if (typeof raw === 'string') {
+          return {
+            id: `choice-${cIdx}`,
+            label_i18n: { vi: raw },
+            extra_price: 0,
+          };
+        }
+        const labelVi = raw?.label_vi || raw?.label_i18n?.vi || '';
+        return {
+          id: raw?.id || `choice-${cIdx}`,
+          label_i18n: raw?.label_i18n || { vi: labelVi },
+          extra_price: Number(raw?.extra_price) || 0,
+        };
+      });
+
+      return {
+        item: fallbackItem,
+        quantity: Math.max(1, Number(li.quantity) || 1),
+        selectedChoices,
+        customNote: li.custom_note || '',
+        quickTags: Array.isArray(li.quick_tags) ? li.quick_tags : [],
+      };
+    });
+
+    setCart(hydratedCart);
+    setIsStaffModalOpen(true);
   };
 
   if (loading) {
@@ -582,6 +636,10 @@ export default function StorefrontMenuPage() {
         locale={locale}
         cart={cart}
         initialTableLabel={initialTableParam}
+        activeOrderProp={lastOrder}
+        editingOrder={editingOrder}
+        onEditOrder={handleHydrateOrderIntoCart}
+        onCancelEditOrder={() => setEditingOrder(null)}
         onUpdateQuantity={handleUpdateQuantity}
         onClearCart={() => setCart([])}
         onOrderCreated={(createdOrder) => {

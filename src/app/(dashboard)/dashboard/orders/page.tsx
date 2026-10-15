@@ -19,6 +19,7 @@ import {
   Printer,
   Settings,
   Monitor,
+  Edit3,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -72,6 +73,7 @@ export default function CounterOrdersPage() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
   const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
+  const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
 
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
@@ -94,6 +96,11 @@ export default function CounterOrdersPage() {
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('qlaok_pos_workspace_mode', mode);
     }
+  };
+
+  const handleOpenEditOrderInPos = (order: ShopOrder) => {
+    setEditingOrder(order);
+    switchWorkspaceMode('pos_terminal');
   };
 
   const updateChimeSettings = (patch: Partial<OrderChimeSettings>) => {
@@ -482,10 +489,13 @@ export default function CounterOrdersPage() {
           categories={catalogCategories}
           items={catalogItems}
           orders={orders}
+          editingOrder={editingOrder}
+          onCancelEditOrder={() => setEditingOrder(null)}
           autoPrintOnPay={autoPrintOnPay}
           onPrintOrder={(ord) => setPrintingOrder(ord)}
           onUpdateOrder={(id, up) => handleUpdateOrder(id, up)}
           onOrderCreated={async (createdOrder, shouldPrint) => {
+            setEditingOrder(null);
             await fetchOrdersAndCatalog(true);
             if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
               const bc = new BroadcastChannel('qlaok_realtime_sync');
@@ -755,14 +765,21 @@ export default function CounterOrdersPage() {
                               {line.selected_choices &&
                                 line.selected_choices.length > 0 && (
                                   <div className="flex flex-wrap gap-1 mt-1">
-                                    {line.selected_choices.map((c, cIdx) => (
-                                      <span
-                                        key={cIdx}
-                                        className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900"
-                                      >
-                                        • {c.label_i18n?.vi}
-                                      </span>
-                                    ))}
+                                    {line.selected_choices.map((c, cIdx) => {
+                                      const label =
+                                        typeof c === 'string'
+                                          ? c
+                                          : c.label_vi || c.label_i18n?.vi || '';
+                                      if (!label) return null;
+                                      return (
+                                        <span
+                                          key={cIdx}
+                                          className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900"
+                                        >
+                                          • {label}
+                                        </span>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               {line.quick_tags && line.quick_tags.length > 0 && (
@@ -806,6 +823,18 @@ export default function CounterOrdersPage() {
                 {/* Action Buttons Footer */}
                 {!isCancelled && (
                   <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    {order.payment_status !== 'paid' && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditOrderInPos(order)}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-2xl border-2 border-amber-400 bg-amber-100 px-3.5 py-2.5 text-xs font-black text-amber-950 shadow-2xs hover:bg-amber-200 transition"
+                        title="Mở giao diện mPOS để thêm/bớt món, đổi Option của đơn này trước khi thanh toán"
+                      >
+                        <Edit3 className="h-4 w-4 text-amber-700" />
+                        <span>Sửa đơn / Sửa món (Mở mPOS)</span>
+                      </button>
+                    )}
+
                     {isNew && (
                       <>
                         <button

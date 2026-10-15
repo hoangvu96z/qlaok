@@ -808,6 +808,10 @@ export async function dbUpdateOrderStatus(
     status?: OrderStatus;
     payment_method?: PaymentMethod;
     payment_status?: 'unpaid' | 'paid';
+    table_label?: string;
+    customer_note?: string;
+    items?: OrderLineItem[];
+    discount_amount?: number;
   }
 ): Promise<ShopOrder> {
   await loadMergedOrders();
@@ -820,9 +824,98 @@ export async function dbUpdateOrderStatus(
   const existing = store.orders[idx];
   const nextStatus = patch.status || existing.status;
 
-  // If cancelling an active order, restore stock quantities
   const restoredItemIds: string[] = [];
-  if (existing.status !== 'cancelled' && nextStatus === 'cancelled') {
+  const zeroedItemIds: string[] = [];
+  let nextItems = existing.items;
+  let nextTotalAmount = Number(existing.total_amount || 0);
+
+  // If updating the items list of an active order (before or during payment)
+  if (Array.isArray(patch.items)) {
+    if (patch.items.length === 0) {
+      throw new Error(
+        'Đơn hàng sau khi sửa phải có ít nhất 1 món (hoặc chọn Hủy đơn).'
+      );
+    }
+
+    // 1. Temporarily restore old quantities into inventory
+    if (existing.status !== 'cancelled') {
+      for (const oldLine of existing.items || []) {
+        const meta = store.inventory[oldLine.item_id];
+        if (meta) {
+          const wasZero = meta.stock_quantity === 0;
+          meta.stock_quantity =
+            meta.stock_quantity !== null
+              ? meta.stock_quantity + Number(oldLine.quantity || 1)
+              : null;
+          meta.sold_count = Math.max(
+            0,
+            (meta.sold_count || 0) - Number(oldLine.quantity || 1)
+          );
+          if (wasZero && (meta.stock_quantity ?? 0) > 0) {
+            restoredItemIds.push(oldLine.item_id);
+          }
+        }
+      }
+    }
+
+    // 2. Check stock availability for new items & deduct
+    if (nextStatus !== 'cancelled') {
+      for (const newLine of patch.items) {
+        const qty = Math.max(1, Number(newLine.quantity || 1));
+        const meta = store.inventory[newLine.item_id];
+        if (
+          meta &&
+          meta.stock_quantity !== null &&
+          meta.stock_quantity < qty
+        ) {
+          throw new Error(
+            `Món "${newLine.name_vi}" chỉ còn ${meta.stock_quantity} phần trong kho.`
+          );
+        }
+      }
+
+      for (const newLine of patch.items) {
+        const qty = Math.max(1, Number(newLine.quantity || 1));
+        const prev = store.inventory[newLine.item_id] || {
+          stock_quantity: null,
+          sold_count: 0,
+        };
+        const nextStock =
+          prev.stock_quantity !== null
+            ? Math.max(0, prev.stock_quantity - qty)
+            : null;
+        store.inventory[newLine.item_id] = {
+          stock_quantity: nextStock,
+          sold_count: (prev.sold_count || 0) + qty,
+        };
+        if (nextStock === 0) {
+          zeroedItemIds.push(newLine.item_id);
+        }
+      }
+    }
+
+    nextItems = patch.items.map((line) => ({
+      ...line,
+      quantity: Math.max(1, Number(line.quantity || 1)),
+      unit_price: Number(line.unit_price || 0),
+      extra_price: Number(line.extra_price || 0),
+      selected_choices: Array.isArray(line.selected_choices)
+        ? line.selected_choices
+        : [],
+      quick_tags: Array.isArray(line.quick_tags) ? line.quick_tags : [],
+    }));
+
+    const subtotalAmount = nextItems.reduce(
+      (sum, line) =>
+        sum +
+        (Number(line.unit_price || 0) + Number(line.extra_price || 0)) *
+          line.quantity,
+      0
+    );
+    const discountAmount = Math.max(0, Number(patch.discount_amount || 0));
+    nextTotalAmount = Math.max(0, subtotalAmount - discountAmount);
+  } else if (existing.status !== 'cancelled' && nextStatus === 'cancelled') {
+    // If cancelling an active order without replacing items, restore stock quantities
     for (const line of existing.items) {
       const meta = store.inventory[line.item_id];
       if (meta) {
@@ -845,6 +938,16 @@ export async function dbUpdateOrderStatus(
 
   const updated: ShopOrder = {
     ...existing,
+    table_label:
+      patch.table_label !== undefined
+        ? patch.table_label.trim() || existing.table_label
+        : existing.table_label,
+    customer_note:
+      patch.customer_note !== undefined
+        ? patch.customer_note.trim()
+        : existing.customer_note,
+    items: nextItems,
+    total_amount: nextTotalAmount,
     status: nextStatus,
     payment_method: patch.payment_method || existing.payment_method,
     payment_status: nextPaymentStatus,
@@ -862,6 +965,13 @@ export async function dbUpdateOrderStatus(
       await Promise.all(
         restoredItemIds.map((id) =>
           sb.from('items').update({ is_available: true }).eq('id', id)
+        )
+      );
+    }
+    if (zeroedItemIds.length > 0) {
+      await Promise.all(
+        zeroedItemIds.map((id) =>
+          sb.from('items').update({ is_available: false }).eq('id', id)
         )
       );
     }
