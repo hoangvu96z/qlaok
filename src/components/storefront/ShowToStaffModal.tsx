@@ -505,7 +505,7 @@ export function ShowToStaffModal({
                       <div className="rounded-2xl border border-emerald-500/40 bg-slate-900 p-4 text-center space-y-2.5">
                         <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
                           <QrCode className="h-3.5 w-3.5" />
-                          <span>{labels.vietqrPayment}</span>
+                          <span>{labels.qrPayment}</span>
                         </div>
                         <div
                           style={{ backgroundColor: '#ffffff' }}
