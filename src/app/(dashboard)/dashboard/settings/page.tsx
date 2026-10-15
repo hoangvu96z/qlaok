@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import imageCompression from 'browser-image-compression';
 import {
   Save,
   Wifi,
@@ -37,6 +36,7 @@ import {
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
 import { WeeklyOpeningHoursPicker } from '@/components/ui/TimeSchedulePicker';
+import { uploadCompressedImage } from '@/lib/upload-helper';
 
 // Pure color swatches — no text labels needed
 const BRAND_COLOR_SWATCHES = [
@@ -183,32 +183,9 @@ export default function DashboardSettingsPage() {
     if (!file) return;
     setUploadingField(fieldKey);
     try {
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.2,
-        maxWidthOrHeight: 1200,
-        useWebWorker: true,
-        fileType: 'image/webp',
-      });
-
-      const reader = new FileReader();
-      const base64Data: string = await new Promise((resolve, reject) => {
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = reject;
-        reader.readAsDataURL(compressed);
-      });
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: file.name.replace(/\.[^.]+$/, '.webp'),
-          contentType: 'image/webp',
-          base64Data,
-        }),
-      });
-      const data = await res.json();
-      if (data.publicUrl) {
-        onDone(data.publicUrl);
+      const publicUrl = await uploadCompressedImage(file);
+      if (publicUrl) {
+        onDone(publicUrl);
       }
     } catch {
       setErrorMsg('Không thể tải ảnh lên. Bạn có thể dán trực tiếp link ảnh.');

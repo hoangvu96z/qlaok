@@ -24,6 +24,26 @@ export function getR2Client(): S3Client | null {
   });
 }
 
+export async function uploadBufferToR2(params: {
+  key: string;
+  contentType: string;
+  buffer: Buffer;
+}): Promise<string | null> {
+  const client = getR2Client();
+  if (!client) return null;
+
+  const command = new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME!,
+    Key: params.key,
+    Body: params.buffer,
+    ContentType: params.contentType,
+  });
+
+  await client.send(command);
+  const publicBase = process.env.R2_PUBLIC_URL!.replace(/\/$/, '');
+  return `${publicBase}/${params.key}`;
+}
+
 export async function createR2PresignedUploadUrl(params: {
   key: string;
   contentType: string;

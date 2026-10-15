@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import imageCompression from 'browser-image-compression';
 import {
   Languages,
   Trash2,
@@ -15,6 +14,7 @@ import {
 import { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { uploadCompressedImage } from '@/lib/upload-helper';
 
 interface QuickItemRowProps {
   item: CatalogItem;
@@ -41,6 +41,7 @@ export function QuickItemRow({
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [imgBroken, setImgBroken] = useState(false);
 
   const [stockInput, setStockInput] = useState(
     item.stock_quantity === null || item.stock_quantity === undefined
@@ -52,6 +53,10 @@ export function QuickItemRow({
   useEffect(() => {
     setPriceInput(String(item.price));
   }, [item.price]);
+
+  useEffect(() => {
+    setImgBroken(false);
+  }, [item.image_url]);
 
   useEffect(() => {
     setStockInput(
@@ -99,30 +104,10 @@ export function QuickItemRow({
     if (!file || !onUpdateImage) return;
     setUploadingPhoto(true);
     try {
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.14,
-        maxWidthOrHeight: 800,
-        useWebWorker: true,
-        fileType: 'image/webp',
-      });
-      const reader = new FileReader();
-      const base64Data: string = await new Promise((resolve, reject) => {
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = reject;
-        reader.readAsDataURL(compressed);
-      });
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: file.name.replace(/\.[^.]+$/, '.webp'),
-          contentType: 'image/webp',
-          base64Data,
-        }),
-      });
-      const data = await res.json();
-      if (data.publicUrl) {
-        await onUpdateImage(item, data.publicUrl);
+      const publicUrl = await uploadCompressedImage(file);
+      if (publicUrl) {
+        setImgBroken(false);
+        await onUpdateImage(item, publicUrl);
       }
     } catch (err) {
       console.error('Quick photo upload failed:', err);
@@ -141,6 +126,8 @@ export function QuickItemRow({
     item.stock_quantity > 0 &&
     item.stock_quantity <= 5;
 
+  const hasValidImage = Boolean(item.image_url && !imgBroken);
+
   return (
     <div
       className={`rounded-2xl border bg-white p-3.5 shadow-2xs transition-all ${
@@ -156,10 +143,11 @@ export function QuickItemRow({
             title="Bấm để tải lên hoặc đổi ảnh món ăn"
             className="group relative h-16 w-16 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
           >
-            {item.image_url ? (
+            {hasValidImage ? (
               <img
-                src={item.image_url}
+                src={item.image_url!}
                 alt={item.name_i18n.vi}
+                onError={() => setImgBroken(true)}
                 className="h-full w-full object-cover transition group-hover:scale-105"
               />
             ) : (
@@ -177,7 +165,7 @@ export function QuickItemRow({
               ) : (
                 <>
                   <Camera className="h-2.5 w-2.5 text-emerald-400" />
-                  <span>{item.image_url ? 'Đổi ảnh' : 'Tải ảnh'}</span>
+                  <span>{hasValidImage ? 'Đổi ảnh' : 'Tải ảnh'}</span>
                 </>
               )}
             </span>

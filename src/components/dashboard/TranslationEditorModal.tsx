@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import imageCompression from 'browser-image-compression';
 import {
   X,
   Sparkles,
@@ -20,6 +19,7 @@ import {
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { uploadCompressedImage } from '@/lib/upload-helper';
 
 interface TranslationEditorModalProps {
   isOpen: boolean;
@@ -170,33 +170,9 @@ export function TranslationEditorModal({
     setUploadingImage(true);
     setErrorMsg('');
     try {
-      // Compress client-side to .webp (max 800px, <150KB) per technical specification
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.14,
-        maxWidthOrHeight: 800,
-        useWebWorker: true,
-        fileType: 'image/webp',
-      });
-
-      const reader = new FileReader();
-      const base64Data: string = await new Promise((resolve, reject) => {
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = reject;
-        reader.readAsDataURL(compressed);
-      });
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: file.name.replace(/\.[^.]+$/, '.webp'),
-          contentType: 'image/webp',
-          base64Data,
-        }),
-      });
-      const data = await res.json();
-      if (data.publicUrl) {
-        setImageUrl(data.publicUrl);
+      const publicUrl = await uploadCompressedImage(file);
+      if (publicUrl) {
+        setImageUrl(publicUrl);
       }
     } catch (err) {
       console.error('Image compression/upload error:', err);

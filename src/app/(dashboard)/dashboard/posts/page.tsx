@@ -205,6 +205,7 @@ export default function DashboardPostsPage() {
     }
 
     if (tc?.flashSale) {
+      const todayIso = new Date().toISOString().slice(0, 10);
       setFlashSale({
         enabled: Boolean(tc.flashSale.enabled),
         badgeText: tc.flashSale.badgeText || '⚡ FLASH SALE GIỜ VÀNG',
@@ -215,6 +216,8 @@ export default function DashboardPostsPage() {
           typeof tc.flashSale.discountValue === 'number'
             ? tc.flashSale.discountValue
             : 25,
+        startDate: tc.flashSale.startDate || todayIso,
+        endDate: tc.flashSale.endDate || tc.flashSale.startDate || todayIso,
         startTime: tc.flashSale.startTime || '11:00',
         endTime: tc.flashSale.endTime || '22:00',
         itemIds: tc.flashSale.itemIds || [],
