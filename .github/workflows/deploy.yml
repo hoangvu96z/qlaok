@@ -23,9 +23,16 @@ jobs:
           script: |
             set -e
             cd /var/www/qlaok.vunph.click
+            if [ -d ".local-db" ]; then
+              cp -r .local-db /tmp/qlaok_local_db_backup || true
+            fi
             echo "📥 Pulling latest changes from GitHub..."
             git fetch origin main
             git reset --hard origin/main
+            if [ -d "/tmp/qlaok_local_db_backup" ]; then
+              mkdir -p .local-db
+              cp -r /tmp/qlaok_local_db_backup/* .local-db/ 2>/dev/null || true
+            fi
             echo "📦 Installing dependencies..."
             npm install --no-audit --no-fund
             echo "🔨 Building Next.js production app..."

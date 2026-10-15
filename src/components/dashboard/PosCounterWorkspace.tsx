@@ -49,8 +49,17 @@ interface PosCounterWorkspaceProps {
   shop: Shop;
   categories: Category[];
   items: CatalogItem[];
+  orders?: ShopOrder[];
   autoPrintOnPay: boolean;
   onOrderCreated: (order: ShopOrder, shouldPrint: boolean) => void;
+  onPrintOrder?: (order: ShopOrder) => void;
+  onUpdateOrder?: (
+    orderId: string,
+    updates: {
+      status?: 'new' | 'preparing' | 'completed' | 'cancelled';
+      payment_status?: 'unpaid' | 'paid';
+    }
+  ) => Promise<void>;
   onEditCatalogItem?: (item: CatalogItem) => void;
 }
 
@@ -67,12 +76,23 @@ const TABLE_PRESETS = [
   'Giao hàng (Ship)',
 ];
 
+function getVnDateKey(dateInput: Date | string | number = new Date()): string {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) {
+    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 export function PosCounterWorkspace({
   shop,
   categories,
   items,
+  orders = [],
   autoPrintOnPay,
   onOrderCreated,
+  onPrintOrder,
+  onUpdateOrder,
 }: PosCounterWorkspaceProps) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
@@ -102,9 +122,35 @@ export function PosCounterWorkspace({
     customNote: string;
   } | null>(null);
 
-  // VietQR Payment Confirmation Modal before finalizing POS order if VietQR is chosen
+  // VietQR Payment Confirmation Modal & Today POS Orders Drawer
   const [showQrConfirmModal, setShowQrConfirmModal] = useState(false);
+  const [showTodayOrdersModal, setShowTodayOrdersModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const todayStats = useMemo(() => {
+    const todayKey = getVnDateKey();
+    const validToday = orders.filter(
+      (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayKey
+    );
+    const revenue = validToday.reduce(
+      (s, o) => s + Number(o.total_amount || 0),
+      0
+    );
+    const cashRev = validToday
+      .filter((o) => o.payment_method === 'cash')
+      .reduce((s, o) => s + Number(o.total_amount || 0), 0);
+    const qrRev = validToday
+      .filter((o) => o.payment_method !== 'cash')
+      .reduce((s, o) => s + Number(o.total_amount || 0), 0);
+    return {
+      todayOrders: validToday,
+      count: validToday.length,
+      revenue,
+      cashRev,
+      qrRev,
+    };
+  }, [orders]);
 
   const verticalQuickTags = useMemo(
     () => QUICK_TAGS_BY_VERTICAL[shop.vertical] || QUICK_TAGS_BY_VERTICAL.fnb,
@@ -515,6 +561,7 @@ export function PosCounterWorkspace({
         };
       });
 
+      setSubmitError(null);
       const createRes = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -523,52 +570,34 @@ export function PosCounterWorkspace({
           table_label: tableLabel.trim() || 'Tại quầy',
           visitor_lang: 'vi',
           payment_method: paymentMethod,
+          payment_status: markPaidImmediately ? 'paid' : 'unpaid',
           source: 'counter_pos',
           items: payloadItems,
         }),
       });
 
-      if (createRes.ok) {
-        const createData = await createRes.json().catch(() => null);
-        let createdOrder: ShopOrder | null = createData?.order || null;
-
-        // If cashier clicked Pay at Counter, mark payment_status='paid' right away
-        if (createdOrder && markPaidImmediately) {
-          const patchRes = await fetch('/api/orders', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              shop_id: shop.id,
-              order_id: createdOrder.id,
-              payment_status: 'paid',
-              payment_method: paymentMethod,
-            }),
-          });
-          if (patchRes.ok) {
-            const patchData = await patchRes.json().catch(() => null);
-            if (patchData?.order) {
-              createdOrder = patchData.order;
-            } else {
-              createdOrder = {
-                ...createdOrder,
-                payment_status: 'paid',
-                payment_method: paymentMethod,
-              };
-            }
-          }
-        }
-
-        setLines([]);
-        setSelectedLineId(null);
-        setShowQrConfirmModal(false);
-
-        if (createdOrder) {
-          onOrderCreated(
-            createdOrder,
-            paymentMethod === 'vietqr' ? true : autoPrintOnPay
-          );
-        }
+      const createData = await createRes.json().catch(() => null);
+      if (!createRes.ok) {
+        setSubmitError(
+          createData?.error || 'Không thể lưu đơn hàng. Vui lòng thử lại.'
+        );
+        return;
       }
+
+      const createdOrder: ShopOrder | null = createData?.order || null;
+
+      setLines([]);
+      setSelectedLineId(null);
+      setShowQrConfirmModal(false);
+
+      if (createdOrder) {
+        onOrderCreated(
+          createdOrder,
+          paymentMethod === 'vietqr' ? true : autoPrintOnPay
+        );
+      }
+    } catch {
+      setSubmitError('Lỗi kết nối máy chủ khi lưu đơn hàng.');
     } finally {
       setSubmitting(false);
     }
@@ -593,8 +622,8 @@ export function PosCounterWorkspace({
       }
     >
       {/* Top POS Status & Mode Bar */}
-      <div className="flex items-center justify-between gap-3 bg-slate-900 px-4 py-2.5 text-white shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 px-4 py-2.5 text-white shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
           <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 py-1 text-xs font-black text-slate-950">
             <Sparkles className="h-3.5 w-3.5" />
             <span>POS THU NGÂN</span>
@@ -602,12 +631,28 @@ export function PosCounterWorkspace({
           <span className="truncate text-sm font-extrabold text-white">
             {shop.name}
           </span>
-          <span className="hidden md:inline-block text-xs text-slate-400">
-            • Chọn món bên phải, chỉnh số lượng / chiết khấu / topping bên trái
-          </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Live Today Shift Stats & Order History Button right inside POS Terminal */}
+          <button
+            type="button"
+            onClick={() => setShowTodayOrdersModal(true)}
+            className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
+            title="Xem danh sách đơn trong ngày & in lại hóa đơn"
+          >
+            <Banknote className="h-3.5 w-3.5 text-emerald-400" />
+            <span>
+              Ca hôm nay: <strong className="text-white">{todayStats.count} đơn</strong> •{' '}
+              <strong className="text-amber-300">
+                {formatCurrency(todayStats.revenue, shop.currency)}
+              </strong>
+            </span>
+            <span className="rounded-md bg-emerald-500 px-1.5 py-0.5 text-[10px] font-black text-slate-950">
+              Xem đơn
+            </span>
+          </button>
+
           <Link
             href="/dashboard/catalog"
             className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-700"
@@ -635,6 +680,19 @@ export function PosCounterWorkspace({
           </button>
         </div>
       </div>
+
+      {submitError && (
+        <div className="flex items-center justify-between gap-2 bg-rose-600 px-4 py-2 text-xs font-bold text-white shrink-0">
+          <span>⚠️ {submitError}</span>
+          <button
+            type="button"
+            onClick={() => setSubmitError(null)}
+            className="rounded-lg bg-white/20 px-2 py-0.5 text-[11px] font-black hover:bg-white/30"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Main Split-Screen POS Body: Left Ticket + Numpad | Right Category + Product Grid */}
       <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
@@ -1597,6 +1655,173 @@ export function PosCounterWorkspace({
             </div>
           );
         })()}
+
+      {/* ================= TODAY POS SHIFT ORDERS & STATS MODAL ================= */}
+      {showTodayOrdersModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
+          onClick={() => setShowTodayOrdersModal(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-3xl bg-white shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 bg-slate-900 px-5 py-4 text-white">
+              <div>
+                <h3 className="text-sm sm:text-base font-black">
+                  Thống Kê &amp; Đơn Hàng Ca Hôm Nay • {shop.name}
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Đồng bộ trực tiếp từ cơ sở dữ liệu máy chủ (tự động lưu vĩnh viễn)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTodayOrdersModal(false)}
+                className="rounded-xl bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* 3 KPI Summary Boxes */}
+            <div className="grid grid-cols-3 gap-2.5 bg-slate-50 border-b border-slate-200 px-5 py-3.5">
+              <div className="rounded-2xl bg-white border border-emerald-200 p-3">
+                <div className="text-[11px] font-bold text-slate-500">
+                  Tổng doanh thu hôm nay
+                </div>
+                <div className="mt-0.5 text-base sm:text-lg font-black text-emerald-600">
+                  {formatCurrency(todayStats.revenue, shop.currency)}
+                </div>
+                <div className="text-[10px] font-semibold text-slate-500">
+                  {todayStats.count} đơn hợp lệ trong ngày
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-white border border-slate-200 p-3">
+                <div className="text-[11px] font-bold text-slate-500">
+                  Tiền mặt tại quầy
+                </div>
+                <div className="mt-0.5 text-base sm:text-lg font-black text-slate-900">
+                  {formatCurrency(todayStats.cashRev, shop.currency)}
+                </div>
+                <div className="text-[10px] font-semibold text-slate-500">
+                  Thu trực tiếp
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-white border border-blue-200 p-3">
+                <div className="text-[11px] font-bold text-blue-700">
+                  Chuyển khoản QR
+                </div>
+                <div className="mt-0.5 text-base sm:text-lg font-black text-blue-700">
+                  {formatCurrency(todayStats.qrRev, shop.currency)}
+                </div>
+                <div className="text-[10px] font-semibold text-slate-500">
+                  VietQR / Ngân hàng
+                </div>
+              </div>
+            </div>
+
+            {/* Orders List */}
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-4 space-y-2.5">
+              {todayStats.todayOrders.length === 0 ? (
+                <div className="py-12 text-center text-xs font-semibold text-slate-500">
+                  Chưa có đơn hàng nào phát sinh trong ngày hôm nay.
+                </div>
+              ) : (
+                todayStats.todayOrders.map((ord) => (
+                  <div
+                    key={ord.id}
+                    className="rounded-2xl border border-slate-200 bg-white p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-slate-300"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="rounded-lg bg-slate-900 px-2.5 py-0.5 text-xs font-black text-amber-400">
+                          {ord.table_label}
+                        </span>
+                        <span className="text-xs font-black text-slate-900">
+                          #{ord.order_code}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
+                            ord.payment_status === 'paid'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {ord.payment_status === 'paid'
+                            ? '✓ Đã thanh toán'
+                            : '⏳ Chờ thanh toán'}{' '}
+                          ({ord.payment_method === 'vietqr' ? 'QR' : 'Tiền mặt'})
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-400">
+                          {new Date(ord.created_at).toLocaleTimeString('vi-VN', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-600 truncate">
+                        {(ord.items || [])
+                          .map((i) => `${i.quantity}x ${i.name_vi}`)
+                          .join(', ')}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                      <span className="text-sm font-black text-emerald-700 mr-1">
+                        {formatCurrency(ord.total_amount, shop.currency)}
+                      </span>
+
+                      {onUpdateOrder && ord.payment_status !== 'paid' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateOrder(ord.id, { payment_status: 'paid' })
+                          }
+                          className="rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-emerald-500"
+                        >
+                          Đã thu tiền
+                        </button>
+                      )}
+
+                      {onUpdateOrder && ord.status !== 'completed' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateOrder(ord.id, {
+                              status: 'completed',
+                              payment_status: 'paid',
+                            })
+                          }
+                          className="rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-black text-emerald-800 hover:bg-emerald-100"
+                        >
+                          Hoàn tất
+                        </button>
+                      )}
+
+                      {onPrintOrder && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowTodayOrdersModal(false);
+                            onPrintOrder(ord);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-black text-slate-800 hover:bg-slate-200"
+                        >
+                          <Printer className="h-3.5 w-3.5" />
+                          <span>In lại Bill</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

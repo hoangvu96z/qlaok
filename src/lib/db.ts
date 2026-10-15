@@ -26,6 +26,7 @@ import { ALL_LOCALES } from './i18n-helper';
 import { smartFallbackTranslate } from './gemini';
 import {
   computeShopRevenueAndInventoryStats,
+  dbGetShopOrders,
   enrichItemsWithInventory,
   setItemStockMetadata,
 } from './mpos-store';
@@ -847,14 +848,17 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     targetShopId = firstShop?.id || SEED_SHOPS[0].id;
   }
 
-  const [{ data: eventsData }, { data: itemsData }] = await Promise.all([
-    sb
-      .from('analytics_events')
-      .select('*')
-      .eq('shop_id', targetShopId)
-      .order('created_at', { ascending: false }),
-    sb.from('items').select('*').eq('shop_id', targetShopId),
-  ]);
+  const resolvedShopId = targetShopId || SEED_SHOPS[0].id;
+  const [{ data: eventsData }, { data: itemsData }, shopOrders] =
+    await Promise.all([
+      sb
+        .from('analytics_events')
+        .select('*')
+        .eq('shop_id', resolvedShopId)
+        .order('created_at', { ascending: false }),
+      sb.from('items').select('*').eq('shop_id', resolvedShopId),
+      dbGetShopOrders(resolvedShopId),
+    ]);
 
   const events = (eventsData || []) as AnalyticsEvent[];
   const rawItems = ((itemsData || []) as CatalogItem[]).map((i) => ({
@@ -863,8 +867,9 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
   }));
   const items = enrichItemsWithInventory(rawItems);
   const mposStats = computeShopRevenueAndInventoryStats(
-    targetShopId || SEED_SHOPS[0].id,
-    items
+    resolvedShopId,
+    items,
+    shopOrders
   );
 
   const scanDoorCount = events.filter(

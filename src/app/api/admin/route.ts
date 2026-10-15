@@ -19,6 +19,7 @@ import {
   dbGetAllOrders,
   dbUpdateOrderStatus,
   enrichItemsWithInventory,
+  getVietnamDateKey,
 } from '@/lib/mpos-store';
 import {
   SEED_CATEGORIES,
@@ -153,7 +154,7 @@ export async function GET(req: Request) {
         (o) => o.shop_id === s.id && o.status !== 'cancelled'
       );
       const shopGmv = shopOrders.reduce(
-        (sum, o) => sum + (o.total_amount || 0),
+        (sum, o) => sum + Number(o.total_amount || 0),
         0
       );
       const shopEvents = events.filter((e) => e.shop_id === s.id);
@@ -218,21 +219,15 @@ export async function GET(req: Request) {
       retail: shops.filter((s) => s.vertical === 'retail').length,
     };
 
-    const now = new Date();
-    const startOfToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    ).getTime();
-
+    const todayVnKey = getVietnamDateKey();
     const validOrders = allOrders.filter((o) => o.status !== 'cancelled');
     const globalMposGmv = validOrders.reduce(
-      (sum, o) => sum + (o.total_amount || 0),
+      (sum, o) => sum + Number(o.total_amount || 0),
       0
     );
     const todayMposGmv = validOrders
-      .filter((o) => new Date(o.created_at).getTime() >= startOfToday)
-      .reduce((sum, o) => sum + (o.total_amount || 0), 0);
+      .filter((o) => getVietnamDateKey(o.created_at) === todayVnKey)
+      .reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
 
     // Analytics & Language breakdown
     const scanDoorCount = events.filter(

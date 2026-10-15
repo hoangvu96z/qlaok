@@ -44,6 +44,14 @@ import {
   saveOrderChimeSettings,
 } from '@/lib/order-chime';
 
+function getVnDateKey(dateInput: Date | string | number = new Date()): string {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) {
+    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
   const [orders, setOrders] = useState<ShopOrder[]>([]);
@@ -54,8 +62,8 @@ export default function CounterOrdersPage() {
     'kitchen_orders' | 'pos_terminal'
   >('kitchen_orders');
   const [filterTab, setFilterTab] = useState<
-    'active' | 'new' | 'preparing' | 'completed' | 'cancelled'
-  >('active');
+    'today' | 'active' | 'new' | 'preparing' | 'completed' | 'cancelled' | 'all'
+  >('today');
   const [chimeSettings, setChimeSettings] = useState<OrderChimeSettings>(
     DEFAULT_CHIME_SETTINGS
   );
@@ -73,7 +81,20 @@ export default function CounterOrdersPage() {
     const loaded = loadOrderChimeSettings();
     setChimeSettings(loaded);
     chimeSettingsRef.current = loaded;
+    if (typeof window !== 'undefined') {
+      const savedMode = sessionStorage.getItem('qlaok_pos_workspace_mode');
+      if (savedMode === 'pos_terminal' || savedMode === 'kitchen_orders') {
+        setWorkspaceMode(savedMode);
+      }
+    }
   }, []);
+
+  const switchWorkspaceMode = (mode: 'kitchen_orders' | 'pos_terminal') => {
+    setWorkspaceMode(mode);
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('qlaok_pos_workspace_mode', mode);
+    }
+  };
 
   const updateChimeSettings = (patch: Partial<OrderChimeSettings>) => {
     setChimeSettings((prev) => {
@@ -237,21 +258,55 @@ export default function CounterOrdersPage() {
 
   const newOrders = orders.filter((o) => o.status === 'new');
   const preparingOrders = orders.filter((o) => o.status === 'preparing');
-  const completedOrders = orders.filter((o) => o.status === 'completed');
+  const completedOrders = orders.filter(
+    (o) => o.status === 'completed' || o.payment_status === 'paid'
+  );
   const cancelledOrders = orders.filter((o) => o.status === 'cancelled');
 
-  const todayPrefix = new Date().toISOString().slice(0, 10);
-  const todayRevenue = orders
-    .filter(
-      (o) => o.status !== 'cancelled' && o.created_at.startsWith(todayPrefix)
-    )
-    .reduce((sum, o) => sum + o.total_amount, 0);
+  const todayVnKey = getVnDateKey();
+  const todayValidOrders = orders.filter(
+    (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
+  );
+  const todayRevenue = todayValidOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
 
-  const filteredOrders = orders.filter((o) => {
-    if (filterTab === 'active')
-      return o.status === 'new' || o.status === 'preparing';
-    return o.status === filterTab;
-  });
+  const statusPriority: Record<OrderStatus, number> = {
+    new: 0,
+    preparing: 1,
+    completed: 2,
+    cancelled: 3,
+  };
+
+  const filteredOrders = orders
+    .filter((o) => {
+      if (filterTab === 'today') {
+        if (todayValidOrders.length > 0) {
+          return (
+            o.status === 'new' ||
+            o.status === 'preparing' ||
+            (o.status !== 'cancelled' &&
+              getVnDateKey(o.created_at) === todayVnKey)
+          );
+        }
+        return o.status !== 'cancelled';
+      }
+      if (filterTab === 'active')
+        return o.status === 'new' || o.status === 'preparing';
+      if (filterTab === 'all') return true;
+      return o.status === filterTab;
+    })
+    .sort((a, b) => {
+      if (filterTab === 'today') {
+        const pa = statusPriority[a.status] ?? 2;
+        const pb = statusPriority[b.status] ?? 2;
+        if (pa !== pb) return pa - pb;
+      }
+      return (
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
 
   return (
     <div className="space-y-4">
@@ -262,7 +317,7 @@ export default function CounterOrdersPage() {
           <div className="inline-flex rounded-2xl bg-slate-800 p-1 border border-slate-700 shrink-0">
             <button
               type="button"
-              onClick={() => setWorkspaceMode('pos_terminal')}
+              onClick={() => switchWorkspaceMode('pos_terminal')}
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
                 workspaceMode === 'pos_terminal'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
@@ -275,7 +330,7 @@ export default function CounterOrdersPage() {
 
             <button
               type="button"
-              onClick={() => setWorkspaceMode('kitchen_orders')}
+              onClick={() => switchWorkspaceMode('kitchen_orders')}
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
                 workspaceMode === 'kitchen_orders'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
@@ -288,7 +343,7 @@ export default function CounterOrdersPage() {
                 }`}
               />
               <span>
-                Đơn Bàn &amp; Bếp ({newOrders.length + preparingOrders.length})
+                Đơn Bàn &amp; Quầy ({todayValidOrders.length} đơn hôm nay)
               </span>
               {newOrders.length > 0 && (
                 <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-black text-white">
@@ -378,7 +433,7 @@ export default function CounterOrdersPage() {
           {workspaceMode === 'kitchen_orders' && (
             <button
               type="button"
-              onClick={() => setWorkspaceMode('pos_terminal')}
+              onClick={() => switchWorkspaceMode('pos_terminal')}
               className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
             >
               <Plus className="h-4 w-4" />
@@ -411,7 +466,7 @@ export default function CounterOrdersPage() {
             type="button"
             onClick={() => {
               setFilterTab('new');
-              setWorkspaceMode('kitchen_orders');
+              switchWorkspaceMode('kitchen_orders');
             }}
             className="rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-black text-white hover:bg-amber-500"
           >
@@ -426,7 +481,10 @@ export default function CounterOrdersPage() {
           shop={activeShop}
           categories={catalogCategories}
           items={catalogItems}
+          orders={orders}
           autoPrintOnPay={autoPrintOnPay}
+          onPrintOrder={(ord) => setPrintingOrder(ord)}
+          onUpdateOrder={(id, up) => handleUpdateOrder(id, up)}
           onOrderCreated={async (createdOrder, shouldPrint) => {
             await fetchOrdersAndCatalog(true);
             if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -481,17 +539,17 @@ export default function CounterOrdersPage() {
         <div className="rounded-3xl bg-white border border-emerald-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-emerald-700">
-              Đã hoàn tất
+              Đơn trong ngày / Hoàn tất
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
               <CheckCircle2 className="h-4 w-4" />
             </span>
           </div>
           <p className="mt-2 text-2xl font-black text-slate-900">
-            {completedOrders.length} đơn
+            {todayValidOrders.length} đơn hôm nay
           </p>
           <p className="text-[11px] font-medium text-slate-500">
-            Đã lên món &amp; thanh toán
+            Đã hoàn tất / thu tiền: {completedOrders.length} đơn
           </p>
         </div>
 
@@ -508,7 +566,7 @@ export default function CounterOrdersPage() {
             {formatCurrency(todayRevenue, activeShop.currency)}
           </p>
           <p className="text-[11px] font-medium text-slate-500">
-            Tự động cộng khi có đơn
+            Lưu vĩnh viễn trên máy chủ
           </p>
         </div>
       </div>
@@ -517,13 +575,21 @@ export default function CounterOrdersPage() {
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
         {[
           {
+            id: 'today',
+            label: `Đơn hôm nay (${todayValidOrders.length})`,
+          },
+          {
             id: 'active',
             label: `Đang xử lý (${newOrders.length + preparingOrders.length})`,
           },
           { id: 'new', label: `Mới chờ nhận (${newOrders.length})` },
           { id: 'preparing', label: `Đang chế biến (${preparingOrders.length})` },
-          { id: 'completed', label: `Đã hoàn tất (${completedOrders.length})` },
+          {
+            id: 'completed',
+            label: `Đã hoàn tất (${orders.filter((o) => o.status === 'completed').length})`,
+          },
           { id: 'cancelled', label: `Đã hủy (${cancelledOrders.length})` },
+          { id: 'all', label: `Tất cả lịch sử (${orders.length})` },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -531,11 +597,13 @@ export default function CounterOrdersPage() {
             onClick={() =>
               setFilterTab(
                 tab.id as
+                  | 'today'
                   | 'active'
                   | 'new'
                   | 'preparing'
                   | 'completed'
                   | 'cancelled'
+                  | 'all'
               )
             }
             className={`shrink-0 rounded-2xl px-4 py-2.5 text-xs font-extrabold transition-all ${

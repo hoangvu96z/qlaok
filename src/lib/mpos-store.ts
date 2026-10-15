@@ -526,27 +526,142 @@ export async function setItemStockMetadata(
   }
 }
 
-export async function dbGetAllOrders(): Promise<ShopOrder[]> {
+const VN_OFFSET_MS = 7 * 3600 * 1000;
+
+export function getVietnamDateKey(
+  dateInput: Date | string | number = new Date()
+): string {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) {
+    return new Date(Date.now() + VN_OFFSET_MS).toISOString().slice(0, 10);
+  }
+  return new Date(ts + VN_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+export function getVietnamHour(dateInput: Date | string | number): number {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) return 12;
+  return new Date(ts + VN_OFFSET_MS).getUTCHours();
+}
+
+function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
+  const items: OrderLineItem[] = Array.isArray(raw.items)
+    ? raw.items.map((line) => ({
+        ...line,
+        quantity: Math.max(1, Number(line?.quantity || 1)),
+        unit_price: Number(line?.unit_price || 0),
+        extra_price: Number(line?.extra_price || 0),
+        selected_choices: Array.isArray(line?.selected_choices)
+          ? line.selected_choices
+          : [],
+        quick_tags: Array.isArray(line?.quick_tags) ? line.quick_tags : [],
+      }))
+    : [];
+
+  const computedTotal = items.reduce(
+    (sum, l) => sum + (l.unit_price + (l.extra_price || 0)) * l.quantity,
+    0
+  );
+  const rawTotal = Number(raw.total_amount);
+
+  return {
+    id: String(raw.id || `ord-${Date.now()}`),
+    order_code: String(raw.order_code || 'ORD-000'),
+    shop_id: String(raw.shop_id || 'shop-fnb-001'),
+    table_label: String(raw.table_label || 'Tại quầy'),
+    visitor_lang: (raw.visitor_lang as SupportedLocale) || 'vi',
+    customer_note: raw.customer_note || '',
+    status: (raw.status as OrderStatus) || 'new',
+    payment_method: (raw.payment_method as PaymentMethod) || 'cash',
+    payment_status:
+      raw.payment_status === 'paid' || raw.status === 'completed'
+        ? 'paid'
+        : 'unpaid',
+    total_amount: !Number.isNaN(rawTotal) ? rawTotal : computedTotal,
+    items,
+    source: raw.source === 'counter_pos' ? 'counter_pos' : 'qr_table',
+    created_at: raw.created_at || new Date().toISOString(),
+    updated_at: raw.updated_at || raw.created_at || new Date().toISOString(),
+  };
+}
+
+/**
+ * Loads orders from Supabase `public.orders` (primary persistent database)
+ * and merges with local `.local-db/mpos-store.json` (fallback + demo seeds),
+ * ensuring no orders are ever lost across page reloads or VPS re-deployments.
+ */
+async function loadMergedOrders(shopId?: string): Promise<ShopOrder[]> {
   const store = readStore();
-  return [...store.orders].sort(
+  const orderMap = new Map<string, ShopOrder>();
+
+  for (const localOrd of store.orders) {
+    const norm = normalizeOrderRecord(localOrd);
+    orderMap.set(norm.id, norm);
+  }
+
+  let storeNeedsWrite = false;
+  try {
+    const sb = getSupabaseDbClient();
+    const { data: sbRows, error } = await sb
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(sbRows)) {
+      for (const row of sbRows) {
+        const sbOrd = normalizeOrderRecord(row as Partial<ShopOrder>);
+        const existing = orderMap.get(sbOrd.id);
+        if (!existing) {
+          orderMap.set(sbOrd.id, sbOrd);
+          storeNeedsWrite = true;
+        } else {
+          const sbTime = new Date(sbOrd.updated_at).getTime() || 0;
+          const localTime = new Date(existing.updated_at).getTime() || 0;
+          if (sbTime >= localTime) {
+            if (
+              existing.status !== sbOrd.status ||
+              existing.payment_status !== sbOrd.payment_status ||
+              existing.total_amount !== sbOrd.total_amount
+            ) {
+              storeNeedsWrite = true;
+            }
+            orderMap.set(sbOrd.id, sbOrd);
+          }
+        }
+      }
+    }
+  } catch {
+    // Fallback to local store if offline or Supabase orders table not reachable
+  }
+
+  const allMerged = Array.from(orderMap.values()).sort(
     (a, b) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
+
+  if (storeNeedsWrite) {
+    store.orders = allMerged;
+    writeStore(store);
+  }
+
+  return shopId
+    ? allMerged.filter((o) => o.shop_id === shopId)
+    : allMerged;
+}
+
+export async function dbGetAllOrders(): Promise<ShopOrder[]> {
+  return loadMergedOrders();
 }
 
 export async function dbGetShopOrders(shopId: string): Promise<ShopOrder[]> {
-  const store = readStore();
-  return store.orders
-    .filter((o) => o.shop_id === shopId)
-    .sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
+  return loadMergedOrders(shopId);
 }
 
-export async function dbGetOrderById(orderId: string): Promise<ShopOrder | null> {
-  const store = readStore();
-  return store.orders.find((o) => o.id === orderId) || null;
+export async function dbGetOrderById(
+  orderId: string
+): Promise<ShopOrder | null> {
+  const all = await loadMergedOrders();
+  return all.find((o) => o.id === orderId) || null;
 }
 
 export async function dbCreateOrder(params: {
@@ -555,11 +670,13 @@ export async function dbCreateOrder(params: {
   visitor_lang?: SupportedLocale;
   customer_note?: string;
   payment_method?: PaymentMethod;
+  payment_status?: 'unpaid' | 'paid';
   source?: 'qr_table' | 'counter_pos';
   markCompletedImmediately?: boolean;
   discount_amount?: number;
   items: OrderLineItem[];
 }): Promise<ShopOrder> {
+  await loadMergedOrders(params.shop_id);
   const store = readStore();
 
   if (!params.items || params.items.length === 0) {
@@ -622,7 +739,9 @@ export async function dbCreateOrder(params: {
 
   const subtotalAmount = params.items.reduce(
     (sum, line) =>
-      sum + (Number(line.unit_price || 0) + Number(line.extra_price || 0)) * line.quantity,
+      sum +
+      (Number(line.unit_price || 0) + Number(line.extra_price || 0)) *
+        line.quantity,
     0
   );
   const discountAmount = Math.max(0, Number(params.discount_amount || 0));
@@ -630,6 +749,9 @@ export async function dbCreateOrder(params: {
 
   const nowIso = new Date().toISOString();
   const randomCode = Math.floor(100 + Math.random() * 900);
+  const isPaid =
+    params.markCompletedImmediately || params.payment_status === 'paid';
+
   const newOrder: ShopOrder = {
     id: `ord-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     order_code: `ORD-${randomCode}`,
@@ -639,7 +761,7 @@ export async function dbCreateOrder(params: {
     customer_note: params.customer_note?.trim() || '',
     status: params.markCompletedImmediately ? 'completed' : 'new',
     payment_method: params.payment_method || 'cash',
-    payment_status: params.markCompletedImmediately ? 'paid' : 'unpaid',
+    payment_status: isPaid ? 'paid' : 'unpaid',
     total_amount: totalAmount,
     items: params.items,
     source: params.source || 'qr_table',
@@ -688,6 +810,7 @@ export async function dbUpdateOrderStatus(
     payment_status?: 'unpaid' | 'paid';
   }
 ): Promise<ShopOrder> {
+  await loadMergedOrders();
   const store = readStore();
   const idx = store.orders.findIndex((o) => o.id === orderId);
   if (idx === -1) {
@@ -733,15 +856,7 @@ export async function dbUpdateOrderStatus(
 
   try {
     const sb = getSupabaseDbClient();
-    await sb
-      .from('orders')
-      .update({
-        status: updated.status,
-        payment_method: updated.payment_method,
-        payment_status: updated.payment_status,
-        updated_at: updated.updated_at,
-      })
-      .eq('id', orderId);
+    await sb.from('orders').upsert(updated);
 
     if (restoredItemIds.length > 0) {
       await Promise.all(
@@ -759,17 +874,15 @@ export async function dbUpdateOrderStatus(
 
 export function computeShopRevenueAndInventoryStats(
   shopId: string,
-  enrichedItems: CatalogItem[]
+  enrichedItems: CatalogItem[],
+  preloadedOrders?: ShopOrder[]
 ) {
-  const store = readStore();
-  const shopOrders = store.orders.filter((o) => o.shop_id === shopId);
+  const shopOrders = (
+    preloadedOrders ??
+    readStore().orders.filter((o) => o.shop_id === shopId)
+  ).map(normalizeOrderRecord);
 
-  const now = new Date();
-  const startOfToday = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  ).getTime();
+  const todayVnKey = getVietnamDateKey();
 
   const validOrders = shopOrders.filter((o) => o.status !== 'cancelled');
   const completedOrders = shopOrders.filter(
@@ -777,18 +890,18 @@ export function computeShopRevenueAndInventoryStats(
   );
 
   const todayValidOrders = validOrders.filter(
-    (o) => new Date(o.created_at).getTime() >= startOfToday
+    (o) => getVietnamDateKey(o.created_at) === todayVnKey
   );
   const todayCompletedOrders = completedOrders.filter(
-    (o) => new Date(o.created_at).getTime() >= startOfToday
+    (o) => getVietnamDateKey(o.created_at) === todayVnKey
   );
 
   const todayRevenue = todayValidOrders.reduce(
-    (sum, o) => sum + (o.total_amount || 0),
+    (sum, o) => sum + Number(o.total_amount || 0),
     0
   );
   const totalRevenue = validOrders.reduce(
-    (sum, o) => sum + (o.total_amount || 0),
+    (sum, o) => sum + Number(o.total_amount || 0),
     0
   );
 
@@ -800,7 +913,7 @@ export function computeShopRevenueAndInventoryStats(
   const avgOrderValue =
     validOrders.length > 0 ? Math.round(totalRevenue / validOrders.length) : 0;
 
-  // 7-day daily revenue chart
+  // 7-day daily revenue chart in Vietnam timezone (UTC+7)
   const dailyRevenue7d: Array<{
     date: string;
     label: string;
@@ -811,25 +924,25 @@ export function computeShopRevenueAndInventoryStats(
     orderCount: number;
   }> = [];
 
+  const nowMs = Date.now();
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-    const dayStart = d.getTime();
-    const dayEnd = dayStart + 24 * 3600 * 1000;
-    const dayOrders = validOrders.filter((o) => {
-      const t = new Date(o.created_at).getTime();
-      return t >= dayStart && t < dayEnd;
-    });
-    const rev = dayOrders.reduce((s, o) => s + (o.total_amount || 0), 0);
+    const targetDayMs = nowMs - i * 24 * 3600 * 1000;
+    const dayKey = getVietnamDateKey(targetDayMs);
+    const [, mm, dd] = dayKey.split('-');
+
+    const dayOrders = validOrders.filter(
+      (o) => getVietnamDateKey(o.created_at) === dayKey
+    );
+    const rev = dayOrders.reduce((s, o) => s + Number(o.total_amount || 0), 0);
     const cashRev = dayOrders
       .filter((o) => o.payment_method === 'cash')
-      .reduce((s, o) => s + (o.total_amount || 0), 0);
+      .reduce((s, o) => s + Number(o.total_amount || 0), 0);
     const vietqrRev = dayOrders
       .filter((o) => o.payment_method !== 'cash')
-      .reduce((s, o) => s + (o.total_amount || 0), 0);
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
+      .reduce((s, o) => s + Number(o.total_amount || 0), 0);
+
     dailyRevenue7d.push({
-      date: `${d.getFullYear()}-${mm}-${dd}`,
+      date: dayKey,
       label: i === 0 ? `Hôm nay` : `${dd}/${mm}`,
       revenue: rev,
       cashRevenue: cashRev,
@@ -843,11 +956,11 @@ export function computeShopRevenueAndInventoryStats(
   const vietqrOrders = validOrders.filter((o) => o.payment_method !== 'cash');
   const cashOrders = validOrders.filter((o) => o.payment_method === 'cash');
   const vietqrRevenueTotal = vietqrOrders.reduce(
-    (s, o) => s + (o.total_amount || 0),
+    (s, o) => s + Number(o.total_amount || 0),
     0
   );
   const cashRevenueTotal = cashOrders.reduce(
-    (s, o) => s + (o.total_amount || 0),
+    (s, o) => s + Number(o.total_amount || 0),
     0
   );
   const vietqrPct =
@@ -871,11 +984,11 @@ export function computeShopRevenueAndInventoryStats(
   const qrTableOrders = validOrders.filter((o) => o.source !== 'counter_pos');
   const counterPosOrders = validOrders.filter((o) => o.source === 'counter_pos');
   const qrTableRevenue = qrTableOrders.reduce(
-    (s, o) => s + (o.total_amount || 0),
+    (s, o) => s + Number(o.total_amount || 0),
     0
   );
   const counterPosRevenue = counterPosOrders.reduce(
-    (s, o) => s + (o.total_amount || 0),
+    (s, o) => s + Number(o.total_amount || 0),
     0
   );
   const qrTablePct =
@@ -898,7 +1011,7 @@ export function computeShopRevenueAndInventoryStats(
     },
   };
 
-  // Peak hours breakdown (6 slots)
+  // Peak hours breakdown (6 slots) in Vietnam timezone (UTC+7)
   const slotsDef = [
     { slot: '06h-09h', label: 'Sáng (6-9h)', minH: 6, maxH: 9 },
     { slot: '09h-12h', label: 'Trưa (9-12h)', minH: 9, maxH: 12 },
@@ -910,10 +1023,10 @@ export function computeShopRevenueAndInventoryStats(
 
   const rawHourly = slotsDef.map((s) => {
     const matched = validOrders.filter((o) => {
-      const h = new Date(o.created_at).getHours();
+      const h = getVietnamHour(o.created_at);
       return h >= s.minH && h < s.maxH;
     });
-    const rev = matched.reduce((acc, o) => acc + (o.total_amount || 0), 0);
+    const rev = matched.reduce((acc, o) => acc + Number(o.total_amount || 0), 0);
     return {
       slot: s.slot,
       label: s.label,
@@ -929,6 +1042,21 @@ export function computeShopRevenueAndInventoryStats(
       h.revenue > 0 ? Math.max(14, Math.round((h.revenue / maxSlotRev) * 100)) : 8,
   }));
 
+  // Compute real item sold counts & revenue from validOrders so stats are never out of sync
+  const orderSoldMap = new Map<string, { qty: number; rev: number }>();
+  for (const ord of validOrders) {
+    for (const line of ord.items || []) {
+      const prev = orderSoldMap.get(line.item_id) || { qty: 0, rev: 0 };
+      const lineQty = Number(line.quantity || 1);
+      const lineRev =
+        (Number(line.unit_price || 0) + Number(line.extra_price || 0)) * lineQty;
+      orderSoldMap.set(line.item_id, {
+        qty: prev.qty + lineQty,
+        rev: prev.rev + lineRev,
+      });
+    }
+  }
+
   // Inventory summary
   const lowStockItems = enrichedItems.filter(
     (i) =>
@@ -943,17 +1071,28 @@ export function computeShopRevenueAndInventoryStats(
 
   // Top selling items by sold_count & revenue
   const topSellingItems = [...enrichedItems]
+    .map((item) => {
+      const fromOrders = orderSoldMap.get(item.id);
+      const effectiveSold = Math.max(
+        item.sold_count || 0,
+        fromOrders?.qty || 0
+      );
+      const effectiveRev =
+        fromOrders && fromOrders.qty >= (item.sold_count || 0)
+          ? fromOrders.rev
+          : effectiveSold * item.price;
+      return {
+        ...item,
+        name_vi: item.name_i18n?.vi || 'Món',
+        sold_count: effectiveSold,
+        stock_quantity:
+          item.stock_quantity === undefined ? null : item.stock_quantity,
+        revenue: effectiveRev,
+        estimated_revenue: effectiveRev,
+      };
+    })
     .sort((a, b) => (b.sold_count || 0) - (a.sold_count || 0))
-    .slice(0, 5)
-    .map((item) => ({
-      ...item,
-      name_vi: item.name_i18n?.vi || 'Món',
-      sold_count: item.sold_count || 0,
-      stock_quantity:
-        item.stock_quantity === undefined ? null : item.stock_quantity,
-      revenue: (item.sold_count || 0) * item.price,
-      estimated_revenue: (item.sold_count || 0) * item.price,
-    }));
+    .slice(0, 5);
 
   return {
     todayRevenue,

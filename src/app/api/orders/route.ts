@@ -36,7 +36,11 @@ export async function GET(req: Request) {
       dbGetShopCatalog(shopId),
     ]);
 
-    const stats = computeShopRevenueAndInventoryStats(shopId, catalog.items);
+    const stats = computeShopRevenueAndInventoryStats(
+      shopId,
+      catalog.items,
+      orders
+    );
 
     return NextResponse.json({
       orders,
@@ -63,6 +67,7 @@ export async function POST(req: Request) {
       visitor_lang = 'vi',
       customer_note = '',
       payment_method = 'cash',
+      payment_status,
       source = 'qr_table',
       markCompletedImmediately = false,
       discount_amount = 0,
@@ -73,6 +78,7 @@ export async function POST(req: Request) {
       visitor_lang?: SupportedLocale;
       customer_note?: string;
       payment_method?: PaymentMethod;
+      payment_status?: 'unpaid' | 'paid';
       source?: 'qr_table' | 'counter_pos';
       markCompletedImmediately?: boolean;
       discount_amount?: number;
@@ -92,6 +98,7 @@ export async function POST(req: Request) {
       visitor_lang,
       customer_note,
       payment_method,
+      payment_status,
       source,
       markCompletedImmediately,
       discount_amount,
