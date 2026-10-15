@@ -20,6 +20,10 @@ import {
   X,
   ShieldCheck,
   FileSpreadsheet,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import {
@@ -120,6 +124,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const { shops, activeShop, profile, loading, selectShop } = useDashboard();
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [liveToastOrder, setLiveToastOrder] = useState<{
     orderCode: string;
     tableLabel: string;
@@ -130,6 +135,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const firstCheckRef = useRef(true);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('qlaok_cms_sidebar_collapsed');
+      if (saved === '1') {
+        setIsSidebarCollapsed(true);
+      }
+    }
     const supabase = createClient();
     if (!supabase) return;
     supabase.auth.getUser().then(({ data }) => {
@@ -202,6 +213,16 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       clearInterval(interval);
     };
   }, [checkLiveOrders, activeShop?.id]);
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('qlaok_cms_sidebar_collapsed', next ? '1' : '0');
+      }
+      return next;
+    });
+  };
 
   const handleLogout = async () => {
     clearStoredAuthOwner();
@@ -276,80 +297,151 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      {/* Desktop Sidebar - Clean Light & Dark Mode High Contrast */}
-      <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-r border-slate-200 dark:border-slate-800">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-black text-lg shadow-xs">
+      {/* Desktop Collapsible Sidebar (Expanded w-64 vs Collapsed w-[72px] Icon Rail) */}
+      <aside
+        className={`hidden md:flex md:flex-col md:fixed md:inset-y-0 z-40 bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-r border-slate-200 dark:border-slate-800 transition-all duration-200 select-none ${
+          isSidebarCollapsed ? 'md:w-[72px]' : 'md:w-64'
+        }`}
+      >
+        {/* Floating Edge Collapse/Expand Handle Tab on the right border */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          title={
+            isSidebarCollapsed
+              ? 'Mở rộng thanh điều hướng (Sidebar)'
+              : 'Thu gọn thanh điều hướng (Sidebar)'
+          }
+          className="absolute -right-3.5 top-20 z-50 flex h-8 w-7 items-center justify-center rounded-full border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 shadow-md hover:border-emerald-500 hover:bg-emerald-500 hover:text-slate-950 transition-all"
+        >
+          {isSidebarCollapsed ? (
+            <ChevronRight className="h-4 w-4" />
+          ) : (
+            <ChevronLeft className="h-4 w-4" />
+          )}
+        </button>
+
+        {/* Sidebar Top Brand & Collapse Button */}
+        <div
+          className={`border-b border-slate-200 dark:border-slate-800 flex items-center ${
+            isSidebarCollapsed
+              ? 'flex-col justify-center gap-2 py-3 px-2'
+              : 'justify-between p-4'
+          }`}
+        >
+          <Link
+            href="/"
+            className="flex items-center gap-2.5 min-w-0"
+            title="Qlaok mPOS • Trang chủ"
+          >
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-black text-lg shadow-xs">
               Q
             </div>
-            <div>
-              <span className="block text-base font-black tracking-tight text-slate-900 dark:text-white">
-                Qlaok mPOS
-              </span>
-              <span className="block text-[10px] text-slate-500 dark:text-slate-400">
-                Quét là OK • Quản trị &amp; Thu ngân
-              </span>
-            </div>
+            {!isSidebarCollapsed && (
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-base font-black tracking-tight text-slate-900 dark:text-white">
+                    Qlaok mPOS
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[9px] font-black uppercase ${planBadgeColor}`}
+                  >
+                    {profile?.plan || 'free'}
+                  </span>
+                </div>
+                <span className="block truncate text-[10px] text-slate-500 dark:text-slate-400">
+                  Quét là OK • Quản trị &amp; Thu ngân
+                </span>
+              </div>
+            )}
           </Link>
 
-          <span
-            className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${planBadgeColor}`}
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            title={
+              isSidebarCollapsed ? 'Mở rộng Sidebar' : 'Thu gọn Sidebar'
+            }
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:border-emerald-500 hover:text-emerald-600 transition"
           >
-            {profile?.plan || 'free'}
-          </span>
-        </div>
-
-        {/* Store Selector */}
-        <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 space-y-2">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Cửa hàng đang quản lý
-          </label>
-          <select
-            value={activeShop?.id || ''}
-            onChange={(e) => selectShop(e.target.value)}
-            className="w-full rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none"
-          >
-            {shops.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.vertical === 'fnb'
-                  ? '🍜 '
-                  : s.vertical === 'service'
-                    ? '💆‍♀️ '
-                    : '🛍️ '}
-                {s.name}
-              </option>
-            ))}
-          </select>
-
-          <div className="grid grid-cols-2 gap-1.5 pt-1">
-            {activeShop && (
-              <>
-                <a
-                  href={`/s/${activeShop.slug}?src=door`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-slate-700"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  <span>QR Cửa</span>
-                </a>
-                <a
-                  href={`/s/${activeShop.slug}/menu?src=table`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  <span>QR Bàn</span>
-                </a>
-              </>
+            {isSidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
             )}
-          </div>
+          </button>
         </div>
+
+        {/* Store Selector (Full when expanded, compact icon links when collapsed) */}
+        {!isSidebarCollapsed ? (
+          <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 space-y-2">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Cửa hàng đang quản lý
+            </label>
+            <select
+              value={activeShop?.id || ''}
+              onChange={(e) => selectShop(e.target.value)}
+              className="w-full rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none"
+            >
+              {shops.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.vertical === 'fnb'
+                    ? '🍜 '
+                    : s.vertical === 'service'
+                      ? '💆‍♀️ '
+                      : '🛍️ '}
+                  {s.name}
+                </option>
+              ))}
+            </select>
+
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              {activeShop && (
+                <>
+                  <a
+                    href={`/s/${activeShop.slug}?src=door`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-slate-700"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    <span>QR Cửa</span>
+                  </a>
+                  <a
+                    href={`/s/${activeShop.slug}/menu?src=table`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    <span>QR Bàn</span>
+                  </a>
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          activeShop && (
+            <div className="py-2.5 px-2 border-b border-slate-200 dark:border-slate-800 flex flex-col items-center gap-1.5">
+              <a
+                href={`/s/${activeShop.slug}/menu?src=table`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Mở Menu QR Bàn (${activeShop.name})`}
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 dark:bg-slate-800 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-slate-700 hover:bg-amber-100"
+              >
+                <QrCode className="h-4 w-4" />
+              </a>
+            </div>
+          )
+        )}
 
         {/* Navigation Links */}
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+        <nav
+          className={`flex-1 space-y-1 overflow-y-auto no-scrollbar ${
+            isSidebarCollapsed ? 'p-2' : 'p-3'
+          }`}
+        >
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active =
@@ -361,7 +453,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-all ${
+                title={item.label}
+                className={`relative flex items-center rounded-xl text-xs font-bold transition-all ${
+                  isSidebarCollapsed
+                    ? 'justify-center p-3'
+                    : 'justify-between gap-2 px-3.5 py-2.5'
+                } ${
                   active
                     ? 'bg-emerald-500 text-slate-950 shadow-sm'
                     : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
@@ -369,17 +466,21 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               >
                 <div className="flex items-center gap-3">
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
+                  {!isSidebarCollapsed && <span>{item.label}</span>}
                 </div>
                 {item.isOrders && newOrdersCount > 0 && (
                   <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
-                      active
-                        ? 'bg-slate-950 text-amber-400'
-                        : 'bg-amber-400 text-slate-950 animate-pulse'
-                    }`}
+                    className={
+                      isSidebarCollapsed
+                        ? 'absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-slate-950 ring-2 ring-white dark:ring-slate-900'
+                        : `rounded-full px-2 py-0.5 text-[10px] font-black ${
+                            active
+                              ? 'bg-slate-950 text-amber-400'
+                              : 'bg-amber-400 text-slate-950 animate-pulse'
+                          }`
+                    }
                   >
-                    {newOrdersCount} mới
+                    {isSidebarCollapsed ? newOrdersCount : `${newOrdersCount} mới`}
                   </span>
                 )}
               </Link>
@@ -387,7 +488,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+        {/* Bottom Sidebar Footer */}
+        <div
+          className={`border-t border-slate-200 dark:border-slate-800 space-y-2 ${
+            isSidebarCollapsed ? 'p-2 flex flex-col items-center' : 'p-3'
+          }`}
+        >
           {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
             <button
               type="button"
@@ -395,47 +501,68 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 stopAdminImpersonation();
                 router.push('/admin');
               }}
-              className="w-full flex items-center justify-center gap-1.5 rounded-xl bg-amber-400 px-3 py-2.5 text-xs font-black text-slate-950 hover:bg-amber-300 shadow-sm"
+              title="Super Admin Portal"
+              className={`flex items-center justify-center gap-1.5 rounded-xl bg-amber-400 text-xs font-black text-slate-950 hover:bg-amber-300 shadow-sm ${
+                isSidebarCollapsed ? 'h-10 w-10' : 'w-full px-3 py-2.5'
+              }`}
             >
-              <ShieldCheck className="h-4 w-4" />
-              <span>🛡️ Super Admin Portal</span>
+              <ShieldCheck className="h-4 w-4 shrink-0" />
+              {!isSidebarCollapsed && <span>🛡️ Super Admin Portal</span>}
             </button>
           )}
 
           <Link
             href="/onboarding"
-            className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20"
+            title="Tạo cửa hàng mới"
+            className={`flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 ${
+              isSidebarCollapsed ? 'h-10 w-10' : 'px-3 py-2.5'
+            }`}
           >
-            <PlusCircle className="h-4 w-4" />
-            <span>Tạo cửa hàng mới</span>
+            <PlusCircle className="h-4 w-4 shrink-0" />
+            {!isSidebarCollapsed && <span>Tạo cửa hàng mới</span>}
           </Link>
 
-          <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 px-3 py-2 border border-slate-200 dark:border-slate-800">
-            <div className="flex items-center gap-2 min-w-0">
-              <UserCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <div className="min-w-0">
-                <p className="truncate text-[11px] font-bold text-slate-900 dark:text-white">
-                  {profile?.full_name || 'Chủ Quán Qlaok'}
-                </p>
-                <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
-                  {authEmail || profile?.email || 'chuquan@qlaok.vn'}
-                </p>
+          {!isSidebarCollapsed ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 px-3 py-2 border border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2 min-w-0">
+                <UserCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="truncate text-[11px] font-bold text-slate-900 dark:text-white">
+                    {profile?.full_name || 'Chủ Quán Qlaok'}
+                  </p>
+                  <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
+                    {authEmail || profile?.email || 'chuquan@qlaok.vn'}
+                  </p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={handleLogout}
+                title="Đăng xuất"
+                className="rounded-lg p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
+          ) : (
             <button
               type="button"
               onClick={handleLogout}
-              title="Đăng xuất"
-              className="rounded-lg p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
+              title={`Đăng xuất (${authEmail || profile?.email || 'Chủ quán'})`}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70 text-slate-500 hover:text-rose-600"
             >
               <LogOut className="h-4 w-4" />
             </button>
-          </div>
+          )}
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <div className="flex-1 md:pl-64 flex flex-col min-h-screen pb-20 md:pb-8">
+      {/* Main Content Area (Dynamically expands when sidebar is collapsed) */}
+      <div
+        className={`flex-1 flex flex-col min-h-screen pb-20 md:pb-8 transition-all duration-200 ${
+          isSidebarCollapsed ? 'md:pl-[72px]' : 'md:pl-64'
+        }`}
+      >
         {/* Super Admin Impersonation / Quick Return Banner */}
         {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
           <div className="bg-slate-950 text-amber-300 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between gap-2 text-xs">
@@ -458,9 +585,33 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
-        {/* Top Mobile Header */}
-        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-2">
+        {/* Top Header Bar */}
+        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 py-2.5 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
+            {/* Desktop Sidebar Collapse/Expand Quick Button right in Top Bar */}
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              title={
+                isSidebarCollapsed
+                  ? 'Mở rộng menu trái (Sidebar)'
+                  : 'Thu gọn menu trái (Sidebar) để mở rộng màn hình'
+              }
+              className="hidden md:inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-700 transition"
+            >
+              {isSidebarCollapsed ? (
+                <>
+                  <PanelLeftOpen className="h-4 w-4 text-emerald-600" />
+                  <span>Mở Menu</span>
+                </>
+              ) : (
+                <>
+                  <PanelLeftClose className="h-4 w-4 text-slate-500" />
+                  <span className="hidden lg:inline">Thu gọn Menu</span>
+                </>
+              )}
+            </button>
+
             <Link
               href="/"
               className="md:hidden flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white font-black text-sm"

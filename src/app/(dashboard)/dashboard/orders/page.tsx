@@ -318,34 +318,50 @@ export default function CounterOrdersPage() {
   return (
     <div className="space-y-4">
       {/* Header Banner + Mode Switcher (POS Terminal vs Kitchen/Table Orders) */}
-      <div className="rounded-3xl bg-slate-900 text-white p-4 sm:p-5 shadow-md flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 min-w-0">
+      <div className="rounded-3xl bg-slate-900 text-white p-4 sm:p-5 shadow-md space-y-3.5">
+        {/* Top Row: Title & Revenue Summary + Primary Mode Switcher */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-black tracking-tight text-white">
+              {workspaceMode === 'pos_terminal'
+                ? `Máy POS Thu Ngân Tại Quầy • ${activeShop.name}`
+                : `Đơn Hàng Tại Bàn & Quầy • ${activeShop.name}`}
+            </h1>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Doanh thu hôm nay:{' '}
+              <strong className="text-emerald-400 font-black">
+                {formatCurrency(todayRevenue, activeShop.currency)}
+              </strong>{' '}
+              • Hoàn tất: <strong className="text-white">{completedOrders.length} đơn</strong>
+            </p>
+          </div>
+
           {/* Primary Workspace Mode Tabs */}
-          <div className="inline-flex rounded-2xl bg-slate-800 p-1 border border-slate-700 shrink-0">
+          <div className="inline-flex flex-wrap rounded-2xl bg-slate-800 p-1 border border-slate-700 shrink-0 self-start lg:self-auto">
             <button
               type="button"
               onClick={() => switchWorkspaceMode('pos_terminal')}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
                 workspaceMode === 'pos_terminal'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              <Monitor className="h-4 w-4" />
+              <Monitor className="h-4 w-4 shrink-0" />
               <span>Màn Hình POS Bán Hàng Tại Quầy</span>
             </button>
 
             <button
               type="button"
               onClick={() => switchWorkspaceMode('kitchen_orders')}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition-all ${
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
                 workspaceMode === 'kitchen_orders'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
                   : 'text-slate-300 hover:text-white'
               }`}
             >
               <BellRing
-                className={`h-4 w-4 ${
+                className={`h-4 w-4 shrink-0 ${
                   newOrders.length > 0 ? 'animate-bounce text-amber-300' : ''
                 }`}
               />
@@ -359,110 +375,100 @@ export default function CounterOrdersPage() {
               )}
             </button>
           </div>
-
-          <div className="min-w-0">
-            <h1 className="text-base sm:text-lg font-black tracking-tight truncate">
-              {workspaceMode === 'pos_terminal'
-                ? `Máy POS Thu Ngân Tại Quầy • ${activeShop.name}`
-                : `Đơn Hàng Tại Bàn & Quầy • ${activeShop.name}`}
-            </h1>
-            <p className="text-[11px] text-slate-400 truncate">
-              Doanh thu hôm nay:{' '}
-              <strong className="text-emerald-400">
-                {formatCurrency(todayRevenue, activeShop.currency)}
-              </strong>{' '}
-              • Hoàn tất: {completedOrders.length} đơn
-            </p>
-          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setAutoPrintOnPay((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
-              autoPrintOnPay
-                ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
-                : 'border-slate-700 bg-slate-800 text-slate-400'
-            }`}
-            title="Tự động bật cửa sổ in hóa đơn ngay sau khi xác nhận thanh toán"
-          >
-            <Printer className="h-4 w-4" />
-            <span>In bill khi thu tiền: {autoPrintOnPay ? 'BẬT' : 'TẮT'}</span>
-          </button>
-
-          <div className="inline-flex items-center rounded-2xl border border-emerald-500/40 bg-slate-800/90 p-0.5">
+        {/* Bottom Row: Utility Controls & Quick Actions */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => {
-                const nextEnabled = !chimeSettings.enabled;
-                const next = { ...chimeSettings, enabled: nextEnabled };
-                updateChimeSettings({ enabled: nextEnabled });
-                if (nextEnabled) playOrderAlertChime(next);
-              }}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
-                chimeSettings.enabled
-                  ? 'bg-emerald-500/20 text-emerald-300'
-                  : 'text-slate-400 hover:text-white'
+              onClick={() => setAutoPrintOnPay((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
+                autoPrintOnPay
+                  ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
+                  : 'border-slate-700 bg-slate-800 text-slate-400'
               }`}
+              title="Tự động bật cửa sổ in hóa đơn ngay sau khi xác nhận thanh toán"
             >
-              {chimeSettings.enabled ? (
-                <>
-                  <Volume2 className="h-4 w-4 text-emerald-400" />
-                  <span>
-                    Chuông:{' '}
-                    {chimeSettings.volumePreset === 'max_boost'
-                      ? 'SIÊU TO'
-                      : chimeSettings.volumePreset === 'loud'
-                        ? 'TO'
-                        : 'BẬT'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <VolumeX className="h-4 w-4" />
-                  <span>Chuông: TẮT</span>
-                </>
-              )}
+              <Printer className="h-4 w-4" />
+              <span>In bill khi thu tiền: {autoPrintOnPay ? 'BẬT' : 'TẮT'}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setIsChimeModalOpen(true)}
-              className="inline-flex items-center gap-1 rounded-xl bg-slate-700/80 px-2.5 py-1.5 text-[11px] font-black text-amber-300 hover:bg-slate-700"
-              title="Đổi kiểu chuông báo & kích âm lượng lớn cho bếp/quầy"
+            <div className="inline-flex items-center rounded-2xl border border-emerald-500/40 bg-slate-800/90 p-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextEnabled = !chimeSettings.enabled;
+                  const next = { ...chimeSettings, enabled: nextEnabled };
+                  updateChimeSettings({ enabled: nextEnabled });
+                  if (nextEnabled) playOrderAlertChime(next);
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
+                  chimeSettings.enabled
+                    ? 'bg-emerald-500/20 text-emerald-300'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {chimeSettings.enabled ? (
+                  <>
+                    <Volume2 className="h-4 w-4 text-emerald-400" />
+                    <span>
+                      Chuông:{' '}
+                      {chimeSettings.volumePreset === 'max_boost'
+                        ? 'SIÊU TO'
+                        : chimeSettings.volumePreset === 'loud'
+                          ? 'TO'
+                          : 'BẬT'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <VolumeX className="h-4 w-4" />
+                    <span>Chuông: TẮT</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsChimeModalOpen(true)}
+                className="inline-flex items-center gap-1 rounded-xl bg-slate-700/80 px-2.5 py-1.5 text-[11px] font-black text-amber-300 hover:bg-slate-700"
+                title="Đổi kiểu chuông báo & kích âm lượng lớn cho bếp/quầy"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                <span>Kiểu chuông &amp; Độ lớn</span>
+              </button>
+            </div>
+
+            <Link
+              href="/dashboard/reports"
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
             >
-              <Settings className="h-3.5 w-3.5" />
-              <span>Kiểu chuông &amp; Độ lớn</span>
-            </button>
+              <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
+            </Link>
           </div>
 
-          <Link
-            href="/dashboard/reports"
-            className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
-          >
-            <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
-          </Link>
+          <div className="flex items-center gap-2">
+            {workspaceMode === 'kitchen_orders' && (
+              <button
+                type="button"
+                onClick={() => switchWorkspaceMode('pos_terminal')}
+                className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Tạo đơn nhanh tại quầy (POS)</span>
+              </button>
+            )}
 
-          {workspaceMode === 'kitchen_orders' && (
             <button
               type="button"
-              onClick={() => switchWorkspaceMode('pos_terminal')}
-              className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
+              onClick={() => fetchOrdersAndCatalog(false)}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white"
+              title="Làm mới"
             >
-              <Plus className="h-4 w-4" />
-              <span>Tạo đơn nhanh tại quầy (POS)</span>
+              <RefreshCw className="h-4 w-4" />
             </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => fetchOrdersAndCatalog(false)}
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white"
-            title="Làm mới"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
+          </div>
         </div>
       </div>
 

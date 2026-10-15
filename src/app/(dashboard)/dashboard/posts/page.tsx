@@ -73,6 +73,28 @@ export default function DashboardPostsPage() {
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
 
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('qlaok_right_preview_open');
+      if (saved === '0') setIsPreviewSidebarOpen(false);
+      else if (saved === '1') setIsPreviewSidebarOpen(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const togglePreviewSidebar = () => {
+    setIsPreviewSidebarOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('qlaok_right_preview_open', next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
   // 1. Discount & Banner Config
   const [promoBanner, setPromoBanner] = useState<ShopPromoBannerConfig>({
     enabled: true,
@@ -422,7 +444,7 @@ export default function DashboardPostsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => setIsPreviewSidebarOpen((prev) => !prev)}
+            onClick={togglePreviewSidebar}
             className={`inline-flex items-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-bold transition ${
               isPreviewSidebarOpen
                 ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
@@ -1356,7 +1378,7 @@ export default function DashboardPostsPage() {
           shop={previewShop}
           items={shopItems}
           isOpen={isPreviewSidebarOpen}
-          onToggle={() => setIsPreviewSidebarOpen((prev) => !prev)}
+          onToggle={togglePreviewSidebar}
           onOpenPopupPreview={() => setPreviewPopupOpen(true)}
           subtitle="Xem trực tiếp Banner, Giảm giá & Flash Sale trên màn hình khách"
         >

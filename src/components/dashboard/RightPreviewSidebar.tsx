@@ -1,12 +1,15 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Smartphone,
   ChevronRight,
   ChevronLeft,
   ExternalLink,
   Eye,
+  PanelRightClose,
+  PanelRightOpen,
+  X,
 } from 'lucide-react';
 import type { CatalogItem, Shop } from '@/types/qlaok';
 import { StorefrontPhonePreview } from '@/components/storefront/StorefrontCustomDecor';
@@ -30,6 +33,17 @@ export function RightPreviewSidebar({
   subtitle = 'Hiển thị trực tiếp theo cài đặt đang chỉnh sửa',
   children,
 }: RightPreviewSidebarProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onToggle();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onToggle]);
+
   return (
     <>
       {/* Mobile / Tablet Backdrop when drawer is open on smaller viewports */}
@@ -48,9 +62,9 @@ export function RightPreviewSidebar({
           title="Mở thanh xem trước màn hình khách (Slide-bar bên phải)"
           className="fixed right-0 top-24 z-40 flex items-center gap-2 rounded-l-2xl border border-r-0 border-emerald-500/40 bg-slate-950 px-3.5 py-3 text-xs font-black text-white shadow-2xl transition-all hover:bg-emerald-600 hover:pr-5"
         >
-          <ChevronLeft className="h-4 w-4 text-emerald-400" />
+          <PanelRightOpen className="h-4 w-4 text-emerald-400" />
           <Smartphone className="h-4 w-4 text-emerald-400" />
-          <span className="hidden sm:inline">Xem trước màn hình khách</span>
+          <span className="hidden sm:inline">Mở Preview Khách</span>
           <span className="sm:hidden">Preview</span>
         </button>
       )}
@@ -58,32 +72,35 @@ export function RightPreviewSidebar({
       {/* Docked Right Sidebar (Slide-bar bên phải) */}
       <aside
         aria-label="Xem trước màn hình khách"
-        className={`fixed inset-y-0 right-0 z-40 w-[355px] sm:w-[385px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : 'translate-x-full'
+        className={`fixed inset-y-0 right-0 z-40 w-[340px] sm:w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
+          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
       >
-        {/* Left-edge Handle Tab to Collapse Slide-bar */}
+        {/* Prominent Left-edge Handle Tab to Collapse Slide-bar */}
         {isOpen && (
           <button
             type="button"
             onClick={onToggle}
-            title="Thu gọn thanh xem trước"
-            className="hidden sm:flex absolute -left-9 top-24 h-16 w-9 items-center justify-center rounded-l-2xl border border-r-0 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 shadow-lg hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+            title="Thu gọn thanh xem trước bên phải (Phím tắt: Esc)"
+            className="flex absolute -left-10 top-24 z-50 flex-col items-center justify-center gap-1 rounded-l-2xl border border-r-0 border-slate-700 bg-slate-900 px-2 py-3 text-white shadow-xl hover:bg-emerald-600 transition-colors cursor-pointer"
           >
-            <ChevronRight className="h-5 w-5" />
+            <ChevronRight className="h-4 w-4 text-emerald-400" />
+            <span className="text-[9px] font-black uppercase tracking-tighter leading-none [writing-mode:vertical-rl]">
+              Thu gọn
+            </span>
           </button>
         )}
 
         {/* Right Sidebar Header */}
-        <div className="px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/90 flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="px-3.5 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
               <Eye className="h-4 w-4" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <h3 className="truncate text-xs font-black text-slate-900 dark:text-white">
-                  Live Preview • Màn hình khách
+                  Preview Khách
                 </h3>
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-black uppercase text-emerald-600 dark:text-emerald-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -110,11 +127,12 @@ export function RightPreviewSidebar({
             <button
               type="button"
               onClick={onToggle}
-              title="Thu gọn Slide-bar"
-              className="inline-flex items-center gap-1 rounded-xl bg-slate-200/80 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 transition"
+              title="Thu gọn thanh xem trước bên phải (Esc)"
+              className="inline-flex items-center gap-1 rounded-xl bg-slate-900 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-rose-600 transition cursor-pointer shadow-xs"
             >
-              <ChevronRight className="h-3.5 w-3.5" />
-              <span className=" sm:inline">Ẩn</span>
+              <PanelRightClose className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Thu gọn</span>
+              <X className="h-3 w-3 opacity-75" />
             </button>
           </div>
         </div>
@@ -135,3 +153,4 @@ export function RightPreviewSidebar({
     </>
   );
 }
+
