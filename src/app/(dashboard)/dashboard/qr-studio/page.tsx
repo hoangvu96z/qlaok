@@ -63,8 +63,8 @@ export default function DashboardQrStudioPage() {
               onClick={() => setAccentColor(c.hex)}
               className={`h-7 w-7 rounded-full border-2 transition-transform ${
                 accentColor === c.hex
-                  ? 'scale-110 border-slate-950 ring-2 ring-slate-300'
-                  : 'border-white shadow-xs'
+                  ? 'scale-110 border-emerald-500 ring-2 ring-emerald-400/60'
+                  : 'border-white/80 shadow-xs'
               }`}
               style={{ backgroundColor: c.hex }}
               title={c.label}
@@ -113,7 +113,7 @@ export default function DashboardQrStudioPage() {
               2. MÃ QR ĐẶT TẠI BÀN / GHẾ DỊCH VỤ (?src=table)
             </span>
             <p className="text-xs text-slate-500">
-              Khách ngồi vào bàn quét mở <strong>thẳng vào trang Menu / Bảng Giá 5 Ngôn Ngữ</strong> và thẻ &ldquo;Đưa Nhân Viên Xem&rdquo;
+              Khách ngồi vào bàn quét mở <strong>thẳng vào trang Menu / Bảng Giá 8 Ngôn Ngữ</strong> và gửi đơn trực tiếp xuống quầy/bếp
             </p>
           </div>
 

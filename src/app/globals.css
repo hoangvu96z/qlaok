@@ -16,35 +16,76 @@
   }
 }
 
-/* Automatic Dark Mode adaptation for standard dashboard cards & surfaces */
-html.dark .bg-white {
+/* Automatic Dark Mode adaptation for standard dashboard cards & surfaces (excluding .qr-light-surface) */
+html.dark .bg-white:not(.qr-light-surface):not(.qr-light-surface *):not(.keep-white-bg) {
   background-color: #0f172a !important;
 }
-html.dark .bg-slate-50 {
+html.dark .bg-slate-50:not(.qr-light-surface):not(.qr-light-surface *) {
   background-color: #020617 !important;
 }
-html.dark .bg-slate-100 {
+html.dark .bg-slate-100:not(.qr-light-surface):not(.qr-light-surface *) {
   background-color: #1e293b !important;
 }
-html.dark .border-slate-200,
-html.dark .border-slate-100,
-html.dark .border-slate-300 {
+html.dark .border-slate-200:not(.qr-light-surface):not(.qr-light-surface *),
+html.dark .border-slate-100:not(.qr-light-surface):not(.qr-light-surface *),
+html.dark .border-slate-300:not(.qr-light-surface):not(.qr-light-surface *) {
   border-color: #1e293b !important;
 }
 html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
 html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
   border-color: #1e293b !important;
 }
-html.dark .text-slate-900,
-html.dark .text-slate-800 {
+html.dark .text-slate-900:not(.qr-light-surface):not(.qr-light-surface *):not(.keep-dark-text),
+html.dark .text-slate-800:not(.qr-light-surface):not(.qr-light-surface *):not(.keep-dark-text) {
   color: #f8fafc !important;
 }
-html.dark .text-slate-700,
-html.dark .text-slate-600 {
+html.dark .text-slate-700:not(.qr-light-surface):not(.qr-light-surface *),
+html.dark .text-slate-600:not(.qr-light-surface):not(.qr-light-surface *) {
   color: #cbd5e1 !important;
 }
-html.dark .text-slate-500 {
+html.dark .text-slate-500:not(.qr-light-surface):not(.qr-light-surface *) {
   color: #94a3b8 !important;
+}
+
+/* Ensure dark slate buttons/tabs inside dark cards remain clearly visible in Dark Mode */
+html.dark button.bg-slate-900,
+html.dark a.bg-slate-900 {
+  background-color: #1e293b !important;
+  border: 1px solid #475569 !important;
+  color: #f8fafc !important;
+}
+html.dark button.bg-slate-900:hover,
+html.dark a.bg-slate-900:hover {
+  background-color: #334155 !important;
+}
+
+/* QR Code & Printable Standee Surface: MUST ALWAYS stay pure white (#ffffff) with dark foreground so cameras can scan in Dark Mode */
+.qr-light-surface {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+.qr-light-surface .bg-white {
+  background-color: #ffffff !important;
+}
+.qr-light-surface .bg-slate-50,
+.qr-light-surface .bg-slate-100 {
+  background-color: #f1f5f9 !important;
+}
+.qr-light-surface .text-slate-900,
+.qr-light-surface .text-slate-800 {
+  color: #0f172a !important;
+}
+.qr-light-surface .text-slate-700,
+.qr-light-surface .text-slate-600 {
+  color: #475569 !important;
+}
+.qr-light-surface .text-slate-500,
+.qr-light-surface .text-slate-400 {
+  color: #64748b !important;
+}
+.qr-light-surface .border-slate-200,
+.qr-light-surface .border-slate-100 {
+  border-color: #e2e8f0 !important;
 }
 
 /* Automatic Light Mode adaptation for pages that used slate-950/slate-900 dark containers (/admin, /login, /onboarding) */
@@ -59,18 +100,22 @@ html:not(.dark) .theme-surface-page .bg-slate-900,
 html:not(.dark) .theme-surface-page .bg-slate-900\/90 {
   background-color: #ffffff !important;
 }
-html:not(.dark) .theme-surface-page .bg-slate-800 {
+html:not(.dark) .theme-surface-page .bg-slate-800,
+html:not(.dark) .theme-surface-page .bg-slate-800\/90,
+html:not(.dark) .theme-surface-page .bg-slate-800\/70,
+html:not(.dark) .theme-surface-page .bg-slate-800\/60 {
   background-color: #f1f5f9 !important;
 }
 html:not(.dark) .theme-surface-page .border-slate-800,
-html:not(.dark) .theme-surface-page .border-slate-700 {
+html:not(.dark) .theme-surface-page .border-slate-700,
+html:not(.dark) .theme-surface-page .border-slate-700\/80 {
   border-color: #e2e8f0 !important;
 }
 html:not(.dark) .theme-surface-page .divide-slate-800\/70 > :not([hidden]) ~ :not([hidden]),
 html:not(.dark) .theme-surface-page .divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
   border-color: #e2e8f0 !important;
 }
-html:not(.dark) .theme-surface-page .text-white,
+html:not(.dark) .theme-surface-page .text-white:not([class*="bg-emerald-"]):not([class*="bg-rose-"]):not([class*="bg-blue-"]):not([class*="bg-indigo-"]):not([class*="bg-amber-"]):not([class*="from-"]),
 html:not(.dark) .theme-surface-page .text-slate-100,
 html:not(.dark) .theme-surface-page .text-slate-200 {
   color: #0f172a !important;

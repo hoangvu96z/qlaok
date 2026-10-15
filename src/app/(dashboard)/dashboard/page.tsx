@@ -209,12 +209,15 @@ export default function DashboardOverviewPage() {
                   : 'Bán lẻ & Đặc sản'}
             </span>
           </div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
+          <h1
+            style={{ color: '#ffffff' }}
+            className="text-xl sm:text-2xl font-black tracking-tight text-white"
+          >
             {activeShop.name}
           </h1>
           <p className="text-xs sm:text-sm text-emerald-100">
             Đường dẫn QR:{' '}
-            <code className="rounded bg-black/25 px-2 py-0.5 font-mono text-amber-300">
+            <code className="rounded bg-black/30 px-2 py-0.5 font-mono text-amber-300">
               qlaok.vn/s/{activeShop.slug}
             </code>
           </p>
@@ -223,7 +226,8 @@ export default function DashboardOverviewPage() {
         <div className="flex flex-wrap items-center gap-2.5">
           <Link
             href="/dashboard/orders"
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-amber-400 px-4 py-2.5 text-xs font-black text-slate-950 shadow-md hover:bg-amber-300"
+            style={{ backgroundColor: '#fbbf24', color: '#020617' }}
+            className="inline-flex items-center gap-1.5 rounded-2xl bg-amber-400 px-4 py-2.5 text-xs font-black text-slate-950 shadow-md hover:bg-amber-300 transition-transform active:scale-95"
           >
             <BellRing className="h-4 w-4" />
             <span>
@@ -235,16 +239,22 @@ export default function DashboardOverviewPage() {
           </Link>
           <Link
             href="/dashboard/ai-scanner"
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-900 shadow-md hover:bg-emerald-50"
+            style={{ backgroundColor: '#ffffff', color: '#064e3b' }}
+            className="keep-white-bg keep-dark-text inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-950 shadow-md hover:bg-emerald-50 border border-emerald-200 transition-transform active:scale-95"
           >
-            <ScanLine className="h-4 w-4" />
+            <ScanLine className="h-4 w-4 text-emerald-700" />
             <span>Quét Menu Giấy AI</span>
           </Link>
           <Link
             href="/dashboard/qr-studio"
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-black/25 hover:bg-black/35 border border-white/20 px-4 py-2.5 text-xs font-bold text-white"
+            style={{
+              backgroundColor: 'rgba(16, 185, 129, 0.25)',
+              color: '#ffffff',
+              borderColor: 'rgba(167, 243, 208, 0.65)',
+            }}
+            className="inline-flex items-center gap-1.5 rounded-2xl border-2 px-4 py-2.5 text-xs font-black text-white shadow-md hover:opacity-90 transition-transform active:scale-95"
           >
-            <QrCode className="h-4 w-4" />
+            <QrCode className="h-4 w-4 text-emerald-200" />
             <span>In QR Bàn</span>
           </Link>
         </div>
@@ -909,12 +919,12 @@ export default function DashboardOverviewPage() {
                   Biểu Đồ Ngôn Ngữ Khách Quét QR
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Tỷ lệ khách Việt Nam &amp; Quốc tế (Anh, Hàn, Nhật, Trung)
+                  Tỷ lệ khách Việt Nam &amp; Quốc tế (Anh, Hàn, Nhật, Trung, TBN, Ý, Nga)
                 </p>
               </div>
             </div>
             <span className="text-xs font-semibold text-slate-400">
-              5 ngôn ngữ
+              8 ngôn ngữ
             </span>
           </div>
 

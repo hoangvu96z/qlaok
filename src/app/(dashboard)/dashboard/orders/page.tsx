@@ -729,7 +729,10 @@ export default function CounterOrdersPage() {
               </p>
             </div>
 
-            <div className="mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center">
+            <div
+              style={{ backgroundColor: '#ffffff' }}
+              className="qr-light-surface mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center"
+            >
               <img
                 src={`https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${qrOrderModal.total_amount}&addInfo=${encodeURIComponent(`QLAOK ${qrOrderModal.order_code}`)}&accountName=${encodeURIComponent(activeShop.name)}`}
                 alt="VietQR Order Payment"

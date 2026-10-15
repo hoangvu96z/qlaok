@@ -227,7 +227,10 @@ export default function DashboardBillingPage() {
       {activeOrder && (
         <div className="rounded-3xl border-2 border-emerald-500 bg-white p-6 shadow-xl space-y-5">
           <div className="flex flex-col md:flex-row items-center gap-6">
-            <div className="shrink-0 rounded-2xl border border-slate-200 p-3 bg-white shadow-md">
+            <div
+              style={{ backgroundColor: '#ffffff' }}
+              className="qr-light-surface shrink-0 rounded-2xl border border-slate-200 p-3 bg-white shadow-md"
+            >
               <img
                 src={`https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${activeOrder.amount}&addInfo=${activeOrder.order_code}&accountName=QLAOK%20SAAS`}
                 alt="VietQR Payment"

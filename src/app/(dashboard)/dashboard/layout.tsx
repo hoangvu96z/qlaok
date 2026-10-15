@@ -225,7 +225,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         : 'bg-slate-200 text-slate-700';
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 theme-surface-page flex flex-col md:flex-row">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col md:flex-row">
       {/* Global Floating New Order Toast Notification */}
       {liveToastOrder && (
         <div className="fixed top-4 right-4 z-50 w-full max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce">
@@ -270,18 +270,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-slate-900 text-white border-r border-slate-800">
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+      {/* Desktop Sidebar - Clean Light & Dark Mode High Contrast */}
+      <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-r border-slate-200 dark:border-slate-800">
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-black text-lg">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-black text-lg shadow-xs">
               Q
             </div>
             <div>
-              <span className="block text-base font-black tracking-tight">
+              <span className="block text-base font-black tracking-tight text-slate-900 dark:text-white">
                 Qlaok mPOS
               </span>
-              <span className="block text-[10px] text-slate-400">
+              <span className="block text-[10px] text-slate-500 dark:text-slate-400">
                 Quét là OK • Quản trị &amp; Thu ngân
               </span>
             </div>
@@ -295,14 +295,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Store Selector */}
-        <div className="p-3.5 border-b border-slate-800 space-y-2">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+        <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 space-y-2">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
             Cửa hàng đang quản lý
           </label>
           <select
             value={activeShop?.id || ''}
             onChange={(e) => selectShop(e.target.value)}
-            className="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2 text-xs font-bold text-white focus:border-emerald-500 focus:outline-none"
+            className="w-full rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-none"
           >
             {shops.map((s) => (
               <option key={s.id} value={s.id}>
@@ -323,7 +323,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                   href={`/s/${activeShop.slug}?src=door`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1 rounded-lg bg-slate-800/90 hover:bg-slate-800 px-2 py-1.5 text-[11px] font-semibold text-emerald-400 border border-slate-700/80"
+                  className="flex items-center justify-center gap-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-slate-700"
                 >
                   <ExternalLink className="h-3 w-3" />
                   <span>QR Cửa</span>
@@ -332,7 +332,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                   href={`/s/${activeShop.slug}/menu?src=table`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1 rounded-lg bg-slate-800/90 hover:bg-slate-800 px-2 py-1.5 text-[11px] font-semibold text-amber-400 border border-slate-700/80"
+                  className="flex items-center justify-center gap-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-slate-800 dark:hover:bg-slate-700 px-2 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700"
                 >
                   <ExternalLink className="h-3 w-3" />
                   <span>QR Bàn</span>
@@ -358,7 +358,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 className={`flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-all ${
                   active
                     ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -381,7 +381,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-800 space-y-2">
+        <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
           {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
             <button
               type="button"
@@ -398,20 +398,20 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
           <Link
             href="/onboarding"
-            className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-400 hover:bg-emerald-500/20"
+            className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20"
           >
             <PlusCircle className="h-4 w-4" />
             <span>Tạo cửa hàng mới</span>
           </Link>
 
-          <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-800/70 px-3 py-2 border border-slate-800">
+          <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 px-3 py-2 border border-slate-200 dark:border-slate-800">
             <div className="flex items-center gap-2 min-w-0">
-              <UserCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+              <UserCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               <div className="min-w-0">
-                <p className="truncate text-[11px] font-bold text-white">
+                <p className="truncate text-[11px] font-bold text-slate-900 dark:text-white">
                   {profile?.full_name || 'Chủ Quán Qlaok'}
                 </p>
-                <p className="truncate text-[10px] text-slate-400">
+                <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
                   {authEmail || profile?.email || 'chuquan@qlaok.vn'}
                 </p>
               </div>
@@ -420,7 +420,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={handleLogout}
               title="Đăng xuất"
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-700 hover:text-rose-400 transition-colors"
+              className="rounded-lg p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
             >
               <LogOut className="h-4 w-4" />
             </button>

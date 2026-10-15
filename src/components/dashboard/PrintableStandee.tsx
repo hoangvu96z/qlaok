@@ -69,15 +69,16 @@ export function PrintableStandee({
 
   return (
     <div className="flex flex-col items-center space-y-4">
-      {/* Printable A6 Standee Card */}
+      {/* Printable A6 Standee Card - ALWAYS pure white (#ffffff) even in Dark Mode so cameras can scan QR reliably */}
       <div
         ref={standeeRef}
-        className="w-full max-w-[340px] rounded-3xl bg-white p-6 shadow-xl border-2 border-slate-200 flex flex-col items-center text-center relative overflow-hidden"
+        style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
+        className="qr-light-surface w-full max-w-[340px] rounded-3xl bg-white p-6 shadow-xl border-2 border-slate-200 flex flex-col items-center text-center relative overflow-hidden"
       >
         {/* Top Accent Header */}
         <div
           className="w-full rounded-2xl px-4 py-3 text-white shadow-sm mb-4"
-          style={{ backgroundColor: primaryColor }}
+          style={{ backgroundColor: primaryColor, color: '#ffffff' }}
         >
           <p className="text-[10px] font-extrabold uppercase tracking-widest opacity-90">
             {qrType === 'door'
@@ -89,9 +90,12 @@ export function PrintableStandee({
           </h3>
         </div>
 
-        {/* 5-Language Scan Invitation */}
+        {/* 8-Language Scan Invitation */}
         <div className="space-y-1.5 mb-4">
-          <p className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-slate-900">
+          <p
+            style={{ color: '#0f172a' }}
+            className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-slate-900"
+          >
             <FlagIcon locale="vi" className="h-3.5 w-5" />
             <span>
               {qrType === 'door'
@@ -99,34 +103,55 @@ export function PrintableStandee({
                 : 'QUÉT MÃ XEM MENU / BẢNG GIÁ ĐA NGÔN NGỮ'}
             </span>
           </p>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600">
+          <div
+            style={{ color: '#475569' }}
+            className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600"
+          >
             <span className="inline-flex items-center gap-1">
               <FlagIcon locale="en" className="h-3 w-4" />
-              <span>Scan for English Menu</span>
+              <span>English Menu</span>
             </span>
             <span>•</span>
             <span className="inline-flex items-center gap-1">
               <FlagIcon locale="ko" className="h-3 w-4" />
-              <span>한국어 메뉴 스캔</span>
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600">
-            <span className="inline-flex items-center gap-1">
-              <FlagIcon locale="ja" className="h-3 w-4" />
-              <span>日本語メニュー</span>
+              <span>한국어 메뉴</span>
             </span>
             <span>•</span>
             <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="ja" className="h-3 w-4" />
+              <span>日本語</span>
+            </span>
+          </div>
+          <div
+            style={{ color: '#475569' }}
+            className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-600"
+          >
+            <span className="inline-flex items-center gap-1">
               <FlagIcon locale="zh" className="h-3 w-4" />
-              <span>扫码查看中文菜单</span>
+              <span>中文</span>
+            </span>
+            <span>•</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="es" className="h-3 w-4" />
+              <span>Español</span>
+            </span>
+            <span>•</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="it" className="h-3 w-4" />
+              <span>Italiano</span>
+            </span>
+            <span>•</span>
+            <span className="inline-flex items-center gap-1">
+              <FlagIcon locale="ru" className="h-3 w-4" />
+              <span>Русский</span>
             </span>
           </div>
         </div>
 
-        {/* QR Code Frame */}
+        {/* QR Code Frame - Strictly White Quiet Zone (#ffffff) + Dark Modules (#0f172a) */}
         <div
-          className="rounded-3xl p-4 bg-white shadow-md border-4 mb-4"
-          style={{ borderColor: primaryColor }}
+          className="qr-light-surface rounded-3xl p-4 bg-white shadow-md border-4 mb-4"
+          style={{ borderColor: primaryColor, backgroundColor: '#ffffff' }}
         >
           <QRCodeCanvas
             value={targetUrl}
@@ -140,28 +165,47 @@ export function PrintableStandee({
 
         {/* Optional Wi-Fi Box inside Standee */}
         {showWifi && shop.wifi_info?.ssid && (
-          <div className="w-full rounded-2xl bg-slate-100 px-3.5 py-2.5 mb-3 flex items-center justify-between text-left border border-slate-200">
+          <div
+            style={{ backgroundColor: '#f1f5f9', borderColor: '#e2e8f0' }}
+            className="w-full rounded-2xl bg-slate-100 px-3.5 py-2.5 mb-3 flex items-center justify-between text-left border border-slate-200"
+          >
             <div className="flex items-center gap-2 min-w-0">
               <Wifi className="h-4 w-4 shrink-0 text-emerald-600" />
               <div className="min-w-0">
-                <p className="truncate text-[11px] font-bold text-slate-900">
+                <p
+                  style={{ color: '#0f172a' }}
+                  className="truncate text-[11px] font-bold text-slate-900"
+                >
                   Wi-Fi: {shop.wifi_info.ssid}
                 </p>
                 {shop.wifi_info.password && (
-                  <p className="truncate text-[10px] font-mono text-slate-600">
+                  <p
+                    style={{ color: '#475569' }}
+                    className="truncate text-[10px] font-mono text-slate-600"
+                  >
                     Pass: <strong>{shop.wifi_info.password}</strong>
                   </p>
                 )}
               </div>
             </div>
-            <span className="shrink-0 rounded-md bg-white px-2 py-0.5 text-[9px] font-bold text-slate-600 border border-slate-200">
+            <span
+              style={{
+                backgroundColor: '#ffffff',
+                color: '#475569',
+                borderColor: '#e2e8f0',
+              }}
+              className="shrink-0 rounded-md bg-white px-2 py-0.5 text-[9px] font-bold text-slate-600 border border-slate-200"
+            >
               FREE
             </span>
           </div>
         )}
 
         {/* Footer Branding */}
-        <div className="w-full flex items-center justify-between border-t border-slate-100 pt-2.5 text-[10px] font-bold text-slate-400">
+        <div
+          style={{ borderColor: '#f1f5f9', color: '#94a3b8' }}
+          className="w-full flex items-center justify-between border-t border-slate-100 pt-2.5 text-[10px] font-bold text-slate-400"
+        >
           <span>Powered by Qlaok.vn</span>
           <span>Quét là OK ✨</span>
         </div>
@@ -173,8 +217,12 @@ export function PrintableStandee({
           type="button"
           onClick={handleDownloadPng}
           disabled={downloading}
-          style={{ backgroundColor: primaryColor }}
-          className="flex-1 flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-bold text-white shadow-md hover:opacity-95 active:scale-95"
+          style={{
+            backgroundColor:
+              primaryColor === '#0f172a' ? '#10b981' : primaryColor,
+            color: '#ffffff',
+          }}
+          className="flex-1 flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-bold text-white shadow-md hover:opacity-95 active:scale-95 border border-white/20"
         >
           <Download className="h-4 w-4" />
           <span>
