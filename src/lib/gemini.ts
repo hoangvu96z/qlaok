@@ -58,7 +58,7 @@ export async function call9RouterJson<T>(
       messages,
       temperature: 0.2,
     }),
-    signal: AbortSignal.timeout(65000),
+    signal: AbortSignal.timeout(25000),
   });
 
   if (!res.ok) {
@@ -502,9 +502,48 @@ export function getDemoOcrResult(vertical: BusinessVertical) {
   };
 }
 
+const OCR_DIACRITIC_RESTORE: Array<[RegExp, string]> = [
+  [/^ca\s*phe\s*den$/i, 'Cà Phê Đen'],
+  [/^ca\s*phe\s*sua$/i, 'Cà Phê Sữa'],
+  [/^bac\s*xiu$/i, 'Bạc Xỉu'],
+  [/^ca\s*phe\s*kem$/i, 'Cà Phê Kem'],
+  [/^ca\s*phe\s*trung$/i, 'Cà Phê Trứng'],
+  [/^sua\s*chua\s*ca\s*phe$/i, 'Sữa Chua Cà Phê'],
+  [/^cot\s*dua\s*ca\s*phe$/i, 'Cốt Dừa Cà Phê'],
+  [/^cot\s*dua\s*com\s*xanh$/i, 'Cốt Dừa Cốm Xanh'],
+  [/^(?:tra\s*)?vai$/i, 'Trà Vải'],
+  [/^(?:tra\s*)?gung$/i, 'Trà Gừng'],
+  [/^(?:tra\s*)?dao\s*cam\s*sa$/i, 'Trà Đào Cam Sả'],
+  [/^(?:tra\s*)?vai\s*hoa\s*hong$/i, 'Trà Vải Hoa Hồng'],
+  [/^(?:tra\s*)?chanh\s*sa\s*hat\s*dac$/i, 'Trà Chanh Sả Hạt Đác'],
+  [/^dau\s*tam\s*pha\s*le\s*tuyet$/i, 'Dâu Tằm Pha Lê Tuyết'],
+  [/^bo\s*ngon$/i, 'Sinh Tố Bơ Ngon'],
+  [/^xoai\s*xanh$/i, 'Xoài Xanh Đá Xay'],
+  [/^mang\s*cau$/i, 'Sinh Tố Mãng Cầu'],
+  [/^chanh\s*tuyet$/i, 'Chanh Tuyết'],
+  [/^viet\s*quat\s*da\s*xay$/i, 'Việt Quất Đá Xay'],
+];
+
+function normalizeOcrItemName(raw: string): string {
+  const cleaned = raw
+    .replace(/^[\d.)\s\-–•·]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const asciiKey = cleaned
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd');
+  for (const [pattern, replacement] of OCR_DIACRITIC_RESTORE) {
+    if (pattern.test(asciiKey)) {
+      return replacement;
+    }
+  }
+  return cleaned;
+}
+
 /**
- * Parses actual OCR text lines extracted by Tesseract when 9Router is offline or times out,
- * ensuring the user still gets the real items & prices read from their image rather than fake demo data.
+ * Parses actual OCR text lines (including multi-column lines where 2-3 items+prices appear on the same line)
+ * when the external AI service is offline or times out.
  */
 export function parseRawOcrTextFallback(
   rawText: string,
@@ -521,53 +560,63 @@ export function parseRawOcrTextFallback(
     name_i18n: I18nText;
     desc_i18n: I18nText;
   }> = [];
+  const seenKeys = new Set<string>();
 
   for (const line of lines) {
-    // Match lines ending with or containing price patterns like "35k", "35.000", "35,000", "150k", "35"
-    const priceMatch = line.match(
-      /^(.*?)\s*[-–.:]*\s*(\d{1,4}(?:[.,]\d{3})+|\d{1,4}\s*[kK]|\b\d{2,3}\b)\s*(?:đ|vnd|vnđ|d)?$/i
-    );
+    // Extract one or more "<item name> <price>" pairs per line (supports multi-column menus)
+    const pairRegex =
+      /([^\d\n]+?)\s*[-–.:]*\s*(\d{1,4}(?:[.,]\d{3})+|\d{1,4}\s*[kK]|\b\d{2,3}\b)\s*(?:đ|vnd|vnđ|d)?(?=\s|$)/gi;
+    const matches = Array.from(line.matchAll(pairRegex));
 
-    if (!priceMatch) continue;
-    const rawName = priceMatch[1].replace(/^\d+[.)\s-]+/, '').trim();
-    const rawPriceStr = priceMatch[2].trim().toLowerCase();
+    for (const m of matches) {
+      const rawName = normalizeOcrItemName(m[1] || '');
+      const rawPriceStr = (m[2] || '').trim().toLowerCase();
 
-    if (rawName.length < 2 || /^\d+$/.test(rawName)) continue;
+      if (rawName.length < 2 || /^\d+$/.test(rawName)) continue;
 
-    let price = 0;
-    if (rawPriceStr.endsWith('k')) {
-      price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10) * 1000;
-    } else if (/[.,]\d{3}/.test(rawPriceStr)) {
-      price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10);
-    } else {
-      const n = parseInt(rawPriceStr, 10);
-      price = n > 0 && n < 1000 ? n * 1000 : n;
+      let price = 0;
+      if (rawPriceStr.endsWith('k')) {
+        price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10) * 1000;
+      } else if (/[.,]\d{3}/.test(rawPriceStr)) {
+        price = parseInt(rawPriceStr.replace(/[^\d]/g, ''), 10);
+      } else {
+        const n = parseInt(rawPriceStr, 10);
+        price = n > 0 && n < 1000 ? n * 1000 : n;
+      }
+
+      if (!price || price < 1000) continue;
+
+      const dedupeKey = `${rawName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/gi, 'd')
+        .toLowerCase()}-${price}`;
+      if (seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
+
+      const translated = smartFallbackTranslate({
+        vertical,
+        itemNameVi: rawName,
+      });
+
+      items.push({
+        price,
+        duration_mins: vertical === 'service' ? 60 : null,
+        name_i18n: translated.name_i18n,
+        desc_i18n: translated.desc_i18n,
+      });
     }
-
-    if (!price || price < 1000) continue;
-
-    const translated = smartFallbackTranslate({
-      vertical,
-      itemNameVi: rawName,
-    });
-
-    items.push({
-      price,
-      duration_mins: vertical === 'service' ? 60 : null,
-      name_i18n: translated.name_i18n,
-      desc_i18n: translated.desc_i18n,
-    });
   }
 
   return {
     categories: [
       {
         name_i18n: {
-          vi: 'Thực Đơn Quét Từ Ảnh (OCR)',
-          en: 'Scanned Menu Items (OCR)',
-          ko: '이미지 스캔 메뉴 (OCR)',
-          ja: 'スキャンされたメニュー (OCR)',
-          zh: '图片扫描菜单 (OCR)',
+          vi: 'Thực Đơn Quét Tự Động',
+          en: 'Scanned Menu Items',
+          ko: '스캔된 메뉴',
+          ja: 'スキャンされたメニュー',
+          zh: '自动扫描菜单',
         },
         items,
       },

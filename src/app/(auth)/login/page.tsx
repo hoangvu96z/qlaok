@@ -171,7 +171,7 @@ function LoginFormContent() {
       if (mode === 'otp') {
         const supabase = createClient();
         if (!supabase) {
-          throw new Error('Supabase Auth chưa được cấu hình.');
+          throw new Error('Tính năng đăng nhập OTP chưa được kích hoạt.');
         }
 
         if (!otpSent) {
@@ -252,7 +252,7 @@ function LoginFormContent() {
           {supabaseEnabled && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-bold text-emerald-400">
               <CheckCircle2 className="h-3 w-3" />
-              Supabase Auth &amp; PostgreSQL Connected
+              Bảo mật &amp; Đồng bộ Thời gian thực
             </span>
           )}
         </div>
@@ -416,7 +416,7 @@ function LoginFormContent() {
           >
             <span>
               {loading
-                ? 'Đang xử lý với Supabase...'
+                ? 'Đang xác thực tài khoản...'
                 : mode === 'password_login'
                   ? 'Đăng nhập vào Quản trị Quán'
                   : mode === 'register'

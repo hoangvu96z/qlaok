@@ -5,6 +5,7 @@ import {
   getAiConfig,
   getDemoOcrResult,
   parseRawOcrTextFallback,
+  smartFallbackTranslate,
 } from '@/lib/gemini';
 import { BusinessVertical, I18nText } from '@/types/qlaok';
 
@@ -15,7 +16,7 @@ interface OcrAiResponse {
       price: number;
       duration_mins?: number | null;
       name_i18n: I18nText;
-      desc_i18n: I18nText;
+      desc_i18n?: I18nText;
     }>;
   }>;
 }
@@ -44,13 +45,13 @@ export async function POST(req: Request) {
       const demoData = getDemoOcrResult(vertical);
       return NextResponse.json({
         ...demoData,
-        provider: 'local-demo-ocr',
+        provider: 'demo-ocr',
       });
     }
 
     extractedText = (rawOcrText || '').trim();
 
-    // If client did not send pre-extracted OCR text, run Tesseract OCR on the server from imageBase64
+    // If client did not send pre-extracted OCR text, run OCR on the server from imageBase64
     if (!extractedText && imageBase64) {
       const base64Clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       const imageBuffer = Buffer.from(base64Clean, 'base64');
@@ -62,7 +63,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            'Không nhận diện được chữ trên ảnh. Vui lòng chọn ảnh chụp rõ chữ hơn hoặc chỉnh sửa văn bản OCR bên dưới.',
+            'Không nhận diện được chữ trên ảnh. Vui lòng chọn ảnh chụp rõ chữ hơn hoặc chỉnh sửa văn bản bên dưới.',
         },
         { status: 400 }
       );
@@ -74,33 +75,30 @@ export async function POST(req: Request) {
       return NextResponse.json({
         ...fallbackParsed,
         rawOcrText: extractedText,
-        provider: 'tesseract-local-dictionary',
+        provider: 'local-dictionary',
       });
     }
 
-    const prompt = `Hãy đọc hình ảnh menu / bảng giá đính kèm (cùng văn bản OCR hỗ trợ bên dưới) của cửa hàng thuộc lĩnh vực "${vertical}":
+    const prompt = `Đọc thực đơn/bảng giá thuộc lĩnh vực "${vertical}" từ văn bản OCR (và ảnh nếu có) bên dưới:
 """
 ${extractedText}
 """
 
-Nhiệm vụ của bạn:
-1. Kết hợp hình ảnh và văn bản OCR ở trên, tự động sửa các lỗi nhận diện ký tự hoặc mất dấu tiếng Việt nhẹ.
-2. Phân loại thành danh mục (categories) và danh sách các món/dịch vụ (items). Nếu văn bản không ghi rõ tên danh mục, hãy tự đặt tên danh mục phù hợp với các món.
-3. Quy tắc xử lý giá tiền:
-   - Nếu giá trên menu ghi dạng rút gọn như "35k", "35.000", "35,000", hoặc "35", hãy quy đổi chuẩn về số nguyên VNĐ là 35000.
-   - Nếu một dòng món ăn không có giá rõ ràng, hãy ước lượng mức giá hợp lý hoặc đặt 0 để chủ quán sửa lại.
-4. Dịch tên danh mục, tên món và viết 1 câu mô tả ngắn hấp dẫn sang đủ 5 ngôn ngữ: Tiếng Việt (vi), Tiếng Anh (en), Tiếng Hàn (ko), Tiếng Nhật (ja), và Tiếng Trung Giản Thể (zh).
-5. CHỈ TRẢ VỀ JSON hợp lệ theo cấu trúc:
+Yêu cầu bắt buộc:
+1. Nếu thực đơn có nhiều cột khiến 1 dòng OCR chứa 2-3 món + giá liền nhau (ví dụ: "CA PHE DEN 25K VAI 25K"), hãy TÁCH RIÊNG từng món và giá tương ứng, đồng thời loại bỏ món bị lặp.
+2. Khôi phục chuẩn dấu Tiếng Việt cho tên danh mục và tên món (ví dụ: "CA PHE DEN" -> "Cà Phê Đen", "BAC XIU" -> "Bạc Xỉu", "DAO CAM SA" -> "Trà Đào Cam Sả").
+3. Quy đổi giá tiền về số nguyên VNĐ (ví dụ: "25K", "25.000", "25" -> 25000).
+4. Dịch tên danh mục và tên món sang 5 ngôn ngữ: vi, en, ko, ja, zh.
+5. CHỈ TRẢ VỀ JSON gọn nhẹ đúng cấu trúc sau (không giải thích thêm):
 {
   "categories": [
     {
       "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
       "items": [
         {
-          "price": 35000,
+          "price": 25000,
           "duration_mins": null,
-          "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." },
-          "desc_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." }
+          "name_i18n": { "vi": "...", "en": "...", "ko": "...", "ja": "...", "zh": "..." }
         }
       ]
     }
@@ -132,23 +130,56 @@ Nhiệm vụ của bạn:
     );
 
     if (!parsed?.categories || !Array.isArray(parsed.categories)) {
-      throw new Error('Invalid OCR categories structure from 9router AI');
+      throw new Error('Invalid OCR categories structure');
+    }
+
+    // Ensure every extracted item has complete 5-language desc_i18n
+    const enrichedCategories = parsed.categories
+      .map((cat) => ({
+        name_i18n: cat.name_i18n,
+        items: (cat.items || []).map((item) => {
+          const fallback = smartFallbackTranslate({
+            vertical,
+            itemNameVi: item.name_i18n?.vi || 'Món đặc trưng',
+          });
+          return {
+            price: Number(item.price) || 0,
+            duration_mins:
+              item.duration_mins ?? (vertical === 'service' ? 60 : null),
+            name_i18n: {
+              vi: item.name_i18n?.vi || fallback.name_i18n.vi,
+              en: item.name_i18n?.en || fallback.name_i18n.en,
+              ko: item.name_i18n?.ko || fallback.name_i18n.ko,
+              ja: item.name_i18n?.ja || fallback.name_i18n.ja,
+              zh: item.name_i18n?.zh || fallback.name_i18n.zh,
+            },
+            desc_i18n:
+              item.desc_i18n && item.desc_i18n.vi
+                ? item.desc_i18n
+                : fallback.desc_i18n,
+          };
+        }),
+      }))
+      .filter((c) => c.items.length > 0);
+
+    if (enrichedCategories.length === 0) {
+      throw new Error('Empty OCR categories');
     }
 
     return NextResponse.json({
-      ...parsed,
+      categories: enrichedCategories,
       rawOcrText: extractedText,
-      provider: `9router-${aiConfig.visionModel}`,
+      provider: 'ai-vision',
     });
   } catch (error) {
-    console.error('9router OCR AI Error:', error);
+    console.error('OCR AI Error:', error);
     if (extractedText) {
       const parsedFromOcr = parseRawOcrTextFallback(extractedText, vertical);
       if (parsedFromOcr.categories[0]?.items.length > 0) {
         return NextResponse.json({
           ...parsedFromOcr,
           rawOcrText: extractedText,
-          provider: 'tesseract-ocr-local-parser',
+          provider: 'local-parser',
         });
       }
     }
@@ -156,7 +187,7 @@ Nhiệm vụ của bạn:
       {
         error:
           error instanceof Error
-            ? `Lỗi phân tích AI: ${error.message}`
+            ? `Lỗi phân tích thực đơn: ${error.message}`
             : 'Không thể phân tích văn bản thực đơn từ ảnh.',
         rawOcrText: extractedText,
       },

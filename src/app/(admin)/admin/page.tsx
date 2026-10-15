@@ -406,20 +406,20 @@ export default function SuperAdminPortalPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: aiTestInput.trim(),
-          context: 'Menu item name & description',
+          itemNameVi: aiTestInput.trim(),
+          vertical: 'fnb',
         }),
       });
       const json = await res.json();
       if (!res.ok) {
-        throw new Error(json.error || 'Lỗi gọi 9Router AI');
+        throw new Error(json.error || 'Lỗi dịch thuật tự động');
       }
-      setAiTestOutput(json.translations || json);
-      showToastMessage('success', '9Router AI dịch 5 ngôn ngữ thành công!');
+      setAiTestOutput(json.name_i18n || json.translations || json);
+      showToastMessage('success', 'Dịch tự động 5 ngôn ngữ thành công!');
     } catch (err) {
       showToastMessage(
         'error',
-        err instanceof Error ? err.message : 'Lỗi kết nối 9Router AI'
+        err instanceof Error ? err.message : 'Lỗi kết nối dịch thuật tự động'
       );
     } finally {
       setAiTestLoading(false);
@@ -605,7 +605,7 @@ export default function SuperAdminPortalPage() {
     },
     {
       id: 'system',
-      label: 'Hạ tầng & 9Router AI',
+      label: 'Trạng thái Hệ thống',
       icon: Cpu,
     },
   ];
@@ -631,7 +631,7 @@ export default function SuperAdminPortalPage() {
       )}
 
       {/* Left Sidebar */}
-      <aside className="w-full md:w-68 md:fixed md:inset-y-0 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col z-30">
+      <aside className="w-full md:w-64 md:fixed md:inset-y-0 bg-slate-900 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col z-30">
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-400 text-slate-950 font-black shadow-md">
@@ -726,7 +726,7 @@ export default function SuperAdminPortalPage() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 md:pl-68 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+      <main className="flex-1 md:pl-64 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
         {/* Top Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
           <div>
@@ -735,7 +735,7 @@ export default function SuperAdminPortalPage() {
                 👑 Super Admin Control Center
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
-                ● Supabase Live
+                ● Hệ thống Trực tuyến
               </span>
             </div>
             <h1 className="mt-1.5 text-xl sm:text-2xl font-black text-white">
@@ -1126,7 +1126,7 @@ export default function SuperAdminPortalPage() {
               >
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-black text-emerald-300">
-                    ➕ Cấp Tài Khoản Chủ Quán Mới Trên Supabase
+                    ➕ Cấp Tài Khoản Chủ Quán Mới
                   </h3>
                   <button
                     type="button"
@@ -1903,21 +1903,21 @@ export default function SuperAdminPortalPage() {
           </div>
         )}
 
-        {/* ==================== TAB 6: SYSTEM HEALTH & 9ROUTER AI ==================== */}
+        {/* ==================== TAB 6: SYSTEM HEALTH ==================== */}
         {activeTab === 'system' && data?.systemHealth && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Supabase DB Status */}
+              {/* Cloud DB Status */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <Database className="h-5 w-5 text-emerald-400" />
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        Supabase PostgreSQL Database
+                        Cơ Sở Dữ Liệu Đám Mây
                       </h3>
                       <p className="text-[11px] text-slate-400">
-                        {data.systemHealth.supabaseUrl}
+                        Đồng bộ thời gian thực cho toàn bộ cửa hàng
                       </p>
                     </div>
                   </div>
@@ -1959,29 +1959,22 @@ export default function SuperAdminPortalPage() {
                     }
                     className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"
                   >
-                    Re-seed Demo Data
+                    Khôi phục dữ liệu mẫu
                   </button>
                 </div>
               </div>
 
-              {/* 9Router AI Gateway Status & Live Tester */}
+              {/* AI Service Status & Live Tester */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <Cpu className="h-5 w-5 text-amber-400" />
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        9Router AI Gateway (OpenAI-Compatible)
+                        Hệ Thống Dịch Thuật &amp; Quét Thực Đơn Tự Động
                       </h3>
                       <p className="text-[11px] text-slate-400">
-                        Endpoint: {data.systemHealth.aiGatewayUrl} • Text:{' '}
-                        <strong className="text-amber-300">
-                          {data.systemHealth.aiTextModel}
-                        </strong>{' '}
-                        • Vision:{' '}
-                        <strong className="text-emerald-300">
-                          {data.systemHealth.aiVisionModel}
-                        </strong>
+                        Nhận diện thực đơn đa cột &amp; dịch tự động 5 ngôn ngữ (Việt, Anh, Hàn, Nhật, Trung)
                       </p>
                     </div>
                   </div>
