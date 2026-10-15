@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import imageCompression from 'browser-image-compression';
 import {
   Languages,
   Trash2,
@@ -8,6 +9,8 @@ import {
   Clock,
   Check,
   Package,
+  Camera,
+  Loader2,
 } from 'lucide-react';
 import { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
@@ -18,6 +21,7 @@ interface QuickItemRowProps {
   onToggleAvailable: (item: CatalogItem, nextAvailable: boolean) => Promise<void>;
   onUpdatePrice: (item: CatalogItem, nextPrice: number) => Promise<void>;
   onUpdateStock?: (item: CatalogItem, nextStock: number | null) => Promise<void>;
+  onUpdateImage?: (item: CatalogItem, nextImageUrl: string) => Promise<void>;
   onToggleFeatured: (item: CatalogItem, nextFeatured: boolean) => Promise<void>;
   onEditTranslations: (item: CatalogItem) => void;
   onDelete: (itemId: string) => Promise<void>;
@@ -28,6 +32,7 @@ export function QuickItemRow({
   onToggleAvailable,
   onUpdatePrice,
   onUpdateStock,
+  onUpdateImage,
   onToggleFeatured,
   onEditTranslations,
   onDelete,
@@ -35,6 +40,7 @@ export function QuickItemRow({
   const [priceInput, setPriceInput] = useState(String(item.price));
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const [stockInput, setStockInput] = useState(
     item.stock_quantity === null || item.stock_quantity === undefined
@@ -86,6 +92,46 @@ export function QuickItemRow({
     setTimeout(() => setStockSaved(false), 1800);
   };
 
+  const handleDirectPhotoSelect = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file || !onUpdateImage) return;
+    setUploadingPhoto(true);
+    try {
+      const compressed = await imageCompression(file, {
+        maxSizeMB: 0.14,
+        maxWidthOrHeight: 800,
+        useWebWorker: true,
+        fileType: 'image/webp',
+      });
+      const reader = new FileReader();
+      const base64Data: string = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsDataURL(compressed);
+      });
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name.replace(/\.[^.]+$/, '.webp'),
+          contentType: 'image/webp',
+          base64Data,
+        }),
+      });
+      const data = await res.json();
+      if (data.publicUrl) {
+        await onUpdateImage(item, data.publicUrl);
+      }
+    } catch (err) {
+      console.error('Quick photo upload failed:', err);
+    } finally {
+      setUploadingPhoto(false);
+      e.target.value = '';
+    }
+  };
+
   const translatedLangs = ALL_LOCALES.filter(
     (loc) => item.name_i18n?.[loc] && item.name_i18n[loc]!.trim().length > 0
   );
@@ -105,17 +151,44 @@ export function QuickItemRow({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          {item.image_url ? (
-            <img
-              src={item.image_url}
-              alt={item.name_i18n.vi}
-              className="h-14 w-14 shrink-0 rounded-xl object-cover border border-slate-200 bg-slate-100"
+          {/* Clickable Dish Image Thumbnail with 1-Tap Upload */}
+          <label
+            title="Bấm để tải lên hoặc đổi ảnh món ăn"
+            className="group relative h-16 w-16 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+          >
+            {item.image_url ? (
+              <img
+                src={item.image_url}
+                alt={item.name_i18n.vi}
+                className="h-full w-full object-cover transition group-hover:scale-105"
+              />
+            ) : (
+              <div className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-slate-400">
+                <Camera className="h-4 w-4 text-emerald-600" />
+                <span className="text-[9px] font-extrabold text-emerald-700">
+                  + Tải ảnh
+                </span>
+              </div>
+            )}
+
+            <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-0.5 bg-slate-900/75 py-0.5 text-[9px] font-bold text-white">
+              {uploadingPhoto ? (
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              ) : (
+                <>
+                  <Camera className="h-2.5 w-2.5 text-emerald-400" />
+                  <span>{item.image_url ? 'Đổi ảnh' : 'Tải ảnh'}</span>
+                </>
+              )}
+            </span>
+
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleDirectPhotoSelect}
             />
-          ) : (
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-lg font-bold text-slate-400">
-              {item.name_i18n.vi?.slice(0, 1) || 'M'}
-            </div>
-          )}
+          </label>
 
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -286,7 +359,28 @@ export function QuickItemRow({
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <label className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+            {uploadingPhoto ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+            ) : (
+              <Camera className="h-3.5 w-3.5 text-emerald-600" />
+            )}
+            <span>
+              {uploadingPhoto
+                ? 'Đang tải...'
+                : item.image_url
+                  ? 'Đổi ảnh'
+                  : 'Tải ảnh'}
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleDirectPhotoSelect}
+            />
+          </label>
+
           <button
             type="button"
             onClick={() => onToggleFeatured(item, !item.is_featured)}
@@ -307,7 +401,7 @@ export function QuickItemRow({
             className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
           >
             <Languages className="h-3.5 w-3.5" />
-            <span>Sửa &amp; Dịch 5 thứ tiếng</span>
+            <span>Sửa &amp; Dịch 8 ngôn ngữ</span>
           </button>
 
           <button

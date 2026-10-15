@@ -36,16 +36,7 @@ import {
   StorefrontPhonePreview,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
-
-const DAYS_LIST: Array<{ key: keyof OpeningHours; label: string }> = [
-  { key: 'mon', label: 'Thứ 2' },
-  { key: 'tue', label: 'Thứ 3' },
-  { key: 'wed', label: 'Thứ 4' },
-  { key: 'thu', label: 'Thứ 5' },
-  { key: 'fri', label: 'Thứ 6' },
-  { key: 'sat', label: 'Thứ 7' },
-  { key: 'sun', label: 'Chủ Nhật' },
-];
+import { WeeklyOpeningHoursPicker } from '@/components/ui/TimeSchedulePicker';
 
 // Pure color swatches — no text labels needed
 const BRAND_COLOR_SWATCHES = [
@@ -943,80 +934,10 @@ export default function DashboardSettingsPage() {
           <span>5. Giờ Mở Cửa 7 Ngày Trong Tuần</span>
         </h2>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {DAYS_LIST.map(({ key, label }) => {
-            const sched = openingHours[key];
-            return (
-              <div
-                key={key}
-                className="rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-900">
-                    {label}
-                  </span>
-                  <label className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={!sched.closed}
-                      onChange={(e) =>
-                        setOpeningHours((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                [key]: {
-                                  ...prev[key],
-                                  closed: !e.target.checked,
-                                },
-                              }
-                            : prev
-                        )
-                      }
-                      className="rounded border-slate-300 text-emerald-600"
-                    />
-                    <span>{sched.closed ? 'Nghỉ' : 'Mở cửa'}</span>
-                  </label>
-                </div>
-
-                {!sched.closed && (
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <input
-                      type="time"
-                      value={sched.open}
-                      onChange={(e) =>
-                        setOpeningHours((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                [key]: { ...prev[key], open: e.target.value },
-                              }
-                            : prev
-                        )
-                      }
-                      className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold"
-                    />
-                    <span>-</span>
-                    <input
-                      type="time"
-                      value={sched.close}
-                      onChange={(e) =>
-                        setOpeningHours((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                [key]: { ...prev[key], close: e.target.value },
-                              }
-                            : prev
-                        )
-                      }
-                      className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold"
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <WeeklyOpeningHoursPicker
+          openingHours={openingHours}
+          onChange={(nextHours) => setOpeningHours(nextHours)}
+        />
       </div>
 
       {/* Interactive Popup Preview Modal */}

@@ -17,6 +17,7 @@ import {
   ShoppingBag,
   Sparkles,
   Minus,
+  Printer,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -27,6 +28,7 @@ import {
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 
 // Synthesize a pleasant dual-tone POS counter chime using Web Audio API
 function playOrderChime() {
@@ -71,8 +73,10 @@ export default function CounterOrdersPage() {
     'active' | 'new' | 'preparing' | 'completed' | 'cancelled'
   >('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [autoPrintOnPay, setAutoPrintOnPay] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
+  const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
 
   // Quick Counter POS Modal state
   const [isPosModalOpen, setIsPosModalOpen] = useState(false);
@@ -168,11 +172,13 @@ export default function CounterOrdersPage() {
       status?: OrderStatus;
       payment_status?: 'unpaid' | 'paid';
       payment_method?: PaymentMethod;
-    }
+    },
+    forcePrint = false
   ) => {
     if (!activeShop) return;
     setUpdatingId(orderId);
     try {
+      const existingOrder = orders.find((o) => o.id === orderId);
       const res = await fetch('/api/orders', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -183,11 +189,23 @@ export default function CounterOrdersPage() {
         }),
       });
       if (res.ok) {
+        const resData = await res.json().catch(() => null);
+        const updatedOrder: ShopOrder | null =
+          resData?.order ||
+          (existingOrder ? { ...existingOrder, ...updates } : null);
+
         await fetchOrdersAndCatalog(true);
         if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
           const bc = new BroadcastChannel('qlaok_realtime_sync');
           bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
           bc.close();
+        }
+
+        if (
+          updatedOrder &&
+          (forcePrint || (updates.payment_status === 'paid' && autoPrintOnPay))
+        ) {
+          setPrintingOrder(updatedOrder);
         }
       }
     } finally {
@@ -228,6 +246,7 @@ export default function CounterOrdersPage() {
       });
 
       if (res.ok) {
+        const resData = await res.json().catch(() => null);
         setPosCart({});
         setIsPosModalOpen(false);
         await fetchOrdersAndCatalog(true);
@@ -235,6 +254,9 @@ export default function CounterOrdersPage() {
           const bc = new BroadcastChannel('qlaok_realtime_sync');
           bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
           bc.close();
+        }
+        if (autoPrintOnPay && resData?.order) {
+          setPrintingOrder(resData.order);
         }
       }
     } finally {
@@ -286,6 +308,20 @@ export default function CounterOrdersPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAutoPrintOnPay((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2.5 text-xs font-bold border transition-colors ${
+              autoPrintOnPay
+                ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
+                : 'border-slate-700 bg-slate-800 text-slate-400'
+            }`}
+            title="Tự động bật cửa sổ in hóa đơn ngay sau khi xác nhận thanh toán"
+          >
+            <Printer className="h-4 w-4" />
+            <span>In bill khi thu tiền: {autoPrintOnPay ? 'BẬT' : 'TẮT'}</span>
+          </button>
+
           <button
             type="button"
             onClick={() => {
@@ -669,7 +705,7 @@ export default function CounterOrdersPage() {
                           className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          <span>Đã phục vụ &amp; Hoàn tất</span>
+                          <span>Thu tiền &amp; Hoàn tất</span>
                         </button>
                         <button
                           type="button"
@@ -695,6 +731,23 @@ export default function CounterOrdersPage() {
                         <span>Mã VietQR</span>
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={() => setPrintingOrder(order)}
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-black transition-colors ${
+                        isCompleted
+                          ? 'flex-1 border-slate-900 bg-slate-900 text-white hover:bg-slate-800'
+                          : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Printer className="h-4 w-4 text-emerald-600" />
+                      <span>
+                        {order.payment_status === 'paid'
+                          ? 'In hóa đơn'
+                          : 'In bill tạm tính'}
+                      </span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -758,21 +811,41 @@ export default function CounterOrdersPage() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={async () => {
-                await handleUpdateOrder(qrOrderModal.id, {
-                  payment_status: 'paid',
-                  payment_method: 'vietqr',
-                  status: 'completed',
-                });
-                setQrOrderModal(null);
-              }}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
-            >
-              <CheckCircle2 className="h-4 w-4" />
-              <span>Xác nhận đã nhận tiền &amp; Hoàn tất đơn</span>
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  const targetOrder = qrOrderModal;
+                  setQrOrderModal(null);
+                  await handleUpdateOrder(
+                    targetOrder.id,
+                    {
+                      payment_status: 'paid',
+                      payment_method: 'vietqr',
+                      status: 'completed',
+                    },
+                    true
+                  );
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const targetOrder = qrOrderModal;
+                  setQrOrderModal(null);
+                  setPrintingOrder(targetOrder);
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
+              >
+                <Printer className="h-4 w-4 text-slate-700" />
+                <span>In phiếu tạm tính kèm mã QR cho khách</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -940,15 +1013,27 @@ export default function CounterOrdersPage() {
                 type="button"
                 disabled={posTotalAmount <= 0 || posSubmitting}
                 onClick={handleCreateCounterPosOrder}
-                className="rounded-2xl bg-emerald-600 px-5 py-3 text-xs sm:text-sm font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-xs sm:text-sm font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
               >
-                {posSubmitting
-                  ? 'Đang tạo đơn...'
-                  : 'Xác nhận Tạo Đơn & Trừ Tồn Kho'}
+                <Printer className="h-4 w-4" />
+                <span>
+                  {posSubmitting
+                    ? 'Đang tạo đơn...'
+                    : 'Tạo Đơn & In Hóa Đơn'}
+                </span>
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Thermal Receipt Print Modal */}
+      {printingOrder && (
+        <ReceiptPrintModal
+          order={printingOrder}
+          shop={activeShop}
+          onClose={() => setPrintingOrder(null)}
+        />
       )}
     </div>
   );

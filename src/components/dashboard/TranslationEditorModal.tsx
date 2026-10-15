@@ -277,11 +277,11 @@ export function TranslationEditorModal({
             <div>
               <h3 className="text-base font-extrabold text-slate-900">
                 {editingItem
-                  ? 'Chỉnh sửa Món / Dịch vụ & Bản dịch 5 Ngôn ngữ'
-                  : 'Thêm Món / Dịch vụ Mới (AI Tự Dịch 5 Ngôn Ngữ)'}
+                  ? 'Chỉnh sửa Món / Hình ảnh & Bản dịch 8 Ngôn ngữ'
+                  : 'Thêm Món Mới (Kèm Ảnh & AI Tự Dịch 8 Ngôn Ngữ)'}
               </h3>
               <p className="text-xs text-slate-500">
-                Chỉ cần nhập Tiếng Việt, AI sẽ tự động bản địa hóa sang Anh, Hàn, Nhật, Trung
+                Tải ảnh món ăn và nhập Tiếng Việt, AI tự động dịch sang Anh, Hàn, Nhật, Trung, TBN, Ý, Nga
               </p>
             </div>
           </div>
@@ -300,6 +300,75 @@ export function TranslationEditorModal({
               ⚠️ {errorMsg}
             </div>
           )}
+
+          {/* Prominent Dish Image Upload + Live Preview Box */}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+            <label
+              title="Bấm để chọn ảnh món từ máy"
+              className="group relative flex h-20 w-20 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-emerald-400 bg-white shadow-2xs"
+            >
+              {imageUrl ? (
+                <img
+                  src={imageUrl}
+                  alt="Preview"
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-1 text-emerald-700">
+                  <Upload className="h-5 w-5" />
+                  <span className="text-[10px] font-extrabold">Chọn ảnh</span>
+                </div>
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </label>
+
+            <div className="flex-1 w-full space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-slate-900">
+                  📷 Hình ảnh món ăn / sản phẩm (Tự động nén WebP &lt; 150KB)
+                </span>
+                {imageUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setImageUrl('')}
+                    className="text-[11px] font-bold text-rose-600 hover:underline"
+                  >
+                    Xoá ảnh hiện tại
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <label className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-2xs hover:bg-emerald-500">
+                  <Upload className="h-3.5 w-3.5" />
+                  <span>
+                    {uploadingImage
+                      ? 'Đang nén & tải lên...'
+                      : 'Tải ảnh từ máy / Điện thoại'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                </label>
+
+                <input
+                  type="text"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="Hoặc dán link ảnh trực tiếp https://..."
+                  className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+            </div>
+          </div>
 
           {/* Basic Info Row */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

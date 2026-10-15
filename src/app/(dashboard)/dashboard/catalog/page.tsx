@@ -161,6 +161,27 @@ export default function DashboardCatalogPage() {
     notifyRealtime();
   };
 
+  const handleUpdateImage = async (item: CatalogItem, nextImageUrl: string) => {
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id ? { ...i, image_url: nextImageUrl } : i
+      )
+    );
+    await fetch('/api/catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'upsert_item',
+        item: {
+          ...item,
+          image_url: nextImageUrl,
+        },
+      }),
+    });
+    notifyRealtime();
+    showToast(`Đã cập nhật hình ảnh cho món: ${item.name_i18n.vi}`);
+  };
+
   const handleDeleteItem = async (itemId: string) => {
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     await fetch(`/api/catalog?itemId=${encodeURIComponent(itemId)}`, {
@@ -389,6 +410,7 @@ export default function DashboardCatalogPage() {
             onToggleAvailable={handleToggleAvailable}
             onUpdatePrice={handleUpdatePrice}
             onUpdateStock={handleUpdateStock}
+            onUpdateImage={handleUpdateImage}
             onToggleFeatured={handleToggleFeatured}
             onEditTranslations={(target) => {
               setEditingItem(target);
@@ -412,7 +434,7 @@ export default function DashboardCatalogPage() {
         }
         onSaved={() => {
           loadCatalog();
-          showToast('Đã lưu và cập nhật bản dịch 5 ngôn ngữ!');
+          showToast('Đã lưu và cập nhật bản dịch 8 ngôn ngữ!');
         }}
       />
     </div>

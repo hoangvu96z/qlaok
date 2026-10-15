@@ -39,6 +39,8 @@ export interface MobileFlashSaleConfig {
   title: string;
   discountType: 'percent' | 'fixed_amount';
   discountValue: number;
+  startDate?: string;
+  endDate?: string;
   startTime?: string;
   endTime?: string;
   itemIds: string[];

@@ -86,6 +86,12 @@ export default function App() {
   const [orderFilter, setOrderFilter] = useState<
     'active' | 'new' | 'preparing' | 'completed'
   >('active');
+  const [printingOrder, setPrintingOrder] = useState<MobileShopOrder | null>(
+    null
+  );
+  const [receiptPaperSize, setReceiptPaperSize] = useState<'80mm' | '58mm'>(
+    '80mm'
+  );
 
   // Realtime Mobile Notification Banner state
   const [liveOrderAlert, setLiveOrderAlert] = useState<{
@@ -139,12 +145,15 @@ export default function App() {
     content: 'Áp dụng trực tiếp khi chọn món trên Menu QR',
     voucherCode: 'QLAOK15',
   });
+  const todayIso = new Date().toISOString().slice(0, 10);
   const [flashSale, setFlashSale] = useState<MobileFlashSaleConfig>({
     enabled: false,
     badgeText: '⚡ FLASH SALE GIỜ VÀNG',
     title: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
     discountType: 'percent',
     discountValue: 25,
+    startDate: todayIso,
+    endDate: todayIso,
     startTime: '11:00',
     endTime: '22:00',
     itemIds: [],
@@ -197,6 +206,7 @@ export default function App() {
         });
       }
 
+      const defaultToday = new Date().toISOString().slice(0, 10);
       if (tc?.flashSale) {
         setFlashSale({
           enabled: Boolean(tc.flashSale.enabled),
@@ -208,6 +218,9 @@ export default function App() {
             typeof tc.flashSale.discountValue === 'number'
               ? tc.flashSale.discountValue
               : 25,
+          startDate: tc.flashSale.startDate || defaultToday,
+          endDate:
+            tc.flashSale.endDate || tc.flashSale.startDate || defaultToday,
           startTime: tc.flashSale.startTime || '11:00',
           endTime: tc.flashSale.endTime || '22:00',
           itemIds:
@@ -386,17 +399,22 @@ export default function App() {
     payment_status?: 'unpaid' | 'paid'
   ) => {
     if (!activeShop) return;
+    const existingOrder = orders.find((o) => o.id === orderId);
+    const updatedLocal: MobileShopOrder | null = existingOrder
+      ? {
+          ...existingOrder,
+          status,
+          payment_status: payment_status || existingOrder.payment_status,
+        }
+      : null;
+
     setOrders((prev) =>
-      prev.map((o) =>
-        o.id === orderId
-          ? {
-              ...o,
-              status,
-              payment_status: payment_status || o.payment_status,
-            }
-          : o
-      )
+      prev.map((o) => (o.id === orderId && updatedLocal ? updatedLocal : o))
     );
+
+    if (payment_status === 'paid' && updatedLocal) {
+      setPrintingOrder(updatedLocal);
+    }
 
     try {
       await fetch(`${API_BASE_URL}/api/orders`, {
@@ -1591,7 +1609,7 @@ export default function App() {
                                   style={{ marginRight: 4 }}
                                 />
                                 <Text style={styles.btnCompleteText}>
-                                  Đã phục vụ &amp; Thu tiền
+                                  Thu tiền &amp; In bill
                                 </Text>
                               </View>
                             </TouchableOpacity>
@@ -1605,6 +1623,59 @@ export default function App() {
                             </TouchableOpacity>
                           </>
                         )}
+
+                        <TouchableOpacity
+                          style={[
+                            styles.btnCancel,
+                            {
+                              backgroundColor:
+                                order.status === 'completed'
+                                  ? '#0f172a'
+                                  : '#f1f5f9',
+                              borderColor:
+                                order.status === 'completed'
+                                  ? '#0f172a'
+                                  : '#cbd5e1',
+                              flex: order.status === 'completed' ? 1 : 0,
+                              paddingHorizontal: 12,
+                            },
+                          ]}
+                          onPress={() => setPrintingOrder(order)}
+                        >
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 4,
+                            }}
+                          >
+                            <Ionicons
+                              name="print-outline"
+                              size={13}
+                              color={
+                                order.status === 'completed'
+                                  ? '#ffffff'
+                                  : '#0f172a'
+                              }
+                            />
+                            <Text
+                              style={[
+                                styles.btnCancelText,
+                                {
+                                  color:
+                                    order.status === 'completed'
+                                      ? '#ffffff'
+                                      : '#0f172a',
+                                },
+                              ]}
+                            >
+                              {order.payment_status === 'paid'
+                                ? 'In hóa đơn'
+                                : 'In bill'}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
                       </View>
                     </View>
                   );
@@ -2564,6 +2635,157 @@ export default function App() {
                     })}
                   </View>
 
+                  {/* Multi-Day Date Range Presets */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    📅 Thời hạn chiến dịch Flash Sale (Nhiều ngày)
+                  </Text>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      marginTop: 4,
+                    }}
+                  >
+                    {[
+                      { label: 'Chỉ hôm nay', days: 0 },
+                      { label: '3 Ngày tới', days: 2 },
+                      { label: '7 Ngày', days: 6 },
+                      { label: '14 Ngày', days: 13 },
+                      { label: '30 Ngày', days: 29 },
+                    ].map((preset) => {
+                      const dStart = new Date();
+                      const startIso = dStart.toISOString().slice(0, 10);
+                      const dEnd = new Date();
+                      dEnd.setDate(dEnd.getDate() + preset.days);
+                      const endIso = dEnd.toISOString().slice(0, 10);
+                      const isActive =
+                        flashSale.startDate === startIso &&
+                        flashSale.endDate === endIso;
+                      return (
+                        <TouchableOpacity
+                          key={preset.label}
+                          onPress={() =>
+                            setFlashSale((prev) => ({
+                              ...prev,
+                              startDate: startIso,
+                              endDate: endIso,
+                            }))
+                          }
+                          style={[
+                            styles.miniChip,
+                            isActive && { backgroundColor: '#e11d48' },
+                          ]}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 10,
+                              fontWeight: '800',
+                              color: isActive ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            {preset.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[styles.fieldLabel, { color: theme.subText }]}
+                      >
+                        Từ ngày (YYYY-MM-DD)
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: theme.subCard,
+                            borderColor: theme.border,
+                            color: theme.text,
+                          },
+                        ]}
+                        value={flashSale.startDate}
+                        onChangeText={(d: string) =>
+                          setFlashSale((prev) => ({ ...prev, startDate: d }))
+                        }
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[styles.fieldLabel, { color: theme.subText }]}
+                      >
+                        Đến hết ngày (YYYY-MM-DD)
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: theme.subCard,
+                            borderColor: theme.border,
+                            color: theme.text,
+                          },
+                        ]}
+                        value={flashSale.endDate}
+                        onChangeText={(d: string) =>
+                          setFlashSale((prev) => ({ ...prev, endDate: d }))
+                        }
+                      />
+                    </View>
+                  </View>
+
+                  {/* Quick Time Slot Presets */}
+                  <Text style={[styles.fieldLabel, { color: theme.subText }]}>
+                    ⏰ Khung giờ vàng mỗi ngày
+                  </Text>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      marginTop: 4,
+                    }}
+                  >
+                    {[
+                      { label: '🍱 Trưa 11:00–14:00', s: '11:00', e: '14:00' },
+                      { label: '🧋 Chiều 14:00–17:00', s: '14:00', e: '17:00' },
+                      { label: '🍻 Tối 18:00–22:00', s: '18:00', e: '22:00' },
+                      { label: '🔥 Cả ngày 00:00–23:45', s: '00:00', e: '23:45' },
+                    ].map((slot) => {
+                      const isActive =
+                        flashSale.startTime === slot.s &&
+                        flashSale.endTime === slot.e;
+                      return (
+                        <TouchableOpacity
+                          key={slot.label}
+                          onPress={() =>
+                            setFlashSale((prev) => ({
+                              ...prev,
+                              startTime: slot.s,
+                              endTime: slot.e,
+                            }))
+                          }
+                          style={[
+                            styles.miniChip,
+                            isActive && { backgroundColor: '#0f172a' },
+                          ]}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 10,
+                              fontWeight: '800',
+                              color: isActive ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            {slot.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
                     <View style={{ flex: 1 }}>
                       <Text
@@ -3041,6 +3263,328 @@ export default function App() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Thermal Receipt Preview & Print Modal (K80 / K58) */}
+      {printingOrder && activeShop && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(2, 6, 23, 0.78)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 16,
+            zIndex: 999,
+          }}
+        >
+          <View
+            style={{
+              width: '100%',
+              maxWidth: 380,
+              maxHeight: '90%',
+              backgroundColor: '#0f172a',
+              borderRadius: 24,
+              padding: 16,
+              borderWidth: 1,
+              borderColor: '#334155',
+            }}
+          >
+            {/* Modal Header */}
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 12,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="print" size={18} color="#10b981" />
+                <Text
+                  style={{ color: '#ffffff', fontSize: 14, fontWeight: '900' }}
+                >
+                  In Hóa Đơn Thanh Toán ({receiptPaperSize})
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setPrintingOrder(null)}>
+                <Ionicons name="close-circle" size={24} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Paper Size Switcher */}
+            <View
+              style={{
+                flexDirection: 'row',
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
+              {(['80mm', '58mm'] as const).map((sz) => {
+                const active = receiptPaperSize === sz;
+                return (
+                  <TouchableOpacity
+                    key={sz}
+                    onPress={() => setReceiptPaperSize(sz)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 7,
+                      borderRadius: 10,
+                      backgroundColor: active ? '#10b981' : '#1e293b',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '800',
+                        color: active ? '#020617' : '#cbd5e1',
+                      }}
+                    >
+                      Khổ {sz === '80mm' ? 'K80 (80mm)' : 'K58 (58mm)'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Crisp White Thermal Paper Ticket */}
+            <ScrollView
+              style={{
+                backgroundColor: '#ffffff',
+                borderRadius: 14,
+                padding: 16,
+                maxHeight: 380,
+              }}
+            >
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderStyle: 'dashed',
+                  borderBottomColor: '#0f172a',
+                  paddingBottom: 10,
+                  marginBottom: 10,
+                  alignItems: 'center',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: '900',
+                    color: '#000000',
+                    textTransform: 'uppercase',
+                    textAlign: 'center',
+                  }}
+                >
+                  {activeShop.name}
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: '#334155',
+                    textAlign: 'center',
+                    marginTop: 2,
+                  }}
+                >
+                  {activeShop.address || activeShop.city}
+                </Text>
+                {activeShop.phone_contact ? (
+                  <Text style={{ fontSize: 11, color: '#334155' }}>
+                    ĐT: {activeShop.phone_contact}
+                  </Text>
+                ) : null}
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: '900',
+                    color: '#000000',
+                    marginTop: 8,
+                  }}
+                >
+                  {printingOrder.payment_status === 'paid'
+                    ? 'HÓA ĐƠN THANH TOÁN'
+                    : 'PHIẾU TẠM TÍNH'}
+                </Text>
+                <Text style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                  Mã: #{printingOrder.order_code} • {printingOrder.table_label}
+                </Text>
+              </View>
+
+              {/* Items List */}
+              <View style={{ gap: 6, marginBottom: 10 }}>
+                {printingOrder.items.map((line, idx) => (
+                  <View
+                    key={idx}
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                    }}
+                  >
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          fontWeight: '800',
+                          color: '#000000',
+                        }}
+                      >
+                        {line.quantity}x {line.name_vi}
+                      </Text>
+                      {line.custom_note ? (
+                        <Text style={{ fontSize: 10, color: '#475569' }}>
+                          * {line.custom_note}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: '800',
+                        color: '#000000',
+                      }}
+                    >
+                      {formatVnd(
+                        (line.unit_price + line.extra_price) * line.quantity
+                      )}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              {/* Total Footer */}
+              <View
+                style={{
+                  borderTopWidth: 1,
+                  borderStyle: 'dashed',
+                  borderTopColor: '#0f172a',
+                  paddingTop: 8,
+                  marginBottom: 12,
+                }}
+              >
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: '900',
+                      color: '#000000',
+                    }}
+                  >
+                    TỔNG CỘNG:
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: '900',
+                      color: '#000000',
+                    }}
+                  >
+                    {formatVnd(printingOrder.total_amount)}
+                  </Text>
+                </View>
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '700',
+                    color: '#334155',
+                    marginTop: 4,
+                  }}
+                >
+                  Trạng thái:{' '}
+                  {printingOrder.payment_status === 'paid'
+                    ? '✓ ĐÃ THANH TOÁN'
+                    : 'CHƯA THANH TOÁN'}{' '}
+                  ({printingOrder.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
+                </Text>
+                {activeShop.wifi_info?.ssid ? (
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      color: '#475569',
+                      marginTop: 6,
+                      textAlign: 'center',
+                    }}
+                  >
+                    Wi-Fi: {activeShop.wifi_info.ssid} (Pass:{' '}
+                    {activeShop.wifi_info.password || 'Miễn phí'})
+                  </Text>
+                ) : null}
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '800',
+                    color: '#0f172a',
+                    textAlign: 'center',
+                    marginTop: 6,
+                  }}
+                >
+                  Cảm ơn Quý khách &amp; Hẹn gặp lại!
+                </Text>
+              </View>
+            </ScrollView>
+
+            {/* Print Action Buttons */}
+            <View
+              style={{
+                flexDirection: 'row',
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => setPrintingOrder(null)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 11,
+                  borderRadius: 14,
+                  backgroundColor: '#1e293b',
+                  alignItems: 'center',
+                }}
+              >
+                <Text
+                  style={{ color: '#cbd5e1', fontSize: 12, fontWeight: '800' }}
+                >
+                  Đóng
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  Alert.alert(
+                    '🖨️ Đã gửi lệnh in hóa đơn',
+                    `Đang in phiếu #${printingOrder.order_code} (${printingOrder.table_label}) ra máy in nhiệt khổ ${receiptPaperSize}.`
+                  );
+                  setPrintingOrder(null);
+                }}
+                style={{
+                  flex: 2,
+                  flexDirection: 'row',
+                  gap: 6,
+                  paddingVertical: 11,
+                  borderRadius: 14,
+                  backgroundColor: '#10b981',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="print" size={16} color="#020617" />
+                <Text
+                  style={{ color: '#020617', fontSize: 12, fontWeight: '900' }}
+                >
+                  In Hóa Đơn Ngay ({receiptPaperSize})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

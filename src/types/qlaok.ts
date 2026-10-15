@@ -70,6 +70,8 @@ export interface ShopFlashSaleConfig {
   title: string;
   discountType: 'percent' | 'fixed_amount';
   discountValue: number;
+  startDate?: string; // Format "YYYY-MM-DD" e.g. "2026-10-15"
+  endDate?: string;   // Format "YYYY-MM-DD" e.g. "2026-10-22"
   startTime?: string; // Format "HH:mm" e.g. "11:00"
   endTime?: string;   // Format "HH:mm" e.g. "22:00"
   itemIds: string[];
@@ -176,6 +178,8 @@ export interface ShopOrder {
   status: OrderStatus;
   payment_method: PaymentMethod;
   payment_status: 'unpaid' | 'paid';
+  subtotal_amount?: number;
+  discount_amount?: number;
   total_amount: number;
   items: OrderLineItem[];
   source: 'qr_table' | 'counter_pos';

@@ -724,7 +724,12 @@ export function StorefrontFlashSaleSection({
   onQuickAdd?: (item: CatalogItem, e: React.MouseEvent) => void;
 }) {
   const flashSale = shop.theme_config?.flashSale;
-  const [timeLeft, setTimeLeft] = useState({ h: '02', m: '45', s: '18' });
+  const [timeLeft, setTimeLeft] = useState({
+    d: 0,
+    h: '02',
+    m: '45',
+    s: '18',
+  });
 
   useEffect(() => {
     if (!flashSale?.enabled) return;
@@ -734,24 +739,36 @@ export function StorefrontFlashSaleSection({
       const endStr = flashSale.endTime || '23:59';
       const [endH, endM] = endStr.split(':').map((n) => parseInt(n, 10) || 0);
       const target = new Date();
+
+      if (flashSale.endDate) {
+        const [y, mo, da] = flashSale.endDate
+          .split('-')
+          .map((n) => parseInt(n, 10));
+        if (y && mo && da) {
+          target.setFullYear(y, mo - 1, da);
+        }
+      }
+
       target.setHours(endH, endM, 59, 999);
       if (target.getTime() <= now.getTime()) {
-        target.setDate(target.getDate() + 1);
+        target.setDate(now.getDate() + 1);
       }
+
       const diffSec = Math.max(
         0,
         Math.floor((target.getTime() - now.getTime()) / 1000)
       );
-      const h = String(Math.floor(diffSec / 3600)).padStart(2, '0');
+      const d = Math.floor(diffSec / 86400);
+      const h = String(Math.floor((diffSec % 86400) / 3600)).padStart(2, '0');
       const m = String(Math.floor((diffSec % 3600) / 60)).padStart(2, '0');
       const s = String(diffSec % 60).padStart(2, '0');
-      setTimeLeft({ h, m, s });
+      setTimeLeft({ d, h, m, s });
     };
 
     updateTimer();
     const timer = setInterval(updateTimer, 1000);
     return () => clearInterval(timer);
-  }, [flashSale?.enabled, flashSale?.endTime]);
+  }, [flashSale?.enabled, flashSale?.endDate, flashSale?.endTime]);
 
   if (
     !flashSale ||
@@ -780,6 +797,23 @@ export function StorefrontFlashSaleSection({
   const displayTitleText =
     locale === 'vi' ? flashSale.title || pt.flashTitle : pt.flashTitle;
 
+  const formatShortDate = (iso?: string) => {
+    if (!iso) return '';
+    const parts = iso.split('-');
+    if (parts.length !== 3) return iso;
+    return `${parts[2]}/${parts[1]}`;
+  };
+
+  const hasMultiDayRange =
+    Boolean(flashSale.startDate && flashSale.endDate) &&
+    flashSale.startDate !== flashSale.endDate;
+
+  const dateRangePrefix = hasMultiDayRange
+    ? `${formatShortDate(flashSale.startDate)} – ${formatShortDate(flashSale.endDate)} • `
+    : '';
+
+  const dayUnitLabel = locale === 'vi' ? 'N' : 'd';
+
   return (
     <div className="rounded-3xl bg-gradient-to-br from-rose-600 via-orange-500 to-amber-500 p-3.5 shadow-lg text-white space-y-3 border border-white/25">
       {/* Flash Sale Header + Live Countdown */}
@@ -795,6 +829,7 @@ export function StorefrontFlashSaleSection({
             </h3>
             {flashSale.startTime && flashSale.endTime && (
               <p className="text-[10px] text-amber-100 font-semibold">
+                {dateRangePrefix}
                 {pt.flashTimeSlot(flashSale.startTime, flashSale.endTime)}
               </p>
             )}
@@ -804,6 +839,15 @@ export function StorefrontFlashSaleSection({
         {/* Countdown Clock */}
         <div className="flex items-center gap-1 text-xs font-black">
           <Clock className="h-3.5 w-3.5 text-amber-200 mr-0.5" />
+          {timeLeft.d > 0 && (
+            <>
+              <span className="rounded-lg bg-slate-950/80 px-1.5 py-1 text-[11px] font-mono text-amber-300">
+                {timeLeft.d}
+                {dayUnitLabel}
+              </span>
+              <span>:</span>
+            </>
+          )}
           <span className="rounded-lg bg-slate-950/80 px-1.5 py-1 text-[11px] font-mono text-amber-300">
             {timeLeft.h}
           </span>

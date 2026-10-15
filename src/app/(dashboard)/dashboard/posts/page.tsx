@@ -36,6 +36,7 @@ import {
   StorefrontPhonePreview,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
+import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
@@ -992,8 +993,8 @@ export default function DashboardPostsPage() {
                 </label>
               </div>
 
-              {/* Flash Sale Discount & Time Window */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Flash Sale Discount Type & Value */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
                     Kiểu giảm Flash Sale
@@ -1053,39 +1054,13 @@ export default function DashboardPostsPage() {
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-black text-rose-600"
                   />
                 </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    <Clock className="inline h-3.5 w-3.5 mr-1 text-rose-600" />
-                    Khung giờ vàng
-                  </label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="time"
-                      value={flashSale.startTime}
-                      onChange={(e) =>
-                        setFlashSale((prev) => ({
-                          ...prev,
-                          startTime: e.target.value,
-                        }))
-                      }
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-bold"
-                    />
-                    <span className="text-xs font-bold text-slate-400">-</span>
-                    <input
-                      type="time"
-                      value={flashSale.endTime}
-                      onChange={(e) =>
-                        setFlashSale((prev) => ({
-                          ...prev,
-                          endTime: e.target.value,
-                        }))
-                      }
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-bold"
-                    />
-                  </div>
-                </div>
               </div>
+
+              {/* Multi-Day + Time Slot Shared Schedule Picker */}
+              <FlashSaleSchedulePicker
+                flashSale={flashSale}
+                onChange={(nextFs) => setFlashSale(nextFs)}
+              />
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
