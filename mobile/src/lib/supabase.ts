@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { NativeModules, Platform } from 'react-native';
 
 export const SUPABASE_URL =
   process.env.EXPO_PUBLIC_SUPABASE_URL ||
@@ -8,8 +9,96 @@ export const SUPABASE_KEY =
   process.env.EXPO_PUBLIC_SUPABASE_KEY ||
   'sb_publishable_BpW2kqz1l3LfN8MFvngWLw_2YxmIgBv';
 
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
+export const PRODUCTION_API_URL = 'https://qlaok.vunph.click';
+
+/**
+ * Dynamically resolves the API Base URL so physical devices on Expo Go / LAN
+ * never get stuck calling `http://localhost:3000` (which points to the phone itself).
+ *
+ * Priority:
+ * 1. Explicit `EXPO_PUBLIC_API_URL` if it is a non-localhost URL (or if running on web/simulator).
+ * 2. Auto-detected LAN IP from React Native Metro `SourceCode.scriptURL` (e.g. `http://192.168.1.x:3000`).
+ * 3. Android Emulator loopback (`http://10.0.2.2:3000`) when running in dev on Android emulator.
+ * 4. Production HTTPS server (`https://qlaok.vunph.click`).
+ */
+export function resolveApiBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+
+  // Extract Metro bundler host IP if available in dev mode
+  let metroHostIp: string | null = null;
+  try {
+    const scriptURL: string | undefined = NativeModules?.SourceCode?.scriptURL;
+    if (scriptURL) {
+      const match = scriptURL.match(/^https?:\/\/([^/:]+)(?::\d+)?\//i);
+      if (match?.[1] && match[1] !== 'localhost' && match[1] !== '127.0.0.1') {
+        metroHostIp = match[1];
+      }
+    }
+  } catch {
+    // ignore NativeModules inspection errors
+  }
+
+  if (envUrl) {
+    const isLocalhostEnv =
+      envUrl.includes('localhost') || envUrl.includes('127.0.0.1');
+    if (!isLocalhostEnv) {
+      return envUrl.replace(/\/+$/, '');
+    }
+    // If .env has localhost but we are on a physical phone connected via LAN IP to Metro, swap localhost -> metroHostIp
+    if (metroHostIp) {
+      return envUrl
+        .replace('localhost', metroHostIp)
+        .replace('127.0.0.1', metroHostIp)
+        .replace(/\/+$/, '');
+    }
+    if (Platform.OS === 'android') {
+      return envUrl
+        .replace('localhost', '10.0.2.2')
+        .replace('127.0.0.1', '10.0.2.2')
+        .replace(/\/+$/, '');
+    }
+    return envUrl.replace(/\/+$/, '');
+  }
+
+  if (__DEV__) {
+    if (metroHostIp) {
+      return `http://${metroHostIp}:3000`;
+    }
+    if (Platform.OS === 'android') {
+      return 'http://10.0.2.2:3000';
+    }
+    if (Platform.OS === 'web') {
+      return 'http://localhost:3000';
+    }
+  }
+
+  return PRODUCTION_API_URL;
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
+
+/**
+ * Fetch helper with automatic fallback to `PRODUCTION_API_URL` if the dev LAN port :3000 is not running.
+ */
+export async function fetchWithApiFallback(
+  path: string,
+  init?: RequestInit
+): Promise<Response> {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const primaryUrl = `${API_BASE_URL}${normalizedPath}`;
+  try {
+    const res = await fetch(primaryUrl, init);
+    if (res.ok || API_BASE_URL === PRODUCTION_API_URL) {
+      return res;
+    }
+  } catch {
+    // If primary LAN/localhost dev server is unreachable, fall back to production API
+    if (API_BASE_URL === PRODUCTION_API_URL) {
+      throw new Error('Không thể kết nối máy chủ API');
+    }
+  }
+  return fetch(`${PRODUCTION_API_URL}${normalizedPath}`, init);
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
@@ -65,6 +154,7 @@ export interface MobileShopThemeConfig {
   promoBanner?: MobilePromoBannerConfig;
   flashSale?: MobileFlashSaleConfig;
   welcomePopup?: MobilePopupConfig;
+  recent_orders?: MobileShopOrder[];
 }
 
 export interface MobileShop {
