@@ -1,5 +1,8 @@
 node_modules
 .next
+.env
 .env.local
+.env.*.local
+mobile/.env
+mobile/.env.local
 .local-db
-

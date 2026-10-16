@@ -200,6 +200,8 @@ export interface ShopOrder {
   total_amount: number;
   items: OrderLineItem[];
   source: 'qr_table' | 'counter_pos';
+  tracking_token?: string;
+  idempotency_key?: string;
   created_at: string;
   updated_at: string;
 }

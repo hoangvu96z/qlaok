@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation';
 import { Profile, Shop } from '@/types/qlaok';
 import {
   clearStoredAuthOwner,
+  getAuthHeaders,
   getStoredAuthOwner,
   isSuperAdmin,
   setStoredAuthOwner,
@@ -50,24 +51,30 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       if (!owner) {
         const supabase = createClient();
         if (supabase) {
-          const { data: userRes } = await supabase.auth.getUser();
-          if (userRes?.user?.email) {
+          const { data: sessionRes } = await supabase.auth.getSession();
+          const sbUser = sessionRes?.session?.user;
+          const sbToken = sessionRes?.session?.access_token;
+          if (sbUser?.email && sbToken) {
             const syncRes = await fetch('/api/auth', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${sbToken}`,
+              },
               body: JSON.stringify({
                 action: 'sync_user',
-                userId: userRes.user.id,
-                email: userRes.user.email,
-                fullName: userRes.user.user_metadata?.full_name as string,
-                phone: userRes.user.user_metadata?.phone as string,
+                userId: sbUser.id,
+                email: sbUser.email,
+                fullName: sbUser.user_metadata?.full_name as string,
+                phone: sbUser.user_metadata?.phone as string,
+                supabaseAccessToken: sbToken,
               }),
             });
             if (syncRes.ok) {
               const syncData = await syncRes.json();
               if (syncData.user) {
                 owner = syncData.user as Profile;
-                setStoredAuthOwner(owner);
+                setStoredAuthOwner(owner, syncData.accessToken);
               }
             }
           }
@@ -82,8 +89,18 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
       const res = await fetch(
         `/api/shops?ownerId=${encodeURIComponent(owner.id)}`,
-        { cache: 'no-store' }
+        {
+          headers: getAuthHeaders(),
+          cache: 'no-store',
+        }
       );
+
+      if (res.status === 401 || res.status === 403) {
+        clearStoredAuthOwner();
+        router.replace('/login');
+        return;
+      }
+
       const data = await res.json();
       let loadedShops: Shop[] = data.shops || [];
       const loadedProfile: Profile = {
@@ -95,7 +112,10 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
       // If Super Admin visits /dashboard and has no personal shops yet, load all platform shops
       if (loadedShops.length === 0 && isSuperAdmin(loadedProfile)) {
-        const allRes = await fetch('/api/shops', { cache: 'no-store' });
+        const allRes = await fetch('/api/shops', {
+          headers: getAuthHeaders(),
+          cache: 'no-store',
+        });
         if (allRes.ok) {
           const allData = await allRes.json();
           loadedShops = allData.shops || [];

@@ -43,23 +43,16 @@ import type {
   SupportedLocale,
 } from '@/types/qlaok';
 
-function verifySuperAdminRequest(req: Request, bodyEmail?: string): boolean {
-  const url = new URL(req.url);
-  const headerEmail = req.headers.get('x-admin-email');
-  const queryEmail = url.searchParams.get('adminEmail');
-  const candidate = headerEmail || queryEmail || bodyEmail || '';
-  return isSuperAdminEmail(candidate);
-}
+import {
+  recordAdminAuditLog,
+  requireSuperAdmin,
+} from '@/lib/server-auth';
 
 export async function GET(req: Request) {
   try {
-    if (!verifySuperAdminRequest(req)) {
-      return NextResponse.json(
-        {
-          error: `Truy cập bị từ chối. Chỉ tài khoản Super Admin (${SUPER_ADMIN_EMAIL}) mới có quyền quản trị hệ thống.`,
-        },
-        { status: 403 }
-      );
+    const auth = await requireSuperAdmin(req);
+    if (auth.errorResponse) {
+      return auth.errorResponse;
     }
 
     await ensureSupabaseReadyAndSeeded();
@@ -360,17 +353,25 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { action, adminEmail } = body;
-
-    if (!verifySuperAdminRequest(req, adminEmail)) {
-      return NextResponse.json(
-        {
-          error: `Từ chối thao tác. Chỉ Super Admin (${SUPER_ADMIN_EMAIL}) mới có quyền thực hiện.`,
-        },
-        { status: 403 }
-      );
+    const auth = await requireSuperAdmin(req);
+    if (auth.errorResponse) {
+      return auth.errorResponse;
     }
+
+    const body = await req.json();
+    const { action } = body;
+
+    recordAdminAuditLog({
+      actorId: auth.user.sub,
+      actorEmail: auth.user.email,
+      action: String(action || 'unknown'),
+      targetId: body.ownerId || body.shopId || body.orderId || body.orderCode,
+      details: {
+        plan: body.plan,
+        email: body.email,
+        isPublished: body.isPublished,
+      },
+    });
 
     await ensureSupabaseReadyAndSeeded();
     const sb = getSupabaseDbClient();

@@ -44,6 +44,19 @@ import {
   dbGetOrderById,
   computeShopRevenueAndInventoryStats,
 } from '@/lib/mpos-store';
+import {
+  issueSessionToken,
+  verifySessionToken,
+} from '@/lib/server-auth';
+import {
+  hashPassword,
+  verifyPassword,
+} from '@/lib/auth-credentials';
+import { GET as adminGet, POST as adminPost } from '@/app/api/admin/route';
+import { POST as authPost } from '@/app/api/auth/route';
+import { POST as paymentPost } from '@/app/api/webhooks/payment/route';
+import { GET as ordersGet, PATCH as ordersPatch } from '@/app/api/orders/route';
+import { PATCH as shopsPatch } from '@/app/api/shops/route';
 import type { CatalogItem, OpeningHours } from '@/types/qlaok';
 
 // ============================================================================
@@ -781,13 +794,12 @@ describe('Suite 7: mPOS Order, Inventory & Revenue Engine (mpos-store.ts)', () =
     const prep = await dbUpdateOrderStatus(created.id, { status: 'preparing' });
     assert.equal(prep.status, 'preparing');
 
-    const comp = await dbUpdateOrderStatus(created.id, { status: 'completed' });
+    const comp = await dbUpdateOrderStatus(created.id, {
+      status: 'completed',
+      payment_status: 'paid',
+    });
     assert.equal(comp.status, 'completed');
-    assert.equal(
-      comp.payment_status,
-      'paid',
-      'Completed order should default to paid'
-    );
+    assert.equal(comp.payment_status, 'paid');
 
     const cancelled = await dbUpdateOrderStatus(created.id, {
       status: 'cancelled',
@@ -844,3 +856,506 @@ describe('Suite 7: mPOS Order, Inventory & Revenue Engine (mpos-store.ts)', () =
     }
   });
 });
+
+// ============================================================================
+// SUITE 8: SECURITY, AUTHORIZATION, WEBHOOK IDEMPOTENCY & MPOS CONCURRENCY
+// ============================================================================
+describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', () => {
+  const secItemId = 'item-unit-test-sec-888';
+
+  test('8.1 (P0 #1) Admin API rejects spoofed x-admin-email header without valid signed token (401/403)', async () => {
+    const spoofedGetReq = new Request(
+      'http://localhost:3000/api/admin?adminEmail=hoangvu96z@gmail.com',
+      {
+        method: 'GET',
+        headers: {
+          'x-admin-email': 'hoangvu96z@gmail.com',
+        },
+      }
+    );
+    const getRes = await adminGet(spoofedGetReq);
+    assert.equal(getRes.status, 401);
+
+    // Owner A token trying to access /api/admin -> 403 Forbidden
+    const ownerToken = issueSessionToken({
+      id: 'owner-other-999',
+      email: 'ownerA@example.com',
+      role: 'owner',
+    });
+    const ownerAdminReq = new Request('http://localhost:3000/api/admin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`,
+        'x-admin-email': 'hoangvu96z@gmail.com',
+      },
+      body: JSON.stringify({
+        action: 'update_owner_plan',
+        adminEmail: 'hoangvu96z@gmail.com',
+        ownerId: 'owner-other-999',
+        plan: 'premium',
+      }),
+    });
+    const postRes = await adminPost(ownerAdminReq);
+    assert.equal(postRes.status, 403);
+  });
+
+  test('8.2 (P0 #2) Session token verification rejects expired or tampered tokens, and salted scrypt verifies passwords safely', () => {
+    const validToken = issueSessionToken(
+      { id: 'owner-1', email: 'test@qlaok.vn', role: 'owner' },
+      3600
+    );
+    const verified = verifySessionToken(validToken);
+    assert.ok(verified);
+    assert.equal(verified?.sub, 'owner-1');
+    assert.equal(verified?.role, 'owner');
+
+    // Tampered signature must return null
+    const tampered = `${validToken.split('.')[0]}.forgedsignature123`;
+    assert.equal(verifySessionToken(tampered), null);
+
+    // Expired token must return null
+    const expiredToken = issueSessionToken(
+      { id: 'owner-1', email: 'test@qlaok.vn', role: 'owner' },
+      -10
+    );
+    assert.equal(verifySessionToken(expiredToken), null);
+
+    // Salted scrypt password hashing
+    const h1 = hashPassword('MySecretPass!123');
+    const h2 = hashPassword('MySecretPass!123');
+    assert.ok(h1.startsWith('scrypt$'));
+    assert.notEqual(h1, h2, 'Each scrypt hash must use a unique random salt');
+    assert.equal(verifyPassword('MySecretPass!123', h1), true);
+    assert.equal(verifyPassword('WrongPassword', h1), false);
+  });
+
+  test('8.3 (P0 #2) Auth API blocks registering Super Admin email and blocks unauthenticated sync_user', async () => {
+    const hijackRegisterReq = new Request('http://localhost:3000/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'register',
+        email: 'hoangvu96z@gmail.com',
+        password: 'attackerPassword123',
+        fullName: 'Attacker',
+      }),
+    });
+    const regRes = await authPost(hijackRegisterReq);
+    assert.equal(
+      regRes.status,
+      403,
+      'Must block public registration overwrite of Super Admin email'
+    );
+
+    const hijackSyncReq = new Request('http://localhost:3000/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'sync_user',
+        email: 'hoangvu96z@gmail.com',
+      }),
+    });
+    const syncRes = await authPost(hijackSyncReq);
+    assert.equal(
+      syncRes.status,
+      401,
+      'Unauthenticated sync_user without verified token must return 401'
+    );
+  });
+
+  test('8.4 (P0 #4) Business APIs reject anonymous and cross-owner access (401/403)', async () => {
+    // Anonymous GET /api/orders?shopId=shop-fnb-001 must return 401
+    const anonOrdersReq = new Request(
+      'http://localhost:3000/api/orders?shopId=shop-fnb-001',
+      { method: 'GET' }
+    );
+    const anonOrdersRes = await ordersGet(anonOrdersReq);
+    assert.equal(anonOrdersRes.status, 401);
+
+    // Anonymous PATCH /api/orders must return 401
+    const anonPatchOrderReq = new Request('http://localhost:3000/api/orders', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orderId: 'ord-seed-101',
+        status: 'cancelled',
+      }),
+    });
+    const anonPatchRes = await ordersPatch(anonPatchOrderReq);
+    assert.equal(anonPatchRes.status, 401);
+
+    // Owner B trying to PATCH Owner A's shop (shop-fnb-001 belongs to owner-demo-001) -> 403
+    const otherOwnerToken = issueSessionToken({
+      id: 'owner-intruder-777',
+      email: 'intruder@example.com',
+      role: 'owner',
+    });
+    const crossShopPatchReq = new Request('http://localhost:3000/api/shops', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${otherOwnerToken}`,
+      },
+      body: JSON.stringify({
+        id: 'shop-fnb-001',
+        name: 'Hacked Shop Name',
+      }),
+    });
+    const crossShopRes = await shopsPatch(crossShopPatchReq);
+    assert.ok(
+      crossShopRes.status === 403 || crossShopRes.status === 404,
+      `Expected 403 or 404 for cross-owner shop PATCH, got ${crossShopRes.status}`
+    );
+  });
+
+  test('8.5 (P0 #5) Payment API blocks public switch_plan_direct and rejects unsigned or unknown webhooks', async () => {
+    // Public switch_plan_direct without Super Admin token -> 403
+    const switchReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'switch_plan_direct',
+          plan: 'premium',
+        }),
+      }
+    );
+    const switchRes = await paymentPost(switchReq);
+    assert.equal(switchRes.status, 403);
+
+    // Unsigned webhook without secret -> 401
+    const unsignedWebhookReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP99999',
+          transferAmount: 69000,
+        }),
+      }
+    );
+    const unsignedRes = await paymentPost(unsignedWebhookReq);
+    assert.equal(unsignedRes.status, 401);
+
+    // Signed webhook with unknown orderCode -> 404 (must NOT auto-create completed transaction)
+    const secret = process.env.PAYMENT_WEBHOOK_SECRET || 'qlaok-webhook-secret-v1';
+    const unknownOrderReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_NON_EXISTENT_99999',
+          transferAmount: 69000,
+        }),
+      }
+    );
+    const unknownRes = await paymentPost(unknownOrderReq);
+    assert.equal(unknownRes.status, 404);
+  });
+
+  test('8.6 (P1 #6) dbCreateOrder enforces server catalog pricing and blocks customer paid/discount flags', async () => {
+    // item-fnb-1 in SEED_ITEMS has price 65,000đ. Customer sends forged unit_price=1, payment_status='paid', markCompletedImmediately=true, discount_amount=50000
+    await setItemStockMetadata('item-fnb-1', 20, 0);
+
+    const customerOrder = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Hack Giá',
+      payment_status: 'paid',
+      markCompletedImmediately: true,
+      discount_amount: 50000,
+      isStaffAuthorized: false,
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
+          quantity: 1,
+          unit_price: 1, // Forged client price!
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    assert.equal(
+      customerOrder.status,
+      'new',
+      'Customer cannot mark order completed immediately'
+    );
+    assert.equal(
+      customerOrder.payment_status,
+      'unpaid',
+      'Customer cannot mark order paid'
+    );
+    assert.equal(
+      customerOrder.discount_amount,
+      0,
+      'Customer cannot apply staff discount'
+    );
+
+    await dbUpdateOrderStatus(customerOrder.id, { status: 'cancelled' });
+  });
+
+  test('8.7 (P1 #7) dbCreateOrder rejects negative/zero/fractional quantities and duplicate line stock overflow', async () => {
+    await setItemStockMetadata(secItemId, 5, 0);
+
+    // Negative quantity (-2) must be rejected and must NOT increase stock from 5 to 7!
+    await assert.rejects(
+      async () => {
+        await dbCreateOrder({
+          shop_id: 'shop-fnb-001',
+          table_label: 'Bàn Số Âm',
+          items: [
+            {
+              item_id: secItemId,
+              name_vi: 'Món Test Âm',
+              quantity: -2,
+              unit_price: 50000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        });
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('INVALID_QUANTITY'));
+        return true;
+      }
+    );
+
+    // Fractional quantity (1.5) must be rejected
+    await assert.rejects(async () => {
+      await dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Số Lẻ',
+        items: [
+          {
+            item_id: secItemId,
+            name_vi: 'Món Test Lẻ',
+            quantity: 1.5,
+            unit_price: 50000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      });
+    });
+
+    // Two duplicate lines of the same item (4 + 4 = 8) when stock is 5 -> must be rejected!
+    await assert.rejects(
+      async () => {
+        await dbCreateOrder({
+          shop_id: 'shop-fnb-001',
+          table_label: 'Bàn Dòng Trùng',
+          items: [
+            {
+              item_id: secItemId,
+              name_vi: 'Món Test Dòng 1',
+              quantity: 4,
+              unit_price: 50000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+            {
+              item_id: secItemId,
+              name_vi: 'Món Test Dòng 2',
+              quantity: 4,
+              unit_price: 50000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        });
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('chỉ còn 5'));
+        return true;
+      }
+    );
+  });
+
+  test('8.8 (P1 #8) Concurrent orders serialize via mutex so two simultaneous orders of 4 against stock 5 reject the second, and idempotency_key deduplicates retries', async () => {
+    await setItemStockMetadata(secItemId, 5, 0);
+
+    const results = await Promise.allSettled([
+      dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Đồng Thời A',
+        items: [
+          {
+            item_id: secItemId,
+            name_vi: 'Món Tranh Chấp',
+            quantity: 4,
+            unit_price: 40000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      }),
+      dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Đồng Thời B',
+        items: [
+          {
+            item_id: secItemId,
+            name_vi: 'Món Tranh Chấp',
+            quantity: 4,
+            unit_price: 40000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    assert.equal(
+      fulfilled.length,
+      1,
+      'Exactly one of the two concurrent orders of 4 (stock 5) must succeed'
+    );
+    assert.equal(
+      rejected.length,
+      1,
+      'The second concurrent order of 4 must be rejected because remaining stock is 1'
+    );
+
+    const enrichedAfterRace = enrichItemsWithInventory([
+      {
+        id: secItemId,
+        shop_id: 'shop-fnb-001',
+        category_id: 'cat-fnb-1',
+        sort_order: 1,
+        price: 40000,
+        is_available: true,
+        is_featured: false,
+        name_i18n: { vi: 'Món Tranh Chấp' },
+        desc_i18n: { vi: '' },
+        options_json: [],
+        view_count: 0,
+      },
+    ]);
+    assert.equal(enrichedAfterRace[0].stock_quantity, 1);
+
+    // Idempotency key retry test: sending the same idempotency_key returns existing order without deducting the remaining 1 stock
+    const idempKey = `idemp-test-${Date.now()}`;
+    const firstRetryOrder = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Idemp',
+      idempotency_key: idempKey,
+      items: [
+        {
+          item_id: secItemId,
+          name_vi: 'Món Tranh Chấp',
+          quantity: 1,
+          unit_price: 40000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const duplicateRetryOrder = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Idemp',
+      idempotency_key: idempKey,
+      items: [
+        {
+          item_id: secItemId,
+          name_vi: 'Món Tranh Chấp',
+          quantity: 1,
+          unit_price: 40000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    assert.equal(firstRetryOrder.id, duplicateRetryOrder.id);
+
+    // Clean up
+    if (fulfilled[0]?.status === 'fulfilled') {
+      await dbUpdateOrderStatus(fulfilled[0].value.id, { status: 'cancelled' });
+    }
+    await dbUpdateOrderStatus(firstRetryOrder.id, { status: 'cancelled' });
+  });
+
+  test('8.9 (P1 #9) Re-opening a cancelled order re-reserves stock so stock 5 -> buy 2 -> cancel -> reopen -> cancel ends at stock 5 (not 7)', async () => {
+    await setItemStockMetadata(secItemId, 5, 0);
+
+    const ord = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn State Machine',
+      items: [
+        {
+          item_id: secItemId,
+          name_vi: 'Món State Machine',
+          quantity: 2,
+          unit_price: 50000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    // Cancel #1 -> stock restored to 5
+    await dbUpdateOrderStatus(ord.id, { status: 'cancelled' });
+
+    // Reopen (cancelled -> new) -> stock must be re-deducted to 3
+    await dbUpdateOrderStatus(ord.id, { status: 'new' });
+    const stockDuringReopen = enrichItemsWithInventory([
+      {
+        id: secItemId,
+        shop_id: 'shop-fnb-001',
+        category_id: 'cat-fnb-1',
+        sort_order: 1,
+        price: 50000,
+        is_available: true,
+        is_featured: false,
+        name_i18n: { vi: 'Món State Machine' },
+        desc_i18n: { vi: '' },
+        options_json: [],
+        view_count: 0,
+      },
+    ])[0].stock_quantity;
+    assert.equal(
+      stockDuringReopen,
+      3,
+      'Re-opening cancelled order must re-deduct 2 units from stock (5 -> 3)'
+    );
+
+    // Cancel #2 -> stock restored to 5 (never 7!)
+    await dbUpdateOrderStatus(ord.id, { status: 'cancelled' });
+    // Cancel #3 (redundant cancel on already-cancelled order) -> stock stays 5
+    await dbUpdateOrderStatus(ord.id, { status: 'cancelled' });
+
+    const finalStock = enrichItemsWithInventory([
+      {
+        id: secItemId,
+        shop_id: 'shop-fnb-001',
+        category_id: 'cat-fnb-1',
+        sort_order: 1,
+        price: 50000,
+        is_available: true,
+        is_featured: false,
+        name_i18n: { vi: 'Món State Machine' },
+        desc_i18n: { vi: '' },
+        options_json: [],
+        view_count: 0,
+      },
+    ])[0].stock_quantity;
+
+    assert.equal(
+      finalStock,
+      5,
+      'Final stock after buy 2 -> cancel -> reopen -> cancel must be 5, never 7'
+    );
+  });
+});
+

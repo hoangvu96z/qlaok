@@ -248,17 +248,23 @@ export async function dbGetShopById(shopId: string): Promise<Shop | undefined> {
   return data ? hydrateShopWithSeedDefaults(data as Shop) : undefined;
 }
 
-export async function dbGetStorefrontBundle(slug: string) {
+export async function dbGetStorefrontBundle(
+  slug: string,
+  options?: { allowUnpublished?: boolean }
+) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { data: rawShop } = await sb
-    .from('shops')
-    .select('*')
-    .eq('slug', slug)
-    .single();
+  let query = sb.from('shops').select('*').eq('slug', slug);
+  if (!options?.allowUnpublished) {
+    query = query.eq('is_published', true);
+  }
+  const { data: rawShop } = await query.maybeSingle();
 
   if (!rawShop) return null;
+  if (!options?.allowUnpublished && rawShop.is_published === false) {
+    return null;
+  }
   const shop = hydrateShopWithSeedDefaults(rawShop as Shop);
 
   const [
@@ -427,6 +433,29 @@ export async function dbCreateShop(
   return data as Shop;
 }
 
+const ALLOWED_SHOP_PATCH_FIELDS: Array<keyof Shop> = [
+  'name',
+  'slug',
+  'vertical',
+  'tagline_i18n',
+  'description_i18n',
+  'logo_url',
+  'cover_urls',
+  'address',
+  'city',
+  'google_maps_url',
+  'google_review_url',
+  'phone_contact',
+  'zalo_phone',
+  'telegram_chat_id',
+  'wifi_info',
+  'opening_hours',
+  'supported_langs',
+  'currency',
+  'theme_config',
+  'is_published',
+];
+
 export async function dbUpdateShop(
   shopId: string,
   patch: Partial<Shop>
@@ -434,11 +463,18 @@ export async function dbUpdateShop(
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  if (patch.slug) {
+  const sanitizedPatch: Record<string, unknown> = {};
+  for (const key of ALLOWED_SHOP_PATCH_FIELDS) {
+    if (patch[key] !== undefined) {
+      sanitizedPatch[key] = patch[key];
+    }
+  }
+
+  if (typeof sanitizedPatch.slug === 'string' && sanitizedPatch.slug) {
     const { data: duplicate } = await sb
       .from('shops')
       .select('id')
-      .eq('slug', patch.slug)
+      .eq('slug', sanitizedPatch.slug)
       .neq('id', shopId)
       .maybeSingle();
 
@@ -451,7 +487,7 @@ export async function dbUpdateShop(
 
   const { data, error } = await sb
     .from('shops')
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...sanitizedPatch, updated_at: new Date().toISOString() })
     .eq('id', shopId)
     .select('*')
     .single();
@@ -952,22 +988,35 @@ export async function dbGetBillingData(ownerId?: string) {
   };
 }
 
+export const OFFICIAL_PLAN_PRICES_VND: Record<'basic' | 'premium', number> = {
+  basic: 39000,
+  premium: 69000,
+};
+
 export async function dbCreatePaymentOrder(
   targetPlan: PlanTier,
-  amount: number,
+  _ignoredClientAmount?: number,
   ownerId?: string
 ): Promise<PaymentTransaction> {
+  if (targetPlan !== 'basic' && targetPlan !== 'premium') {
+    throw new Error(
+      'INVALID_TARGET_PLAN: Chỉ hỗ trợ tạo giao dịch nâng cấp cho gói Basic hoặc Premium.'
+    );
+  }
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
   const resolvedOwnerId = ownerId || SEED_PROFILE.id;
+  // Server-authoritative plan price (never trusts client-supplied amount)
+  const authoritativeAmount = OFFICIAL_PLAN_PRICES_VND[targetPlan];
 
   const orderCode = `QLAOK${targetPlan.toUpperCase().slice(0, 1)}${Math.floor(10000 + Math.random() * 90000)}`;
   const tx: PaymentTransaction = {
-    id: `tx-${Date.now()}`,
+    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     user_id: resolvedOwnerId,
     order_code: orderCode,
     target_plan: targetPlan,
-    amount,
+    amount: authoritativeAmount,
     status: 'pending',
     created_at: new Date().toISOString(),
   };
@@ -985,53 +1034,119 @@ export async function dbCreatePaymentOrder(
 export async function dbCompletePaymentWebhook(
   orderCode: string,
   bankRefId?: string,
-  ownerId?: string
+  ownerId?: string,
+  options?: { verifiedTransferAmount?: number }
 ) {
-  await ensureSupabaseReadyAndSeeded();
-  const sb = getSupabaseDbClient();
+  const normalizedCode = (orderCode || '').trim().toUpperCase();
+  if (!normalizedCode) {
+    throw new Error('MISSING_ORDER_CODE: Thiếu mã đơn thanh toán.');
+  }
 
-  const { data: existingTx } = await sb
-    .from('payment_transactions')
-    .select('*')
-    .ilike('order_code', orderCode)
-    .maybeSingle();
+  let sb: ReturnType<typeof getSupabaseDbClient> | null = null;
+  let existingTx: PaymentTransaction | null = null;
+
+  try {
+    await ensureSupabaseReadyAndSeeded();
+    sb = getSupabaseDbClient();
+    const { data } = await sb
+      .from('payment_transactions')
+      .select('*')
+      .ilike('order_code', normalizedCode)
+      .maybeSingle();
+    existingTx = (data as PaymentTransaction | null) || null;
+  } catch {
+    existingTx =
+      SEED_TRANSACTIONS.find(
+        (tx) => tx.order_code.toUpperCase() === normalizedCode
+      ) || null;
+  }
+
+  // P0 #5 Fix: Never fabricate a completed transaction when orderCode does not exist
+  if (!existingTx) {
+    throw new Error(
+      `PAYMENT_ORDER_NOT_FOUND: Mã giao dịch "${normalizedCode}" không tồn tại trên hệ thống.`
+    );
+  }
+
+  if (!sb) {
+    await ensureSupabaseReadyAndSeeded();
+    sb = getSupabaseDbClient();
+  }
+
+  const resolvedOwnerId = existingTx.user_id || ownerId || SEED_PROFILE.id;
+
+  // P0 #5 Fix: Idempotent webhook retry — do NOT re-extend plan_expires_at if already completed
+  if (existingTx.status === 'completed') {
+    const billingData = await dbGetBillingData(resolvedOwnerId);
+    return {
+      ...billingData,
+      alreadyCompleted: true,
+    };
+  }
+
+  const requiredAmount = Number(existingTx.amount || 0);
+  if (
+    options?.verifiedTransferAmount !== undefined &&
+    options.verifiedTransferAmount !== null
+  ) {
+    const paidAmount = Number(options.verifiedTransferAmount);
+    if (!Number.isFinite(paidAmount) || paidAmount < requiredAmount) {
+      throw new Error(
+        `PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản (${paidAmount}) nhỏ hơn số tiền gói cước yêu cầu (${requiredAmount}).`
+      );
+    }
+  }
 
   const nowIso = new Date().toISOString();
-  const refId = bankRefId || `FT${Date.now()}`;
-  let targetPlan: PlanTier = 'premium';
-  const resolvedOwnerId = existingTx?.user_id || ownerId || SEED_PROFILE.id;
+  const refId = (bankRefId || '').trim() || `FT-${existingTx.id}`;
 
-  if (existingTx) {
-    targetPlan = existingTx.target_plan as PlanTier;
-    await sb
+  // Ensure bank_ref_id has not been used by another transaction
+  if (bankRefId && bankRefId.trim()) {
+    const { data: duplicateRef } = await sb
       .from('payment_transactions')
-      .update({
-        status: 'completed',
-        bank_ref_id: refId,
-        completed_at: nowIso,
-      })
-      .eq('id', existingTx.id);
-  } else {
-    targetPlan = orderCode.toUpperCase().startsWith('QLAOKB')
-      ? 'basic'
-      : 'premium';
-    await sb.from('payment_transactions').insert({
-      id: `tx-${Date.now()}`,
-      user_id: resolvedOwnerId,
-      order_code: orderCode,
-      target_plan: targetPlan,
-      amount: targetPlan === 'basic' ? 39000 : 69000,
+      .select('id, order_code')
+      .eq('bank_ref_id', refId)
+      .neq('id', existingTx.id)
+      .maybeSingle();
+
+    if (duplicateRef) {
+      throw new Error(
+        `DUPLICATE_BANK_REF: Mã tham chiếu ngân hàng "${refId}" đã được sử dụng cho giao dịch khác.`
+      );
+    }
+  }
+
+  const targetPlan = existingTx.target_plan as PlanTier;
+
+  // Conditional atomic update from status='pending' -> 'completed'
+  const { data: updatedTx, error: txUpdateErr } = await sb
+    .from('payment_transactions')
+    .update({
       status: 'completed',
       bank_ref_id: refId,
-      created_at: nowIso,
       completed_at: nowIso,
-    });
+    })
+    .eq('id', existingTx.id)
+    .eq('status', 'pending')
+    .select('*')
+    .maybeSingle();
+
+  if (txUpdateErr) {
+    throw new Error(txUpdateErr.message);
+  }
+
+  if (!updatedTx) {
+    const billingData = await dbGetBillingData(resolvedOwnerId);
+    return {
+      ...billingData,
+      alreadyCompleted: true,
+    };
   }
 
   const expires = new Date();
   expires.setDate(expires.getDate() + 30);
 
-  await sb
+  const { error: profileErr } = await sb
     .from('profiles')
     .update({
       plan: targetPlan,
@@ -1040,7 +1155,15 @@ export async function dbCompletePaymentWebhook(
     })
     .eq('id', resolvedOwnerId);
 
-  return dbGetBillingData(resolvedOwnerId);
+  if (profileErr) {
+    throw new Error(profileErr.message);
+  }
+
+  const billingData = await dbGetBillingData(resolvedOwnerId);
+  return {
+    ...billingData,
+    alreadyCompleted: false,
+  };
 }
 
 export async function dbSetProfilePlan(

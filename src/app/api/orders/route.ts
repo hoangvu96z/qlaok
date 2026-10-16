@@ -6,8 +6,16 @@ import {
   dbGetShopOrders,
   dbUpdateOrderStatus,
 } from '@/lib/mpos-store';
-import { dbGetShopCatalog, dbRecordAnalyticsEvent } from '@/lib/db';
 import {
+  dbGetShopById,
+  dbGetShopCatalog,
+  dbRecordAnalyticsEvent,
+} from '@/lib/db';
+import {
+  requireShopOwnerOrAdmin,
+  verifyRequestUser,
+} from '@/lib/server-auth';
+import type {
   OrderLineItem,
   OrderStatus,
   PaymentMethod,
@@ -18,6 +26,7 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const orderId = searchParams.get('orderId');
+    const trackingToken = searchParams.get('trackingToken');
     const shopId = searchParams.get('shopId') || 'shop-fnb-001';
 
     if (orderId) {
@@ -28,8 +37,39 @@ export async function GET(req: Request) {
           { status: 404 }
         );
       }
-      return NextResponse.json({ order });
+
+      const sessionUser = await verifyRequestUser(req);
+      let isOwnerOrAdmin = sessionUser?.role === 'admin';
+      if (!isOwnerOrAdmin && sessionUser) {
+        const shop = await dbGetShopById(order.shop_id);
+        isOwnerOrAdmin = shop?.owner_id === sessionUser.sub;
+      }
+
+      if (isOwnerOrAdmin) {
+        return NextResponse.json({ order });
+      }
+
+      // Customer order status tracker: if order has a tracking_token and caller passes a mismatched token, reject
+      if (
+        order.tracking_token &&
+        trackingToken &&
+        trackingToken !== order.tracking_token
+      ) {
+        return NextResponse.json(
+          { error: 'Mã theo dõi đơn hàng (trackingToken) không hợp lệ.' },
+          { status: 403 }
+        );
+      }
+
+      // Return sanitized customer tracking view (strip internal tokens)
+      const { tracking_token: _t, idempotency_key: _i, ...publicOrderView } =
+        order;
+      return NextResponse.json({ order: publicOrderView });
     }
+
+    // Listing all orders, inventory & revenue stats for a shop requires Shop Owner or Super Admin authentication
+    const auth = await requireShopOwnerOrAdmin(req, shopId);
+    if (auth.errorResponse) return auth.errorResponse;
 
     const [orders, catalog] = await Promise.all([
       dbGetShopOrders(shopId),
@@ -71,6 +111,7 @@ export async function POST(req: Request) {
       source = 'qr_table',
       markCompletedImmediately = false,
       discount_amount = 0,
+      idempotency_key,
       items = [],
     } = body as {
       shop_id: string;
@@ -82,6 +123,7 @@ export async function POST(req: Request) {
       source?: 'qr_table' | 'counter_pos';
       markCompletedImmediately?: boolean;
       discount_amount?: number;
+      idempotency_key?: string;
       items: OrderLineItem[];
     };
 
@@ -90,6 +132,20 @@ export async function POST(req: Request) {
         { error: 'Thiếu mã cửa hàng (shop_id)' },
         { status: 400 }
       );
+    }
+
+    // Check if the request comes from the authenticated shop owner/staff or Super Admin
+    let isStaffAuthorized = false;
+    const sessionUser = await verifyRequestUser(req);
+    if (sessionUser) {
+      if (sessionUser.role === 'admin') {
+        isStaffAuthorized = true;
+      } else {
+        const shop = await dbGetShopById(shop_id);
+        if (shop && shop.owner_id === sessionUser.sub) {
+          isStaffAuthorized = true;
+        }
+      }
     }
 
     const order = await dbCreateOrder({
@@ -102,6 +158,9 @@ export async function POST(req: Request) {
       source,
       markCompletedImmediately,
       discount_amount,
+      idempotency_key:
+        idempotency_key || req.headers.get('x-idempotency-key') || undefined,
+      isStaffAuthorized,
       items,
     });
 
@@ -156,6 +215,18 @@ export async function PATCH(req: Request) {
         { status: 400 }
       );
     }
+
+    const existingOrder = await dbGetOrderById(resolvedOrderId);
+    if (!existingOrder) {
+      return NextResponse.json(
+        { error: 'Không tìm thấy đơn hàng' },
+        { status: 404 }
+      );
+    }
+
+    // Only the authenticated shop owner or Super Admin can update order status / edit items / mark paid
+    const auth = await requireShopOwnerOrAdmin(req, existingOrder.shop_id);
+    if (auth.errorResponse) return auth.errorResponse;
 
     const updated = await dbUpdateOrderStatus(resolvedOrderId, {
       status,

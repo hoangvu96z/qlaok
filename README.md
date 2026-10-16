@@ -84,7 +84,7 @@ Trong file `.env.local`, hệ thống sử dụng cổng **9Router AI** (cấu h
 ```env
 # 9Router AI Server (combo1 cho dịch văn bản, combo2 cho quét ảnh/OCR)
 AI_BASE_URL=https://vunph.click/v1
-AI_API_KEY=sk-07c9f002b12e445e-luaxyd-d0592739
+AI_API_KEY=sk-your-9router-api-key
 AI_MODEL=combo1
 AI_VISION_MODEL=combo2
 

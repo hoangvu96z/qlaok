@@ -36,6 +36,7 @@ import {
 import {
   clearStoredAuthOwner,
   getAdminBackupSession,
+  getAuthHeaders,
   getStoredAuthOwner,
   isSuperAdmin,
   setStoredAuthOwner,
@@ -237,16 +238,19 @@ export default function SuperAdminPortalPage() {
     if (!adminUser) return;
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/admin?adminEmail=${encodeURIComponent(adminUser.email)}`,
-        {
-          headers: {
-            'x-admin-email': adminUser.email,
-          },
-          cache: 'no-store',
-        }
-      );
+      const res = await fetch('/api/admin', {
+        headers: getAuthHeaders(),
+        cache: 'no-store',
+      });
       const json = await res.json();
+      if (res.status === 401 || res.status === 403) {
+        clearStoredAuthOwner();
+        setAdminUser(null);
+        throw new Error(
+          json.error ||
+            'Phiên đăng nhập Super Admin đã hết hạn. Vui lòng đăng nhập lại.'
+        );
+      }
       if (!res.ok) {
         throw new Error(json.error || 'Không thể tải dữ liệu Super Admin');
       }
@@ -299,7 +303,7 @@ export default function SuperAdminPortalPage() {
         role: 'admin',
         plan: 'premium',
       };
-      setStoredAuthOwner(profile);
+      setStoredAuthOwner(profile, json.accessToken);
       setAdminUser(profile);
       showToastMessage(
         'success',
@@ -323,14 +327,10 @@ export default function SuperAdminPortalPage() {
     try {
       const res = await fetch('/api/admin', {
         method: 'POST',
-        headers: {
+        headers: getAuthHeaders({
           'Content-Type': 'application/json',
-          'x-admin-email': adminUser.email,
-        },
-        body: JSON.stringify({
-          ...payload,
-          adminEmail: adminUser.email,
         }),
+        body: JSON.stringify(payload),
       });
       const json = await res.json();
       if (!res.ok) {

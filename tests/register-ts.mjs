@@ -25,6 +25,10 @@ function tryResolveTsFile(basePath) {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === 'next/server') {
+      return nextResolve('next/server.js', context);
+    }
+
     // Resolve Next.js "@/..." alias to "<root>/src/..."
     if (specifier.startsWith('@/')) {
       const target = path.join(ROOT_DIR, 'src', specifier.slice(2));

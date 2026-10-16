@@ -1,25 +1,36 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
-import {
-  isSuperAdminEmail,
-  SUPER_ADMIN_EMAIL,
-} from '@/lib/auth-session';
+import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   ensureSuperAdminSeeded,
   hashPassword,
   readCredentials,
+  verifyPassword,
   writeCredentials,
 } from '@/lib/auth-credentials';
+import {
+  attachSessionCookie,
+  clearSessionCookie,
+  issueSessionToken,
+  verifyRequestUser,
+} from '@/lib/server-auth';
 import { SEED_PROFILE } from '@/lib/seed-data';
-import { Profile, Shop } from '@/types/qlaok';
+import type { Profile, Shop } from '@/types/qlaok';
+
+export async function GET(req: Request) {
+  const verified = await verifyRequestUser(req);
+  if (!verified) {
+    return NextResponse.json({ authenticated: false }, { status: 401 });
+  }
+  return NextResponse.json({
+    authenticated: true,
+    session: verified,
+  });
+}
 
 export async function POST(req: Request) {
   try {
-    await ensureSupabaseReadyAndSeeded();
-    const sb = getSupabaseDbClient();
-    await ensureSuperAdminSeeded();
-
     const body = await req.json();
     const {
       action,
@@ -27,20 +38,102 @@ export async function POST(req: Request) {
       password = '',
       fullName = '',
       phone = '',
-      userId = '',
+      supabaseAccessToken = '',
     } = body as {
-      action: 'register' | 'login' | 'demo_login' | 'sync_user';
+      action: 'register' | 'login' | 'demo_login' | 'sync_user' | 'logout';
       email?: string;
       password?: string;
       fullName?: string;
       phone?: string;
       userId?: string;
+      supabaseAccessToken?: string;
     };
+
+    if (action === 'logout') {
+      const res = NextResponse.json({ success: true });
+      return clearSessionCookie(res);
+    }
 
     const normalizedEmail = email.trim().toLowerCase();
     const isAdminUser = isSuperAdminEmail(normalizedEmail);
 
-    // 1. Explicit Demo Account Login
+    // P0 Security Fix: Reject any attempt to register or overwrite the Super Admin account BEFORE DB access
+    if (action === 'register') {
+      if (!normalizedEmail || !normalizedEmail.includes('@')) {
+        return NextResponse.json(
+          { error: 'Vui lòng nhập địa chỉ email hợp lệ.' },
+          { status: 400 }
+        );
+      }
+      if (!password || password.length < 6) {
+        return NextResponse.json(
+          { error: 'Mật khẩu phải có ít nhất 6 ký tự.' },
+          { status: 400 }
+        );
+      }
+      if (isAdminUser) {
+        return NextResponse.json(
+          {
+            error:
+              'Email Quản trị hệ thống không thể đăng ký mới hoặc ghi đè mật khẩu qua luồng công khai. Vui lòng sử dụng chức năng Đăng nhập.',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // P0 Security Fix: Verify token on sync_user BEFORE DB access
+    let preVerifiedSyncSession = null;
+    if (action === 'sync_user') {
+      preVerifiedSyncSession = await verifyRequestUser(req);
+      if (!preVerifiedSyncSession && supabaseAccessToken) {
+        try {
+          const sb = getSupabaseDbClient();
+          const { data: sbUserRes, error: sbErr } = await sb.auth.getUser(
+            supabaseAccessToken
+          );
+          if (!sbErr && sbUserRes?.user?.email) {
+            const sbEmail = sbUserRes.user.email.trim().toLowerCase();
+            preVerifiedSyncSession = {
+              sub: sbUserRes.user.id,
+              email: sbEmail,
+              role: (isSuperAdminEmail(sbEmail) ? 'admin' : 'owner') as
+                | 'admin'
+                | 'owner',
+              iat: Math.floor(Date.now() / 1000),
+              exp: Math.floor(Date.now() / 1000) + 3600,
+            };
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!preVerifiedSyncSession) {
+        return NextResponse.json(
+          {
+            error:
+              'Không thể đồng bộ người dùng: Thiếu hoặc sai token xác thực phiên đăng nhập (Unauthorized).',
+          },
+          { status: 401 }
+        );
+      }
+
+      if (normalizedEmail && normalizedEmail !== preVerifiedSyncSession.email) {
+        return NextResponse.json(
+          {
+            error:
+              'Email yêu cầu đồng bộ không khớp với phiên đăng nhập đã xác thực.',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    await ensureSupabaseReadyAndSeeded();
+    const sb = getSupabaseDbClient();
+
+    // 1. Explicit Demo Account Login (non-admin demo shop owner)
     if (
       action === 'demo_login' ||
       (action === 'login' &&
@@ -56,78 +149,37 @@ export async function POST(req: Request) {
           .order('created_at', { ascending: true }),
       ]);
 
-      return NextResponse.json({
-        user: (demoProfile as Profile) || SEED_PROFILE,
+      const resolvedUser = ((demoProfile as Profile) || SEED_PROFILE) as Profile;
+      const accessToken = issueSessionToken({
+        id: resolvedUser.id,
+        email: resolvedUser.email,
+        role: 'owner',
+        is_admin: false,
+      });
+
+      const res = NextResponse.json({
+        user: resolvedUser,
         shops: (demoShops || []) as Shop[],
         isAdmin: false,
+        accessToken,
       });
+      return attachSessionCookie(res, accessToken);
     }
 
-    // 2. Register New Shop Owner Account (or set Super Admin password) on Supabase
+    // 2. Register New Shop Owner Account
     if (action === 'register') {
-      if (!normalizedEmail || !normalizedEmail.includes('@')) {
-        return NextResponse.json(
-          { error: 'Vui lòng nhập địa chỉ email hợp lệ.' },
-          { status: 400 }
-        );
-      }
-      if (!password || password.length < 6) {
-        return NextResponse.json(
-          { error: 'Mật khẩu phải có ít nhất 6 ký tự.' },
-          { status: 400 }
-        );
-      }
 
-      // Special handling: If Super Admin registers, update their password & profile seamlessly
-      if (isAdminUser) {
-        const adminProfile = await ensureSuperAdminSeeded();
-        const updatedFullName =
-          fullName.trim() || adminProfile.full_name || 'Hoàng Vũ (Super Admin)';
-        const updatedPhone = phone.trim() || adminProfile.phone || '0905649696';
-
-        const { data: updatedAdmin } = await sb
-          .from('profiles')
-          .update({
-            full_name: updatedFullName,
-            phone: updatedPhone,
-            plan: 'premium',
-          })
-          .eq('id', adminProfile.id)
-          .select('*')
-          .maybeSingle();
-
-        const creds = readCredentials();
-        creds[SUPER_ADMIN_EMAIL] = {
-          passwordHash: hashPassword(password),
-          profileId: adminProfile.id,
-        };
-        writeCredentials(creds);
-
-        const { data: adminShops } = await sb
-          .from('shops')
-          .select('*')
-          .eq('owner_id', adminProfile.id)
-          .order('created_at', { ascending: true });
-
-        return NextResponse.json({
-          user: {
-            ...((updatedAdmin as Profile) || adminProfile),
-            plan: 'premium',
-            is_admin: true,
-            role: 'admin',
-          },
-          shops: (adminShops || []) as Shop[],
-          isAdmin: true,
-        });
-      }
-
+      const creds = readCredentials();
       const { data: existingProfiles } = await sb
         .from('profiles')
         .select('*')
         .ilike('email', normalizedEmail)
         .limit(1);
 
-      if (existingProfiles && existingProfiles.length > 0) {
+      if (
+        (existingProfiles && existingProfiles.length > 0) ||
+        Boolean(creds[normalizedEmail])
+      ) {
         return NextResponse.json(
           {
             error:
@@ -137,7 +189,7 @@ export async function POST(req: Request) {
         );
       }
 
-      let newOwnerId = userId || `owner-${crypto.randomUUID()}`;
+      let newOwnerId = `owner-${crypto.randomUUID()}`;
       try {
         const signUpRes = await sb.auth.signUp({
           email: normalizedEmail,
@@ -175,21 +227,30 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: insertErr.message }, { status: 400 });
       }
 
-      const creds = readCredentials();
       creds[normalizedEmail] = {
         passwordHash: hashPassword(password),
         profileId: createdProfile.id,
       };
       writeCredentials(creds);
 
-      return NextResponse.json(
+      const finalCreated = createdProfile as Profile;
+      const accessToken = issueSessionToken({
+        id: finalCreated.id,
+        email: finalCreated.email,
+        role: 'owner',
+        is_admin: false,
+      });
+
+      const res = NextResponse.json(
         {
-          user: createdProfile as Profile,
+          user: finalCreated,
           shops: [] as Shop[],
           isAdmin: false,
+          accessToken,
         },
         { status: 201 }
       );
+      return attachSessionCookie(res, accessToken);
     }
 
     // 3. Login Existing Shop Owner or Super Admin Account
@@ -199,6 +260,10 @@ export async function POST(req: Request) {
           { error: 'Vui lòng nhập đầy đủ Email và Mật khẩu.' },
           { status: 400 }
         );
+      }
+
+      if (isAdminUser) {
+        await ensureSuperAdminSeeded();
       }
 
       const { data: matchingProfiles } = await sb
@@ -214,11 +279,19 @@ export async function POST(req: Request) {
       const storedCred = creds[normalizedEmail];
 
       if (storedCred) {
-        if (storedCred.passwordHash !== hashPassword(password)) {
+        if (!verifyPassword(password, storedCred.passwordHash)) {
           return NextResponse.json(
             { error: 'Mật khẩu không chính xác. Vui lòng kiểm tra lại.' },
             { status: 401 }
           );
+        }
+        // Automatically upgrade legacy sha256 hash to salted scrypt on successful login
+        if (!storedCred.passwordHash.startsWith('scrypt$')) {
+          creds[normalizedEmail] = {
+            ...storedCred,
+            passwordHash: hashPassword(password),
+          };
+          writeCredentials(creds);
         }
       } else {
         const { data: authData, error: authErr } =
@@ -227,26 +300,14 @@ export async function POST(req: Request) {
             password,
           });
 
-        if (authErr) {
-          const msg = authErr.message.toLowerCase();
-          if (!profile) {
-            return NextResponse.json(
-              {
-                error:
-                  'Email này chưa được đăng ký tài khoản Chủ quán. Vui lòng chọn tab "Đăng ký mới".',
-              },
-              { status: 401 }
-            );
-          }
-          if (!msg.includes('email not confirmed')) {
-            return NextResponse.json(
-              { error: 'Email hoặc mật khẩu không chính xác.' },
-              { status: 401 }
-            );
-          }
+        if (authErr || !authData?.user) {
+          return NextResponse.json(
+            { error: 'Email hoặc mật khẩu không chính xác.' },
+            { status: 401 }
+          );
         }
 
-        if (authData?.user && !profile) {
+        if (authData.user && !profile) {
           const nowIso = new Date().toISOString();
           const { data: synced } = await sb
             .from('profiles')
@@ -296,22 +357,74 @@ export async function POST(req: Request) {
         .eq('owner_id', profile.id)
         .order('created_at', { ascending: true });
 
-      return NextResponse.json({
+      const accessToken = issueSessionToken({
+        id: finalUser.id,
+        email: finalUser.email,
+        role: isAdminUser ? 'admin' : 'owner',
+        is_admin: isAdminUser,
+      });
+
+      const res = NextResponse.json({
         user: finalUser,
         shops: (ownerShops || []) as Shop[],
         isAdmin: isAdminUser,
+        accessToken,
       });
+      return attachSessionCookie(res, accessToken);
     }
 
-    // 4. Sync OTP / OAuth User
+    // 4. Sync OTP / OAuth User — MUST prove identity via verified token or Supabase JWT
     if (action === 'sync_user') {
-      if (!normalizedEmail) {
-        return NextResponse.json({ error: 'Missing email' }, { status: 400 });
+      let verifiedSession = await verifyRequestUser(req);
+
+      if (!verifiedSession && supabaseAccessToken) {
+        try {
+          const { data: sbUserRes, error: sbErr } = await sb.auth.getUser(
+            supabaseAccessToken
+          );
+          if (!sbErr && sbUserRes?.user?.email) {
+            const sbEmail = sbUserRes.user.email.trim().toLowerCase();
+            verifiedSession = {
+              sub: sbUserRes.user.id,
+              email: sbEmail,
+              role: isSuperAdminEmail(sbEmail) ? 'admin' : 'owner',
+              iat: Math.floor(Date.now() / 1000),
+              exp: Math.floor(Date.now() / 1000) + 3600,
+            };
+          }
+        } catch {
+          // ignore
+        }
       }
+
+      if (!verifiedSession) {
+        return NextResponse.json(
+          {
+            error:
+              'Không thể đồng bộ người dùng: Thiếu hoặc sai token xác thực phiên đăng nhập (Unauthorized).',
+          },
+          { status: 401 }
+        );
+      }
+
+      // If caller passed an email in body, it must match the verified token's email
+      if (normalizedEmail && normalizedEmail !== verifiedSession.email) {
+        return NextResponse.json(
+          {
+            error:
+              'Email yêu cầu đồng bộ không khớp với phiên đăng nhập đã xác thực.',
+          },
+          { status: 403 }
+        );
+      }
+
+      const verifiedEmail = verifiedSession.email;
+      const verifiedIsAdmin = isSuperAdminEmail(verifiedEmail);
+
       const { data: existing } = await sb
         .from('profiles')
         .select('*')
-        .ilike('email', normalizedEmail)
+        .ilike('email', verifiedEmail)
         .maybeSingle();
 
       let profile: Profile | null = (existing as Profile) || null;
@@ -321,11 +434,11 @@ export async function POST(req: Request) {
           .from('profiles')
           .upsert(
             {
-              id: userId || `owner-${crypto.randomUUID()}`,
-              email: normalizedEmail,
-              full_name: fullName || normalizedEmail.split('@')[0],
+              id: verifiedSession.sub || `owner-${crypto.randomUUID()}`,
+              email: verifiedEmail,
+              full_name: fullName || verifiedEmail.split('@')[0],
               phone: phone || null,
-              plan: isAdminUser ? 'premium' : 'free',
+              plan: verifiedIsAdmin ? 'premium' : 'free',
               created_at: nowIso,
               updated_at: nowIso,
             },
@@ -336,7 +449,7 @@ export async function POST(req: Request) {
         profile = (created as Profile) || null;
       }
 
-      const finalUser: Profile = isAdminUser
+      const finalUser: Profile = verifiedIsAdmin
         ? {
             ...profile!,
             plan: 'premium',
@@ -351,11 +464,20 @@ export async function POST(req: Request) {
         .eq('owner_id', finalUser.id)
         .order('created_at', { ascending: true });
 
-      return NextResponse.json({
+      const accessToken = issueSessionToken({
+        id: finalUser.id,
+        email: finalUser.email,
+        role: verifiedIsAdmin ? 'admin' : 'owner',
+        is_admin: verifiedIsAdmin,
+      });
+
+      const res = NextResponse.json({
         user: finalUser,
         shops: (ownerShops || []) as Shop[],
-        isAdmin: isAdminUser,
+        isAdmin: verifiedIsAdmin,
+        accessToken,
       });
+      return attachSessionCookie(res, accessToken);
     }
 
     return NextResponse.json({ error: 'Invalid auth action' }, { status: 400 });

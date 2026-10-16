@@ -11,6 +11,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { getAuthHeaders } from '@/lib/auth-session';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
 import { PaymentTransaction, PlanTier } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
@@ -29,6 +30,7 @@ export default function DashboardBillingPage() {
       ? `?ownerId=${encodeURIComponent(profile.id)}`
       : '';
     const res = await fetch(`/api/webhooks/payment${query}`, {
+      headers: getAuthHeaders(),
       cache: 'no-store',
     });
     const data = await res.json();
@@ -50,7 +52,7 @@ export default function DashboardBillingPage() {
 
     const res = await fetch('/api/webhooks/payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'create_order',
         targetPlan,
@@ -70,7 +72,7 @@ export default function DashboardBillingPage() {
     try {
       const res = await fetch('/api/webhooks/payment', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           orderCode,
           referenceCode: `SEPAY_${Date.now()}`,
@@ -94,7 +96,7 @@ export default function DashboardBillingPage() {
   const handleDirectSwitch = async (plan: PlanTier) => {
     await fetch('/api/webhooks/payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'switch_plan_direct',
         plan,

@@ -4,11 +4,30 @@ import assert from "node:assert/strict";
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:3000";
 const LOCALES = ["vi", "en", "ko", "ja", "zh"];
 
+let cachedAccessToken = null;
+
+async function ensureAccessToken() {
+  if (cachedAccessToken) return cachedAccessToken;
+  const res = await fetch(`${BASE_URL}/api/auth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "demo_login" }),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    cachedAccessToken = data.accessToken || null;
+  }
+  return cachedAccessToken;
+}
+
 async function fetchJson(path, options = {}) {
+  const token =
+    options.unauthenticated === true ? null : await ensureAccessToken();
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });

@@ -79,7 +79,7 @@ function LoginFormContent() {
       if (!res.ok || !data.user) {
         throw new Error(data.error || 'Không thể mở tài khoản Demo.');
       }
-      setStoredAuthOwner(data.user);
+      setStoredAuthOwner(data.user, data.accessToken);
       if (data.shops?.[0]?.id && typeof window !== 'undefined') {
         localStorage.setItem('qlaok_active_shop_id', data.shops[0].id);
       }
@@ -117,7 +117,7 @@ function LoginFormContent() {
           );
         }
 
-        setStoredAuthOwner(data.user);
+        setStoredAuthOwner(data.user, data.accessToken);
         if (data.isAdmin || isSuperAdmin(data.user)) {
           router.push('/admin');
           return;
@@ -156,7 +156,7 @@ function LoginFormContent() {
           throw new Error(data.error || 'Không thể đăng ký tài khoản.');
         }
 
-        setStoredAuthOwner(data.user);
+        setStoredAuthOwner(data.user, data.accessToken);
         if (data.isAdmin || isSuperAdmin(data.user)) {
           router.push('/admin');
           return;
@@ -196,20 +196,27 @@ function LoginFormContent() {
           });
           if (error) throw error;
           if (data.user) {
+            const sbAccessToken = data.session?.access_token || '';
             const syncRes = await fetch('/api/auth', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                ...(sbAccessToken
+                  ? { Authorization: `Bearer ${sbAccessToken}` }
+                  : {}),
+              },
               body: JSON.stringify({
                 action: 'sync_user',
                 userId: data.user.id,
                 email: data.user.email || email.trim(),
                 fullName: data.user.user_metadata?.full_name as string,
                 phone: data.user.user_metadata?.phone as string,
+                supabaseAccessToken: sbAccessToken,
               }),
             });
             const syncData = await syncRes.json();
             if (syncData.user) {
-              setStoredAuthOwner(syncData.user);
+              setStoredAuthOwner(syncData.user, syncData.accessToken);
             }
             if ((syncData.shops || []).length === 0) {
               router.push('/onboarding');

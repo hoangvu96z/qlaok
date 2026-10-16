@@ -1,14 +1,15 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Automated Supabase SQL Migration Runner for Qlaok
+ * Automated Supabase SQL Migration Runner for Qlaok (with History & Checksum Tracking)
  * Usage: npm run db:migrate
  *
  * Supports:
  * 1. SUPABASE_ACCESS_TOKEN (Personal Access Token from https://supabase.com/dashboard/account/tokens)
- *    -> Executes all supabase/migrations/*.sql via Supabase Management API over HTTPS
- * 2. rpc('exec_sql') via SUPABASE_SERVICE_ROLE_KEY (if exec_sql function was created once)
+ *    -> Tracks applied migrations in `public.schema_migrations` and executes only unapplied `.sql` files
+ * 2. rpc('exec_sql') via SUPABASE_SERVICE_ROLE_KEY
  */
 
 function loadEnvFile(filePath) {
@@ -45,6 +46,10 @@ function extractProjectRef(url) {
   return match ? match[1] : process.env.SUPABASE_PROJECT_REF || '';
 }
 
+function computeChecksum(sql) {
+  return crypto.createHash('sha256').update(sql, 'utf8').digest('hex');
+}
+
 async function runSqlViaManagementApi(projectRef, accessToken, sql, fileName) {
   const res = await fetch(
     `https://api.supabase.com/v1/projects/${projectRef}/database/query`,
@@ -66,21 +71,33 @@ async function runSqlViaManagementApi(projectRef, accessToken, sql, fileName) {
 }
 
 async function runSqlViaRpc(supabaseUrl, serviceKey, sql, fileName) {
-  const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/exec_sql`, {
-    method: 'POST',
-    headers: {
-      apikey: serviceKey,
-      Authorization: `Bearer ${serviceKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query: sql }),
-  });
+  const res = await fetch(
+    `${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/exec_sql`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: sql }),
+    }
+  );
 
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`RPC exec_sql HTTP ${res.status} on ${fileName}: ${errText}`);
   }
 }
+
+const INIT_MIGRATION_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+  filename TEXT PRIMARY KEY,
+  checksum TEXT NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+`;
 
 async function main() {
   const migrationsDir = path.join(process.cwd(), 'supabase', 'migrations');
@@ -105,11 +122,42 @@ async function main() {
 
   if (SUPABASE_ACCESS_TOKEN && projectRef) {
     console.log(
-      `🚀 Running migrations automatically on Supabase project "${projectRef}" via Management API...`
+      `🚀 Running tracked migrations on Supabase project "${projectRef}" via Management API...`
     );
+
+    await runSqlViaManagementApi(
+      projectRef,
+      SUPABASE_ACCESS_TOKEN,
+      INIT_MIGRATION_TABLE_SQL,
+      'init_schema_migrations'
+    );
+
+    const appliedRows = await runSqlViaManagementApi(
+      projectRef,
+      SUPABASE_ACCESS_TOKEN,
+      'SELECT filename, checksum FROM public.schema_migrations;',
+      'read_schema_migrations'
+    );
+
+    const appliedMap = new Map();
+    if (Array.isArray(appliedRows)) {
+      for (const row of appliedRows) {
+        if (row && row.filename) {
+          appliedMap.set(row.filename, row.checksum);
+        }
+      }
+    }
+
     for (const file of files) {
       const fullPath = path.join(migrationsDir, file);
       const sql = fs.readFileSync(fullPath, 'utf8');
+      const checksum = computeChecksum(sql);
+
+      if (appliedMap.has(file)) {
+        console.log(`  ⏭️  Skipping ${file} (already applied)`);
+        continue;
+      }
+
       process.stdout.write(`  -> Applying ${file}... `);
       await runSqlViaManagementApi(
         projectRef,
@@ -117,9 +165,16 @@ async function main() {
         sql,
         file
       );
+      const recordSql = `INSERT INTO public.schema_migrations (filename, checksum) VALUES ('${file.replace(/'/g, "''")}', '${checksum}') ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = NOW();`;
+      await runSqlViaManagementApi(
+        projectRef,
+        SUPABASE_ACCESS_TOKEN,
+        recordSql,
+        `record_${file}`
+      );
       console.log('DONE ✅');
     }
-    console.log('🎉 All SQL migrations applied to Supabase successfully!');
+    console.log('🎉 All SQL migrations verified & applied to Supabase!');
     return;
   }
 
@@ -127,11 +182,25 @@ async function main() {
     console.log(
       `🚀 Running migrations via Supabase RPC exec_sql on ${SUPABASE_URL}...`
     );
+    await runSqlViaRpc(
+      SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY,
+      INIT_MIGRATION_TABLE_SQL,
+      'init_schema_migrations'
+    );
     for (const file of files) {
       const fullPath = path.join(migrationsDir, file);
       const sql = fs.readFileSync(fullPath, 'utf8');
+      const checksum = computeChecksum(sql);
       process.stdout.write(`  -> Applying ${file}... `);
       await runSqlViaRpc(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, sql, file);
+      const recordSql = `INSERT INTO public.schema_migrations (filename, checksum) VALUES ('${file.replace(/'/g, "''")}', '${checksum}') ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = NOW();`;
+      await runSqlViaRpc(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        recordSql,
+        `record_${file}`
+      );
       console.log('DONE ✅');
     }
     console.log('🎉 All SQL migrations applied to Supabase successfully!');
@@ -149,7 +218,7 @@ async function main() {
     '  2. Thêm dòng sau vào file .env.local:\n     SUPABASE_ACCESS_TOKEN=sbp_xxxxxxxxxxxxxxxxxxxx'
   );
   console.log(
-    '  3. Chạy lệnh: npm run db:migrate (tự động đẩy toàn bộ file .sql lên Supabase!)\n'
+    '  3. Chạy lệnh: npm run db:migrate (tự động đẩy các file .sql mới lên Supabase!)\n'
   );
 }
 

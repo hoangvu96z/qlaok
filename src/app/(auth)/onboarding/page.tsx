@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { BusinessVertical, Profile } from '@/types/qlaok';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
-import { getStoredAuthOwner } from '@/lib/auth-session';
+import { getAuthHeaders, getStoredAuthOwner } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 
 export default function OnboardingWizardPage() {
@@ -111,7 +111,7 @@ export default function OnboardingWizardPage() {
       // 2. Create Shop attached to the logged-in Owner
       const shopRes = await fetch('/api/shops', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           owner_id: ownerProfile?.id,
           name: shopName.trim(),
@@ -178,7 +178,7 @@ export default function OnboardingWizardPage() {
       // 3. Bulk import initial category and translated item
       await fetch('/api/catalog', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_import',
           shopId: createdShop.id,

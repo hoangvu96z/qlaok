@@ -6,7 +6,7 @@ import {
   SUPER_ADMIN_EMAIL,
   SUPER_ADMIN_ID,
 } from '@/lib/auth-session';
-import { Profile } from '@/types/qlaok';
+import type { Profile } from '@/types/qlaok';
 
 const STORE_DIR = path.join(process.cwd(), '.local-db');
 const CREDENTIALS_FILE = path.join(STORE_DIR, 'auth-credentials.json');
@@ -18,11 +18,47 @@ export interface CredentialMap {
   };
 }
 
+/**
+ * Hashes password using scrypt with a unique random 16-byte salt per password.
+ * Format: scrypt$<saltHex>$<derivedKeyHex>
+ */
 export function hashPassword(password: string): string {
-  return crypto
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+}
+
+/**
+ * Verifies a plaintext password against a stored scrypt hash (or legacy sha256 hash)
+ * using constant-time comparison (crypto.timingSafeEqual).
+ */
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (!password || !storedHash) return false;
+
+  if (storedHash.startsWith('scrypt$')) {
+    const parts = storedHash.split('$');
+    if (parts.length !== 3) return false;
+    const [, salt, expectedHex] = parts;
+    if (!salt || !expectedHex) return false;
+    try {
+      const derived = crypto.scryptSync(password, salt, 64);
+      const expected = Buffer.from(expectedHex, 'hex');
+      if (derived.length !== expected.length) return false;
+      return crypto.timingSafeEqual(derived, expected);
+    } catch {
+      return false;
+    }
+  }
+
+  // Legacy sha256 compatibility check (constant-time)
+  const legacyHash = crypto
     .createHash('sha256')
     .update(`qlaok-salt-v1:${password}`)
     .digest('hex');
+  const a = Buffer.from(legacyHash, 'utf8');
+  const b = Buffer.from(storedHash, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 export function readCredentials(): CredentialMap {
@@ -90,14 +126,17 @@ export async function ensureSuperAdminSeeded(): Promise<Profile> {
     }
   }
 
-  // Ensure default credential exists for hoangvu96z@gmail.com if not set yet
-  const creds = readCredentials();
-  if (!creds[SUPER_ADMIN_EMAIL]) {
-    creds[SUPER_ADMIN_EMAIL] = {
-      passwordHash: hashPassword('Hoangvu@6496'),
-      profileId: adminProfile.id,
-    };
-    writeCredentials(creds);
+  // Only seed initial super admin credential if INITIAL_SUPER_ADMIN_PASSWORD is explicitly provided in env
+  const envInitialAdminPassword = process.env.INITIAL_SUPER_ADMIN_PASSWORD?.trim();
+  if (envInitialAdminPassword) {
+    const creds = readCredentials();
+    if (!creds[SUPER_ADMIN_EMAIL]) {
+      creds[SUPER_ADMIN_EMAIL] = {
+        passwordHash: hashPassword(envInitialAdminPassword),
+        profileId: adminProfile.id,
+      };
+      writeCredentials(creds);
+    }
   }
 
   return {

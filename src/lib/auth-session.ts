@@ -1,6 +1,7 @@
-import { Profile } from '@/types/qlaok';
+import type { Profile } from '@/types/qlaok';
 
 const AUTH_STORAGE_KEY = 'qlaok_auth_owner_v1';
+const AUTH_TOKEN_KEY = 'qlaok_auth_token_v1';
 const ACTIVE_SHOP_KEY = 'qlaok_active_shop_id';
 const ADMIN_BACKUP_KEY = 'qlaok_admin_backup_v1';
 
@@ -19,6 +20,39 @@ export function isSuperAdmin(profile?: Profile | null): boolean {
     profile.role === 'admin' ||
     isSuperAdminEmail(profile.email)
   );
+}
+
+export function getStoredAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredAuthToken(token?: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getAuthHeaders(
+  extraHeaders?: Record<string, string>
+): Record<string, string> {
+  const headers: Record<string, string> = { ...(extraHeaders || {}) };
+  const token = getStoredAuthToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 export function getStoredAuthOwner(): Profile | null {
@@ -40,7 +74,7 @@ export function getStoredAuthOwner(): Profile | null {
   }
 }
 
-export function setStoredAuthOwner(profile: Profile): void {
+export function setStoredAuthOwner(profile: Profile, accessToken?: string): void {
   if (typeof window === 'undefined') return;
   try {
     const normalized: Profile = {
@@ -50,6 +84,9 @@ export function setStoredAuthOwner(profile: Profile): void {
         : {}),
     };
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(normalized));
+    if (accessToken) {
+      localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
+    }
   } catch {
     // ignore storage errors
   }
@@ -59,8 +96,15 @@ export function clearStoredAuthOwner(): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(ACTIVE_SHOP_KEY);
     localStorage.removeItem(ADMIN_BACKUP_KEY);
+    // Also clear server HttpOnly session cookie asynchronously
+    fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'logout' }),
+    }).catch(() => {});
   } catch {
     // ignore storage errors
   }
