@@ -24,6 +24,7 @@ import {
   PanelLeftOpen,
   ChevronLeft,
   ChevronRight,
+  Monitor,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import {
@@ -37,6 +38,14 @@ import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { ShopOrder } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
+import {
+  ensureAudioContextUnlocked,
+  getBrowserNotificationPermission,
+  loadOrderChimeSettings,
+  playOrderAlertChime,
+  requestBrowserNotificationPermission,
+  sendBrowserOrderNotification,
+} from '@/lib/order-chime';
 
 const NAV_ITEMS = [
   {
@@ -87,44 +96,17 @@ const NAV_ITEMS = [
   },
 ];
 
-function playGlobalOrderChime() {
-  if (typeof window === 'undefined') return;
-  try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const playTone = (freq: number, start: number, duration: number) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(
-        0.001,
-        ctx.currentTime + start + duration
-      );
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + duration);
-    };
-    playTone(659.25, 0, 0.16);
-    playTone(880, 0.16, 0.32);
-  } catch {
-    // ignore autoplay restriction
-  }
-}
-
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { shops, activeShop, profile, loading, selectShop } = useDashboard();
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
+  const [latestNewTableLabel, setLatestNewTableLabel] = useState<string>('Bàn khách');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [browserPerm, setBrowserPerm] = useState<
+    NotificationPermission | 'unsupported'
+  >('default');
   const [liveToastOrder, setLiveToastOrder] = useState<{
     orderCode: string;
     tableLabel: string;
@@ -135,11 +117,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const firstCheckRef = useRef(true);
 
   useEffect(() => {
+    ensureAudioContextUnlocked();
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('qlaok_cms_sidebar_collapsed');
       if (saved === '1') {
         setIsSidebarCollapsed(true);
       }
+      setBrowserPerm(getBrowserNotificationPermission());
     }
     const supabase = createClient();
     if (!supabase) return;
@@ -149,6 +133,46 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       }
     });
   }, []);
+
+  const triggerOrderAlertAndNotifications = useCallback(
+    (orderInfo: {
+      orderCode: string;
+      tableLabel: string;
+      totalAmount: number;
+      itemsSummary?: string;
+    }) => {
+      // 1. Play user's selected chime & volume from loadOrderChimeSettings()
+      playOrderAlertChime(
+        undefined,
+        orderInfo.tableLabel,
+        orderInfo.orderCode
+      );
+
+      // 2. Keep in-app floating toast notification
+      setLiveToastOrder({
+        orderCode: orderInfo.orderCode,
+        tableLabel: orderInfo.tableLabel,
+        totalAmount: orderInfo.totalAmount,
+      });
+
+      // 3. Push native Browser / Windows OS desktop notification
+      sendBrowserOrderNotification({
+        orderCode: orderInfo.orderCode,
+        tableLabel: orderInfo.tableLabel,
+        totalFormatted: formatCurrency(
+          orderInfo.totalAmount,
+          activeShop?.currency || 'VND'
+        ),
+        shopName: activeShop?.name,
+        itemsSummary: orderInfo.itemsSummary,
+        onClickNavigate: () => {
+          setLiveToastOrder(null);
+          router.push('/dashboard/orders');
+        },
+      });
+    },
+    [activeShop?.currency, activeShop?.name, router]
+  );
 
   const checkLiveOrders = useCallback(async () => {
     if (!activeShop) return;
@@ -162,17 +186,24 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       const orders: ShopOrder[] = data.orders || [];
       const newList = orders.filter((o) => o.status === 'new');
       setNewOrdersCount(newList.length);
+      if (newList[0]?.table_label) {
+        setLatestNewTableLabel(newList[0].table_label);
+      }
 
       if (!firstCheckRef.current) {
         const brandNew = newList.find(
           (o) => !knownNewIdsRef.current.has(o.id)
         );
         if (brandNew) {
-          playGlobalOrderChime();
-          setLiveToastOrder({
+          const itemsSummary = (brandNew.items || [])
+            .slice(0, 3)
+            .map((it) => `${it.quantity}x ${it.name_vi}`)
+            .join(', ');
+          triggerOrderAlertAndNotifications({
             orderCode: brandNew.order_code,
             tableLabel: brandNew.table_label,
             totalAmount: brandNew.total_amount,
+            itemsSummary,
           });
         }
       }
@@ -182,7 +213,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
-  }, [activeShop]);
+  }, [activeShop, triggerOrderAlertAndNotifications]);
 
   useEffect(() => {
     firstCheckRef.current = true;
@@ -196,8 +227,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           ev.data?.type === 'new_order_submitted' &&
           ev.data?.shopId === activeShop?.id
         ) {
-          playGlobalOrderChime();
-          setLiveToastOrder({
+          triggerOrderAlertAndNotifications({
             orderCode: ev.data.orderCode || 'MỚI',
             tableLabel: ev.data.tableLabel || 'Bàn khách',
             totalAmount: ev.data.totalAmount || 0,
@@ -212,7 +242,36 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       if (bc) bc.close();
       clearInterval(interval);
     };
-  }, [checkLiveOrders, activeShop?.id]);
+  }, [checkLiveOrders, activeShop?.id, triggerOrderAlertAndNotifications]);
+
+  // Repeat reminder chime every 10s when on non-orders dashboard pages if there are unaccepted 'new' orders
+  useEffect(() => {
+    if (pathname === '/dashboard/orders' || newOrdersCount === 0) return;
+    const reminderInterval = setInterval(() => {
+      const currentSettings = loadOrderChimeSettings();
+      if (currentSettings.enabled && currentSettings.remindUntilAccepted) {
+        playOrderAlertChime(currentSettings, latestNewTableLabel);
+      }
+    }, 10000);
+    return () => clearInterval(reminderInterval);
+  }, [pathname, newOrdersCount, latestNewTableLabel]);
+
+  const handleEnableOrTestBrowserNotifications = async () => {
+    const perm = await requestBrowserNotificationPermission();
+    setBrowserPerm(perm);
+    if (perm === 'granted') {
+      playOrderAlertChime(undefined, 'Bàn 05');
+      sendBrowserOrderNotification({
+        orderCode: 'TEST-88',
+        tableLabel: 'Bàn 05 (Thử nghiệm)',
+        totalFormatted: formatCurrency(65000, activeShop?.currency || 'VND'),
+        shopName: activeShop?.name,
+        itemsSummary: '2x Cà phê sữa đá, 1x Bánh sừng bò',
+        forceTest: true,
+        onClickNavigate: () => router.push('/dashboard/orders'),
+      });
+    }
+  };
 
   const toggleSidebar = () => {
     setIsSidebarCollapsed((prev) => {
@@ -275,7 +334,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                     activeShop?.currency || 'VND'
                   )}
                 </p>
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2">
                   <Link
                     href="/dashboard/orders"
                     onClick={() => setLiveToastOrder(null)}
@@ -283,6 +342,15 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                   >
                     Mở Quầy mPOS Nhận Đơn
                   </Link>
+                  {browserPerm !== 'granted' && browserPerm !== 'unsupported' && (
+                    <button
+                      type="button"
+                      onClick={handleEnableOrTestBrowserNotifications}
+                      className="rounded-xl border border-emerald-400/50 bg-emerald-500/20 px-2.5 py-1.5 text-[10px] font-black text-emerald-300 hover:bg-emerald-500/30"
+                    >
+                      🖥️ Bật thông báo Windows
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -643,6 +711,29 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
           {activeShop && (
             <div className="flex items-center gap-1.5 shrink-0">
+              {browserPerm !== 'unsupported' && (
+                <button
+                  type="button"
+                  onClick={handleEnableOrTestBrowserNotifications}
+                  title={
+                    browserPerm === 'granted'
+                      ? 'Thông báo đẩy ra Windows/Mac đã bật — Bấm để nghe thử chuông & hiện thông báo Windows'
+                      : 'Bật thông báo đẩy ra màn hình Windows/Mac khi có đơn mới'
+                  }
+                  className={`hidden sm:inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition ${
+                    browserPerm === 'granted'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                      : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                  }`}
+                >
+                  <Monitor className="h-3.5 w-3.5 text-emerald-600" />
+                  <span className="hidden lg:inline">
+                    {browserPerm === 'granted'
+                      ? 'TB Windows: Bật'
+                      : 'Bật TB Windows'}
+                  </span>
+                </button>
+              )}
               <ThemeToggle />
               <Link
                 href="/dashboard/orders"

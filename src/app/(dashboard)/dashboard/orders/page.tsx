@@ -35,14 +35,19 @@ import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
+  CHIME_SETTINGS_EVENT,
   CHIME_SOUND_OPTIONS,
   ChimeSoundId,
   ChimeVolumePreset,
   DEFAULT_CHIME_SETTINGS,
+  ensureAudioContextUnlocked,
+  getBrowserNotificationPermission,
   loadOrderChimeSettings,
   OrderChimeSettings,
   playOrderAlertChime,
+  requestBrowserNotificationPermission,
   saveOrderChimeSettings,
+  sendBrowserOrderNotification,
 } from '@/lib/order-chime';
 
 function getVnDateKey(dateInput: Date | string | number = new Date()): string {
@@ -68,6 +73,9 @@ export default function CounterOrdersPage() {
   const [chimeSettings, setChimeSettings] = useState<OrderChimeSettings>(
     DEFAULT_CHIME_SETTINGS
   );
+  const [browserNotifPerm, setBrowserNotifPerm] = useState<
+    NotificationPermission | 'unsupported'
+  >('default');
   const [isChimeModalOpen, setIsChimeModalOpen] = useState(false);
   const [autoPrintOnPay, setAutoPrintOnPay] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -80,14 +88,34 @@ export default function CounterOrdersPage() {
   const chimeSettingsRef = useRef<OrderChimeSettings>(DEFAULT_CHIME_SETTINGS);
 
   useEffect(() => {
-    const loaded = loadOrderChimeSettings();
-    setChimeSettings(loaded);
-    chimeSettingsRef.current = loaded;
+    const syncFromStorage = () => {
+      const loaded = loadOrderChimeSettings();
+      setChimeSettings(loaded);
+      chimeSettingsRef.current = loaded;
+      setBrowserNotifPerm(getBrowserNotificationPermission());
+    };
+    syncFromStorage();
+
     if (typeof window !== 'undefined') {
       const savedMode = sessionStorage.getItem('qlaok_pos_workspace_mode');
       if (savedMode === 'pos_terminal' || savedMode === 'kitchen_orders') {
         setWorkspaceMode(savedMode);
       }
+
+      const unlockHandler = () => {
+        ensureAudioContextUnlocked();
+      };
+      window.addEventListener('pointerdown', unlockHandler, { passive: true });
+      window.addEventListener('keydown', unlockHandler, { passive: true });
+      window.addEventListener(CHIME_SETTINGS_EVENT, syncFromStorage);
+      window.addEventListener('focus', syncFromStorage);
+
+      return () => {
+        window.removeEventListener('pointerdown', unlockHandler);
+        window.removeEventListener('keydown', unlockHandler);
+        window.removeEventListener(CHIME_SETTINGS_EVENT, syncFromStorage);
+        window.removeEventListener('focus', syncFromStorage);
+      };
     }
   }, []);
 
@@ -130,17 +158,41 @@ export default function CounterOrdersPage() {
           const data = await ordersRes.json();
           const fetchedOrders: ShopOrder[] = data.orders || [];
 
-          // Detect newly arrived orders to ring chime
+          // Detect newly arrived orders to ring chime & push Windows notification
           if (!isFirstLoadRef.current) {
             const brandNewOrder = fetchedOrders.find(
               (o) =>
                 o.status === 'new' && !knownOrderIdsRef.current.has(o.id)
             );
-            if (brandNewOrder && chimeSettingsRef.current.enabled) {
-              playOrderAlertChime(
-                chimeSettingsRef.current,
-                brandNewOrder.table_label
-              );
+            if (brandNewOrder) {
+              const latestChime = loadOrderChimeSettings();
+              chimeSettingsRef.current = latestChime;
+              if (latestChime.enabled) {
+                playOrderAlertChime(
+                  latestChime,
+                  brandNewOrder.table_label,
+                  brandNewOrder.order_code
+                );
+              }
+              const itemsSummary = Array.isArray(brandNewOrder.items)
+                ? brandNewOrder.items
+                    .slice(0, 3)
+                    .map(
+                      (it) =>
+                        `${it.quantity}x ${it.name_vi || 'Món'}`
+                    )
+                    .join(', ')
+                : undefined;
+              sendBrowserOrderNotification({
+                orderCode: brandNewOrder.order_code || 'MỚI',
+                tableLabel: brandNewOrder.table_label || 'Tại quầy',
+                totalFormatted: formatCurrency(
+                  Number(brandNewOrder.total_amount) || 0,
+                  activeShop.currency
+                ),
+                itemsSummary,
+                shopName: activeShop.name,
+              });
             }
           }
 
@@ -175,8 +227,25 @@ export default function CounterOrdersPage() {
           ev.data?.type === 'new_order_submitted' &&
           ev.data?.shopId === activeShop?.id
         ) {
-          if (chimeSettingsRef.current.enabled) {
-            playOrderAlertChime(chimeSettingsRef.current);
+          const latestChime = loadOrderChimeSettings();
+          chimeSettingsRef.current = latestChime;
+          if (latestChime.enabled) {
+            playOrderAlertChime(
+              latestChime,
+              ev.data?.tableLabel || 'Khách mới',
+              ev.data?.orderCode
+            );
+          }
+          if (ev.data?.orderCode) {
+            sendBrowserOrderNotification({
+              orderCode: ev.data.orderCode,
+              tableLabel: ev.data.tableLabel || 'Tại quầy',
+              totalFormatted: formatCurrency(
+                Number(ev.data.totalAmount || ev.data.totalVnd) || 0,
+                activeShop?.currency || 'VND'
+              ),
+              shopName: activeShop?.name,
+            });
           }
         }
         fetchOrdersAndCatalog(true);
@@ -191,7 +260,7 @@ export default function CounterOrdersPage() {
       if (bc) bc.close();
       clearInterval(interval);
     };
-  }, [fetchOrdersAndCatalog, activeShop?.id]);
+  }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name]);
 
   // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders and remindUntilAccepted is enabled
   useEffect(() => {
@@ -205,10 +274,13 @@ export default function CounterOrdersPage() {
     }
 
     const reminderTimer = setInterval(() => {
-      playOrderAlertChime(
-        chimeSettingsRef.current,
-        pendingNewOrders[0]?.table_label
-      );
+      const latestChime = loadOrderChimeSettings();
+      if (latestChime.enabled && latestChime.remindUntilAccepted) {
+        playOrderAlertChime(
+          latestChime,
+          pendingNewOrders[0]?.table_label
+        );
+      }
     }, 10000);
 
     return () => clearInterval(reminderTimer);
@@ -401,7 +473,7 @@ export default function CounterOrdersPage() {
                   const nextEnabled = !chimeSettings.enabled;
                   const next = { ...chimeSettings, enabled: nextEnabled };
                   updateChimeSettings({ enabled: nextEnabled });
-                  if (nextEnabled) playOrderAlertChime(next);
+                  if (nextEnabled) playOrderAlertChime(next, 'Bàn 01');
                 }}
                 className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
                   chimeSettings.enabled
@@ -414,11 +486,15 @@ export default function CounterOrdersPage() {
                     <Volume2 className="h-4 w-4 text-emerald-400" />
                     <span>
                       Chuông:{' '}
+                      {CHIME_SOUND_OPTIONS.find(
+                        (o) => o.id === chimeSettings.soundId
+                      )?.label.replace(/^[^\s]+\s/, '') || 'Đã bật'}{' '}
+                      •{' '}
                       {chimeSettings.volumePreset === 'max_boost'
                         ? 'SIÊU TO'
                         : chimeSettings.volumePreset === 'loud'
                           ? 'TO'
-                          : 'BẬT'}
+                          : 'VỪA'}
                     </span>
                   </>
                 ) : (
@@ -433,10 +509,10 @@ export default function CounterOrdersPage() {
                 type="button"
                 onClick={() => setIsChimeModalOpen(true)}
                 className="inline-flex items-center gap-1 rounded-xl bg-slate-700/80 px-2.5 py-1.5 text-[11px] font-black text-amber-300 hover:bg-slate-700"
-                title="Đổi kiểu chuông báo & kích âm lượng lớn cho bếp/quầy"
+                title="Đổi kiểu chuông báo, kích âm lượng lớn & bật thông báo đẩy Windows"
               >
                 <Settings className="h-3.5 w-3.5" />
-                <span>Kiểu chuông &amp; Độ lớn</span>
+                <span>Kiểu chuông &amp; TB Windows</span>
               </button>
             </div>
 
@@ -1293,21 +1369,109 @@ export default function CounterOrdersPage() {
                   </span>
                 </div>
               </label>
+
+              {/* 4. Native Browser / Windows OS Desktop Notification */}
+              <div className="pt-2.5 border-t border-slate-200/80 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <label className="flex items-start gap-2.5 cursor-pointer flex-1">
+                    <input
+                      type="checkbox"
+                      checked={chimeSettings.browserNotificationEnabled}
+                      onChange={async (e) => {
+                        const checked = e.target.checked;
+                        updateChimeSettings({
+                          browserNotificationEnabled: checked,
+                        });
+                        if (checked && browserNotifPerm === 'default') {
+                          const perm =
+                            await requestBrowserNotificationPermission();
+                          setBrowserNotifPerm(perm);
+                        }
+                      }}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600"
+                    />
+                    <div className="text-xs">
+                      <span className="font-black text-slate-900 block">
+                        🖥️ Đẩy thông báo ra màn hình Windows / Mac (Kết hợp với
+                        hộp thoại trên web)
+                      </span>
+                      <span className="text-slate-500 text-[11px]">
+                        Hiển thị popup thông báo gốc của Windows ở góc dưới màn
+                        hình ngay cả khi thu nhỏ trình duyệt hoặc đang mở phần
+                        mềm khác
+                      </span>
+                    </div>
+                  </label>
+
+                  {browserNotifPerm !== 'unsupported' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const perm =
+                          await requestBrowserNotificationPermission();
+                        setBrowserNotifPerm(perm);
+                        if (perm === 'granted') {
+                          updateChimeSettings({
+                            browserNotificationEnabled: true,
+                          });
+                          sendBrowserOrderNotification({
+                            orderCode: 'TEST-88',
+                            tableLabel: 'Bàn 02 (Thử thông báo)',
+                            totalFormatted: formatCurrency(
+                              125000,
+                              activeShop?.currency || 'VND'
+                            ),
+                            itemsSummary: '2x Phở Bò Tái Lăn, 1x Trà Đào',
+                            shopName: activeShop?.name,
+                            forceTest: true,
+                          });
+                        }
+                      }}
+                      className={`shrink-0 rounded-xl px-3 py-1.5 text-[11px] font-black transition ${
+                        browserNotifPerm === 'granted'
+                          ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                          : browserNotifPerm === 'denied'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-sm'
+                      }`}
+                    >
+                      {browserNotifPerm === 'granted'
+                        ? '✓ Đã cấp quyền (Bấm test)'
+                        : browserNotifPerm === 'denied'
+                          ? 'Bị chặn trên trình duyệt'
+                          : 'Bật quyền TB Windows'}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() =>
-                  playOrderAlertChime(
-                    { ...chimeSettings, enabled: true },
-                    'Bàn 01'
-                  )
-                }
+                onClick={async () => {
+                  const testConfig = { ...chimeSettings, enabled: true };
+                  playOrderAlertChime(testConfig, 'Bàn 01');
+                  if (browserNotifPerm === 'default') {
+                    const perm = await requestBrowserNotificationPermission();
+                    setBrowserNotifPerm(perm);
+                  }
+                  sendBrowserOrderNotification({
+                    orderCode: 'TEST-01',
+                    tableLabel: 'Bàn 01',
+                    totalFormatted: formatCurrency(
+                      85000,
+                      activeShop?.currency || 'VND'
+                    ),
+                    itemsSummary: '2x Cà phê sữa đá, 1x Bánh sừng bò',
+                    shopName: activeShop?.name,
+                    forceTest: true,
+                  });
+                }}
                 className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-200"
               >
                 <Volume2 className="h-4 w-4 text-emerald-600" />
-                <span>Test thử âm thanh đang chọn</span>
+                <span>Test Chuông + Đẩy TB Windows</span>
               </button>
               <button
                 type="button"

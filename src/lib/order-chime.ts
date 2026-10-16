@@ -15,6 +15,7 @@ export interface OrderChimeSettings {
   volumePreset: ChimeVolumePreset;
   repeatCount: 1 | 2 | 3;
   remindUntilAccepted: boolean;
+  browserNotificationEnabled: boolean;
 }
 
 export const DEFAULT_CHIME_SETTINGS: OrderChimeSettings = {
@@ -23,9 +24,11 @@ export const DEFAULT_CHIME_SETTINGS: OrderChimeSettings = {
   volumePreset: 'max_boost',
   repeatCount: 2,
   remindUntilAccepted: true,
+  browserNotificationEnabled: true,
 };
 
 const STORAGE_KEY = 'qlaok_order_chime_settings_v1';
+export const CHIME_SETTINGS_EVENT = 'qlaok_chime_settings_updated';
 
 export const CHIME_SOUND_OPTIONS: Array<{
   id: ChimeSoundId;
@@ -82,9 +85,52 @@ export function saveOrderChimeSettings(settings: OrderChimeSettings): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    window.dispatchEvent(
+      new CustomEvent(CHIME_SETTINGS_EVENT, { detail: settings })
+    );
   } catch {
     // ignore storage errors
   }
+}
+
+// Singleton AudioContext unlocked on user gesture so background polls always play the custom chime
+let sharedAudioCtx: AudioContext | null = null;
+let audioUnlockAttached = false;
+
+function getOrUnlockAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioCtx) return null;
+
+  if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+    sharedAudioCtx = new AudioCtx();
+  }
+  if (sharedAudioCtx.state === 'suspended') {
+    sharedAudioCtx.resume().catch(() => {});
+  }
+  return sharedAudioCtx;
+}
+
+export function ensureAudioContextUnlocked(): void {
+  if (typeof window === 'undefined' || audioUnlockAttached) return;
+  audioUnlockAttached = true;
+
+  const unlock = () => {
+    try {
+      const ctx = getOrUnlockAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  window.addEventListener('pointerdown', unlock, { passive: true });
+  window.addEventListener('keydown', unlock, { passive: true });
 }
 
 function getGainMultiplier(preset: ChimeVolumePreset): number {
@@ -135,7 +181,10 @@ function playSingleBurst(
       const overPeak = peak * (isBoost ? 0.45 : 0.22);
       overGain.gain.setValueAtTime(0.001, t0);
       overGain.gain.linearRampToValueAtTime(overPeak, t0 + 0.01);
-      overGain.gain.exponentialRampToValueAtTime(0.0008, t0 + durationSec * 0.85);
+      overGain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        t0 + durationSec * 0.85
+      );
       overtone.connect(overGain);
       overGain.connect(masterOut);
       overtone.start(t0);
@@ -186,11 +235,30 @@ function playSingleBurst(
   return 0.7;
 }
 
+// Deduplicate simultaneous triggers from layout.tsx + orders/page.tsx for the same order
+let lastPlayedOrderKey = '';
+let lastPlayedAtMs = 0;
+
 export function playOrderAlertChime(
   customSettings?: Partial<OrderChimeSettings>,
-  tableLabel?: string
+  tableLabel?: string,
+  dedupeOrderKey?: string
 ): void {
   if (typeof window === 'undefined') return;
+
+  if (dedupeOrderKey) {
+    const now = Date.now();
+    if (
+      dedupeOrderKey === lastPlayedOrderKey &&
+      now - lastPlayedAtMs < 2000
+    ) {
+      return;
+    }
+    lastPlayedOrderKey = dedupeOrderKey;
+    lastPlayedAtMs = now;
+  }
+
+  // Always read latest saved settings from localStorage first, then merge any explicit overrides
   const settings: OrderChimeSettings = {
     ...loadOrderChimeSettings(),
     ...customSettings,
@@ -198,44 +266,54 @@ export function playOrderAlertChime(
   if (!settings.enabled) return;
 
   try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    if (AudioCtx) {
-      const ctx = new AudioCtx();
+    const ctx = getOrUnlockAudioContext();
+    if (ctx) {
+      const startPlay = () => {
+        try {
+          const compressor = ctx.createDynamicsCompressor();
+          compressor.threshold.setValueAtTime(-18, ctx.currentTime);
+          compressor.knee.setValueAtTime(12, ctx.currentTime);
+          compressor.ratio.setValueAtTime(6, ctx.currentTime);
+          compressor.attack.setValueAtTime(0.003, ctx.currentTime);
+          compressor.release.setValueAtTime(0.15, ctx.currentTime);
 
-      // Use a DynamicsCompressorNode + Master Gain so max_boost is genuinely loud without harsh clipping
-      const compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.setValueAtTime(-18, ctx.currentTime);
-      compressor.knee.setValueAtTime(12, ctx.currentTime);
-      compressor.ratio.setValueAtTime(6, ctx.currentTime);
-      compressor.attack.setValueAtTime(0.003, ctx.currentTime);
-      compressor.release.setValueAtTime(0.15, ctx.currentTime);
+          const masterGain = ctx.createGain();
+          const boostFactor =
+            settings.volumePreset === 'max_boost'
+              ? 2.4
+              : settings.volumePreset === 'loud'
+                ? 1.45
+                : 0.85;
+          masterGain.gain.setValueAtTime(boostFactor, ctx.currentTime);
 
-      const masterGain = ctx.createGain();
-      const boostFactor =
-        settings.volumePreset === 'max_boost'
-          ? 2.4
-          : settings.volumePreset === 'loud'
-            ? 1.45
-            : 0.85;
-      masterGain.gain.setValueAtTime(boostFactor, ctx.currentTime);
+          compressor.connect(masterGain);
+          masterGain.connect(ctx.destination);
 
-      compressor.connect(masterGain);
-      masterGain.connect(ctx.destination);
+          const repeats =
+            settings.soundId === 'voice_vi' ? 1 : settings.repeatCount || 1;
+          let offset = 0;
+          for (let i = 0; i < repeats; i++) {
+            const dur = playSingleBurst(
+              ctx,
+              compressor,
+              settings.soundId,
+              settings.volumePreset,
+              offset
+            );
+            offset += dur + 0.12;
+          }
+        } catch {
+          // ignore
+        }
+      };
 
-      const repeats = settings.soundId === 'voice_vi' ? 1 : settings.repeatCount || 1;
-      let offset = 0;
-      for (let i = 0; i < repeats; i++) {
-        const dur = playSingleBurst(
-          ctx,
-          compressor,
-          settings.soundId,
-          settings.volumePreset,
-          offset
-        );
-        offset += dur + 0.12;
+      if (ctx.state === 'suspended') {
+        ctx
+          .resume()
+          .then(startPlay)
+          .catch(() => startPlay());
+      } else {
+        startPlay();
       }
     }
 
@@ -259,5 +337,125 @@ export function playOrderAlertChime(
     }
   } catch {
     // ignore audio autoplay restrictions
+  }
+}
+
+// ============================================================================
+// BROWSER / WINDOWS OS NATIVE DESKTOP NOTIFICATION HELPERS
+// ============================================================================
+
+export function getBrowserNotificationPermission():
+  | NotificationPermission
+  | 'unsupported' {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return 'unsupported';
+  }
+  return window.Notification.permission;
+}
+
+export async function requestBrowserNotificationPermission(): Promise<
+  NotificationPermission | 'unsupported'
+> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return 'unsupported';
+  }
+  if (window.Notification.permission === 'granted') {
+    return 'granted';
+  }
+  try {
+    const result = await window.Notification.requestPermission();
+    return result;
+  } catch {
+    return window.Notification.permission;
+  }
+}
+
+let lastNotifiedOrderKey = '';
+let lastNotifiedAtMs = 0;
+
+export function sendBrowserOrderNotification(params: {
+  orderCode: string;
+  tableLabel: string;
+  totalFormatted: string;
+  shopName?: string;
+  itemsSummary?: string;
+  onClickNavigate?: () => void;
+  forceTest?: boolean;
+}): boolean {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return false;
+  }
+
+  const settings = loadOrderChimeSettings();
+  if (!params.forceTest && !settings.browserNotificationEnabled) {
+    return false;
+  }
+
+  if (window.Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const dedupeKey = `${params.orderCode}-${params.tableLabel}`;
+  const now = Date.now();
+  if (
+    !params.forceTest &&
+    dedupeKey === lastNotifiedOrderKey &&
+    now - lastNotifiedAtMs < 3000
+  ) {
+    return false;
+  }
+  lastNotifiedOrderKey = dedupeKey;
+  lastNotifiedAtMs = now;
+
+  const title = `🔔 Đơn mới #${params.orderCode} • ${params.tableLabel}`;
+  const bodyLines = [
+    `💰 Tổng đơn: ${params.totalFormatted}${params.shopName ? ` (${params.shopName})` : ''}`,
+    params.itemsSummary ? `🍽️ Món: ${params.itemsSummary}` : '',
+    '👉 Bấm vào thông báo này để mở Quầy mPOS nhận đơn!',
+  ].filter(Boolean);
+
+  const body = bodyLines.join('\n');
+
+  try {
+    const notification = new window.Notification(title, {
+      body,
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      tag: `qlaok-order-${params.orderCode}`,
+      requireInteraction: true,
+    });
+
+    notification.onclick = () => {
+      try {
+        window.focus();
+      } catch {
+        // ignore
+      }
+      notification.close();
+      if (params.onClickNavigate) {
+        params.onClickNavigate();
+      } else {
+        window.location.href = '/dashboard/orders';
+      }
+    };
+
+    return true;
+  } catch {
+    // Fallback to ServiceWorker registration notification if available
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          reg.showNotification(title, {
+            body,
+            icon: '/favicon.ico',
+            badge: '/favicon.ico',
+            tag: `qlaok-order-${params.orderCode}`,
+            requireInteraction: true,
+          });
+        })
+        .catch(() => {});
+      return true;
+    }
+    return false;
   }
 }
