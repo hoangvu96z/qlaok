@@ -307,6 +307,7 @@ export const styles = StyleSheet.create({
   },
   orderHeaderRow: {
     flexDirection: 'row',
+    gap: 8,
     justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
@@ -347,11 +348,13 @@ export const styles = StyleSheet.create({
   },
   orderActionsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 4,
   },
   btnPrepare: {
     flex: 1,
+    minWidth: 160,
     backgroundColor: '#2563eb',
     paddingVertical: 10,
     borderRadius: 12,
@@ -364,6 +367,7 @@ export const styles = StyleSheet.create({
   },
   btnComplete: {
     flex: 1,
+    minWidth: 160,
     backgroundColor: '#059669',
     paddingVertical: 10,
     borderRadius: 12,

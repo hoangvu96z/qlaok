@@ -22,6 +22,7 @@ interface OrdersTabProps {
   onPrintOrder: (order: MobileShopOrder) => void;
   canCollectPayment?: boolean;
   canRefundOrder?: boolean;
+  canCancelOrder?: boolean;
   theme: MobileThemePalette;
 }
 
@@ -33,6 +34,7 @@ export const OrdersTab = memo(function OrdersTab({
   onPrintOrder,
   canCollectPayment = true,
   canRefundOrder = false,
+  canCancelOrder = false,
   theme,
 }: OrdersTabProps) {
   const newOrdersCount = orders.filter((o) => o.status === 'new').length;
@@ -135,7 +137,7 @@ export const OrdersTab = memo(function OrdersTab({
               ]}
             >
               <View style={styles.orderHeaderRow}>
-                <View>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text
                     style={[
                       styles.orderTableBadge,
@@ -258,12 +260,12 @@ export const OrdersTab = memo(function OrdersTab({
                         </Text>
                       </View>
                     </TouchableOpacity>
-                    <TouchableOpacity
+                    {canCancelOrder && order.payment_status === 'unpaid' && <TouchableOpacity
                       style={styles.btnCancel}
                       onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
                     >
                       <Text style={styles.btnCancelText}>Hủy</Text>
-                    </TouchableOpacity>
+                    </TouchableOpacity>}
                   </>
                 )}
 
@@ -293,12 +295,12 @@ export const OrdersTab = memo(function OrdersTab({
                         </Text>
                       </View>
                     </TouchableOpacity>
-                    <TouchableOpacity
+                    {canCancelOrder && order.payment_status === 'unpaid' && <TouchableOpacity
                       style={styles.btnCancel}
                       onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
                     >
                       <Text style={styles.btnCancelText}>Hủy</Text>
-                    </TouchableOpacity>
+                    </TouchableOpacity>}
                   </>
                 )}
 
@@ -336,7 +338,8 @@ export const OrdersTab = memo(function OrdersTab({
                         order.status === 'completed' ? '#0f172a' : '#f1f5f9',
                       borderColor:
                         order.status === 'completed' ? '#0f172a' : '#cbd5e1',
-                      flex: order.status === 'completed' ? 1 : 0,
+                      flexGrow: 1,
+                      flexBasis: 120,
                       paddingHorizontal: 12,
                     },
                   ]}

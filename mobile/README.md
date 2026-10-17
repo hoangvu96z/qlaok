@@ -44,3 +44,28 @@ In trên mobile hiện vẫn là preview/mô phỏng, chưa tích hợp máy in.
 
 Kiểm tra: `npm run typecheck` và `npm test` (Node 24 hỗ trợ strip types).
 Chưa có kiểm thử thiết bị cho cold start, refresh token, SecureStore và máy in.
+
+## Kiểm tra giao diện web bằng fixture local
+
+Chạy hai terminal từ repo (sau khi cài dependencies trong `mobile`):
+
+```bash
+node tests/mobile-ui-fixture.mjs
+```
+
+```bash
+cd mobile
+BROWSER=none EXPO_PUBLIC_API_URL=http://127.0.0.1:8090 EXPO_PUBLIC_SUPABASE_URL=http://127.0.0.1:8090 EXPO_PUBLIC_SUPABASE_KEY=fixture-publishable-key npx expo start --offline --port 8083
+```
+
+Mở http://localhost:8083. Tài khoản fixture: `owner@fixture.test`,
+`cashier@fixture.test`, `staff@fixture.test`; mật khẩu `fixture-password`.
+Fixture chỉ lắng nghe loopback, không kết nối production. Mỗi lần đăng nhập reset
+đơn giả; lần thu tiền đầu trả 403, lần tiếp theo thành công để kiểm tra UI lỗi và
+biên nhận. Mock HTTP này không thay thế integration Supabase, realtime hoặc kiểm
+thử thiết bị thật.
+
+Đã kiểm tra thủ công trên Expo Web: đăng nhập sai/đúng, session sau reload,
+đăng xuất, chuyển quán A/B, thu tiền lỗi/thành công, hóa đơn, quyền staff và nhận
+đơn ở viewport 390×844. Sửa lỗi thông báo đăng nhập/cập nhật đơn không hiển thị
+trên web, nút hủy không xét quyền và bố cục thẻ đơn hẹp.

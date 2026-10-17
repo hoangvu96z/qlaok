@@ -1,6 +1,5 @@
 import React, { memo, useState } from 'react';
 import {
-  Alert,
   SafeAreaView,
   Text,
   TextInput,
@@ -15,9 +14,11 @@ export const AuthScreen = memo(function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   const handleLogin = async () => {
     setAuthLoading(true);
+    setAuthError('');
     try {
       const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
@@ -27,8 +28,7 @@ export const AuthScreen = memo(function AuthScreen() {
         throw error;
       }
     } catch (err) {
-      Alert.alert(
-        'Đăng nhập thất bại',
+      setAuthError(
         err instanceof Error
           ? err.message
           : 'Vui lòng kiểm tra lại email/mật khẩu'
@@ -54,6 +54,8 @@ export const AuthScreen = memo(function AuthScreen() {
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Email Chủ quán</Text>
           <TextInput
+            accessibilityLabel="Email Chủ quán"
+            autoComplete="email"
             style={styles.authInput}
             value={email}
             onChangeText={setEmail}
@@ -65,6 +67,8 @@ export const AuthScreen = memo(function AuthScreen() {
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Mật khẩu</Text>
           <TextInput
+            accessibilityLabel="Mật khẩu"
+            autoComplete="current-password"
             style={styles.authInput}
             value={password}
             onChangeText={setPassword}
@@ -72,7 +76,9 @@ export const AuthScreen = memo(function AuthScreen() {
           />
         </View>
 
+        {authError ? <Text accessibilityRole="alert" style={{ color: '#fca5a5', marginBottom: 12 }}>{authError}</Text> : null}
         <TouchableOpacity
+          accessibilityRole="button"
           style={styles.primaryAuthBtn}
           onPress={() => handleLogin()}
           disabled={authLoading}

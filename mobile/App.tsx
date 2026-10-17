@@ -77,12 +77,14 @@ function Workspace({ userId }: { userId: string }) {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [orderError, setOrderError] = useState('');
 
   const [shops, setShops] = useState<MobileShop[]>([]);
   const [memberships, setMemberships] = useState<
     Record<string, MobileShopMembership>
   >({});
   const [activeShopId, setActiveShopId] = useState<string>('');
+  useEffect(() => { setOrderError(''); }, [activeShopId]);
   const [categories, setCategories] = useState<MobileCategory[]>([]);
   const [items, setItems] = useState<MobileCatalogItem[]>([]);
   const [events, setEvents] = useState<MobileAnalyticsEvent[]>([]);
@@ -463,6 +465,7 @@ function Workspace({ userId }: { userId: string }) {
       const generation = loadGeneration.current;
       if (scopeRef.current !== shopId || pendingOrders.current.has(orderId)) return;
       pendingOrders.current.add(orderId);
+      setOrderError('');
       try {
         const response = await fetchApi('/api/orders', {
           method: 'PATCH',
@@ -487,7 +490,7 @@ function Workspace({ userId }: { userId: string }) {
         setOrders((prev) => prev.map((o) => o.id === orderId ? order : o));
         if (payment_status === 'paid' && order.payment_status === 'paid') setPrintingOrder(order);
       } catch (error) {
-        if (scopeRef.current === shopId && generation === loadGeneration.current) Alert.alert('Không thể cập nhật đơn', error instanceof Error ? error.message : 'Vui lòng thử lại');
+        if (scopeRef.current === shopId && generation === loadGeneration.current) setOrderError(error instanceof Error ? error.message : 'Không thể cập nhật đơn. Vui lòng thử lại');
       } finally {
         pendingOrders.current.delete(orderId);
       }
@@ -588,6 +591,7 @@ function Workspace({ userId }: { userId: string }) {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
+      {orderError ? <Text accessibilityRole="alert" style={{ color: '#b91c1c', backgroundColor: '#fee2e2', padding: 12 }}>{orderError}</Text> : null}
 
       {/* Top Header & Store Switcher + Realtime WS Indicator + Light/Dark Toggle */}
       <View
@@ -810,6 +814,7 @@ function Workspace({ userId }: { userId: string }) {
                 onPrintOrder={setPrintingOrder}
                 canCollectPayment={canCollectPayment}
                 canRefundOrder={canRefundOrder}
+                canCancelOrder={hasPerm('orders.cancel_unpaid')}
                 theme={theme}
               />
             </ScrollView>
