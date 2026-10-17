@@ -182,8 +182,8 @@ export function checkShopOpenStatus(openingHours: OpeningHours): {
   const currentMins = now.getHours() * 60 + now.getMinutes();
   const [openH, openM] = schedule.open.split(':').map(Number);
   const [closeH, closeM] = schedule.close.split(':').map(Number);
-  const openMins = (openH || 8) * 60 + (openM || 0);
-  const closeMins = (closeH || 22) * 60 + (closeM || 0);
+  const openMins = (openH ?? 8) * 60 + (openM ?? 0);
+  const closeMins = (closeH ?? 22) * 60 + (closeM ?? 0);
 
   const isOpen = currentMins >= openMins && currentMins <= closeMins;
   return { isOpen, todaySchedule: schedule };

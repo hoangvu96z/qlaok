@@ -249,7 +249,8 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
     assert.ok(usd.includes('USD'));
   });
 
-  test('2.9 checkShopOpenStatus evaluates closed days and 24-hour open schedules', () => {
+  test('2.9 checkShopOpenStatus evaluates closed days and 24-hour open schedules', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 18, 12).getTime() });
     const alwaysClosed: OpeningHours = {
       mon: { open: '08:00', close: '22:00', closed: true },
       tue: { open: '08:00', close: '22:00', closed: true },
@@ -272,8 +273,10 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
       sat: { open: '00:00', close: '23:59', closed: false },
       sun: { open: '00:00', close: '23:59', closed: false },
     };
-    const openResult = checkShopOpenStatus(alwaysOpen);
-    assert.equal(openResult.isOpen, true);
+    for (const [hour, minute] of [[0, 0], [7, 30], [12, 0], [23, 59]]) {
+      t.mock.timers.setTime(new Date(2026, 9, 18, hour, minute).getTime());
+      assert.equal(checkShopOpenStatus(alwaysOpen).isOpen, true, `open at ${hour}:${minute}`);
+    }
   });
 
   test('2.10 UI_LABELS & QUICK_TAGS_BY_VERTICAL have complete 8-locale translations', () => {

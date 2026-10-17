@@ -32,3 +32,17 @@ Kiểm thử thiết bị iOS/Android, máy in phần cứng và giao dịch ng�
 - Đã sửa hai kỳ vọng test cũ dùng giá client 55.000 thay vì giá catalog 65.000; fixture tổng/discount nay kiểm tra giá catalog.
 
 Engine dùng DB làm nguồn chính khi có cấu hình; không ghép các order chỉ nằm trong `.local-db` vào phản hồi DB. Khi rollout từ bản dùng fallback cũ, cần đối chiếu/backup các giao dịch chỉ có ở `.local-db` trước khi chuyển sang DB authoritative. Chưa thực hiện đối chiếu dữ liệu production. Audit file cục bộ và các trường người thu/hoàn đã lưu; chưa triển khai payment ledger và audit transaction hoàn chỉnh cho chốt ca.
+
+## Deployment migration recovery (2026-10-18)
+
+Run 39080044191 passed verify but failed migration 003 with duplicate bank reference
+23505. Added 002z before 003: locks plan payment transactions, archives the entire
+conflicting group in `payment_bank_ref_conflicts` (RLS, service-role read only),
+retains the earliest reference by created_at/id and clears only other reference
+assignments. No transaction is deleted; amount/status/plan/entitlement stay intact.
+The retained row is a deterministic replay guard, not a financial reconciliation
+verdict. Review archived conflicts manually to reconcile any legacy double credit.
+Unique index creation is in the same transaction, protecting against new duplicates.
+PGlite regression reproduces the original index failure, verifies complete archive,
+unchanged payment fields, rerun safety, replay rejection and restricted archive reads.
+Also fixed midnight opening hours: zero hours must not fall through to defaults.

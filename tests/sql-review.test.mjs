@@ -13,7 +13,30 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
       $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;`);
     const migrations = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();
-    for (const file of migrations) await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
+    for (const file of migrations) {
+      if (file === '002z_reconcile_legacy_bank_refs.sql') {
+        await db.exec(`INSERT INTO profiles (id) VALUES ('legacy-payer');
+          INSERT INTO payment_transactions (id,user_id,order_code,target_plan,amount,status,bank_ref_id,created_at)
+          VALUES ('legacy-a','legacy-payer','LEGACY-A','basic',100000,'completed','FT2628799999','2026-01-01'),
+                 ('legacy-b','legacy-payer','LEGACY-B','basic',200000,'completed','FT2628799999','2026-01-02');`);
+        await assert.rejects(db.exec('CREATE UNIQUE INDEX failing_bank_ref_index ON payment_transactions(bank_ref_id) WHERE bank_ref_id IS NOT NULL'), /duplicat|unique/i);
+      }
+      await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
+    }
+    const repaired = (await db.query("SELECT id,amount,status,bank_ref_id FROM payment_transactions ORDER BY id")).rows;
+    assert.deepEqual(repaired.map(r => [r.id, Number(r.amount), r.status, r.bank_ref_id]), [
+      ['legacy-a',100000,'completed','FT2628799999'], ['legacy-b',200000,'completed',null],
+    ]);
+    const archived = (await db.query('SELECT * FROM payment_bank_ref_conflicts ORDER BY transaction_id')).rows;
+    assert.equal(archived.length, 2, 'preserve the entire conflicting group for reconciliation');
+    assert.equal(archived[1].original_transaction.bank_ref_id, 'FT2628799999');
+    assert.equal(archived[1].retained_transaction_id, 'legacy-a');
+    await db.exec(fs.readFileSync('supabase/migrations/002z_reconcile_legacy_bank_refs.sql', 'utf8'));
+    assert.equal((await db.query('SELECT * FROM payment_bank_ref_conflicts')).rows.length, 2);
+    await assert.rejects(db.exec("INSERT INTO payment_transactions (user_id,order_code,target_plan,amount,bank_ref_id) VALUES ('legacy-payer','REPLAY','basic',1,'FT2628799999')"), /duplicat|unique/i);
+    await db.exec('SET ROLE authenticated');
+    await assert.rejects(db.query('SELECT * FROM payment_bank_ref_conflicts'), /permission denied/i);
+    await db.exec('RESET ROLE');
     for (const file of migrations.filter((name) => name.startsWith('004_') || name.startsWith('005_'))) {
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
