@@ -162,18 +162,45 @@ export function getShopPaymentQrInfo(
   overrideConfig?: ShopPaymentConfig
 ): ResolvedShopPaymentQr {
   const cfg = overrideConfig || shop?.theme_config?.paymentConfig;
-  const mode = cfg?.mode || 'vietqr_auto';
-  const bankId = (cfg?.bankId || 'MB').trim().toUpperCase();
-  const bankObj =
-    VIETQR_BANKS.find((b) => b.code === bankId || b.bin === bankId) ||
-    VIETQR_BANKS[1]; // Default MB Bank
+  const mobileQr = shop?.theme_config?.paymentQr;
 
-  const rawAccountNo = (cfg?.accountNumber || '').replace(/\s+/g, '').trim();
+  const mode = cfg?.mode || 'vietqr_auto';
+  const rawBankId = (
+    cfg?.bankId ||
+    mobileQr?.bankId ||
+    mobileQr?.bankBin ||
+    mobileQr?.bankShortName ||
+    ''
+  )
+    .trim()
+    .toUpperCase();
+  const bankObj =
+    VIETQR_BANKS.find(
+      (b) =>
+        b.code === rawBankId ||
+        b.bin === rawBankId ||
+        b.shortName.toUpperCase() === rawBankId
+    );
+
+  const rawAccountNo = (
+    cfg?.accountNumber ||
+    cfg?.accountNo ||
+    mobileQr?.accountNumber ||
+    mobileQr?.accountNo ||
+    ''
+  )
+    .replace(/\s+/g, '')
+    .trim();
   const defaultAccountName = stripVietnameseAccents(
     shop?.name || 'CHU QUAN QLAOK'
   );
-  const accountName = (cfg?.accountName || '').trim()
-    ? stripVietnameseAccents(cfg!.accountName!)
+  const rawConfiguredName = (
+    cfg?.accountName ||
+    mobileQr?.accountName ||
+    ''
+  ).trim();
+  const accountName = rawConfiguredName
+    ? stripVietnameseAccents(rawConfiguredName)
     : defaultAccountName;
 
   const prefix = (cfg?.transferPrefix || 'QLAOK').trim() || 'QLAOK';
@@ -190,9 +217,9 @@ export function getShopPaymentQrInfo(
       qrImageUrl: cfg.customQrUrl.trim(),
       isConfigured: true,
       mode: 'custom_qr',
-      bankId: bankObj.code,
-      bankShortName: cfg?.bankName || bankObj.shortName,
-      bankFullName: cfg?.bankName || bankObj.fullName,
+      bankId: bankObj?.code || '',
+      bankShortName: cfg?.bankName || bankObj?.shortName || '',
+      bankFullName: cfg?.bankName || bankObj?.fullName || '',
       accountNumber: rawAccountNo,
       accountName,
       transferContent,
@@ -200,8 +227,8 @@ export function getShopPaymentQrInfo(
     };
   }
 
-  // Mode A: Auto-generate dynamic VietQR from shop's bank account
-  if (rawAccountNo) {
+  // Mode A: Auto-generate dynamic VietQR from shop's configured bank account
+  if (rawAccountNo && bankObj) {
     const cleanAmount = Math.max(0, Math.round(amount || 0));
     const amountParam = cleanAmount > 0 ? `amount=${cleanAmount}&` : '';
     const qrImageUrl = `https://img.vietqr.io/image/${encodeURIComponent(
@@ -226,21 +253,16 @@ export function getShopPaymentQrInfo(
     };
   }
 
-  // Unconfigured fallback (Demo QR with isConfigured = false so UI warns shop owner)
-  const fallbackAmount = Math.max(0, Math.round(amount || 0));
-  const fallbackUrl = `https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${fallbackAmount}&addInfo=${encodeURIComponent(
-    transferContent
-  )}&accountName=${encodeURIComponent(accountName)}`;
-
+  // Unconfigured: NEVER return a fake/demo bank account QR
   return {
-    qrImageUrl: fallbackUrl,
+    qrImageUrl: '',
     isConfigured: false,
     mode: 'vietqr_auto',
-    bankId: 'MB',
-    bankShortName: 'MB Bank (Chưa cài STK)',
-    bankFullName: 'MB Bank (Mặc định - Chưa cài đặt STK quán)',
-    accountNumber: '0905123456',
-    accountName,
+    bankId: '',
+    bankShortName: 'Chưa cấu hình ngân hàng',
+    bankFullName: 'Cửa hàng chưa cấu hình tài khoản ngân hàng nhận tiền',
+    accountNumber: '',
+    accountName: '',
     transferContent,
     paymentNote,
   };

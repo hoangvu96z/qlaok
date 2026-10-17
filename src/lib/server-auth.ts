@@ -4,7 +4,11 @@ import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { getSupabaseDbClient } from '@/lib/db';
 import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
-import type { Profile } from '@/types/qlaok';
+import {
+  hasShopPermission,
+  resolveUserShopMembership,
+} from '@/lib/shop-permissions';
+import type { Profile, ShopMembership, ShopPermission } from '@/types/qlaok';
 
 export const SESSION_COOKIE_NAME = 'qlaok_session';
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
@@ -24,6 +28,9 @@ function getSigningSecret(): string {
     process.env.PAYMENT_WEBHOOK_SECRET;
   if (configured && configured.trim().length >= 16) {
     return configured.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SESSION_SECRET (at least 16 characters) is required in production.');
   }
   // Deterministic fallback for local dev/test environments without SESSION_SECRET
   return 'qlaok-server-hmac-secret-key-v2-do-not-share-in-client';
@@ -269,6 +276,134 @@ export async function requireSuperAdmin(req: Request): Promise<
   return { user };
 }
 
+async function lookupShopBasic(
+  shopId: string
+): Promise<{ id: string; owner_id: string } | null> {
+  if (!shopId) return null;
+  let shop: { id: string; owner_id: string } | null = null;
+  try {
+    const sb = getSupabaseDbClient();
+    const { data } = await sb
+      .from('shops')
+      .select('id, owner_id')
+      .eq('id', shopId)
+      .maybeSingle();
+    shop = data;
+  } catch {
+    // fallback to seed shops
+  }
+
+  if (!shop) {
+    const { SEED_SHOPS } = await import('@/lib/seed-data');
+    const seedMatch = SEED_SHOPS.find((s) => s.id === shopId);
+    if (seedMatch) {
+      shop = { id: seedMatch.id, owner_id: seedMatch.owner_id };
+    }
+  }
+  return shop;
+}
+
+export async function getRequestShopMembership(
+  req: Request,
+  shopId: string
+): Promise<{
+  user: VerifiedSessionUser | null;
+  membership: ShopMembership | null;
+}> {
+  const user = await verifyRequestUser(req);
+  if (!user || !shopId) {
+    return { user: user || null, membership: null };
+  }
+  const shop = await lookupShopBasic(shopId);
+  const membership = await resolveUserShopMembership({
+    userId: user.sub,
+    shopId,
+    isSuperAdmin: user.role === 'admin',
+    shopOwnerId: shop?.owner_id ?? null,
+  });
+  return { user, membership };
+}
+
+export async function requireShopPermission(
+  req: Request,
+  shopId: string,
+  requiredPermissions: ShopPermission | ShopPermission[]
+): Promise<
+  | {
+      user: VerifiedSessionUser;
+      membership: ShopMembership;
+      errorResponse?: undefined;
+    }
+  | {
+      user?: undefined;
+      membership?: undefined;
+      errorResponse: NextResponse;
+    }
+> {
+  const auth = await requireAuthenticatedUser(req);
+  if (auth.errorResponse) return auth;
+  const { user } = auth;
+
+  if (!shopId) {
+    return {
+      errorResponse: NextResponse.json(
+        { error: 'Thiếu mã cửa hàng (shopId).' },
+        { status: 400 }
+      ),
+    };
+  }
+
+  const shop = await lookupShopBasic(shopId);
+  if (!shop && user.role !== 'admin') {
+    return {
+      errorResponse: NextResponse.json(
+        { error: 'Không tìm thấy cửa hàng.' },
+        { status: 404 }
+      ),
+    };
+  }
+
+  const membership = await resolveUserShopMembership({
+    userId: user.sub,
+    shopId,
+    isSuperAdmin: user.role === 'admin',
+    shopOwnerId: shop?.owner_id ?? null,
+  });
+
+  if (!membership || !membership.is_active) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Bạn không có quyền truy cập hoặc chỉnh sửa dữ liệu của cửa hàng này.',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (!hasShopPermission(membership, requiredPermissions)) {
+    const requiredList = Array.isArray(requiredPermissions)
+      ? requiredPermissions.join(', ')
+      : requiredPermissions;
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error: `Tài khoản (${membership.role}) không có quyền thực hiện thao tác này (cần quyền: ${requiredList}).`,
+          code: 'INSUFFICIENT_SHOP_PERMISSION',
+          role: membership.role,
+          requiredPermissions: Array.isArray(requiredPermissions)
+            ? requiredPermissions
+            : [requiredPermissions],
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return { user, membership };
+}
+
 export async function requireShopOwnerOrAdmin(
   req: Request,
   shopId: string
@@ -293,23 +428,7 @@ export async function requireShopOwnerOrAdmin(
     };
   }
 
-  let shop: { id: string; owner_id: string } | null = null;
-  try {
-    const sb = getSupabaseDbClient();
-    const { data } = await sb
-      .from('shops')
-      .select('id, owner_id')
-      .eq('id', shopId)
-      .maybeSingle();
-    shop = data;
-  } catch {
-    const { SEED_SHOPS } = await import('@/lib/seed-data');
-    const seedMatch = SEED_SHOPS.find((s) => s.id === shopId);
-    if (seedMatch) {
-      shop = { id: seedMatch.id, owner_id: seedMatch.owner_id };
-    }
-  }
-
+  const shop = await lookupShopBasic(shopId);
   if (!shop) {
     return {
       errorResponse: NextResponse.json(
@@ -320,15 +439,23 @@ export async function requireShopOwnerOrAdmin(
   }
 
   if (shop.owner_id !== user.sub) {
-    return {
-      errorResponse: NextResponse.json(
-        {
-          error:
-            'Bạn không có quyền truy cập hoặc chỉnh sửa dữ liệu của cửa hàng này.',
-        },
-        { status: 403 }
-      ),
-    };
+    const membership = await resolveUserShopMembership({
+      userId: user.sub,
+      shopId,
+      isSuperAdmin: false,
+      shopOwnerId: shop.owner_id,
+    });
+    if (!membership || membership.role !== 'owner' || !membership.is_active) {
+      return {
+        errorResponse: NextResponse.json(
+          {
+            error:
+              'Bạn không có quyền truy cập hoặc chỉnh sửa dữ liệu của cửa hàng này.',
+          },
+          { status: 403 }
+        ),
+      };
+    }
   }
 
   return { user };
@@ -357,6 +484,41 @@ export function recordAdminAuditLog(entry: {
       ...entry,
     };
     fs.appendFileSync(AUDIT_LOG_FILE, `${JSON.stringify(payload)}\n`, 'utf8');
+  } catch {
+    // ignore fs write error in read-only containers
+  }
+}
+
+const ORDER_AUDIT_LOG_FILE = path.join(
+  process.cwd(),
+  '.local-db',
+  'order-audit.log.jsonl'
+);
+
+export function recordOrderAuditLog(entry: {
+  shopId: string;
+  orderId: string;
+  actorId: string;
+  actorRole?: string;
+  action: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  details?: Record<string, unknown>;
+}): void {
+  try {
+    const dir = path.dirname(ORDER_AUDIT_LOG_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const payload = {
+      timestamp: new Date().toISOString(),
+      ...entry,
+    };
+    fs.appendFileSync(
+      ORDER_AUDIT_LOG_FILE,
+      `${JSON.stringify(payload)}\n`,
+      'utf8'
+    );
   } catch {
     // ignore fs write error in read-only containers
   }

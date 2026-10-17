@@ -4,30 +4,54 @@ import {
   dbCreateOrder,
   dbGetOrderById,
   dbGetShopOrders,
+  dbGetTableBill,
+  dbRecordOrderPrint,
+  dbSettleTableBill,
   dbUpdateOrderStatus,
+  quoteOrderPricing,
 } from '@/lib/mpos-store';
 import {
-  dbGetShopById,
   dbGetShopCatalog,
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
 import {
-  requireShopOwnerOrAdmin,
-  verifyRequestUser,
+  getRequestShopMembership,
+  recordOrderAuditLog,
+  requireShopPermission,
 } from '@/lib/server-auth';
+import { hasShopPermission } from '@/lib/shop-permissions';
 import type {
   OrderLineItem,
+  OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  ShopOrder,
+  ShopPermission,
   SupportedLocale,
+  TicketPrintType,
 } from '@/types/qlaok';
+
+function sanitizeCustomerOrderView(order: ShopOrder) {
+  const {
+    tracking_token: _t,
+    idempotency_key: _i,
+    payment_idempotency_key: _pi,
+    paid_by: _pb,
+    refunded_by: _rb,
+    ...publicOrderView
+  } = order;
+  return publicOrderView;
+}
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const orderId = searchParams.get('orderId');
-    const trackingToken = searchParams.get('trackingToken');
+    const trackingToken =
+      searchParams.get('trackingToken') ||
+      req.headers.get('x-tracking-token');
     const shopId = searchParams.get('shopId') || 'shop-fnb-001';
+    const action = searchParams.get('action');
 
     if (orderId) {
       const order = await dbGetOrderById(orderId);
@@ -38,54 +62,101 @@ export async function GET(req: Request) {
         );
       }
 
-      const sessionUser = await verifyRequestUser(req);
-      let isOwnerOrAdmin = sessionUser?.role === 'admin';
-      if (!isOwnerOrAdmin && sessionUser) {
-        const shop = await dbGetShopById(order.shop_id);
-        isOwnerOrAdmin = shop?.owner_id === sessionUser.sub;
+      const { membership } = await getRequestShopMembership(
+        req,
+        order.shop_id
+      );
+      if (hasShopPermission(membership, 'orders.view')) {
+        return NextResponse.json({ order, membership });
       }
 
-      if (isOwnerOrAdmin) {
-        return NextResponse.json({ order });
-      }
-
-      // Customer order status tracker: if order has a tracking_token and caller passes a mismatched token, reject
+      // Customer order status tracker: require matching trackingToken when order has tracking_token
       if (
-        order.tracking_token &&
-        trackingToken &&
-        trackingToken !== order.tracking_token
+        !order.tracking_token || !trackingToken || trackingToken !== order.tracking_token
       ) {
         return NextResponse.json(
-          { error: 'Mã theo dõi đơn hàng (trackingToken) không hợp lệ.' },
+          {
+            error:
+              'Mã theo dõi đơn hàng (trackingToken) không hợp lệ hoặc bị thiếu.',
+          },
           { status: 403 }
         );
       }
 
-      // Return sanitized customer tracking view (strip internal tokens)
-      const { tracking_token: _t, idempotency_key: _i, ...publicOrderView } =
-        order;
-      return NextResponse.json({ order: publicOrderView });
+      return NextResponse.json({ order: sanitizeCustomerOrderView(order) });
     }
 
-    // Listing all orders, inventory & revenue stats for a shop requires Shop Owner or Super Admin authentication
-    const auth = await requireShopOwnerOrAdmin(req, shopId);
+    if (action === 'table_bill' || searchParams.get('tableBill') === '1') {
+      const auth = await requireShopPermission(req, shopId, 'orders.view');
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const tableLabel = searchParams.get('tableLabel') || undefined;
+      const sessionId = searchParams.get('sessionId') || undefined;
+      const tableBill = await dbGetTableBill({
+        shop_id: shopId,
+        table_label: tableLabel,
+        session_id: sessionId,
+      });
+      return NextResponse.json({ tableBill, membership: auth.membership });
+    }
+
+    // Listing orders for a shop requires 'orders.view' permission
+    const auth = await requireShopPermission(req, shopId, 'orders.view');
     if (auth.errorResponse) return auth.errorResponse;
 
-    const [orders, catalog] = await Promise.all([
-      dbGetShopOrders(shopId),
-      dbGetShopCatalog(shopId),
-    ]);
+    const orders = await dbGetShopOrders(shopId);
+    let catalogItems: Awaited<ReturnType<typeof dbGetShopCatalog>>['items'] = [];
+    try {
+      const catalog = await dbGetShopCatalog(shopId);
+      catalogItems = catalog.items;
+    } catch {
+      const { SEED_ITEMS } = await import('@/lib/seed-data');
+      catalogItems = SEED_ITEMS.filter((i) => i.shop_id === shopId);
+    }
 
-    const stats = computeShopRevenueAndInventoryStats(
+    const fullStats = computeShopRevenueAndInventoryStats(
       shopId,
-      catalog.items,
+      catalogItems,
       orders
     );
 
+    const canViewReports = hasShopPermission(auth.membership, 'reports.view');
+    const visibleOrders = canViewReports ? orders : orders.filter((order) =>
+      order.status !== 'cancelled' && (order.status !== 'completed' || order.payment_status === 'unpaid')
+    );
+    const stats = canViewReports
+      ? fullStats
+      : {
+          todayRevenue: null,
+          todayGrossOrderAmount: null,
+          todayUnpaidAmount: null,
+          todayRefundedAmount: null,
+          totalRefundedAmount: null,
+          totalRevenue: null,
+          avgOrderValue: null,
+          todayOrdersCount: fullStats.todayOrdersCount,
+          todayPaidOrdersCount: fullStats.todayPaidOrdersCount,
+          todayCompletedCount: fullStats.todayCompletedCount,
+          completedOrdersCount: fullStats.completedOrdersCount,
+          totalOrdersCount: fullStats.totalOrdersCount,
+          newOrdersCount: fullStats.newOrdersCount,
+          preparingOrdersCount: fullStats.preparingOrdersCount,
+          lowStockCount: fullStats.lowStockCount,
+          outOfStockCount: fullStats.outOfStockCount,
+          lowStockItems: fullStats.lowStockItems,
+          dailyRevenue7d: [],
+          dailyRevenue7Days: [],
+          paymentBreakdown: null,
+          sourceBreakdown: null,
+          hourlyBreakdown: [],
+          topSellingItems: [],
+        };
+
     return NextResponse.json({
-      orders,
+      orders: visibleOrders,
       stats,
-      items: catalog.items,
+      items: catalogItems,
+      membership: auth.membership,
     });
   } catch (error) {
     return NextResponse.json(
@@ -101,9 +172,144 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    const { action } = body as { action?: string };
+
+    if (action === 'quote') {
+      const shopId = body.shop_id || body.shopId;
+      if (!shopId) {
+        return NextResponse.json(
+          { error: 'Thiếu mã cửa hàng (shop_id)' },
+          { status: 400 }
+        );
+      }
+      const { membership } = await getRequestShopMembership(req, shopId);
+      const canApplyManualDiscount = hasShopPermission(
+        membership,
+        'discount.apply'
+      );
+      const quote = await quoteOrderPricing({
+        shop_id: shopId,
+        items: body.items || [],
+        discount_amount: body.discount_amount,
+        discount_code: body.discount_code,
+        apply_shop_promotions: body.apply_shop_promotions !== false,
+        canApplyManualDiscount,
+      });
+      return NextResponse.json({ quote });
+    }
+
+    if (action === 'settle_table_bill') {
+      const shopId = body.shop_id || body.shopId;
+      if (!shopId) {
+        return NextResponse.json(
+          { error: 'Thiếu mã cửa hàng (shop_id)' },
+          { status: 400 }
+        );
+      }
+      const auth = await requireShopPermission(
+        req,
+        shopId,
+        body.markCompleted ? ['payment.collect', 'orders.fulfill'] : 'payment.collect'
+      );
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const tableBill = await dbSettleTableBill({
+        shop_id: shopId,
+        table_label: body.table_label || body.tableLabel,
+        session_id: body.session_id || body.sessionId,
+        payment_method: body.payment_method || 'cash',
+        payment_idempotency_key:
+          body.payment_idempotency_key ||
+          req.headers.get('x-idempotency-key') ||
+          undefined,
+        paid_by: auth.user.sub,
+        markCompleted: Boolean(body.markCompleted),
+      });
+
+      recordOrderAuditLog({
+        shopId,
+        orderId: tableBill.order_ids.join(','),
+        actorId: auth.user.sub,
+        actorRole: auth.membership.role,
+        action: 'settle_table_bill',
+        details: {
+          table_label: tableBill.table_label,
+          session_id: tableBill.session_id,
+          total_amount: tableBill.total_amount,
+          payment_method: body.payment_method || 'cash',
+        },
+      });
+
+      return NextResponse.json({ tableBill });
+    }
+
+    if (action === 'record_print') {
+      const resolvedOrderId = body.orderId || body.order_id;
+      const ticketType = (body.ticketType ||
+        body.ticket_type ||
+        'receipt') as TicketPrintType;
+      if (!['kitchen', 'provisional', 'receipt'].includes(ticketType)) {
+        return NextResponse.json({ error: 'Loại phiếu không hợp lệ' }, { status: 400 });
+      }
+      if (!resolvedOrderId) {
+        return NextResponse.json(
+          { error: 'Thiếu mã đơn hàng (orderId)' },
+          { status: 400 }
+        );
+      }
+      const existing = await dbGetOrderById(resolvedOrderId);
+      if (!existing) {
+        return NextResponse.json(
+          { error: 'Không tìm thấy đơn hàng' },
+          { status: 404 }
+        );
+      }
+
+      const requiredPerm: ShopPermission =
+        ticketType === 'kitchen'
+          ? 'orders.print_kitchen'
+          : ticketType === 'provisional'
+            ? 'orders.print_provisional'
+            : 'orders.view';
+
+      const auth = await requireShopPermission(
+        req,
+        existing.shop_id,
+        requiredPerm
+      );
+      if (auth.errorResponse) return auth.errorResponse;
+
+      if (ticketType === 'receipt' && existing.payment_status !== 'paid') {
+        return NextResponse.json(
+          {
+            error:
+              'Không thể in biên lai đã thu tiền cho đơn chưa thanh toán. Vui lòng chọn Phiếu tạm tính hoặc xác nhận thu tiền trước.',
+          },
+          { status: 409 }
+        );
+      }
+
+      const printResult = await dbRecordOrderPrint(resolvedOrderId, ticketType);
+      recordOrderAuditLog({
+        shopId: existing.shop_id,
+        orderId: existing.id,
+        actorId: auth.user.sub,
+        actorRole: auth.membership.role,
+        action: `print_${ticketType}`,
+        details: {
+          printCount: printResult.printCount,
+          isReprint: printResult.isReprint,
+          bill_version: printResult.order.bill_version,
+        },
+      });
+
+      return NextResponse.json(printResult);
+    }
+
     const {
       shop_id,
       table_label = 'Bàn khách',
+      session_id,
       visitor_lang = 'vi',
       customer_note = '',
       payment_method = 'cash',
@@ -111,19 +317,26 @@ export async function POST(req: Request) {
       source = 'qr_table',
       markCompletedImmediately = false,
       discount_amount = 0,
+      discount_code,
+      apply_shop_promotions,
       idempotency_key,
+      payment_idempotency_key,
       items = [],
     } = body as {
       shop_id: string;
       table_label?: string;
+      session_id?: string;
       visitor_lang?: SupportedLocale;
       customer_note?: string;
       payment_method?: PaymentMethod;
-      payment_status?: 'unpaid' | 'paid';
+      payment_status?: OrderPaymentStatus;
       source?: 'qr_table' | 'counter_pos';
       markCompletedImmediately?: boolean;
       discount_amount?: number;
+      discount_code?: string;
+      apply_shop_promotions?: boolean;
       idempotency_key?: string;
+      payment_idempotency_key?: string;
       items: OrderLineItem[];
     };
 
@@ -134,23 +347,85 @@ export async function POST(req: Request) {
       );
     }
 
-    // Check if the request comes from the authenticated shop owner/staff or Super Admin
-    let isStaffAuthorized = false;
-    const sessionUser = await verifyRequestUser(req);
-    if (sessionUser) {
-      if (sessionUser.role === 'admin') {
-        isStaffAuthorized = true;
-      } else {
-        const shop = await dbGetShopById(shop_id);
-        if (shop && shop.owner_id === sessionUser.sub) {
-          isStaffAuthorized = true;
-        }
+    const { user: sessionUser, membership } = await getRequestShopMembership(
+      req,
+      shop_id
+    );
+
+    const hasCreatePerm = hasShopPermission(membership, 'orders.create');
+    const canApplyDiscount = hasShopPermission(membership, 'discount.apply');
+    const canCollectPayment = hasShopPermission(membership, 'payment.collect');
+
+    // Counter POS orders require an authenticated shop member with 'orders.create'
+    if (source === 'counter_pos') {
+      if (!sessionUser) {
+        return NextResponse.json(
+          { error: 'Vui lòng đăng nhập để tạo đơn tại quầy POS.' },
+          { status: 401 }
+        );
+      }
+      if (!hasCreatePerm) {
+        return NextResponse.json(
+          {
+            error:
+              'Bạn không có quyền tạo đơn hàng tại quầy cho cửa hàng này.',
+          },
+          { status: 403 }
+        );
+      }
+
+      const hasLineDiscountRequest =
+        Array.isArray(items) &&
+        items.some(
+          (l) =>
+            (l.discount_percent !== undefined &&
+              Number(l.discount_percent) > 0) ||
+            (l.custom_unit_price !== undefined &&
+              l.custom_unit_price !== null &&
+              Number(l.custom_unit_price) < Number(l.unit_price || 0))
+        );
+      if (
+        (Number(discount_amount || 0) > 0 || hasLineDiscountRequest) &&
+        !canApplyDiscount
+      ) {
+        return NextResponse.json(
+          {
+            error: `Tài khoản (${membership?.role || 'staff'}) không có quyền áp dụng giảm giá.`,
+            code: 'INSUFFICIENT_SHOP_PERMISSION',
+          },
+          { status: 403 }
+        );
+      }
+
+      if (
+        (payment_status === 'paid' || markCompletedImmediately) &&
+        !canCollectPayment
+      ) {
+        return NextResponse.json(
+          {
+            error: `Tài khoản (${membership?.role || 'staff'}) không có quyền xác nhận thu tiền.`,
+            code: 'INSUFFICIENT_SHOP_PERMISSION',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    if (body.expected_total !== undefined) {
+      const expectedQuote = await quoteOrderPricing({
+        shop_id, items, discount_amount, discount_code,
+        apply_shop_promotions: Boolean(apply_shop_promotions) || Boolean(discount_code),
+        canApplyManualDiscount: canApplyDiscount,
+      });
+      if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== expectedQuote.total_amount) {
+        return NextResponse.json({ error: 'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.', quote: expectedQuote }, { status: 409 });
       }
     }
 
     const order = await dbCreateOrder({
       shop_id,
       table_label,
+      session_id,
       visitor_lang,
       customer_note,
       payment_method,
@@ -158,10 +433,32 @@ export async function POST(req: Request) {
       source,
       markCompletedImmediately,
       discount_amount,
+      discount_code,
+      apply_shop_promotions,
+      canApplyDiscount,
+      canCollectPayment,
+      paid_by: canCollectPayment ? sessionUser?.sub : undefined,
       idempotency_key:
         idempotency_key || req.headers.get('x-idempotency-key') || undefined,
-      isStaffAuthorized,
+      payment_idempotency_key,
+      isStaffAuthorized: hasCreatePerm,
       items,
+    });
+
+    recordOrderAuditLog({
+      shopId: shop_id,
+      orderId: order.id,
+      actorId: sessionUser?.sub || 'customer_qr',
+      actorRole: membership?.role || 'customer',
+      action: 'create_order',
+      after: {
+        status: order.status,
+        payment_status: order.payment_status,
+        subtotal_amount: order.subtotal_amount,
+        discount_amount: order.discount_amount,
+        total_amount: order.total_amount,
+        source: order.source,
+      },
     });
 
     // Record analytics event for table order submission
@@ -189,9 +486,15 @@ export async function PATCH(req: Request) {
     const {
       orderId,
       order_id,
+      trackingToken,
+      tracking_token,
       status,
       payment_method,
       payment_status,
+      payment_idempotency_key,
+      refund_reason,
+      cancelled_reason,
+      restock_items,
       table_label,
       customer_note,
       items,
@@ -199,9 +502,15 @@ export async function PATCH(req: Request) {
     } = body as {
       orderId?: string;
       order_id?: string;
+      trackingToken?: string;
+      tracking_token?: string;
       status?: OrderStatus;
       payment_method?: PaymentMethod;
-      payment_status?: 'unpaid' | 'paid';
+      payment_status?: OrderPaymentStatus;
+      payment_idempotency_key?: string;
+      refund_reason?: string;
+      cancelled_reason?: string;
+      restock_items?: boolean;
       table_label?: string;
       customer_note?: string;
       items?: OrderLineItem[];
@@ -224,30 +533,195 @@ export async function PATCH(req: Request) {
       );
     }
 
-    // Only the authenticated shop owner or Super Admin can update order status / edit items / mark paid
-    const auth = await requireShopOwnerOrAdmin(req, existingOrder.shop_id);
+    const { user: sessionUser, membership } = await getRequestShopMembership(
+      req,
+      existingOrder.shop_id
+    );
+
+    const resolvedTrackingToken =
+      trackingToken ||
+      tracking_token ||
+      req.headers.get('x-tracking-token') ||
+      undefined;
+
+    // Customer pre-acceptance self-edit/cancel flow via trackingToken (when not an authenticated shop member)
+    if ((!membership || !membership.is_active) && resolvedTrackingToken) {
+      if (
+        !existingOrder.tracking_token ||
+        resolvedTrackingToken !== existingOrder.tracking_token
+      ) {
+        return NextResponse.json(
+          { error: 'Mã theo dõi đơn hàng (trackingToken) không hợp lệ.' },
+          { status: 403 }
+        );
+      }
+
+      if (
+        existingOrder.status !== 'new' ||
+        existingOrder.payment_status !== 'unpaid'
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Đơn hàng đã được bếp tiếp nhận hoặc đã thanh toán, không thể tự chỉnh sửa. Vui lòng báo nhân viên.',
+          },
+          { status: 409 }
+        );
+      }
+
+      if (
+        (status && status !== 'new' && status !== 'cancelled') ||
+        (payment_status && payment_status !== 'unpaid') ||
+        (discount_amount !== undefined && Number(discount_amount) > 0)
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Khách hàng chỉ được phép cập nhật món hoặc hủy đơn khi quán chưa tiếp nhận.',
+          },
+          { status: 403 }
+        );
+      }
+
+      const updatedByCustomer = await dbUpdateOrderStatus(resolvedOrderId, {
+        status: status === 'cancelled' ? 'cancelled' : undefined,
+        customer_note,
+        items,
+        canApplyDiscount: false,
+        require_new_unpaid: true,
+      });
+
+      recordOrderAuditLog({
+        shopId: existingOrder.shop_id,
+        orderId: existingOrder.id,
+        actorId: 'customer_tracking',
+        actorRole: 'customer',
+        action:
+          status === 'cancelled'
+            ? 'customer_cancel_order'
+            : 'customer_edit_order',
+        before: {
+          status: existingOrder.status,
+          total_amount: existingOrder.total_amount,
+          bill_version: existingOrder.bill_version,
+        },
+        after: {
+          status: updatedByCustomer.status,
+          total_amount: updatedByCustomer.total_amount,
+          bill_version: updatedByCustomer.bill_version,
+        },
+      });
+
+      return NextResponse.json({
+        order: sanitizeCustomerOrderView(updatedByCustomer),
+      });
+    }
+
+    // Authenticated shop member flow: determine required permissions from requested patch fields
+    const requiredPerms = new Set<ShopPermission>();
+
+    const isMarkingPaid =
+      payment_status === 'paid' && existingOrder.payment_status !== 'paid';
+    const isRefunding =
+      payment_status === 'refunded' ||
+      (existingOrder.payment_status === 'paid' && status === 'cancelled');
+    const isChangingDiscount =
+      discount_amount !== undefined &&
+      Number(discount_amount) !== Number(existingOrder.discount_amount || 0);
+    const isEditingItems = Array.isArray(items);
+    const isCancellingUnpaid =
+      status === 'cancelled' && existingOrder.payment_status !== 'paid';
+
+    if (payment_status !== undefined || payment_method !== undefined || payment_idempotency_key !== undefined) {
+      requiredPerms.add(payment_status === 'refunded' ? 'payment.refund' : 'payment.collect');
+    }
+    if (isRefunding) requiredPerms.add('payment.refund');
+    if (isChangingDiscount || (Array.isArray(items) && items.some((line) =>
+      line.discount_percent !== undefined || line.custom_unit_price != null
+    ))) requiredPerms.add('discount.apply');
+    if (isEditingItems || table_label !== undefined || customer_note !== undefined) requiredPerms.add('orders.edit_items');
+    if (isCancellingUnpaid) requiredPerms.add('orders.cancel_unpaid');
+    if (status !== undefined && status !== existingOrder.status && status !== 'cancelled') requiredPerms.add('orders.fulfill');
+    if (requiredPerms.size === 0) requiredPerms.add('orders.fulfill');
+
+    const auth = await requireShopPermission(
+      req,
+      existingOrder.shop_id,
+      Array.from(requiredPerms)
+    );
     if (auth.errorResponse) return auth.errorResponse;
+
+    if (body.expected_total !== undefined) {
+      const quote = Array.isArray(items) || discount_amount !== undefined
+        ? await quoteOrderPricing({
+            shop_id: existingOrder.shop_id, items: items || existingOrder.items,
+            discount_amount: discount_amount ?? existingOrder.discount_amount,
+            apply_shop_promotions: false,
+            canApplyManualDiscount: hasShopPermission(auth.membership, 'discount.apply'),
+          })
+        : { total_amount: existingOrder.total_amount };
+      if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== Number(quote.total_amount)) {
+        return NextResponse.json({ error: 'Tổng tiền đã thay đổi. Vui lòng tải lại đơn trước khi xác nhận.', quote }, { status: 409 });
+      }
+    }
+
+    if (status === 'cancelled' && existingOrder.payment_status === 'paid' && payment_status !== 'refunded') {
+      return NextResponse.json({ error: 'Đơn đã thu tiền: hãy xác nhận hoàn tiền trước khi hủy.' }, { status: 409 });
+    }
 
     const updated = await dbUpdateOrderStatus(resolvedOrderId, {
       status,
       payment_method,
       payment_status,
+      payment_idempotency_key:
+        payment_idempotency_key ||
+        req.headers.get('x-idempotency-key') ||
+        undefined,
+      paid_by: isMarkingPaid ? auth.user.sub : undefined,
+      refund_reason,
+      refunded_by: isRefunding ? auth.user.sub : undefined,
+      cancelled_reason,
+      restock_items,
       table_label,
       customer_note,
       items,
       discount_amount,
+      canApplyDiscount: hasShopPermission(auth.membership, 'discount.apply'),
+      expected_total: body.expected_total,
+    });
+
+    recordOrderAuditLog({
+      shopId: existingOrder.shop_id,
+      orderId: existingOrder.id,
+      actorId: auth.user.sub,
+      actorRole: auth.membership.role,
+      action: 'update_order',
+      before: {
+        status: existingOrder.status,
+        payment_status: existingOrder.payment_status,
+        subtotal_amount: existingOrder.subtotal_amount,
+        discount_amount: existingOrder.discount_amount,
+        total_amount: existingOrder.total_amount,
+        bill_version: existingOrder.bill_version,
+      },
+      after: {
+        status: updated.status,
+        payment_status: updated.payment_status,
+        subtotal_amount: updated.subtotal_amount,
+        discount_amount: updated.discount_amount,
+        total_amount: updated.total_amount,
+        bill_version: updated.bill_version,
+        waste_recorded: updated.waste_recorded,
+      },
     });
 
     return NextResponse.json({ order: updated });
   } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Không thể cập nhật trạng thái đơn',
-      },
-      { status: 400 }
-    );
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Không thể cập nhật trạng thái đơn';
+    const statusCode = /ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
+    return NextResponse.json({ error: message }, { status: statusCode });
   }
 }

@@ -1,7 +1,11 @@
 import React, { memo } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { formatVnd, MobileShopOrder } from '../../lib/supabase';
+import {
+  formatVnd,
+  MobileOrderPaymentStatus,
+  MobileShopOrder,
+} from '../../lib/supabase';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
 
 export type OrderFilterType = 'active' | 'new' | 'preparing' | 'completed';
@@ -13,9 +17,11 @@ interface OrdersTabProps {
   onUpdateOrderStatus: (
     orderId: string,
     status: 'new' | 'preparing' | 'completed' | 'cancelled',
-    payment_status?: 'unpaid' | 'paid'
+    payment_status?: MobileOrderPaymentStatus
   ) => void;
   onPrintOrder: (order: MobileShopOrder) => void;
+  canCollectPayment?: boolean;
+  canRefundOrder?: boolean;
   theme: MobileThemePalette;
 }
 
@@ -25,16 +31,29 @@ export const OrdersTab = memo(function OrdersTab({
   onChangeOrderFilter,
   onUpdateOrderStatus,
   onPrintOrder,
+  canCollectPayment = true,
+  canRefundOrder = false,
   theme,
 }: OrdersTabProps) {
   const newOrdersCount = orders.filter((o) => o.status === 'new').length;
   const preparingOrdersCount = orders.filter(
     (o) => o.status === 'preparing'
   ).length;
+  const activeOrdersCount = orders.filter(
+    (o) =>
+      o.status === 'new' ||
+      o.status === 'preparing' ||
+      (o.status !== 'cancelled' && o.payment_status === 'unpaid')
+  ).length;
 
   const visibleOrders = orders.filter((o) => {
-    if (orderFilter === 'active')
-      return o.status === 'new' || o.status === 'preparing';
+    if (orderFilter === 'active') {
+      return (
+        o.status === 'new' ||
+        o.status === 'preparing' ||
+        (o.status !== 'cancelled' && o.payment_status === 'unpaid')
+      );
+    }
     return o.status === orderFilter;
   });
 
@@ -44,7 +63,7 @@ export const OrdersTab = memo(function OrdersTab({
         {[
           {
             id: 'active',
-            label: `Đang xử lý (${newOrdersCount + preparingOrdersCount})`,
+            label: `Đang xử lý (${activeOrdersCount})`,
           },
           { id: 'new', label: `Mới chờ nhận (${newOrdersCount})` },
           {
@@ -134,7 +153,13 @@ export const OrdersTab = memo(function OrdersTab({
                     Ngôn ngữ khách: {order.visitor_lang.toUpperCase()} •{' '}
                     {order.payment_method === 'vietqr'
                       ? 'Chuyển khoản QR'
-                      : 'Tiền mặt'}
+                      : 'Tiền mặt'}{' '}
+                    •{' '}
+                    {order.payment_status === 'paid'
+                      ? '✓ Đã thu tiền'
+                      : order.payment_status === 'refunded'
+                        ? '↩ Đã hoàn tiền'
+                        : 'Chưa thu tiền'}
                   </Text>
                 </View>
                 <Text style={styles.orderTotalText}>
@@ -277,10 +302,29 @@ export const OrdersTab = memo(function OrdersTab({
                   </>
                 )}
 
-                {order.payment_status === 'unpaid' && order.status !== 'cancelled' && (
-                  <TouchableOpacity style={styles.btnComplete}
-                    onPress={() => onUpdateOrderStatus(order.id, order.status, 'paid')}>
-                    <Text style={styles.btnCompleteText}>Xác nhận đã thu tiền</Text>
+                {order.payment_status === 'unpaid' &&
+                  order.status !== 'cancelled' &&
+                  canCollectPayment && (
+                    <TouchableOpacity
+                      style={styles.btnComplete}
+                      onPress={() =>
+                        onUpdateOrderStatus(order.id, order.status, 'paid')
+                      }
+                    >
+                      <Text style={styles.btnCompleteText}>
+                        Xác nhận đã thu tiền
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+
+                {order.payment_status === 'paid' && canRefundOrder && (
+                  <TouchableOpacity
+                    style={styles.btnCancel}
+                    onPress={() =>
+                      onUpdateOrderStatus(order.id, order.status, 'refunded')
+                    }
+                  >
+                    <Text style={styles.btnCancelText}>Hoàn tiền</Text>
                   </TouchableOpacity>
                 )}
 
@@ -325,8 +369,8 @@ export const OrdersTab = memo(function OrdersTab({
                       ]}
                     >
                       {order.payment_status === 'paid'
-                        ? 'In hóa đơn'
-                        : 'In bill'}
+                        ? 'Xem hóa đơn'
+                        : 'Xem phiếu in'}
                     </Text>
                   </View>
                 </TouchableOpacity>

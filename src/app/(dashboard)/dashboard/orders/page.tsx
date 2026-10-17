@@ -25,8 +25,10 @@ import { useDashboard } from '@/lib/dashboard-context';
 import {
   CatalogItem,
   Category,
+  OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  ShopMembership,
   ShopOrder,
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
@@ -61,6 +63,7 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
   const [orders, setOrders] = useState<ShopOrder[]>([]);
+  const [membership, setMembership] = useState<ShopMembership | null>(null);
   const [catalogCategories, setCatalogCategories] = useState<Category[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -157,6 +160,9 @@ export default function CounterOrdersPage() {
         if (ordersRes.ok) {
           const data = await ordersRes.json();
           const fetchedOrders: ShopOrder[] = data.orders || [];
+          if (data.membership) {
+            setMembership(data.membership as ShopMembership);
+          }
 
           // Detect newly arrived orders to ring chime & push Windows notification
           if (!isFirstLoadRef.current) {
@@ -290,15 +296,16 @@ export default function CounterOrdersPage() {
     orderId: string,
     updates: {
       status?: OrderStatus;
-      payment_status?: 'unpaid' | 'paid';
+      payment_status?: OrderPaymentStatus;
       payment_method?: PaymentMethod;
+      restock_items?: boolean;
+      refund_reason?: string;
     },
     forcePrint = false
-  ) => {
-    if (!activeShop) return;
+  ): Promise<ShopOrder | null> => {
+    if (!activeShop) return null;
     setUpdatingId(orderId);
     try {
-      const existingOrder = orders.find((o) => o.id === orderId);
       const res = await fetch('/api/orders', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -306,13 +313,14 @@ export default function CounterOrdersPage() {
           shop_id: activeShop.id,
           order_id: orderId,
           ...updates,
+          ...(updates.payment_status === 'paid'
+            ? { payment_idempotency_key: `${orderId}:paid`, expected_total: orders.find((o) => o.id === orderId)?.total_amount }
+            : {}),
         }),
       });
       if (res.ok) {
         const resData = await res.json().catch(() => null);
-        const updatedOrder: ShopOrder | null =
-          resData?.order ||
-          (existingOrder ? { ...existingOrder, ...updates } : null);
+        const updatedOrder: ShopOrder | null = resData?.order || null;
 
         await fetchOrdersAndCatalog(true);
         if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -327,18 +335,38 @@ export default function CounterOrdersPage() {
         ) {
           setPrintingOrder(updatedOrder);
         }
+        return updatedOrder;
       }
+      const error = await res.json().catch(() => null);
+      window.alert(error?.error || 'Không thể cập nhật đơn hàng');
+      return null;
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Không thể cập nhật đơn hàng');
+      return null;
     } finally {
       setUpdatingId(null);
     }
   };
 
+  const canCollectPayment =
+    !membership || membership.permissions.includes('payment.collect');
+  const canViewReports =
+    !membership || membership.permissions.includes('reports.view');
+  const canRefundOrder =
+    !membership || membership.permissions.includes('payment.refund');
+
   if (!activeShop) return null;
 
   const newOrders = orders.filter((o) => o.status === 'new');
   const preparingOrders = orders.filter((o) => o.status === 'preparing');
+  const activeOrders = orders.filter(
+    (o) =>
+      o.status === 'new' ||
+      o.status === 'preparing' ||
+      (o.status !== 'cancelled' && o.payment_status === 'unpaid')
+  );
   const completedOrders = orders.filter(
-    (o) => o.status === 'completed' || o.payment_status === 'paid'
+    (o) => o.status === 'completed' && o.payment_status === 'paid'
   );
   const cancelledOrders = orders.filter((o) => o.status === 'cancelled');
 
@@ -346,7 +374,10 @@ export default function CounterOrdersPage() {
   const todayValidOrders = orders.filter(
     (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
   );
-  const todayRevenue = todayValidOrders.reduce(
+  const todayPaidOrders = todayValidOrders.filter(
+    (o) => o.payment_status === 'paid'
+  );
+  const todayRevenue = todayPaidOrders.reduce(
     (sum, o) => sum + Number(o.total_amount || 0),
     0
   );
@@ -365,14 +396,20 @@ export default function CounterOrdersPage() {
           return (
             o.status === 'new' ||
             o.status === 'preparing' ||
+            (o.status !== 'cancelled' && o.payment_status === 'unpaid') ||
             (o.status !== 'cancelled' &&
               getVnDateKey(o.created_at) === todayVnKey)
           );
         }
         return o.status !== 'cancelled';
       }
-      if (filterTab === 'active')
-        return o.status === 'new' || o.status === 'preparing';
+      if (filterTab === 'active') {
+        return (
+          o.status === 'new' ||
+          o.status === 'preparing' ||
+          (o.status !== 'cancelled' && o.payment_status === 'unpaid')
+        );
+      }
       if (filterTab === 'all') return true;
       return o.status === filterTab;
     })
@@ -400,11 +437,16 @@ export default function CounterOrdersPage() {
                 : `Đơn Hàng Tại Bàn & Quầy • ${activeShop.name}`}
             </h1>
             <p className="text-xs text-slate-300 mt-0.5">
-              Doanh thu hôm nay:{' '}
-              <strong className="text-emerald-400 font-black">
-                {formatCurrency(todayRevenue, activeShop.currency)}
-              </strong>{' '}
-              • Hoàn tất: <strong className="text-white">{completedOrders.length} đơn</strong>
+              {canViewReports ? (
+                <>
+                  Doanh thu đã thu hôm nay:{' '}
+                  <strong className="text-emerald-400 font-black">
+                    {formatCurrency(todayRevenue, activeShop.currency)}
+                  </strong>{' '}
+                  •{' '}
+                </>
+              ) : null}
+              Hoàn tất &amp; đã thu: <strong className="text-white">{completedOrders.length} đơn</strong>
             </p>
           </div>
 
@@ -655,17 +697,19 @@ export default function CounterOrdersPage() {
         <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600">
-              Doanh thu hôm nay
+              Doanh thu đã thu hôm nay
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
               <Banknote className="h-4 w-4" />
             </span>
           </div>
           <p className="mt-2 text-xl sm:text-2xl font-black text-emerald-600">
-            {formatCurrency(todayRevenue, activeShop.currency)}
+            {canViewReports
+              ? formatCurrency(todayRevenue, activeShop.currency)
+              : '🔒 Chỉ Chủ quán / Thu ngân'}
           </p>
           <p className="text-[11px] font-medium text-slate-500">
-            Lưu vĩnh viễn trên máy chủ
+            Chỉ tính đơn đã xác nhận thu tiền
           </p>
         </div>
       </div>
@@ -679,7 +723,7 @@ export default function CounterOrdersPage() {
           },
           {
             id: 'active',
-            label: `Đang xử lý (${newOrders.length + preparingOrders.length})`,
+            label: `Đang xử lý (${activeOrders.length})`,
           },
           { id: 'new', label: `Mới chờ nhận (${newOrders.length})` },
           { id: 'preparing', label: `Đang chế biến (${preparingOrders.length})` },
@@ -784,7 +828,7 @@ export default function CounterOrdersPage() {
                             : isPreparing
                               ? 'Đang chế biến'
                               : isCompleted
-                                ? 'Hoàn tất'
+                                ? 'Đã phục vụ'
                                 : 'Đã hủy'}
                         </span>
                       </div>
@@ -824,12 +868,16 @@ export default function CounterOrdersPage() {
                         className={`inline-block rounded-lg px-2 py-0.5 text-[10px] font-bold ${
                           order.payment_status === 'paid'
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            : order.payment_status === 'refunded'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
                         }`}
                       >
                         {order.payment_status === 'paid'
                           ? '✓ Đã thu tiền'
-                          : 'Chưa thu tiền'}{' '}
+                          : order.payment_status === 'refunded'
+                            ? '↩ Đã hoàn tiền'
+                            : 'Chưa thu tiền'}{' '}
                         ({order.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
                       </span>
                     </div>
@@ -912,7 +960,7 @@ export default function CounterOrdersPage() {
                 {/* Action Buttons Footer */}
                 {!isCancelled && (
                   <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
-                    {order.payment_status !== 'paid' && (
+                    {order.payment_status === 'unpaid' && (
                       <button
                         type="button"
                         onClick={() => handleOpenEditOrderInPos(order)}
@@ -959,19 +1007,36 @@ export default function CounterOrdersPage() {
                           onClick={() =>
                             handleUpdateOrder(order.id, {
                               status: 'completed',
-                              payment_status: 'paid',
                             })
                           }
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          <span>Thu tiền &amp; Hoàn tất</span>
+                          <span>Đã phục vụ</span>
                         </button>
+                        {order.payment_status === 'unpaid' && canCollectPayment && (
+                          <button
+                            type="button"
+                            disabled={updatingId === order.id}
+                            onClick={() =>
+                              handleUpdateOrder(order.id, {
+                                payment_status: 'paid',
+                              })
+                            }
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            <Banknote className="h-4 w-4" />
+                            <span>Xác nhận đã thu tiền</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={updatingId === order.id}
                           onClick={() =>
-                            handleUpdateOrder(order.id, { status: 'cancelled' })
+                            handleUpdateOrder(order.id, {
+                              status: 'cancelled',
+                              restock_items: false,
+                            })
                           }
                           className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
                         >
@@ -979,6 +1044,41 @@ export default function CounterOrdersPage() {
                           <span>Hủy</span>
                         </button>
                       </>
+                    )}
+
+                    {isCompleted &&
+                      order.payment_status === 'unpaid' &&
+                      canCollectPayment && (
+                        <button
+                          type="button"
+                          disabled={updatingId === order.id}
+                          onClick={() =>
+                            handleUpdateOrder(order.id, {
+                              payment_status: 'paid',
+                            })
+                          }
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                        >
+                          <Banknote className="h-4 w-4" />
+                          <span>Xác nhận đã thu tiền</span>
+                        </button>
+                      )}
+
+                    {order.payment_status === 'paid' && canRefundOrder && (
+                      <button
+                        type="button"
+                        disabled={updatingId === order.id}
+                        onClick={() =>
+                          handleUpdateOrder(order.id, {
+                            payment_status: 'refunded',
+                            refund_reason: 'Hoàn tiền tại quầy',
+                          })
+                        }
+                        className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        <span>Hoàn tiền</span>
+                      </button>
                     )}
 
                     {order.payment_status === 'unpaid' && (
@@ -1053,28 +1153,32 @@ export default function CounterOrdersPage() {
                   </p>
                 </div>
 
-                {!qrInfo.isConfigured && (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] font-bold text-amber-800">
-                    ⚠️ Quán chưa cài đặt Số Tài Khoản / Mã QR riêng.{' '}
+                {!qrInfo.isConfigured || !qrInfo.qrImageUrl ? (
+                  <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-xs font-bold text-amber-900 space-y-2">
+                    <p>
+                      ⚠️ Quán chưa cài đặt Số Tài Khoản / Mã QR nhận tiền thật.
+                      Hệ thống đã chặn hiển thị QR mặc định để tránh chuyển nhầm
+                      tài khoản.
+                    </p>
                     <Link
                       href="/dashboard/settings#payment-qr-settings"
-                      className="underline font-black text-emerald-700"
+                      className="inline-block underline font-black text-emerald-700"
                     >
-                      Cài đặt ngay →
+                      Cài đặt tài khoản ngân hàng ngay →
                     </Link>
                   </div>
+                ) : (
+                  <div
+                    style={{ backgroundColor: '#ffffff' }}
+                    className="qr-light-surface mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center"
+                  >
+                    <img
+                      src={qrInfo.qrImageUrl}
+                      alt="VietQR Order Payment"
+                      className="w-full h-full object-contain"
+                    />
+                  </div>
                 )}
-
-                <div
-                  style={{ backgroundColor: '#ffffff' }}
-                  className="qr-light-surface mx-auto w-56 h-56 rounded-2xl border border-slate-200 p-2 bg-white shadow-inner flex items-center justify-center"
-                >
-                  <img
-                    src={qrInfo.qrImageUrl}
-                    alt="VietQR Order Payment"
-                    className="w-full h-full object-contain"
-                  />
-                </div>
 
                 <div className="rounded-2xl bg-slate-50 p-3 text-xs space-y-1 text-left">
                   <div className="flex justify-between">
@@ -1115,26 +1219,27 @@ export default function CounterOrdersPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const targetOrder = qrOrderModal;
-                      setQrOrderModal(null);
-                      await handleUpdateOrder(
-                        targetOrder.id,
-                        {
-                          payment_status: 'paid',
-                          payment_method: 'vietqr',
-                          status: 'completed',
-                        },
-                        true
-                      );
-                    }}
-                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
-                  </button>
+                  {canCollectPayment && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const targetOrder = qrOrderModal;
+                        setQrOrderModal(null);
+                        await handleUpdateOrder(
+                          targetOrder.id,
+                          {
+                            payment_status: 'paid',
+                            payment_method: 'vietqr',
+                          },
+                          true
+                        );
+                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -1491,22 +1596,26 @@ export default function CounterOrdersPage() {
           order={printingOrder}
           shop={activeShop}
           onClose={() => setPrintingOrder(null)}
-          onConfirmPaid={async (targetOrder) => {
-            await handleUpdateOrder(
-              targetOrder.id,
-              {
-                payment_status: 'paid',
-                status:
-                  targetOrder.status === 'new'
-                    ? 'preparing'
-                    : targetOrder.status,
-              },
-              false
-            );
-            setPrintingOrder((prev) =>
-              prev ? { ...prev, payment_status: 'paid' } : null
-            );
-          }}
+          onConfirmPaid={
+            canCollectPayment
+              ? async (targetOrder) => {
+                  const updated = await handleUpdateOrder(
+                    targetOrder.id,
+                    {
+                      payment_status: 'paid',
+                      status:
+                        targetOrder.status === 'new'
+                          ? 'preparing'
+                          : targetOrder.status,
+                    },
+                    false
+                  );
+                  if (updated) {
+                    setPrintingOrder(updated);
+                  }
+                }
+              : undefined
+          }
         />
       )}
     </div>

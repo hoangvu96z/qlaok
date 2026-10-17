@@ -15,7 +15,6 @@ import {
   MobileCatalogItem,
   MobileCategory,
   MobileShop,
-  supabase,
 } from '../../lib/supabase';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
 
@@ -25,6 +24,8 @@ interface CatalogTabProps {
   items: MobileCatalogItem[];
   setItems: React.Dispatch<React.SetStateAction<MobileCatalogItem[]>>;
   onReloadShopData: (shopId?: string) => void;
+  canManageCatalog?: boolean;
+  canAdjustInventory?: boolean;
   theme: MobileThemePalette;
 }
 
@@ -34,6 +35,8 @@ export const CatalogTab = memo(function CatalogTab({
   items,
   setItems,
   onReloadShopData,
+  canManageCatalog = true,
+  canAdjustInventory = true,
   theme,
 }: CatalogTabProps) {
   // Local state isolated inside CatalogTab so typing never triggers re-renders on other tabs!
@@ -48,18 +51,29 @@ export const CatalogTab = memo(function CatalogTab({
       : items.filter((i) => i.category_id === selectedCategoryId);
 
   const handleToggleItemAvailability = async (item: MobileCatalogItem) => {
+    if (!canManageCatalog && !canAdjustInventory) return;
     const nextVal = !item.is_available;
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, is_available: nextVal } : i))
     );
 
-    const { error } = await supabase
-      .from('items')
-      .update({ is_available: nextVal, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-
-    if (error) {
-      Alert.alert('Lỗi cập nhật', error.message);
+    try {
+      await fetchApi('/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...item,
+            is_available: nextVal,
+          },
+        }),
+      });
+    } catch (error) {
+      Alert.alert(
+        'Lỗi cập nhật',
+        error instanceof Error ? error.message : 'Vui lòng thử lại'
+      );
       onReloadShopData(activeShop?.id);
     }
   };
@@ -68,21 +82,38 @@ export const CatalogTab = memo(function CatalogTab({
     item: MobileCatalogItem,
     delta: number
   ) => {
+    if (!canManageCatalog) return;
     const nextPrice = Math.max(0, Number(item.price) + delta);
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
 
-    await supabase
-      .from('items')
-      .update({ price: nextPrice, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
+    try {
+      await fetchApi('/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...item,
+            price: nextPrice,
+          },
+        }),
+      });
+    } catch (error) {
+      Alert.alert(
+        'Không thể cập nhật giá',
+        error instanceof Error ? error.message : 'Vui lòng thử lại'
+      );
+      onReloadShopData(activeShop?.id);
+    }
   };
 
   const handleUpdateItemStock = async (
     item: MobileCatalogItem,
     nextStock: number | null
   ) => {
+    if (!canAdjustInventory && !canManageCatalog) return;
     const nextAvail =
       nextStock === 0
         ? false
@@ -118,6 +149,7 @@ export const CatalogTab = memo(function CatalogTab({
   };
 
   const handleQuickAddItem = async () => {
+    if (!canManageCatalog) return;
     if (!activeShop || !newItemName.trim()) return;
     const targetCatId =
       selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id;
@@ -127,7 +159,12 @@ export const CatalogTab = memo(function CatalogTab({
       return;
     }
 
-    const priceNum = Number(newItemPrice.replace(/[^0-9]/g, '')) || 35000;
+    const cleanedPrice = newItemPrice.replace(/[^0-9]/g, '');
+    const parsedPrice = Number(cleanedPrice);
+    const priceNum =
+      cleanedPrice !== '' && Number.isFinite(parsedPrice)
+        ? Math.max(0, parsedPrice)
+        : 35000;
     const stockNum =
       newItemStock.trim() === ''
         ? null

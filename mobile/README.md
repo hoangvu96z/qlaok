@@ -32,9 +32,10 @@ nếu không đặt `EXPO_PUBLIC_API_URL`. Không đưa service-role key vào bi
 
 Ứng dụng yêu cầu đăng nhập Supabase Auth thật; tài khoản demo không bỏ qua xác thực.
 Session native lưu bằng Expo SecureStore, tự refresh khi app foreground và logout
-xóa session local. Danh sách làm việc hiện chỉ có shop thuộc `owner_id` của user;
-phân quyền staff/cashier theo membership chưa triển khai. Cần migration RLS 003
-được quản trị viên áp dụng đúng môi trường để các truy vấn trực tiếp được bảo vệ.
+xóa session local. Danh sách làm việc lấy từ membership theo từng shop (`owner`, `cashier`, `staff`).
+Staff mặc định nhận/phục vụ đơn; cashier được thu tiền và áp giảm giá; owner quản trị shop.
+Server kiểm tra từng quyền, giao diện chỉ hiển thị thao tác tương ứng. Cần áp dụng
+các migration trong repo theo thứ tự trước khi chạy phiên bản này.
 
 REST gửi Bearer token hiện tại, báo lỗi HTTP và timeout 15 giây. Không dùng dữ liệu
 `theme_config.recent_orders` thay thế khi API từ chối. Xác nhận thu tiền chỉ mở

@@ -1,7 +1,12 @@
-import React, { memo, useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { formatVnd, MobileShop, MobileShopOrder } from '../lib/supabase';
+import {
+  formatVnd,
+  MobileShop,
+  MobileShopOrder,
+  MobileTicketPrintType,
+} from '../lib/supabase';
 
 interface ReceiptModalProps {
   order: MobileShopOrder | null;
@@ -17,8 +22,68 @@ export const ReceiptModal = memo(function ReceiptModal({
   const [receiptPaperSize, setReceiptPaperSize] = useState<'80mm' | '58mm'>(
     '80mm'
   );
+  const [ticketType, setTicketType] = useState<MobileTicketPrintType>('provisional');
+
+  useEffect(() => {
+    if (!order) return;
+    setTicketType(order.payment_status === 'paid' ? 'receipt' : 'provisional');
+  }, [order?.id, order?.payment_status]);
 
   if (!order || !shop) return null;
+
+  const isPaid = order.payment_status === 'paid';
+  const rawSubtotal = order.items.reduce(
+    (sum, it) =>
+      sum + (Number(it.unit_price || 0) + Number(it.extra_price || 0)) * Number(it.quantity || 1),
+    0
+  );
+  const subtotalAmount =
+    typeof order.subtotal_amount === 'number' && order.subtotal_amount > 0
+      ? order.subtotal_amount
+      : rawSubtotal;
+  const discountAmount =
+    typeof order.discount_amount === 'number' && order.discount_amount > 0
+      ? order.discount_amount
+      : Math.max(0, subtotalAmount - order.total_amount);
+
+  const currentTypePrintCount =
+    ticketType === 'kitchen'
+      ? Number(order.kitchen_printed_count || 0)
+      : ticketType === 'provisional'
+        ? Number(order.provisional_printed_count || 0)
+        : Number(order.receipt_printed_count || 0);
+  const isReprint = currentTypePrintCount > 0;
+
+  const paymentCfg =
+    shop.theme_config?.paymentConfig || shop.theme_config?.paymentQr;
+  const acctNo = (
+    paymentCfg?.accountNumber ||
+    paymentCfg?.accountNo ||
+    ''
+  ).trim();
+  const customQr = (
+    paymentCfg?.customQrUrl ||
+    paymentCfg?.qrImageUrl ||
+    ''
+  ).trim();
+  const isQrConfigured = Boolean(acctNo || customQr);
+
+  const ticketHeaderLabel =
+    ticketType === 'kitchen'
+      ? 'PHIẾU BÁO BẾP / BAR'
+      : ticketType === 'provisional'
+        ? 'PHIẾU TẠM TÍNH KIỂM MÓN'
+        : isPaid
+          ? 'HÓA ĐƠN THANH TOÁN'
+          : 'HÓA ĐƠN (CHƯA THU TIỀN)';
+
+  const handlePreviewPrintAction = () => {
+    Alert.alert(
+      '📄 Bản xem trước phiếu in nhiệt',
+      `Phiếu "${ticketHeaderLabel}" #${order.order_code} (${order.table_label}), khổ ${receiptPaperSize}. Chưa gửi lệnh in và chưa ghi nhận lượt in phần cứng.`,
+    );
+    onClose();
+  };
 
   return (
     <View
@@ -39,7 +104,7 @@ export const ReceiptModal = memo(function ReceiptModal({
         style={{
           width: '100%',
           maxWidth: 380,
-          maxHeight: '90%',
+          maxHeight: '92%',
           backgroundColor: '#0f172a',
           borderRadius: 24,
           padding: 16,
@@ -53,15 +118,15 @@ export const ReceiptModal = memo(function ReceiptModal({
             flexDirection: 'row',
             justifyContent: 'space-between',
             alignItems: 'center',
-            marginBottom: 12,
+            marginBottom: 10,
           }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Ionicons name="print" size={18} color="#10b981" />
             <Text
-              style={{ color: '#ffffff', fontSize: 14, fontWeight: '900' }}
+              style={{ color: '#ffffff', fontSize: 13, fontWeight: '900' }}
             >
-              In Hóa Đơn Thanh Toán ({receiptPaperSize})
+              Xem Trước Phiếu In Nhiệt ({receiptPaperSize})
             </Text>
           </View>
           <TouchableOpacity onPress={onClose}>
@@ -69,23 +134,29 @@ export const ReceiptModal = memo(function ReceiptModal({
           </TouchableOpacity>
         </View>
 
-        {/* Paper Size Switcher */}
+        {/* 3 Ticket Types Switcher */}
         <View
           style={{
             flexDirection: 'row',
-            gap: 8,
-            marginBottom: 12,
+            gap: 6,
+            marginBottom: 8,
           }}
         >
-          {(['80mm', '58mm'] as const).map((sz) => {
-            const active = receiptPaperSize === sz;
+          {(
+            [
+              { id: 'kitchen', label: '🍳 Báo bếp' },
+              { id: 'provisional', label: '📋 Tạm tính' },
+              { id: 'receipt', label: '🧾 Hóa đơn' },
+            ] as const
+          ).map((t) => {
+            const active = ticketType === t.id;
             return (
               <TouchableOpacity
-                key={sz}
-                onPress={() => setReceiptPaperSize(sz)}
+                key={t.id}
+                onPress={() => setTicketType(t.id)}
                 style={{
                   flex: 1,
-                  paddingVertical: 7,
+                  paddingVertical: 6,
                   borderRadius: 10,
                   backgroundColor: active ? '#10b981' : '#1e293b',
                   alignItems: 'center',
@@ -96,6 +167,42 @@ export const ReceiptModal = memo(function ReceiptModal({
                     fontSize: 11,
                     fontWeight: '800',
                     color: active ? '#020617' : '#cbd5e1',
+                  }}
+                >
+                  {t.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Paper Size Switcher */}
+        <View
+          style={{
+            flexDirection: 'row',
+            gap: 8,
+            marginBottom: 10,
+          }}
+        >
+          {(['80mm', '58mm'] as const).map((sz) => {
+            const active = receiptPaperSize === sz;
+            return (
+              <TouchableOpacity
+                key={sz}
+                onPress={() => setReceiptPaperSize(sz)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 6,
+                  borderRadius: 10,
+                  backgroundColor: active ? '#334155' : '#1e293b',
+                  alignItems: 'center',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '800',
+                    color: active ? '#ffffff' : '#94a3b8',
                   }}
                 >
                   Khổ {sz === '80mm' ? 'K80 (80mm)' : 'K58 (58mm)'}
@@ -111,7 +218,7 @@ export const ReceiptModal = memo(function ReceiptModal({
             backgroundColor: '#ffffff',
             borderRadius: 14,
             padding: 16,
-            maxHeight: 380,
+            maxHeight: 360,
           }}
         >
           <View
@@ -135,20 +242,24 @@ export const ReceiptModal = memo(function ReceiptModal({
             >
               {shop.name}
             </Text>
-            <Text
-              style={{
-                fontSize: 11,
-                color: '#334155',
-                textAlign: 'center',
-                marginTop: 2,
-              }}
-            >
-              {shop.address || shop.city}
-            </Text>
-            {shop.phone_contact ? (
-              <Text style={{ fontSize: 11, color: '#334155' }}>
-                ĐT: {shop.phone_contact}
-              </Text>
+            {ticketType !== 'kitchen' ? (
+              <>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: '#334155',
+                    textAlign: 'center',
+                    marginTop: 2,
+                  }}
+                >
+                  {shop.address || shop.city}
+                </Text>
+                {shop.phone_contact ? (
+                  <Text style={{ fontSize: 11, color: '#334155' }}>
+                    ĐT: {shop.phone_contact}
+                  </Text>
+                ) : null}
+              </>
             ) : null}
             <Text
               style={{
@@ -158,12 +269,23 @@ export const ReceiptModal = memo(function ReceiptModal({
                 marginTop: 8,
               }}
             >
-              {order.payment_status === 'paid'
-                ? 'HÓA ĐƠN THANH TOÁN'
-                : 'PHIẾU TẠM TÍNH'}
+              {ticketHeaderLabel}
             </Text>
+            {isReprint ? (
+              <Text
+                style={{
+                  fontSize: 9,
+                  fontWeight: '900',
+                  color: '#0f172a',
+                  marginTop: 2,
+                }}
+              >
+                [BẢN IN LẠI LẦN {currentTypePrintCount + 1}]
+              </Text>
+            ) : null}
             <Text style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-              Mã: #{order.order_code} • {order.table_label}
+              Mã: #{order.order_code} • {order.table_label} • Ver #
+              {order.bill_version || 1}
             </Text>
           </View>
 
@@ -194,96 +316,161 @@ export const ReceiptModal = memo(function ReceiptModal({
                     </Text>
                   ) : null}
                 </View>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    fontWeight: '800',
-                    color: '#000000',
-                  }}
-                >
-                  {formatVnd(
-                    (line.unit_price + line.extra_price) * line.quantity
-                  )}
-                </Text>
+                {ticketType !== 'kitchen' ? (
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: '800',
+                      color: '#000000',
+                    }}
+                  >
+                    {formatVnd(
+                      (line.unit_price + line.extra_price) * line.quantity
+                    )}
+                  </Text>
+                ) : null}
               </View>
             ))}
           </View>
 
-          {/* Total Footer */}
-          <View
-            style={{
-              borderTopWidth: 1,
-              borderStyle: 'dashed',
-              borderTopColor: '#0f172a',
-              paddingTop: 8,
-              marginBottom: 12,
-            }}
-          >
+          {/* Total Footer (hidden on kitchen ticket) */}
+          {ticketType !== 'kitchen' ? (
             <View
               style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
+                borderTopWidth: 1,
+                borderStyle: 'dashed',
+                borderTopColor: '#0f172a',
+                paddingTop: 8,
+                marginBottom: 12,
               }}
             >
-              <Text
+              {discountAmount > 0 ? (
+                <>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      marginBottom: 2,
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#334155' }}>
+                      Tạm tính:
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: '#000000',
+                      }}
+                    >
+                      {formatVnd(subtotalAmount)}
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      marginBottom: 4,
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#334155' }}>
+                      Giảm giá / KM:
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '800',
+                        color: '#000000',
+                      }}
+                    >
+                      -{formatVnd(discountAmount)}
+                    </Text>
+                  </View>
+                </>
+              ) : null}
+              <View
                 style={{
-                  fontSize: 13,
-                  fontWeight: '900',
-                  color: '#000000',
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
                 }}
               >
-                TỔNG CỘNG:
-              </Text>
-              <Text
-                style={{
-                  fontSize: 15,
-                  fontWeight: '900',
-                  color: '#000000',
-                }}
-              >
-                {formatVnd(order.total_amount)}
-              </Text>
-            </View>
-            <Text
-              style={{
-                fontSize: 10,
-                fontWeight: '700',
-                color: '#334155',
-                marginTop: 4,
-              }}
-            >
-              Trạng thái:{' '}
-              {order.payment_status === 'paid'
-                ? '✓ ĐÃ THANH TOÁN'
-                : 'CHƯA THANH TOÁN'}{' '}
-              ({order.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
-            </Text>
-            {shop.wifi_info?.ssid ? (
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: '900',
+                    color: '#000000',
+                  }}
+                >
+                  {isPaid && ticketType === 'receipt'
+                    ? 'ĐÃ THANH TOÁN:'
+                    : 'TỔNG THANH TOÁN:'}
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: '900',
+                    color: '#000000',
+                  }}
+                >
+                  {formatVnd(order.total_amount)}
+                </Text>
+              </View>
               <Text
                 style={{
                   fontSize: 10,
-                  color: '#475569',
-                  marginTop: 6,
-                  textAlign: 'center',
+                  fontWeight: '700',
+                  color: '#334155',
+                  marginTop: 4,
                 }}
               >
-                Wi-Fi: {shop.wifi_info.ssid} (Pass:{' '}
-                {shop.wifi_info.password || 'Miễn phí'})
+                Trạng thái:{' '}
+                {order.payment_status === 'paid'
+                  ? '✓ ĐÃ THANH TOÁN'
+                  : order.payment_status === 'refunded'
+                    ? '↩ ĐÃ HOÀN TIỀN'
+                    : 'CHƯA THANH TOÁN'}{' '}
+                ({order.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
               </Text>
-            ) : null}
-            <Text
-              style={{
-                fontSize: 10,
-                fontWeight: '800',
-                color: '#0f172a',
-                textAlign: 'center',
-                marginTop: 6,
-              }}
-            >
-              Cảm ơn Quý khách &amp; Hẹn gặp lại!
-            </Text>
-          </View>
+              {ticketType === 'provisional' && !isPaid && !isQrConfigured ? (
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '700',
+                    color: '#b45309',
+                    marginTop: 6,
+                    textAlign: 'center',
+                  }}
+                >
+                  ⚠️ Quán chưa cấu hình tài khoản ngân hàng nhận QR.
+                </Text>
+              ) : null}
+              {shop.wifi_info?.ssid ? (
+                <Text
+                  style={{
+                    fontSize: 10,
+                    color: '#475569',
+                    marginTop: 6,
+                    textAlign: 'center',
+                  }}
+                >
+                  Wi-Fi: {shop.wifi_info.ssid} (Pass:{' '}
+                  {shop.wifi_info.password || 'Miễn phí'})
+                </Text>
+              ) : null}
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontWeight: '800',
+                  color: '#0f172a',
+                  textAlign: 'center',
+                  marginTop: 6,
+                }}
+              >
+                Cảm ơn Quý khách &amp; Hẹn gặp lại!
+              </Text>
+            </View>
+          ) : null}
         </ScrollView>
 
         {/* Print Action Buttons */}
@@ -311,13 +498,7 @@ export const ReceiptModal = memo(function ReceiptModal({
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={() => {
-              Alert.alert(
-                '🖨️ Đã gửi lệnh in hóa đơn',
-                `Đang in phiếu #${order.order_code} (${order.table_label}) ra máy in nhiệt khổ ${receiptPaperSize}.`
-              );
-              onClose();
-            }}
+            onPress={handlePreviewPrintAction}
             style={{
               flex: 2,
               flexDirection: 'row',
@@ -329,11 +510,11 @@ export const ReceiptModal = memo(function ReceiptModal({
               justifyContent: 'center',
             }}
           >
-            <Ionicons name="print" size={16} color="#020617" />
+            <Ionicons name="document-text" size={16} color="#020617" />
             <Text
               style={{ color: '#020617', fontSize: 12, fontWeight: '900' }}
             >
-              In Hóa Đơn Ngay ({receiptPaperSize})
+              Xem thông tin in ({receiptPaperSize})
             </Text>
           </TouchableOpacity>
         </View>

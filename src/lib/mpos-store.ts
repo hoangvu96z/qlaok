@@ -1,14 +1,38 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   CatalogItem,
   OrderLineItem,
+  OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
   ShopOrder,
+  ShopThemeConfig,
   SupportedLocale,
+  TableBillSummary,
+  TicketPrintType,
 } from '@/types/qlaok';
 import { getSupabaseDbClient } from './db';
+import {
+  computeSharedOrderQuote,
+  getItemFlashSalePrice,
+  isFlashSaleActiveNow,
+  isPromoBannerActiveNow,
+  type SharedOrderQuoteResult,
+} from './order-pricing';
+import { SEED_ITEMS, SEED_SHOPS } from './seed-data';
+import { isSupabaseConfigured } from './supabase/client';
+
+export {
+  computeSharedOrderQuote,
+  getItemFlashSalePrice,
+  isFlashSaleActiveNow,
+  isPromoBannerActiveNow,
+  type SharedOrderQuoteResult,
+};
 
 interface InventoryMeta {
   stock_quantity: number | null;
@@ -20,8 +44,74 @@ interface MposStoreData {
   orders: ShopOrder[];
 }
 
-const STORE_DIR = path.join(process.cwd(), '.local-db');
-const STORE_FILE = path.join(STORE_DIR, 'mpos-store.json');
+const DEFAULT_STORE_DIR = path.join(process.cwd(), '.local-db');
+const DEFAULT_STORE_FILE = path.join(DEFAULT_STORE_DIR, 'mpos-store.json');
+
+const IS_NODE_TEST_PROCESS =
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.argv.includes('--test') ||
+  process.execArgv.includes('--test') ||
+  process.env.NODE_ENV === 'test';
+
+const PROCESS_TEST_STORE_FILE = IS_NODE_TEST_PROCESS
+  ? path.join(
+      os.tmpdir(),
+      `qlaok-mpos-test-${process.pid}-${Date.now()}`,
+      'mpos-store.json'
+    )
+  : null;
+
+let testStoreFileOverride: string | null = null;
+let testDbClientOverride: SupabaseClient | null = null;
+let testForceDbMode: boolean | null = null;
+
+export function setMposStoreFileForTests(filePath: string | null) {
+  testStoreFileOverride = filePath;
+}
+
+export function resetMposStoreForTests() {
+  const targetFile = resolveStoreFilePath();
+  const dir = path.dirname(targetFile);
+  fs.mkdirSync(dir, { recursive: true });
+  const initial = buildInitialSeedStore();
+  fs.writeFileSync(targetFile, JSON.stringify(initial, null, 2), 'utf8');
+}
+
+export function setMposDbClientForTests(
+  client: unknown | null,
+  forceDbMode?: boolean
+) {
+  testDbClientOverride = (client as SupabaseClient | null) ?? null;
+  testForceDbMode =
+    forceDbMode !== undefined ? forceDbMode : client !== null ? true : null;
+}
+
+export function isOrderDbConfigured(): boolean {
+  if (testForceDbMode !== null) return testForceDbMode;
+  if (testDbClientOverride !== null) return true;
+  if (IS_NODE_TEST_PROCESS && process.env.QLAOK_ENABLE_TEST_SUPABASE !== '1') {
+    return false;
+  }
+  return isSupabaseConfigured() || Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+function getActiveDbClient(): SupabaseClient {
+  if (testDbClientOverride) return testDbClientOverride;
+  return getSupabaseDbClient();
+}
+
+function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function resolveStoreFilePath(): string {
+  if (testStoreFileOverride) return testStoreFileOverride;
+  if (process.env.QLAOK_MPOS_STORE_FILE?.trim()) {
+    return process.env.QLAOK_MPOS_STORE_FILE.trim();
+  }
+  if (PROCESS_TEST_STORE_FILE) return PROCESS_TEST_STORE_FILE;
+  return DEFAULT_STORE_FILE;
+}
 
 function buildInitialSeedStore(): MposStoreData {
   const now = new Date();
@@ -427,6 +517,8 @@ function buildInitialSeedStore(): MposStoreData {
 }
 
 function readStore(): MposStoreData {
+  const STORE_FILE = resolveStoreFilePath();
+  const STORE_DIR = path.dirname(STORE_FILE);
   try {
     if (!fs.existsSync(STORE_FILE)) {
       fs.mkdirSync(STORE_DIR, { recursive: true });
@@ -446,6 +538,8 @@ function readStore(): MposStoreData {
 }
 
 function writeStore(data: MposStoreData) {
+  const STORE_FILE = resolveStoreFilePath();
+  const STORE_DIR = path.dirname(STORE_FILE);
   try {
     fs.mkdirSync(STORE_DIR, { recursive: true });
     fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
@@ -455,6 +549,7 @@ function writeStore(data: MposStoreData) {
 }
 
 export function enrichItemsWithInventory(items: CatalogItem[]): CatalogItem[] {
+  if (isOrderDbConfigured()) return items;
   const store = readStore();
   return items.map((item) => {
     const meta = store.inventory[item.id];
@@ -485,6 +580,18 @@ export async function setItemStockMetadata(
   stockQuantity: number | null | undefined,
   soldCount?: number
 ) {
+  if (isOrderDbConfigured()) {
+    const patch: Record<string, unknown> = {};
+    if (stockQuantity !== undefined) {
+      if (stockQuantity !== null && (!Number.isInteger(stockQuantity) || stockQuantity < 0)) throw new Error('INVALID_STOCK');
+      patch.stock_quantity = stockQuantity;
+      if (stockQuantity !== null) patch.is_available = stockQuantity > 0;
+    }
+    if (soldCount !== undefined) patch.sold_count = soldCount;
+    const { error } = await getActiveDbClient().from('items').update(patch).eq('id', itemId);
+    if (error) throw new Error(error.message);
+    return;
+  }
   const store = readStore();
   const prev = store.inventory[itemId] || { stock_quantity: null, sold_count: 0 };
   const nextStock =
@@ -502,7 +609,7 @@ export async function setItemStockMetadata(
 
   // Sync availability & stock columns (if 002 migration is applied) to Supabase items table
   try {
-    const sb = getSupabaseDbClient();
+    const sb = getActiveDbClient();
     await sb
       .from('items')
       .update({
@@ -563,13 +670,32 @@ const VALID_ORDER_STATUSES = new Set<OrderStatus>([
   'cancelled',
 ]);
 
+const VALID_PAYMENT_STATUSES = new Set<OrderPaymentStatus>([
+  'unpaid',
+  'paid',
+  'refunded',
+]);
+
 function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
   const items: OrderLineItem[] = Array.isArray(raw.items)
     ? raw.items.map((line) => ({
         ...line,
         quantity: Math.max(1, Number(line?.quantity || 1)),
         unit_price: Number(line?.unit_price || 0),
+        original_unit_price:
+          line?.original_unit_price !== undefined
+            ? Number(line.original_unit_price)
+            : Number(line?.unit_price || 0),
         extra_price: Number(line?.extra_price || 0),
+        discount_percent:
+          line?.discount_percent !== undefined
+            ? Number(line.discount_percent)
+            : undefined,
+        custom_unit_price:
+          line?.custom_unit_price !== undefined &&
+          line?.custom_unit_price !== null
+            ? Number(line.custom_unit_price)
+            : null,
         selected_choices: Array.isArray(line?.selected_choices)
           ? line.selected_choices
           : [],
@@ -577,36 +703,123 @@ function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
       }))
     : [];
 
-  const computedTotal = items.reduce(
+  const computedSubtotal = items.reduce(
     (sum, l) => sum + (l.unit_price + (l.extra_price || 0)) * l.quantity,
     0
   );
+  const subtotalAmount =
+    raw.subtotal_amount !== undefined && !Number.isNaN(Number(raw.subtotal_amount))
+      ? Number(raw.subtotal_amount)
+      : computedSubtotal;
+  const discountAmount =
+    raw.discount_amount !== undefined && !Number.isNaN(Number(raw.discount_amount))
+      ? Math.max(0, Number(raw.discount_amount))
+      : 0;
   const rawTotal = Number(raw.total_amount);
+  const fallbackTotal = Math.max(0, subtotalAmount - discountAmount);
+
+  const paymentStatus: OrderPaymentStatus = VALID_PAYMENT_STATUSES.has(
+    raw.payment_status as OrderPaymentStatus
+  )
+    ? (raw.payment_status as OrderPaymentStatus)
+    : 'unpaid';
 
   return {
     id: String(raw.id || `ord-${Date.now()}`),
     order_code: String(raw.order_code || 'ORD-000'),
     shop_id: String(raw.shop_id || 'shop-fnb-001'),
     table_label: String(raw.table_label || 'Tại quầy'),
+    session_id: raw.session_id || undefined,
+    bill_version:
+      raw.bill_version !== undefined && Number(raw.bill_version) >= 1
+        ? Math.floor(Number(raw.bill_version))
+        : 1,
     visitor_lang: (raw.visitor_lang as SupportedLocale) || 'vi',
     customer_note: raw.customer_note || '',
     status: (raw.status as OrderStatus) || 'new',
     payment_method: (raw.payment_method as PaymentMethod) || 'cash',
-    payment_status: raw.payment_status === 'paid' ? 'paid' : 'unpaid',
-    subtotal_amount:
-      raw.subtotal_amount !== undefined
-        ? Number(raw.subtotal_amount)
-        : computedTotal,
-    discount_amount:
-      raw.discount_amount !== undefined ? Number(raw.discount_amount) : 0,
-    total_amount: !Number.isNaN(rawTotal) ? rawTotal : computedTotal,
+    payment_status: paymentStatus,
+    subtotal_amount: subtotalAmount,
+    discount_amount: discountAmount,
+    promo_discount_amount:
+      raw.promo_discount_amount !== undefined
+        ? Number(raw.promo_discount_amount)
+        : undefined,
+    manual_discount_amount:
+      raw.manual_discount_amount !== undefined
+        ? Number(raw.manual_discount_amount)
+        : undefined,
+    discount_code: raw.discount_code || undefined,
+    total_amount: !Number.isNaN(rawTotal) ? rawTotal : fallbackTotal,
     items,
     source: raw.source === 'counter_pos' ? 'counter_pos' : 'qr_table',
     tracking_token: raw.tracking_token,
     idempotency_key: raw.idempotency_key,
+    payment_idempotency_key: raw.payment_idempotency_key,
+    paid_at: raw.paid_at,
+    paid_by: raw.paid_by,
+    refunded_at: raw.refunded_at,
+    refund_reason: raw.refund_reason,
+    refunded_by: raw.refunded_by,
+    cancelled_reason: raw.cancelled_reason,
+    waste_recorded: raw.waste_recorded,
+    print_count:
+      raw.print_count !== undefined
+        ? Number(raw.print_count)
+        : Number(raw.kitchen_printed_count || 0) +
+          Number(raw.provisional_printed_count || 0) +
+          Number(raw.receipt_printed_count || 0),
+    kitchen_printed_count:
+      raw.kitchen_printed_count !== undefined
+        ? Number(raw.kitchen_printed_count)
+        : 0,
+    provisional_printed_count:
+      raw.provisional_printed_count !== undefined
+        ? Number(raw.provisional_printed_count)
+        : 0,
+    receipt_printed_count:
+      raw.receipt_printed_count !== undefined
+        ? Number(raw.receipt_printed_count)
+        : 0,
+    last_printed_at: raw.last_printed_at,
     created_at: raw.created_at || new Date().toISOString(),
     updated_at: raw.updated_at || raw.created_at || new Date().toISOString(),
   };
+}
+
+async function upsertOrderToSupabaseSafe(_order: ShopOrder): Promise<void> {
+  if (isOrderDbConfigured()) throw new Error('DB_COMMIT_REQUIRED: Phải ghi đơn hàng qua transaction.');
+}
+
+async function orderRpc(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const { data, error } = await getActiveDbClient().rpc(name, args);
+  if (error) throw new Error(`DB_COMMIT_FAILED: ${error.message}`);
+  if (!data) throw new Error('DB_COMMIT_FAILED: Máy chủ không xác nhận ghi đơn hàng.');
+  return data;
+}
+
+function orderStockDemand(order: ShopOrder): Map<string, number> {
+  const demand = new Map<string, number>();
+  if (order.status === 'cancelled' && !order.waste_recorded) return demand;
+  for (const line of order.items) demand.set(line.item_id, (demand.get(line.item_id) || 0) + line.quantity);
+  return demand;
+}
+
+function orderInventoryDelta(before: ShopOrder, after: ShopOrder) {
+  const oldDemand = orderStockDemand(before), nextDemand = orderStockDemand(after);
+  return Array.from(new Set([...oldDemand.keys(), ...nextDemand.keys()])).map((item_id) => ({
+    item_id, delta: (nextDemand.get(item_id) || 0) - (oldDemand.get(item_id) || 0),
+  })).filter((entry) => entry.delta !== 0);
+}
+
+function assertPaymentTransition(existing: ShopOrder, nextStatus: OrderStatus, nextPayment: OrderPaymentStatus) {
+  if (!VALID_PAYMENT_STATUSES.has(nextPayment)) throw new Error('INVALID_PAYMENT_STATUS');
+  if ((existing.payment_status === 'paid' && nextPayment === 'unpaid') ||
+      (existing.payment_status === 'refunded' && nextPayment !== 'refunded') ||
+      (existing.payment_status === 'unpaid' && nextPayment === 'refunded') ||
+      (nextPayment === 'paid' && existing.payment_status !== 'paid' && (existing.status === 'cancelled' || nextStatus === 'cancelled'))) {
+    throw new Error('INVALID_PAYMENT_TRANSITION: Không thể đổi trạng thái thanh toán này.');
+  }
 }
 
 /**
@@ -619,7 +832,8 @@ function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
 function validateAndPriceOrderLines(
   rawLines: OrderLineItem[],
   shopId: string,
-  itemMap: Map<string, CatalogItem>
+  itemMap: Map<string, CatalogItem>,
+  options?: { preserveStaffLineDiscountMeta?: boolean }
 ): OrderLineItem[] {
   if (!Array.isArray(rawLines) || rawLines.length === 0) {
     throw new Error('EMPTY_ORDER_ITEMS: Đơn hàng phải có ít nhất 1 món/dịch vụ.');
@@ -650,9 +864,12 @@ function validateAndPriceOrderLines(
 
     const dbItem = itemMap.get(line.item_id);
     const isSyntheticUnitTestItem =
-      line.item_id.startsWith('item-unit-test-') && !dbItem;
+      (line.item_id.startsWith('item-unit-test-') ||
+        line.item_id.startsWith('unit-test-item-')) &&
+      !dbItem;
 
-    if (catalogLoaded && !isSyntheticTestBypass(isSyntheticUnitTestItem)) {
+    if ((catalogLoaded || isOrderDbConfigured() || isProductionRuntime()) &&
+        !(isSyntheticTestBypass(isSyntheticUnitTestItem) && !isOrderDbConfigured() && !isProductionRuntime())) {
       if (!dbItem || (dbItem.shop_id && dbItem.shop_id !== shopId)) {
         throw new Error(
           `ITEM_NOT_IN_SHOP: Món "${line.name_vi || line.item_id}" không tồn tại hoặc không thuộc cửa hàng này.`
@@ -749,13 +966,26 @@ function validateAndPriceOrderLines(
       authoritativeExtraPrice = Math.max(0, Number(line.extra_price || 0));
     }
 
+    const allowDiscountMeta = Boolean(options?.preserveStaffLineDiscountMeta);
+
     return {
       ...line,
       name_vi: dbItem?.name_i18n?.vi || line.name_vi || 'Món',
       name_i18n: dbItem?.name_i18n || line.name_i18n,
       quantity: rawQty,
       unit_price: authoritativeUnitPrice,
+      original_unit_price: authoritativeUnitPrice,
       extra_price: authoritativeExtraPrice,
+      discount_percent:
+        allowDiscountMeta && line.discount_percent !== undefined
+          ? Math.min(100, Math.max(0, Number(line.discount_percent || 0)))
+          : undefined,
+      custom_unit_price:
+        allowDiscountMeta &&
+        line.custom_unit_price !== undefined &&
+        line.custom_unit_price !== null
+          ? Math.max(0, Math.round(Number(line.custom_unit_price)))
+          : null,
       selected_choices: dbItem ? verifiedChoices : submittedChoices,
       quick_tags: Array.isArray(line.quick_tags) ? line.quick_tags : [],
     };
@@ -764,6 +994,92 @@ function validateAndPriceOrderLines(
 
 function isSyntheticTestBypass(isSynthetic: boolean): boolean {
   return isSynthetic;
+}
+
+async function loadShopCatalogAndTheme(shopId: string): Promise<{
+  itemMap: Map<string, CatalogItem>;
+  themeConfig: ShopThemeConfig | null;
+}> {
+  const itemMap = new Map<string, CatalogItem>();
+  let themeConfig: ShopThemeConfig | null = null;
+
+  for (const seedItem of (isOrderDbConfigured() ? [] : SEED_ITEMS)) {
+    if (seedItem.shop_id === shopId) {
+      itemMap.set(seedItem.id, seedItem);
+    }
+  }
+  const seedShop = SEED_SHOPS.find((s) => s.id === shopId);
+  if (!isOrderDbConfigured() && seedShop?.theme_config) {
+    themeConfig = seedShop.theme_config;
+  }
+
+  try {
+    const sb = getActiveDbClient();
+    const [{ data: dbItems, error: itemsError }, { data: dbShop, error: shopError }] = await Promise.all([
+      sb.from('items').select('*').eq('shop_id', shopId),
+      sb.from('shops').select('theme_config').eq('id', shopId).maybeSingle(),
+    ]);
+    if (isOrderDbConfigured() && (itemsError || shopError || !dbShop)) throw new Error(itemsError?.message || shopError?.message || 'SHOP_NOT_FOUND');
+    for (const raw of dbItems || []) {
+      itemMap.set(raw.id, raw as CatalogItem);
+    }
+    if (dbShop?.theme_config) {
+      themeConfig = {
+        ...(themeConfig || {}),
+        ...(dbShop.theme_config as ShopThemeConfig),
+      };
+    }
+  } catch (error) {
+    if (isOrderDbConfigured()) throw error;
+    // offline or unit test mode
+  }
+
+  return { itemMap, themeConfig };
+}
+
+export async function quoteOrderPricing(params: {
+  shop_id: string;
+  items: OrderLineItem[];
+  discount_amount?: number;
+  discount_code?: string;
+  apply_shop_promotions?: boolean;
+  canApplyManualDiscount?: boolean;
+  themeConfigOverride?: ShopThemeConfig | null;
+  itemMapOverride?: Map<string, CatalogItem>;
+  now?: Date;
+}): Promise<SharedOrderQuoteResult & { items: OrderLineItem[] }> {
+  if (!params.shop_id) {
+    throw new Error('MISSING_SHOP_ID: Thiếu mã cửa hàng (shop_id).');
+  }
+  const loaded = await loadShopCatalogAndTheme(params.shop_id);
+  const itemMap = params.itemMapOverride || loaded.itemMap;
+  const themeConfig =
+    params.themeConfigOverride !== undefined
+      ? params.themeConfigOverride
+      : loaded.themeConfig;
+
+  const canApplyManual = Boolean(params.canApplyManualDiscount);
+  const validatedItems = validateAndPriceOrderLines(
+    params.items,
+    params.shop_id,
+    itemMap,
+    { preserveStaffLineDiscountMeta: canApplyManual }
+  );
+
+  const quote = computeSharedOrderQuote({
+    lines: validatedItems,
+    themeConfig,
+    applyShopPromotions: params.apply_shop_promotions !== false,
+    discountCode: params.discount_code,
+    manualOrderDiscountAmount: params.discount_amount,
+    canApplyManualDiscount: canApplyManual,
+    now: params.now,
+  });
+
+  return {
+    ...quote,
+    items: validatedItems,
+  };
 }
 
 /**
@@ -819,6 +1135,15 @@ function assertAggregatedStockAvailable(
  * and merges with local `.local-db/mpos-store.json`.
  */
 async function loadMergedOrders(shopId?: string): Promise<ShopOrder[]> {
+  if (isOrderDbConfigured()) {
+    let query = getActiveDbClient().from('orders').select('*');
+    if (shopId) query = query.eq('shop_id', shopId);
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error || !Array.isArray(data)) throw new Error(error?.message || 'DB_READ_FAILED');
+    const rows = data.map((row) => normalizeOrderRecord(row));
+    return rows;
+  }
+
   const store = readStore();
   const orderMap = new Map<string, ShopOrder>();
 
@@ -829,7 +1154,7 @@ async function loadMergedOrders(shopId?: string): Promise<ShopOrder[]> {
 
   let storeNeedsWrite = false;
   try {
-    const sb = getSupabaseDbClient();
+    const sb = getActiveDbClient();
     let query = sb.from('orders').select('*');
     if (shopId) {
       query = query.eq('shop_id', shopId);
@@ -849,14 +1174,68 @@ async function loadMergedOrders(shopId?: string): Promise<ShopOrder[]> {
           const sbTime = new Date(sbOrd.updated_at).getTime() || 0;
           const localTime = new Date(existing.updated_at).getTime() || 0;
           if (sbTime >= localTime) {
+            // Preserve local extended fields that legacy DB rows might not have yet
+            const mergedOrd: ShopOrder = {
+              ...existing,
+              ...sbOrd,
+              payment_status:
+                existing.payment_status === 'refunded' &&
+                sbOrd.payment_status === 'unpaid'
+                  ? 'refunded'
+                  : sbOrd.payment_status,
+              subtotal_amount:
+                (row as Record<string, unknown>).subtotal_amount !== undefined
+                  ? sbOrd.subtotal_amount
+                  : existing.subtotal_amount,
+              discount_amount:
+                (row as Record<string, unknown>).discount_amount !== undefined
+                  ? sbOrd.discount_amount
+                  : existing.discount_amount,
+              promo_discount_amount:
+                sbOrd.promo_discount_amount ?? existing.promo_discount_amount,
+              manual_discount_amount:
+                sbOrd.manual_discount_amount ?? existing.manual_discount_amount,
+              session_id: sbOrd.session_id ?? existing.session_id,
+              bill_version: Math.max(
+                existing.bill_version || 1,
+                sbOrd.bill_version || 1
+              ),
+              tracking_token: sbOrd.tracking_token ?? existing.tracking_token,
+              idempotency_key: sbOrd.idempotency_key ?? existing.idempotency_key,
+              payment_idempotency_key:
+                sbOrd.payment_idempotency_key ??
+                existing.payment_idempotency_key,
+              paid_at: sbOrd.paid_at ?? existing.paid_at,
+              paid_by: sbOrd.paid_by ?? existing.paid_by,
+              refunded_at: sbOrd.refunded_at ?? existing.refunded_at,
+              refund_reason: sbOrd.refund_reason ?? existing.refund_reason,
+              refunded_by: sbOrd.refunded_by ?? existing.refunded_by,
+              cancelled_reason:
+                sbOrd.cancelled_reason ?? existing.cancelled_reason,
+              waste_recorded: sbOrd.waste_recorded ?? existing.waste_recorded,
+              kitchen_printed_count: Math.max(
+                existing.kitchen_printed_count || 0,
+                sbOrd.kitchen_printed_count || 0
+              ),
+              provisional_printed_count: Math.max(
+                existing.provisional_printed_count || 0,
+                sbOrd.provisional_printed_count || 0
+              ),
+              receipt_printed_count: Math.max(
+                existing.receipt_printed_count || 0,
+                sbOrd.receipt_printed_count || 0
+              ),
+              last_printed_at:
+                sbOrd.last_printed_at ?? existing.last_printed_at,
+            };
             if (
-              existing.status !== sbOrd.status ||
-              existing.payment_status !== sbOrd.payment_status ||
-              existing.total_amount !== sbOrd.total_amount
+              existing.status !== mergedOrd.status ||
+              existing.payment_status !== mergedOrd.payment_status ||
+              existing.total_amount !== mergedOrd.total_amount
             ) {
               storeNeedsWrite = true;
             }
-            orderMap.set(sbOrd.id, sbOrd);
+            orderMap.set(mergedOrd.id, mergedOrd);
           }
         }
       }
@@ -892,36 +1271,106 @@ export async function dbGetOrderById(
   orderId: string
 ): Promise<ShopOrder | null> {
   if (!orderId) return null;
+  if (isOrderDbConfigured()) {
+    const { data, error } = await getActiveDbClient().from('orders').select('*').eq('id', orderId).maybeSingle();
+    if (error) throw new Error(error.message);
+    return data ? normalizeOrderRecord(data) : null;
+  }
+
+  const store = readStore();
+  const localFound = store.orders.find((o) => o.id === orderId);
+
   try {
-    const sb = getSupabaseDbClient();
+    const sb = getActiveDbClient();
     const { data, error } = await sb
       .from('orders')
       .select('*')
       .eq('id', orderId)
       .maybeSingle();
     if (!error && data) {
-      return normalizeOrderRecord(data as Partial<ShopOrder>);
+      const sbNorm = normalizeOrderRecord(data as Partial<ShopOrder>);
+      if (localFound) {
+        const localNorm = normalizeOrderRecord(localFound);
+        return {
+          ...localNorm,
+          ...sbNorm,
+          payment_status:
+            localNorm.payment_status === 'refunded' &&
+            sbNorm.payment_status === 'unpaid'
+              ? 'refunded'
+              : sbNorm.payment_status,
+          subtotal_amount:
+            (data as Record<string, unknown>).subtotal_amount !== undefined
+              ? sbNorm.subtotal_amount
+              : localNorm.subtotal_amount,
+          discount_amount:
+            (data as Record<string, unknown>).discount_amount !== undefined
+              ? sbNorm.discount_amount
+              : localNorm.discount_amount,
+          promo_discount_amount:
+            sbNorm.promo_discount_amount ?? localNorm.promo_discount_amount,
+          manual_discount_amount:
+            sbNorm.manual_discount_amount ?? localNorm.manual_discount_amount,
+          session_id: sbNorm.session_id ?? localNorm.session_id,
+          bill_version: Math.max(
+            localNorm.bill_version || 1,
+            sbNorm.bill_version || 1
+          ),
+          tracking_token: sbNorm.tracking_token ?? localNorm.tracking_token,
+          idempotency_key: sbNorm.idempotency_key ?? localNorm.idempotency_key,
+          payment_idempotency_key:
+            sbNorm.payment_idempotency_key ?? localNorm.payment_idempotency_key,
+          paid_at: sbNorm.paid_at ?? localNorm.paid_at,
+          paid_by: sbNorm.paid_by ?? localNorm.paid_by,
+          refunded_at: sbNorm.refunded_at ?? localNorm.refunded_at,
+          refund_reason: sbNorm.refund_reason ?? localNorm.refund_reason,
+          refunded_by: sbNorm.refunded_by ?? localNorm.refunded_by,
+          cancelled_reason:
+            sbNorm.cancelled_reason ?? localNorm.cancelled_reason,
+          waste_recorded: sbNorm.waste_recorded ?? localNorm.waste_recorded,
+          kitchen_printed_count: Math.max(
+            localNorm.kitchen_printed_count || 0,
+            sbNorm.kitchen_printed_count || 0
+          ),
+          provisional_printed_count: Math.max(
+            localNorm.provisional_printed_count || 0,
+            sbNorm.provisional_printed_count || 0
+          ),
+          receipt_printed_count: Math.max(
+            localNorm.receipt_printed_count || 0,
+            sbNorm.receipt_printed_count || 0
+          ),
+          last_printed_at: sbNorm.last_printed_at ?? localNorm.last_printed_at,
+        };
+      }
+      return sbNorm;
     }
   } catch {
     // fallback to store
   }
-  const store = readStore();
-  const found = store.orders.find((o) => o.id === orderId);
-  return found ? normalizeOrderRecord(found) : null;
+  return localFound ? normalizeOrderRecord(localFound) : null;
 }
 
 export async function dbCreateOrder(params: {
   shop_id: string;
   table_label: string;
+  session_id?: string;
   visitor_lang?: SupportedLocale;
   customer_note?: string;
   payment_method?: PaymentMethod;
-  payment_status?: 'unpaid' | 'paid';
+  payment_status?: OrderPaymentStatus;
   source?: 'qr_table' | 'counter_pos';
   markCompletedImmediately?: boolean;
   discount_amount?: number;
+  discount_code?: string;
+  apply_shop_promotions?: boolean;
+  canApplyDiscount?: boolean;
+  canCollectPayment?: boolean;
+  paid_by?: string;
   idempotency_key?: string;
+  payment_idempotency_key?: string;
   isStaffAuthorized?: boolean;
+  themeConfigOverride?: ShopThemeConfig | null;
   items: OrderLineItem[];
 }): Promise<ShopOrder> {
   return withOrderInventoryLock(async () => {
@@ -929,8 +1378,9 @@ export async function dbCreateOrder(params: {
       throw new Error('MISSING_SHOP_ID: Thiếu mã cửa hàng (shop_id).');
     }
 
-    await loadMergedOrders(params.shop_id);
+    const loadedOrders = await loadMergedOrders(params.shop_id);
     const store = readStore();
+    if (isOrderDbConfigured()) store.orders = loadedOrders;
 
     // Idempotency key deduplication: return existing order if already processed
     if (params.idempotency_key && params.idempotency_key.trim()) {
@@ -944,38 +1394,27 @@ export async function dbCreateOrder(params: {
       }
     }
 
-    // Fetch authoritative items from Supabase to verify shop membership, prices, options & availability
-    const itemMap = new Map<string, CatalogItem>();
-    try {
-      const sb = getSupabaseDbClient();
-      const { data: dbItems } = await sb
-        .from('items')
-        .select('*')
-        .eq('shop_id', params.shop_id);
-
-      for (const raw of dbItems || []) {
-        itemMap.set(raw.id, raw as CatalogItem);
-        // Sync DB stock_quantity into local inventory if local inventory has no entry yet
-        if (
-          raw.id &&
-          store.inventory[raw.id] === undefined &&
-          raw.stock_quantity !== undefined
-        ) {
-          store.inventory[raw.id] = {
-            stock_quantity: raw.stock_quantity,
-            sold_count: Number(raw.sold_count || 0),
-          };
-        }
-      }
-    } catch {
-      // offline or unit test mode
+    const loaded = await loadShopCatalogAndTheme(params.shop_id);
+    const itemMap = loaded.itemMap;
+    const themeConfig = params.themeConfigOverride !== undefined ? params.themeConfigOverride : loaded.themeConfig;
+    if (isOrderDbConfigured()) for (const item of itemMap.values()) {
+      store.inventory[item.id] = { stock_quantity: item.stock_quantity ?? null, sold_count: Number(item.sold_count || 0) };
     }
+
+    const isStaff = params.isStaffAuthorized === true;
+    const canApplyDiscount =
+      params.canApplyDiscount !== undefined ? params.canApplyDiscount : isStaff;
+    const canCollectPayment =
+      params.canCollectPayment !== undefined
+        ? params.canCollectPayment
+        : isStaff;
 
     // 1. Validate quantities, shop membership, options, and calculate authoritative prices
     const validatedItems = validateAndPriceOrderLines(
       params.items,
       params.shop_id,
-      itemMap
+      itemMap,
+      { preserveStaffLineDiscountMeta: canApplyDiscount }
     );
 
     // 2. Aggregate demand per item_id across all lines and check stock availability BEFORE deducting
@@ -1009,66 +1448,101 @@ export async function dbCreateOrder(params: {
       }
     }
 
-    // 4. Server-authoritative subtotal, discount, and payment/completion status
-    const subtotalAmount = validatedItems.reduce(
-      (sum, line) =>
-        sum +
-        (Number(line.unit_price || 0) + Number(line.extra_price || 0)) *
-          line.quantity,
-      0
-    );
+    // 4. Shared server quote/discount/checkout calculation
+    const shouldApplyShopPromotions =
+      Boolean(params.apply_shop_promotions) ||
+      Boolean(params.discount_code) ||
+      params.themeConfigOverride !== undefined;
 
-    // Only authenticated staff/owner (`isStaffAuthorized === true`) can apply discounts or mark paid/completed on creation
-    const isStaff = params.isStaffAuthorized === true;
-    const rawDiscount = isStaff ? Number(params.discount_amount || 0) : 0;
-    if (!Number.isFinite(rawDiscount) || rawDiscount < 0) {
-      throw new Error('INVALID_DISCOUNT: Số tiền giảm giá không hợp lệ.');
-    }
-    const discountAmount = Math.min(subtotalAmount, Math.max(0, rawDiscount));
-    const totalAmount = Math.max(0, subtotalAmount - discountAmount);
+    const quote = computeSharedOrderQuote({
+      lines: validatedItems,
+      themeConfig,
+      applyShopPromotions: shouldApplyShopPromotions,
+      discountCode: params.discount_code,
+      manualOrderDiscountAmount: params.discount_amount,
+      canApplyManualDiscount: canApplyDiscount,
+    });
 
     const nowIso = new Date().toISOString();
     const randomCode = Math.floor(100 + Math.random() * 900);
-    const trackingToken = `trk_${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`;
+    const trackingToken = `trk_${randomUUID()}`;
 
     const markCompleted = isStaff && Boolean(params.markCompletedImmediately);
     const isPaid =
-      isStaff && (markCompleted || params.payment_status === 'paid');
+      canCollectPayment && (markCompleted || params.payment_status === 'paid');
+
+    const normalizedTableLabel =
+      (params.table_label || '').trim() || 'Bàn khách';
+    const orderSource =
+      isStaff && params.source === 'counter_pos' ? 'counter_pos' : 'qr_table';
+
+    // Reuse active unpaid table session_id for multi-round dine-in orders on the same table
+    let resolvedSessionId = params.session_id?.trim() || undefined;
+    if (!resolvedSessionId && !isPaid) {
+      const existingActiveForTable = store.orders.find(
+        (o) =>
+          o.shop_id === params.shop_id &&
+          o.status !== 'cancelled' &&
+          o.payment_status === 'unpaid' &&
+          o.table_label.trim().toLowerCase() ===
+            normalizedTableLabel.toLowerCase() &&
+          Boolean(o.session_id)
+      );
+      resolvedSessionId =
+        existingActiveForTable?.session_id ||
+        `sess-${params.shop_id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    } else if (!resolvedSessionId) {
+      resolvedSessionId = `sess-${params.shop_id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    }
 
     const newOrder: ShopOrder = {
-      id: `ord-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `ord-${randomUUID()}`,
       order_code: `ORD-${randomCode}`,
       shop_id: params.shop_id,
-      table_label: (params.table_label || '').trim() || 'Bàn khách',
+      table_label: normalizedTableLabel,
+      session_id: resolvedSessionId,
+      bill_version: 1,
       visitor_lang: params.visitor_lang || 'vi',
       customer_note: params.customer_note?.trim() || '',
       status: markCompleted ? 'completed' : 'new',
       payment_method: params.payment_method || 'cash',
       payment_status: isPaid ? 'paid' : 'unpaid',
-      subtotal_amount: subtotalAmount,
-      discount_amount: discountAmount,
-      total_amount: totalAmount,
+      subtotal_amount: quote.subtotal_amount,
+      discount_amount: quote.discount_amount,
+      promo_discount_amount: quote.promo_discount_amount,
+      manual_discount_amount: quote.manual_discount_amount,
+      discount_code: params.discount_code?.trim() || undefined,
+      total_amount: quote.total_amount,
       items: validatedItems,
-      source: isStaff && params.source === 'counter_pos' ? 'counter_pos' : 'qr_table',
+      source: orderSource,
       tracking_token: trackingToken,
       idempotency_key: params.idempotency_key?.trim() || undefined,
+      payment_idempotency_key: isPaid
+        ? params.payment_idempotency_key?.trim() ||
+          `pay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        : undefined,
+      paid_at: isPaid ? nowIso : undefined,
+      paid_by: isPaid ? params.paid_by : undefined,
+      kitchen_printed_count: 0,
+      provisional_printed_count: 0,
+      receipt_printed_count: 0,
       created_at: nowIso,
       updated_at: nowIso,
     };
+
+    if (isOrderDbConfigured()) {
+      const committed = await orderRpc('commit_order_with_inventory', { p_order: newOrder,
+        p_inventory_deltas: Array.from(demandByItem, ([item_id, delta]) => ({ item_id, delta })) });
+      return normalizeOrderRecord(committed as ShopOrder);
+    }
 
     store.orders.unshift(newOrder);
     writeStore(store);
 
     // 5. Sync new order & updated inventory to Supabase and check errors
+    await upsertOrderToSupabaseSafe(newOrder);
     try {
-      const sb = getSupabaseDbClient();
-      const { error: ordErr } = await sb.from('orders').upsert(newOrder);
-      if (ordErr) {
-        // Ignore only if optional migration columns (tracking_token/idempotency_key) are not yet on remote DB
-        const { tracking_token: _t, idempotency_key: _i, subtotal_amount: _s, discount_amount: _d, ...legacyOrder } = newOrder;
-        await sb.from('orders').upsert(legacyOrder);
-      }
-
+      const sb = getActiveDbClient();
       for (const [itemId] of demandByItem.entries()) {
         const meta = store.inventory[itemId];
         if (meta) {
@@ -1101,22 +1575,39 @@ export async function dbUpdateOrderStatus(
   patch: {
     status?: OrderStatus;
     payment_method?: PaymentMethod;
-    payment_status?: 'unpaid' | 'paid';
+    payment_status?: OrderPaymentStatus;
+    payment_idempotency_key?: string;
+    paid_by?: string;
+    refund_reason?: string;
+    refunded_by?: string;
+    cancelled_reason?: string;
+    restock_items?: boolean;
     table_label?: string;
     customer_note?: string;
     items?: OrderLineItem[];
     discount_amount?: number;
+    apply_shop_promotions?: boolean;
+    canApplyDiscount?: boolean;
+    require_new_unpaid?: boolean;
+    expected_total?: number;
   }
 ): Promise<ShopOrder> {
   return withOrderInventoryLock(async () => {
-    await loadMergedOrders();
+    const loadedOrders = isOrderDbConfigured()
+      ? [await dbGetOrderById(orderId)].filter((order): order is ShopOrder => Boolean(order))
+      : await loadMergedOrders();
     const store = readStore();
+    if (isOrderDbConfigured()) store.orders = loadedOrders;
     const idx = store.orders.findIndex((o) => o.id === orderId);
     if (idx === -1) {
       throw new Error('Không tìm thấy đơn hàng.');
     }
 
-    const existing = store.orders[idx];
+    const existing = normalizeOrderRecord(store.orders[idx]);
+    if (patch.require_new_unpaid && (existing.status !== 'new' || existing.payment_status !== 'unpaid')) {
+      throw new Error('ORDER_ALREADY_PAID: Đơn hàng đã được tiếp nhận hoặc đã thanh toán.');
+    }
+
     const nextStatus = patch.status || existing.status;
 
     if (!VALID_ORDER_STATUSES.has(nextStatus)) {
@@ -1130,32 +1621,60 @@ export async function dbUpdateOrderStatus(
       );
     }
 
-    // Load shop catalog items for validation & authoritative pricing
-    const itemMap = new Map<string, CatalogItem>();
-    try {
-      const sb = getSupabaseDbClient();
-      const { data: dbItems } = await sb
-        .from('items')
-        .select('*')
-        .eq('shop_id', existing.shop_id);
-      for (const raw of dbItems || []) {
-        itemMap.set(raw.id, raw as CatalogItem);
-      }
-    } catch {
-      // offline or unit test mode
+    // Lock item and discount modifications once an order is already paid
+    const isChangingItems = Array.isArray(patch.items);
+    const isChangingDiscount =
+      patch.discount_amount !== undefined &&
+      Number(patch.discount_amount) !== Number(existing.discount_amount || 0);
+
+    if (
+      existing.payment_status !== 'unpaid' &&
+      (isChangingItems || isChangingDiscount)
+    ) {
+      throw new Error(
+        'ORDER_ALREADY_PAID: Không thể sửa món hoặc giảm giá khi đơn hàng đã thanh toán.'
+      );
+    }
+
+    // Payment idempotency: if already paid and patch is a duplicate payment collection request, return existing
+    if (
+      existing.payment_status === 'paid' &&
+      patch.payment_status === 'paid' &&
+      nextStatus === existing.status &&
+      !isChangingItems &&
+      !isChangingDiscount &&
+      patch.table_label === undefined &&
+      patch.customer_note === undefined
+    ) {
+      return existing;
+    }
+
+    const loaded = await loadShopCatalogAndTheme(existing.shop_id);
+    const itemMap = loaded.itemMap;
+    if (isOrderDbConfigured()) for (const item of itemMap.values()) {
+      store.inventory[item.id] = { stock_quantity: item.stock_quantity ?? null, sold_count: Number(item.sold_count || 0) };
     }
 
     const restoredItemIds: string[] = [];
     const zeroedItemIds: string[] = [];
     let nextItems = existing.items;
+    let nextSubtotalAmount = Number(
+      existing.subtotal_amount ?? existing.total_amount ?? 0
+    );
+    let nextDiscountAmount = Number(existing.discount_amount || 0);
+    let nextPromoDiscountAmount = existing.promo_discount_amount;
+    let nextManualDiscountAmount = existing.manual_discount_amount;
     let nextTotalAmount = Number(existing.total_amount || 0);
+    let nextBillVersion = Number(existing.bill_version || 1);
+    let nextWasteRecorded = existing.waste_recorded;
 
     // Case A: Updating the items list of an order
     if (Array.isArray(patch.items)) {
       const validatedNewItems = validateAndPriceOrderLines(
         patch.items,
         existing.shop_id,
-        itemMap
+        itemMap,
+        { preserveStaffLineDiscountMeta: patch.canApplyDiscount !== false }
       );
 
       // 1. Temporarily restore old quantities into a working copy of inventory (if order was active)
@@ -1218,69 +1737,158 @@ export async function dbUpdateOrderStatus(
       store.inventory = workingInventory;
       nextItems = validatedNewItems;
 
-      const subtotalAmount = nextItems.reduce(
+      nextSubtotalAmount = nextItems.reduce(
         (sum, line) =>
           sum +
           (Number(line.unit_price || 0) + Number(line.extra_price || 0)) *
             line.quantity,
         0
       );
-      const discountAmount = Math.max(
-        0,
-        Number(
-          patch.discount_amount !== undefined
-            ? patch.discount_amount
-            : existing.discount_amount || 0
-        )
-      );
-      nextTotalAmount = Math.max(0, subtotalAmount - discountAmount);
-    } else if (existing.status !== 'cancelled' && nextStatus === 'cancelled') {
-      // Case B: Cancelling an active order without replacing items -> restore stock quantities once
-      for (const line of existing.items) {
-        const meta = store.inventory[line.item_id];
-        if (meta) {
-          const wasZero = meta.stock_quantity === 0;
-          meta.stock_quantity =
-            meta.stock_quantity !== null
-              ? meta.stock_quantity + line.quantity
-              : null;
-          meta.sold_count = Math.max(0, (meta.sold_count || 0) - line.quantity);
-          if (wasZero && (meta.stock_quantity ?? 0) > 0) {
-            restoredItemIds.push(line.item_id);
-          }
-        }
+      const requestedDiscount =
+        patch.discount_amount !== undefined
+          ? Number(patch.discount_amount)
+          : Number(existing.discount_amount || 0);
+      if (!Number.isFinite(requestedDiscount) || requestedDiscount < 0) {
+        throw new Error('INVALID_DISCOUNT: Số tiền giảm giá không hợp lệ.');
       }
-    } else if (existing.status === 'cancelled' && nextStatus !== 'cancelled') {
-      // Case C (P1 #9 Fix): Re-opening a cancelled order MUST re-verify and re-deduct stock!
-      const demandByItem = assertAggregatedStockAvailable(
-        existing.items,
-        store.inventory,
-        itemMap
+      nextDiscountAmount = Math.min(
+        nextSubtotalAmount,
+        Math.max(0, Math.round(requestedDiscount))
       );
-
-      for (const [itemId, totalQty] of demandByItem.entries()) {
-        const prev = store.inventory[itemId] || {
-          stock_quantity: null,
-          sold_count: 0,
-        };
-        const nextStock =
-          prev.stock_quantity !== null
-            ? Math.max(0, prev.stock_quantity - totalQty)
-            : null;
-        store.inventory[itemId] = {
-          stock_quantity: nextStock,
-          sold_count: (prev.sold_count || 0) + totalQty,
-        };
-        if (nextStock === 0) {
-          zeroedItemIds.push(itemId);
-        }
+      nextManualDiscountAmount = nextDiscountAmount;
+      nextTotalAmount = Math.max(0, nextSubtotalAmount - nextDiscountAmount);
+      nextBillVersion += 1;
+    } else if (patch.discount_amount !== undefined) {
+      // Updating discount_amount without changing items
+      const requestedDiscount = Number(patch.discount_amount);
+      if (!Number.isFinite(requestedDiscount) || requestedDiscount < 0) {
+        throw new Error('INVALID_DISCOUNT: Số tiền giảm giá không hợp lệ.');
+      }
+      nextSubtotalAmount = nextItems.reduce(
+        (sum, line) =>
+          sum +
+          (Number(line.unit_price || 0) + Number(line.extra_price || 0)) *
+            line.quantity,
+        0
+      );
+      nextDiscountAmount = Math.min(
+        nextSubtotalAmount,
+        Math.max(0, Math.round(requestedDiscount))
+      );
+      nextManualDiscountAmount = nextDiscountAmount;
+      nextTotalAmount = Math.max(0, nextSubtotalAmount - nextDiscountAmount);
+      if (nextDiscountAmount !== Number(existing.discount_amount || 0)) {
+        nextBillVersion += 1;
       }
     }
 
-    const nextPaymentStatus =
+    if (isChangingItems || patch.discount_amount !== undefined) {
+      const quote = computeSharedOrderQuote({
+        lines: nextItems, themeConfig: loaded.themeConfig,
+        applyShopPromotions: patch.apply_shop_promotions ?? Boolean(existing.discount_code || existing.promo_discount_amount),
+        discountCode: existing.discount_code,
+        manualOrderDiscountAmount: patch.canApplyDiscount === false ? 0 :
+          (patch.discount_amount ?? existing.manual_discount_amount ?? existing.discount_amount ?? 0),
+        canApplyManualDiscount: patch.canApplyDiscount !== false,
+      });
+      nextSubtotalAmount = quote.subtotal_amount; nextDiscountAmount = quote.discount_amount;
+      nextPromoDiscountAmount = quote.promo_discount_amount; nextManualDiscountAmount = quote.manual_discount_amount;
+      nextTotalAmount = quote.total_amount;
+    }
+
+    if (
+      !Array.isArray(patch.items) &&
+      existing.status !== 'cancelled' &&
+      nextStatus === 'cancelled'
+    ) {
+      // Case B: Cancelling an active order -> check restock_items policy (default true; false records kitchen waste without restoring stock)
+      const shouldRestock = patch.restock_items !== false;
+      nextWasteRecorded = !shouldRestock;
+      if (shouldRestock) {
+        for (const line of existing.items) {
+          const meta = store.inventory[line.item_id];
+          if (meta) {
+            const wasZero = meta.stock_quantity === 0;
+            meta.stock_quantity =
+              meta.stock_quantity !== null
+                ? meta.stock_quantity + line.quantity
+                : null;
+            meta.sold_count = Math.max(
+              0,
+              (meta.sold_count || 0) - line.quantity
+            );
+            if (wasZero && (meta.stock_quantity ?? 0) > 0) {
+              restoredItemIds.push(line.item_id);
+            }
+          }
+        }
+      }
+    } else if (
+      !Array.isArray(patch.items) &&
+      existing.status === 'cancelled' &&
+      nextStatus !== 'cancelled'
+    ) {
+      // Case C (P1 #9 Fix): Re-opening a cancelled order MUST re-verify and re-deduct stock if it was restored on cancel
+      if (!existing.waste_recorded) {
+        const demandByItem = assertAggregatedStockAvailable(
+          existing.items,
+          store.inventory,
+          itemMap
+        );
+
+        for (const [itemId, totalQty] of demandByItem.entries()) {
+          const prev = store.inventory[itemId] || {
+            stock_quantity: null,
+            sold_count: 0,
+          };
+          const nextStock =
+            prev.stock_quantity !== null
+              ? Math.max(0, prev.stock_quantity - totalQty)
+              : null;
+          store.inventory[itemId] = {
+            stock_quantity: nextStock,
+            sold_count: (prev.sold_count || 0) + totalQty,
+          };
+          if (nextStock === 0) {
+            zeroedItemIds.push(itemId);
+          }
+        }
+      }
+      nextWasteRecorded = false;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    let nextPaymentStatus: OrderPaymentStatus =
       patch.payment_status !== undefined
         ? patch.payment_status
         : existing.payment_status;
+
+    // If a paid order is cancelled, transition payment_status to 'refunded' automatically
+    if (
+      existing.payment_status === 'paid' &&
+      nextStatus === 'cancelled' &&
+      patch.payment_status === undefined
+    ) {
+      nextPaymentStatus = 'refunded';
+    }
+
+    if (!VALID_PAYMENT_STATUSES.has(nextPaymentStatus)) {
+      throw new Error(
+        `INVALID_PAYMENT_STATUS: Trạng thái thanh toán "${nextPaymentStatus}" không hợp lệ.`
+      );
+    }
+
+    assertPaymentTransition(existing, nextStatus, nextPaymentStatus);
+    if (patch.expected_total !== undefined && Number(patch.expected_total) !== nextTotalAmount) {
+      throw new Error('ORDER_ALREADY_PAID: Tổng tiền đã thay đổi, vui lòng tải lại đơn.');
+    }
+
+    const becamePaid =
+      existing.payment_status !== 'paid' && nextPaymentStatus === 'paid';
+    const becameRefunded =
+      existing.payment_status !== 'refunded' &&
+      nextPaymentStatus === 'refunded';
 
     const updated: ShopOrder = {
       ...existing,
@@ -1293,24 +1901,54 @@ export async function dbUpdateOrderStatus(
           ? patch.customer_note.trim()
           : existing.customer_note,
       items: nextItems,
+      subtotal_amount: nextSubtotalAmount,
+      discount_amount: nextDiscountAmount,
+      promo_discount_amount: nextPromoDiscountAmount,
+      manual_discount_amount: nextManualDiscountAmount,
       total_amount: nextTotalAmount,
+      bill_version: nextBillVersion,
       status: nextStatus,
       payment_method: patch.payment_method || existing.payment_method,
       payment_status: nextPaymentStatus,
-      updated_at: new Date().toISOString(),
+      payment_idempotency_key:
+        patch.payment_idempotency_key?.trim() ||
+        existing.payment_idempotency_key ||
+        (becamePaid
+          ? `pay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          : undefined),
+      paid_at: becamePaid ? nowIso : existing.paid_at,
+      paid_by: patch.paid_by || existing.paid_by,
+      refunded_at: becameRefunded ? nowIso : existing.refunded_at,
+      refund_reason:
+        patch.refund_reason ||
+        (becameRefunded ? patch.cancelled_reason : undefined) ||
+        existing.refund_reason,
+      refunded_by: patch.refunded_by || existing.refunded_by,
+      cancelled_reason:
+        patch.cancelled_reason !== undefined
+          ? patch.cancelled_reason
+          : existing.cancelled_reason,
+      waste_recorded: nextWasteRecorded,
+      updated_at: nowIso,
     };
+
+    if (nextStatus === 'cancelled' && existing.status !== 'cancelled') updated.waste_recorded = patch.restock_items === false;
+    if (isOrderDbConfigured()) {
+      const committed = await orderRpc('update_order_with_inventory', {
+        p_order_id: orderId, p_order: updated, p_inventory_deltas: orderInventoryDelta(existing, updated),
+        p_guards: { expected_updated_at: existing.updated_at, expected_bill_version: existing.bill_version,
+          expected_status: existing.status, expected_payment_status: existing.payment_status,
+          require_new_unpaid: Boolean(patch.require_new_unpaid) },
+      });
+      return normalizeOrderRecord(committed as ShopOrder);
+    }
 
     store.orders[idx] = updated;
     writeStore(store);
 
+    await upsertOrderToSupabaseSafe(updated);
     try {
-      const sb = getSupabaseDbClient();
-      const { error: upErr } = await sb.from('orders').upsert(updated);
-      if (upErr) {
-        const { tracking_token: _t, idempotency_key: _i, subtotal_amount: _s, discount_amount: _d, ...legacyOrder } = updated;
-        await sb.from('orders').upsert(legacyOrder);
-      }
-
+      const sb = getActiveDbClient();
       if (restoredItemIds.length > 0) {
         await Promise.all(
           restoredItemIds.map((id) =>
@@ -1333,6 +1971,262 @@ export async function dbUpdateOrderStatus(
   });
 }
 
+export async function dbGetTableBill(params: {
+  shop_id: string;
+  table_label?: string;
+  session_id?: string;
+}): Promise<TableBillSummary> {
+  const shopOrders = await dbGetShopOrders(params.shop_id);
+  const targetSession = params.session_id?.trim();
+  const targetTable = params.table_label?.trim().toLowerCase();
+
+  const matchingOrders = shopOrders
+    .filter((o) => {
+      if (o.status === 'cancelled') return false;
+      if (targetSession) {
+        return o.session_id === targetSession;
+      }
+      if (targetTable) {
+        return (
+          o.payment_status === 'unpaid' &&
+          o.table_label.trim().toLowerCase() === targetTable
+        );
+      }
+      return false;
+    })
+    .sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+
+  const combinedMap = new Map<string, OrderLineItem>();
+  let subtotalAmount = 0;
+  let discountAmount = 0;
+  let totalAmount = 0;
+  let billVersion = 0;
+
+  for (const ord of matchingOrders) {
+    subtotalAmount += Number(ord.subtotal_amount ?? ord.total_amount ?? 0);
+    discountAmount += Number(ord.discount_amount || 0);
+    totalAmount += Number(ord.total_amount || 0);
+    billVersion += Number(ord.bill_version || 1);
+
+    for (const line of ord.items || []) {
+      const choicesKey = (line.selected_choices || [])
+        .map((c) => c.id || c.label_vi)
+        .sort()
+        .join('|');
+      const tagsKey = (line.quick_tags || []).slice().sort().join('|');
+      const key = `${line.item_id}::${line.unit_price}::${line.extra_price || 0}::${choicesKey}::${tagsKey}`;
+      const prev = combinedMap.get(key);
+      if (prev) {
+        prev.quantity += line.quantity;
+      } else {
+        combinedMap.set(key, { ...line });
+      }
+    }
+  }
+
+  const allPaid =
+    matchingOrders.length > 0 &&
+    matchingOrders.every((o) => o.payment_status === 'paid');
+  const allRefunded =
+    matchingOrders.length > 0 &&
+    matchingOrders.every((o) => o.payment_status === 'refunded');
+
+  return {
+    shop_id: params.shop_id,
+    table_label:
+      matchingOrders[0]?.table_label || params.table_label || 'Bàn khách',
+    session_id:
+      targetSession ||
+      matchingOrders[0]?.session_id ||
+      `sess-${params.shop_id}`,
+    order_ids: matchingOrders.map((o) => o.id),
+    order_codes: matchingOrders.map((o) => o.order_code),
+    orders: matchingOrders,
+    combined_items: Array.from(combinedMap.values()),
+    subtotal_amount: subtotalAmount,
+    discount_amount: discountAmount,
+    total_amount: totalAmount,
+    payment_status: allPaid ? 'paid' : allRefunded ? 'refunded' : 'unpaid',
+    bill_version: Math.max(1, billVersion),
+    created_at: matchingOrders[0]?.created_at || new Date().toISOString(),
+    updated_at:
+      matchingOrders[matchingOrders.length - 1]?.updated_at ||
+      new Date().toISOString(),
+  };
+}
+
+export async function dbSettleTableBill(params: {
+  shop_id: string;
+  table_label?: string;
+  session_id?: string;
+  payment_method: PaymentMethod;
+  payment_idempotency_key?: string;
+  paid_by?: string;
+  markCompleted?: boolean;
+}): Promise<TableBillSummary> {
+  return withOrderInventoryLock(async () => {
+    if (isOrderDbConfigured()) {
+      const rows = await orderRpc('settle_table_bill_atomic', { p_shop_id: params.shop_id,
+        p_session_id: params.session_id || null, p_table_label: params.table_label || null,
+        p_payment_method: params.payment_method, p_paid_by: params.paid_by || null,
+        p_payment_idempotency_key: params.payment_idempotency_key || `table-${randomUUID()}`,
+        p_mark_completed: Boolean(params.markCompleted), p_now: new Date().toISOString(),
+      });
+      if (!Array.isArray(rows)) throw new Error('DB_COMMIT_FAILED: Phản hồi bill không hợp lệ');
+      return summarizeSettledOrders(params.shop_id, rows.map(normalizeOrderRecord));
+    }
+
+    await loadMergedOrders(params.shop_id);
+    const store = readStore();
+    const targetSession = params.session_id?.trim();
+    const targetTable = params.table_label?.trim().toLowerCase();
+
+    const replayKey = params.payment_idempotency_key?.trim();
+    if (replayKey) {
+      const replay = store.orders.filter((order) => order.shop_id === params.shop_id && order.payment_idempotency_key?.startsWith(`${replayKey}:`));
+      if (replay.length) return summarizeSettledOrders(params.shop_id, replay);
+    }
+    const matchingIndices: number[] = [];
+    for (let i = 0; i < store.orders.length; i++) {
+      const o = store.orders[i];
+      if (o.shop_id !== params.shop_id || o.status === 'cancelled' || o.payment_status !== 'unpaid') continue;
+      if (targetSession && o.session_id === targetSession) {
+        matchingIndices.push(i);
+      } else if (
+        !targetSession &&
+        targetTable &&
+        o.payment_status === 'unpaid' &&
+        o.table_label.trim().toLowerCase() === targetTable
+      ) {
+        matchingIndices.push(i);
+      }
+    }
+
+    if (matchingIndices.length === 0) {
+      throw new Error(
+        'TABLE_BILL_EMPTY: Không tìm thấy đơn hàng chưa thanh toán nào cho bàn này.'
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const batchPayKey =
+      params.payment_idempotency_key?.trim() ||
+      `pay-table-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const updatedOrders: ShopOrder[] = [];
+    for (const idx of matchingIndices) {
+      const existing = normalizeOrderRecord(store.orders[idx]);
+      if (existing.payment_status === 'paid') {
+        updatedOrders.push(existing);
+        continue;
+      }
+      const next: ShopOrder = {
+        ...existing,
+        status: params.markCompleted ? 'completed' : existing.status,
+        payment_method: params.payment_method || existing.payment_method,
+        payment_status: 'paid',
+        payment_idempotency_key: `${batchPayKey}:${existing.id}`,
+        paid_at: nowIso,
+        paid_by: params.paid_by || existing.paid_by,
+        updated_at: nowIso,
+      };
+      store.orders[idx] = next;
+      updatedOrders.push(next);
+    }
+
+    writeStore(store);
+    await Promise.all(
+      updatedOrders.map((ord) => upsertOrderToSupabaseSafe(ord))
+    );
+
+    return summarizeSettledOrders(params.shop_id, updatedOrders);
+  });
+}
+
+function summarizeSettledOrders(shopId: string, orders: ShopOrder[]): TableBillSummary {
+  return { shop_id: shopId, session_id: orders[0]?.session_id || '', table_label: orders[0]?.table_label || '',
+    order_ids: orders.map((order) => order.id), order_codes: orders.map((order) => order.order_code), orders,
+    combined_items: orders.flatMap((order) => order.items),
+    subtotal_amount: orders.reduce((sum, order) => sum + (order.subtotal_amount ?? order.total_amount), 0),
+    discount_amount: orders.reduce((sum, order) => sum + (order.discount_amount || 0), 0),
+    total_amount: orders.reduce((sum, order) => sum + order.total_amount, 0),
+    payment_status: orders.every((order) => order.payment_status === 'paid') ? 'paid' : 'unpaid',
+    bill_version: orders.reduce((sum, order) => sum + (order.bill_version || 1), 0),
+    created_at: orders[0]?.created_at || '', updated_at: orders.at(-1)?.updated_at || '' };
+}
+
+export async function dbRecordOrderPrint(
+  orderId: string,
+  ticketType: TicketPrintType
+): Promise<{
+  order: ShopOrder;
+  ticketType: TicketPrintType;
+  printCount: number;
+  isReprint: boolean;
+}> {
+  return withOrderInventoryLock(async () => {
+    const loadedOrders = isOrderDbConfigured()
+      ? [await dbGetOrderById(orderId)].filter((order): order is ShopOrder => Boolean(order))
+      : await loadMergedOrders();
+    const store = readStore();
+    if (isOrderDbConfigured()) store.orders = loadedOrders;
+    const idx = store.orders.findIndex((o) => o.id === orderId);
+    if (idx === -1) {
+      throw new Error('Không tìm thấy đơn hàng.');
+    }
+    const existing = normalizeOrderRecord(store.orders[idx]);
+    const nowIso = new Date().toISOString();
+
+    const kitchenCount =
+      (existing.kitchen_printed_count || 0) +
+      (ticketType === 'kitchen' ? 1 : 0);
+    const provisionalCount =
+      (existing.provisional_printed_count || 0) +
+      (ticketType === 'provisional' ? 1 : 0);
+    const receiptCount =
+      (existing.receipt_printed_count || 0) +
+      (ticketType === 'receipt' ? 1 : 0);
+
+    const printCount =
+      ticketType === 'kitchen'
+        ? kitchenCount
+        : ticketType === 'provisional'
+          ? provisionalCount
+          : receiptCount;
+
+    const updated: ShopOrder = {
+      ...existing,
+      print_count: kitchenCount + provisionalCount + receiptCount,
+      kitchen_printed_count: kitchenCount,
+      provisional_printed_count: provisionalCount,
+      receipt_printed_count: receiptCount,
+      last_printed_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    if (isOrderDbConfigured()) {
+      const committed = normalizeOrderRecord(await orderRpc('update_order_with_inventory', {
+        p_order_id: orderId, p_order: updated, p_inventory_deltas: [],
+        p_guards: { expected_updated_at: existing.updated_at, expected_bill_version: existing.bill_version },
+      }) as ShopOrder);
+      return { order: committed, ticketType, printCount, isReprint: printCount > 1 };
+    }
+    store.orders[idx] = updated;
+    writeStore(store);
+    await upsertOrderToSupabaseSafe(updated);
+
+    return {
+      order: updated,
+      ticketType,
+      printCount,
+      isReprint: printCount > 1,
+    };
+  });
+}
+
 export function computeShopRevenueAndInventoryStats(
   shopId: string,
   enrichedItems: CatalogItem[],
@@ -1346,6 +2240,11 @@ export function computeShopRevenueAndInventoryStats(
   const todayVnKey = getVietnamDateKey();
 
   const validOrders = shopOrders.filter((o) => o.status !== 'cancelled');
+  const paidOrders = validOrders.filter((o) => o.payment_status === 'paid');
+  const unpaidOrders = validOrders.filter((o) => o.payment_status === 'unpaid');
+  const refundedOrders = shopOrders.filter(
+    (o) => o.payment_status === 'refunded'
+  );
   const completedOrders = shopOrders.filter(
     (o) => o.status === 'completed' || o.payment_status === 'paid'
   );
@@ -1353,15 +2252,42 @@ export function computeShopRevenueAndInventoryStats(
   const todayValidOrders = validOrders.filter(
     (o) => getVietnamDateKey(o.created_at) === todayVnKey
   );
+  const todayPaidOrders = paidOrders.filter(
+    (o) => getVietnamDateKey(o.created_at) === todayVnKey
+  );
+  const todayUnpaidOrders = unpaidOrders.filter(
+    (o) => getVietnamDateKey(o.created_at) === todayVnKey
+  );
+  const todayRefundedOrders = refundedOrders.filter(
+    (o) => getVietnamDateKey(o.created_at) === todayVnKey
+  );
   const todayCompletedOrders = completedOrders.filter(
     (o) => getVietnamDateKey(o.created_at) === todayVnKey
   );
 
-  const todayRevenue = todayValidOrders.reduce(
+  // Collected revenue strictly sums non-cancelled paid orders (F12 fix)
+  const todayRevenue = todayPaidOrders.reduce(
     (sum, o) => sum + Number(o.total_amount || 0),
     0
   );
-  const totalRevenue = validOrders.reduce(
+  const totalRevenue = paidOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
+
+  const todayGrossOrderAmount = todayValidOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
+  const todayUnpaidAmount = todayUnpaidOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
+  const todayRefundedAmount = todayRefundedOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
+  const totalRefundedAmount = refundedOrders.reduce(
     (sum, o) => sum + Number(o.total_amount || 0),
     0
   );
@@ -1372,9 +2298,9 @@ export function computeShopRevenueAndInventoryStats(
   ).length;
 
   const avgOrderValue =
-    validOrders.length > 0 ? Math.round(totalRevenue / validOrders.length) : 0;
+    paidOrders.length > 0 ? Math.round(totalRevenue / paidOrders.length) : 0;
 
-  // 7-day daily revenue chart in Vietnam timezone (UTC+7)
+  // 7-day daily revenue chart in Vietnam timezone (UTC+7) using collected paid orders
   const dailyRevenue7d: Array<{
     date: string;
     label: string;
@@ -1391,14 +2317,20 @@ export function computeShopRevenueAndInventoryStats(
     const dayKey = getVietnamDateKey(targetDayMs);
     const [, mm, dd] = dayKey.split('-');
 
-    const dayOrders = validOrders.filter(
+    const dayPaidOrders = paidOrders.filter(
       (o) => getVietnamDateKey(o.created_at) === dayKey
     );
-    const rev = dayOrders.reduce((s, o) => s + Number(o.total_amount || 0), 0);
-    const cashRev = dayOrders
+    const dayValidOrders = validOrders.filter(
+      (o) => getVietnamDateKey(o.created_at) === dayKey
+    );
+    const rev = dayPaidOrders.reduce(
+      (s, o) => s + Number(o.total_amount || 0),
+      0
+    );
+    const cashRev = dayPaidOrders
       .filter((o) => o.payment_method === 'cash')
       .reduce((s, o) => s + Number(o.total_amount || 0), 0);
-    const vietqrRev = dayOrders
+    const vietqrRev = dayPaidOrders
       .filter((o) => o.payment_method !== 'cash')
       .reduce((s, o) => s + Number(o.total_amount || 0), 0);
 
@@ -1408,14 +2340,14 @@ export function computeShopRevenueAndInventoryStats(
       revenue: rev,
       cashRevenue: cashRev,
       vietqrRevenue: vietqrRev,
-      orders: dayOrders.length,
-      orderCount: dayOrders.length,
+      orders: dayValidOrders.length,
+      orderCount: dayValidOrders.length,
     });
   }
 
-  // Payment method breakdown (VietQR vs Cash)
-  const vietqrOrders = validOrders.filter((o) => o.payment_method !== 'cash');
-  const cashOrders = validOrders.filter((o) => o.payment_method === 'cash');
+  // Payment method breakdown (VietQR vs Cash) across paid orders
+  const vietqrOrders = paidOrders.filter((o) => o.payment_method !== 'cash');
+  const cashOrders = paidOrders.filter((o) => o.payment_method === 'cash');
   const vietqrRevenueTotal = vietqrOrders.reduce(
     (s, o) => s + Number(o.total_amount || 0),
     0
@@ -1442,8 +2374,8 @@ export function computeShopRevenueAndInventoryStats(
   };
 
   // Order source breakdown (QR Table vs Counter POS)
-  const qrTableOrders = validOrders.filter((o) => o.source !== 'counter_pos');
-  const counterPosOrders = validOrders.filter((o) => o.source === 'counter_pos');
+  const qrTableOrders = paidOrders.filter((o) => o.source !== 'counter_pos');
+  const counterPosOrders = paidOrders.filter((o) => o.source === 'counter_pos');
   const qrTableRevenue = qrTableOrders.reduce(
     (s, o) => s + Number(o.total_amount || 0),
     0
@@ -1453,11 +2385,11 @@ export function computeShopRevenueAndInventoryStats(
     0
   );
   const qrTablePct =
-    validOrders.length > 0
-      ? Math.round((qrTableOrders.length / validOrders.length) * 100)
+    paidOrders.length > 0
+      ? Math.round((qrTableOrders.length / paidOrders.length) * 100)
       : 75;
   const counterPosPct =
-    validOrders.length > 0 ? Math.max(0, 100 - qrTablePct) : 25;
+    paidOrders.length > 0 ? Math.max(0, 100 - qrTablePct) : 25;
 
   const sourceBreakdown = {
     qr_table: {
@@ -1483,7 +2415,7 @@ export function computeShopRevenueAndInventoryStats(
   ];
 
   const rawHourly = slotsDef.map((s) => {
-    const matched = validOrders.filter((o) => {
+    const matched = paidOrders.filter((o) => {
       const h = getVietnamHour(o.created_at);
       return h >= s.minH && h < s.maxH;
     });
@@ -1557,7 +2489,12 @@ export function computeShopRevenueAndInventoryStats(
 
   return {
     todayRevenue,
+    todayGrossOrderAmount,
+    todayUnpaidAmount,
+    todayRefundedAmount,
+    totalRefundedAmount,
     todayOrdersCount: todayValidOrders.length,
+    todayPaidOrdersCount: todayPaidOrders.length,
     todayCompletedCount: todayCompletedOrders.length,
     completedOrdersCount: completedOrders.length,
     totalRevenue,

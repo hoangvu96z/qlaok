@@ -240,15 +240,25 @@ export function ShowToStaffModal({
     if (!activeOrder) return;
     const poll = async () => {
       try {
+        const tokenParam = activeOrder.tracking_token
+          ? `&trackingToken=${encodeURIComponent(activeOrder.tracking_token)}`
+          : '';
         const res = await fetch(
-          `/api/orders?orderId=${encodeURIComponent(activeOrder.id)}`,
+          `/api/orders?orderId=${encodeURIComponent(activeOrder.id)}${tokenParam}`,
           { cache: 'no-store' }
         );
         if (res.ok) {
           const data = await res.json();
           if (data.order) {
-            setActiveOrder(data.order);
-            onOrderCreated?.(data.order);
+            setActiveOrder((prev) => ({
+              ...data.order,
+              tracking_token: data.order.tracking_token || prev?.tracking_token,
+            }));
+            onOrderCreated?.({
+              ...data.order,
+              tracking_token:
+                data.order.tracking_token || activeOrder.tracking_token,
+            });
           }
         }
       } catch {
@@ -332,7 +342,9 @@ export function ShowToStaffModal({
       });
 
       const isEditingExisting = Boolean(
-        editingOrder && editingOrder.payment_status !== 'paid'
+        editingOrder &&
+          editingOrder.status === 'new' &&
+          editingOrder.payment_status === 'unpaid'
       );
 
       const res = await fetch('/api/orders', {
@@ -342,12 +354,11 @@ export function ShowToStaffModal({
           isEditingExisting && editingOrder
             ? {
                 order_id: editingOrder.id,
+                tracking_token: editingOrder.tracking_token,
                 table_label:
                   tableNumber.trim() || editingOrder.table_label || 'Bàn khách QR',
                 customer_note:
                   `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
-                payment_method: paymentMethod,
-                discount_amount: promoCalc.discountAmount,
                 items: mappedItems,
               }
             : {
@@ -358,6 +369,8 @@ export function ShowToStaffModal({
                   `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
                 payment_method: paymentMethod,
                 source: 'qr_table',
+                apply_shop_promotions: true,
+                discount_code: promoCalc.voucherCode || undefined,
                 discount_amount: promoCalc.discountAmount,
                 items: mappedItems,
               }
@@ -369,8 +382,13 @@ export function ShowToStaffModal({
         throw new Error(data.error || 'Failed to submit order');
       }
 
-      setActiveOrder(data.order);
-      onOrderCreated?.(data.order);
+      const savedOrder: ShopOrder = {
+        ...data.order,
+        tracking_token:
+          data.order?.tracking_token || editingOrder?.tracking_token,
+      };
+      setActiveOrder(savedOrder);
+      onOrderCreated?.(savedOrder);
       onCancelEditOrder?.();
       onClearCart();
 
@@ -378,7 +396,7 @@ export function ShowToStaffModal({
         const bc = new BroadcastChannel('qlaok_realtime_sync');
         bc.postMessage({
           type: isEditingExisting ? 'order_updated' : 'order_created',
-          order: data.order,
+          order: savedOrder,
           shopId: shop.id,
         });
         bc.close();
@@ -569,6 +587,15 @@ export function ShowToStaffModal({
                       activeOrder.total_amount,
                       activeOrder.order_code
                     );
+                    if (!qrInfo.isConfigured || !qrInfo.qrImageUrl) {
+                      return (
+                        <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-center text-xs font-bold text-amber-200">
+                          {locale === 'vi'
+                            ? 'Quán chưa cấu hình mã VietQR tự động. Vui lòng thanh toán trực tiếp với nhân viên tại bàn/quầy.'
+                            : 'Online QR is not configured for this shop. Please pay with staff at your table or counter.'}
+                        </div>
+                      );
+                    }
                     return (
                       <div className="rounded-2xl border border-emerald-500/40 bg-slate-900 p-4 text-center space-y-2.5">
                         <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
@@ -603,9 +630,9 @@ export function ShowToStaffModal({
                     );
                   })()}
 
-                {/* Allow Customer to Edit Order / Change Dishes before Payment */}
-                {activeOrder.payment_status !== 'paid' &&
-                  activeOrder.status !== 'cancelled' &&
+                {/* Allow Customer to Edit Order / Change Dishes ONLY while status === 'new' and unpaid */}
+                {activeOrder.status === 'new' &&
+                  activeOrder.payment_status === 'unpaid' &&
                   onEditOrder && (
                     <button
                       type="button"

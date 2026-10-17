@@ -17,6 +17,14 @@ interface OverviewTabProps {
   theme: MobileThemePalette;
 }
 
+function getVnDateKey(dateInput: Date | string | number = new Date()): string {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) {
+    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 export const OverviewTab = memo(function OverviewTab({
   orders,
   items,
@@ -30,22 +38,23 @@ export const OverviewTab = memo(function OverviewTab({
       (o) => o.status === 'preparing'
     ).length;
     const validOrders = orders.filter((o) => o.status !== 'cancelled');
-    const todayPrefix = new Date().toISOString().slice(0, 10);
-    const todayRevenue = validOrders
-      .filter((o) => o.created_at.startsWith(todayPrefix))
+    const paidOrders = validOrders.filter((o) => o.payment_status === 'paid');
+    const todayPrefix = getVnDateKey();
+    const todayRevenue = paidOrders
+      .filter((o) => getVnDateKey(o.created_at) === todayPrefix)
       .reduce((sum, o) => sum + o.total_amount, 0);
-    const totalRevenue = validOrders.reduce(
+    const totalRevenue = paidOrders.reduce(
       (sum, o) => sum + o.total_amount,
       0
     );
 
     const sevenDayBars = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (6 - i));
-      const dateKey = d.toISOString().slice(0, 10);
-      const label = `${d.getDate()}/${d.getMonth() + 1}`;
-      const dayRev = validOrders
-        .filter((o) => o.created_at.startsWith(dateKey))
+      const vnNow = new Date(Date.now() + 7 * 3600 * 1000);
+      vnNow.setUTCDate(vnNow.getUTCDate() - (6 - i));
+      const dateKey = vnNow.toISOString().slice(0, 10);
+      const label = `${vnNow.getUTCDate()}/${vnNow.getUTCMonth() + 1}`;
+      const dayRev = paidOrders
+        .filter((o) => getVnDateKey(o.created_at) === dateKey)
         .reduce((s, o) => s + o.total_amount, 0);
       return { dateKey, label, revenue: dayRev };
     });
@@ -75,7 +84,7 @@ export const OverviewTab = memo(function OverviewTab({
     return {
       newOrdersCount,
       preparingOrdersCount,
-      validOrdersCount: validOrders.length,
+      validOrdersCount: paidOrders.length,
       todayRevenue,
       totalRevenue,
       sevenDayBars,
@@ -92,14 +101,14 @@ export const OverviewTab = memo(function OverviewTab({
     <View style={styles.sectionStack}>
       <View style={styles.revenueHeroCard}>
         <Text style={styles.revenueLabel}>
-          DOANH THU HÔM NAY (QUẦY mPOS &amp; ĐƠN QR BÀN)
+          DOANH THU ĐÃ THU HÔM NAY (QUẦY mPOS &amp; ĐƠN QR BÀN)
         </Text>
         <Text style={styles.revenueValue}>
           {formatVnd(metrics.todayRevenue)}
         </Text>
         <Text style={styles.revenueSub}>
-          Tổng lũy kế: {formatVnd(metrics.totalRevenue)} (
-          {metrics.validOrdersCount} đơn) •{' '}
+          Tổng lũy kế đã thu: {formatVnd(metrics.totalRevenue)} (
+          {metrics.validOrdersCount} đơn đã thu) •{' '}
           {items.filter((i) => i.is_available).length}/{items.length} món đang
           mở bán
         </Text>

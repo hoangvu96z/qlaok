@@ -59,9 +59,9 @@ interface PosCounterWorkspaceProps {
     orderId: string,
     updates: {
       status?: 'new' | 'preparing' | 'completed' | 'cancelled';
-      payment_status?: 'unpaid' | 'paid';
+      payment_status?: 'unpaid' | 'paid' | 'refunded';
     }
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   onEditCatalogItem?: (item: CatalogItem) => void;
 }
 
@@ -255,14 +255,15 @@ export function PosCounterWorkspace({
     const validToday = orders.filter(
       (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayKey
     );
-    const revenue = validToday.reduce(
+    const paidToday = validToday.filter((o) => o.payment_status === 'paid');
+    const revenue = paidToday.reduce(
       (s, o) => s + Number(o.total_amount || 0),
       0
     );
-    const cashRev = validToday
+    const cashRev = paidToday
       .filter((o) => o.payment_method === 'cash')
       .reduce((s, o) => s + Number(o.total_amount || 0), 0);
-    const qrRev = validToday
+    const qrRev = paidToday
       .filter((o) => o.payment_method !== 'cash')
       .reduce((s, o) => s + Number(o.total_amount || 0), 0);
     return {
@@ -303,30 +304,33 @@ export function PosCounterWorkspace({
     });
   }, [items, selectedCategoryId, searchQuery]);
 
-  // Calculate line unit price, extra price, and total
+  // Calculate line unit price, extra price, and total against catalog price
   const calcLineAmounts = (line: PosOrderLine) => {
+    const catalogPrice = Math.max(0, Number(line.item.price || 0));
     const basePrice =
       line.customUnitPrice !== undefined
-        ? line.customUnitPrice
-        : line.item.price;
+        ? Math.max(0, Number(line.customUnitPrice))
+        : catalogPrice;
     const extraPrice = line.selectedChoices.reduce(
       (sum, c) => sum + (c.extra_price || 0),
       0
     );
+    const catalogGrossUnit = catalogPrice + extraPrice;
     const grossUnit = basePrice + extraPrice;
-    const discMultiplier = Math.max(
-      0,
-      Math.min(100, 100 - (line.discountPercent || 0))
-    ) / 100;
+    const discMultiplier =
+      Math.max(0, Math.min(100, 100 - (line.discountPercent || 0))) / 100;
     const finalLineTotal = Math.round(
       grossUnit * line.quantity * discMultiplier
     );
-    const discountSaved = Math.round(
-      grossUnit * line.quantity - finalLineTotal
+    const discountSaved = Math.max(
+      0,
+      Math.round(catalogGrossUnit * line.quantity - finalLineTotal)
     );
     return {
+      catalogPrice,
       basePrice,
       extraPrice,
+      catalogGrossUnit,
       grossUnit,
       finalLineTotal,
       discountSaved,
@@ -340,9 +344,9 @@ export function PosCounterWorkspace({
     let totalQty = 0;
 
     for (const line of lines) {
-      const { grossUnit, finalLineTotal, discountSaved } =
+      const { catalogGrossUnit, finalLineTotal, discountSaved } =
         calcLineAmounts(line);
-      subtotal += grossUnit * line.quantity;
+      subtotal += catalogGrossUnit * line.quantity;
       totalDiscount += discountSaved;
       grandTotal += finalLineTotal;
       totalQty += line.quantity;
@@ -696,11 +700,17 @@ export function PosCounterWorkspace({
           isEditing && activeEditingOrder
             ? {
                 order_id: activeEditingOrder.id,
-                table_label: tableLabel.trim() || activeEditingOrder.table_label || 'Tại quầy',
+                table_label:
+                  tableLabel.trim() ||
+                  activeEditingOrder.table_label ||
+                  'Tại quầy',
                 payment_method: paymentMethod,
                 payment_status: markPaidImmediately
                   ? 'paid'
                   : activeEditingOrder.payment_status,
+                discount_amount: totals.totalDiscount,
+                expected_total: totals.grandTotal,
+                apply_shop_promotions: false,
                 items: payloadItems,
               }
             : {
@@ -709,6 +719,9 @@ export function PosCounterWorkspace({
                 visitor_lang: 'vi',
                 payment_method: paymentMethod,
                 payment_status: markPaidImmediately ? 'paid' : 'unpaid',
+                discount_amount: totals.totalDiscount,
+                expected_total: totals.grandTotal,
+                apply_shop_promotions: false,
                 source: 'counter_pos',
                 items: payloadItems,
               }

@@ -3,12 +3,15 @@ import {
   dbGetShopAnalyticsSummary,
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
-import { AnalyticsEventType, SupportedLocale } from '@/types/qlaok';
+import type { AnalyticsEventType, SupportedLocale } from '@/types/qlaok';
+import { requireShopPermission } from '@/lib/server-auth';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const shopId = searchParams.get('shopId') || undefined;
-  const summary = await dbGetShopAnalyticsSummary(shopId);
+  const auth = await requireShopPermission(req, shopId || 'shop-fnb-001', 'reports.view');
+  if (auth.errorResponse) return auth.errorResponse;
+  const summary = await dbGetShopAnalyticsSummary(shopId || 'shop-fnb-001');
   return NextResponse.json(summary);
 }
 
@@ -52,4 +55,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

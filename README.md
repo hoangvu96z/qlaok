@@ -172,3 +172,31 @@ npm test
 # Build bản Production
 npm run build
 ```
+
+### Bản nâng cấp membership và thanh toán
+
+Trước khi triển khai bản này, áp dụng các SQL migration theo thứ tự trong
+`supabase/migrations/`. Backend cần `SUPABASE_SERVICE_ROLE_KEY` (chỉ ở server)
+và secret ký session đủ mạnh (`SESSION_SECRET`, tối thiểu 16 ký tự). Bản production
+không dùng secret mặc định trong source; không đặt service-role key trong biến public/Expo.
+
+Workflow deploy main kiểm tra web/mobile và SQL trên PostgreSQL cô lập, sau đó mới
+chạy migration và deploy đúng commit đã kiểm tra. Để workflow migration chạy được,
+cần hai GitHub Secrets `NEXT_PUBLIC_SUPABASE_URL` và `SUPABASE_ACCESS_TOKEN`.
+Push main có tác động tới production thông qua workflow này.
+
+Kiểm tra local (không gọi database production):
+
+```bash
+npm run typecheck
+npm run typecheck --prefix mobile
+npm run test:unit
+npm run test:review
+npm run test:sql
+npm test --prefix mobile
+npm run build
+```
+
+`test:sql` chạy PostgreSQL WASM trong bộ nhớ, kiểm tra migration và ranh giới RLS;
+không chứng minh phần cứng máy in, thiết bị mobile hay đối soát merchant hoạt động.
+Không chạy `test:e2e` với URL/database production vì suite đó có thao tác ghi dữ liệu.

@@ -42,8 +42,20 @@ import {
   dbCreateOrder,
   dbUpdateOrderStatus,
   dbGetOrderById,
+  dbGetTableBill,
+  dbSettleTableBill,
+  dbRecordOrderPrint,
   computeShopRevenueAndInventoryStats,
 } from '@/lib/mpos-store';
+import {
+  DEFAULT_ROLE_PERMISSIONS,
+  hasShopPermission,
+  dbUpsertShopMembership,
+  dbDeleteShopMembership,
+  resolveUserShopMembership,
+} from '@/lib/shop-permissions';
+import { computeSharedOrderQuote } from '@/lib/order-pricing';
+import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
   issueSessionToken,
   verifySessionToken,
@@ -55,8 +67,16 @@ import {
 import { GET as adminGet, POST as adminPost } from '@/app/api/admin/route';
 import { POST as authPost } from '@/app/api/auth/route';
 import { POST as paymentPost } from '@/app/api/webhooks/payment/route';
-import { GET as ordersGet, PATCH as ordersPatch } from '@/app/api/orders/route';
-import { PATCH as shopsPatch } from '@/app/api/shops/route';
+import {
+  GET as ordersGet,
+  POST as ordersPost,
+  PATCH as ordersPatch,
+} from '@/app/api/orders/route';
+import {
+  GET as shopsGet,
+  POST as shopsPost,
+  PATCH as shopsPatch,
+} from '@/app/api/shops/route';
 import type { CatalogItem, OpeningHours } from '@/types/qlaok';
 
 // ============================================================================
@@ -1359,3 +1379,641 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
   });
 });
 
+// ============================================================================
+// SUITE 9: MEMBERSHIPS, PERMISSIONS, QUOTE/DISCOUNT, PAYMENT/REFUND & TABLE BILL
+// ============================================================================
+describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & Table Billing', () => {
+  test('9.1 Default role permissions enforce owner vs cashier vs staff boundaries', () => {
+    const staffPerms = DEFAULT_ROLE_PERMISSIONS.staff;
+    const cashierPerms = DEFAULT_ROLE_PERMISSIONS.cashier;
+    const ownerPerms = DEFAULT_ROLE_PERMISSIONS.owner;
+
+    // Staff can view/create/fulfill orders and print kitchen tickets
+    assert.ok(staffPerms.includes('orders.view'));
+    assert.ok(staffPerms.includes('orders.create'));
+    assert.ok(staffPerms.includes('orders.fulfill'));
+    assert.ok(staffPerms.includes('orders.print_kitchen'));
+
+    // Staff CANNOT collect payment, apply discounts, refund, edit bank, or view revenue by default
+    assert.ok(!staffPerms.includes('payment.collect'));
+    assert.ok(!staffPerms.includes('discount.apply'));
+    assert.ok(!staffPerms.includes('payment.refund'));
+    assert.ok(!staffPerms.includes('settings.bank'));
+    assert.ok(!staffPerms.includes('reports.view'));
+
+    // Cashier can collect payment, apply discounts, and print provisional bills, but cannot edit bank or manage members by default
+    assert.ok(cashierPerms.includes('orders.print_provisional'));
+    assert.ok(cashierPerms.includes('payment.collect'));
+    assert.ok(cashierPerms.includes('discount.apply'));
+    assert.ok(!cashierPerms.includes('settings.bank'));
+    assert.ok(!cashierPerms.includes('members.manage'));
+
+    // Owner has all permissions
+    assert.ok(ownerPerms.includes('payment.collect'));
+    assert.ok(ownerPerms.includes('payment.refund'));
+    assert.ok(ownerPerms.includes('settings.bank'));
+    assert.ok(ownerPerms.includes('reports.view'));
+    assert.ok(ownerPerms.includes('members.manage'));
+  });
+
+  test('9.2 Server API enforces staff vs cashier permissions and redacts revenue stats for staff', async () => {
+    const shopId = 'shop-fnb-001';
+    const staffUserId = 'staff-member-test-001';
+    const cashierUserId = 'cashier-member-test-001';
+
+    await dbUpsertShopMembership({
+      shop_id: shopId,
+      user_id: staffUserId,
+      email: 'staff01@qlaok.vn',
+      full_name: 'Nhân viên Phục vụ',
+      role: 'staff',
+    });
+
+    await dbUpsertShopMembership({
+      shop_id: shopId,
+      user_id: cashierUserId,
+      email: 'cashier01@qlaok.vn',
+      full_name: 'Thu ngân Ca Sáng',
+      role: 'cashier',
+    });
+
+    const staffToken = issueSessionToken({
+      id: staffUserId,
+      email: 'staff01@qlaok.vn',
+      role: 'owner',
+    });
+    const cashierToken = issueSessionToken({
+      id: cashierUserId,
+      email: 'cashier01@qlaok.vn',
+      role: 'owner',
+    });
+
+    // Staff GET /api/orders succeeds (orders.view), but revenue numbers in stats are redacted (null) because staff lacks reports.view
+    const staffGetRes = await ordersGet(
+      new Request(`http://localhost:3000/api/orders?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${staffToken}` },
+      })
+    );
+    assert.equal(staffGetRes.status, 200);
+    const staffGetData = await staffGetRes.json();
+    assert.equal(
+      staffGetData.stats?.todayRevenue,
+      null,
+      'Staff must not see todayRevenue'
+    );
+    assert.equal(
+      staffGetData.stats?.totalRevenue,
+      null,
+      'Staff must not see totalRevenue'
+    );
+    assert.deepEqual(
+      staffGetData.stats?.dailyRevenue7d,
+      [],
+      'Staff must not see 7-day revenue chart'
+    );
+    assert.equal(staffGetData.membership?.role, 'staff');
+
+    // Create a new unpaid order
+    const testOrder = await dbCreateOrder({
+      shop_id: shopId,
+      table_label: 'Bàn Phân Quyền',
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò Tái Nạm',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    // Staff can mark order as preparing/completed (orders.fulfill)
+    const staffFulfillRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          orderId: testOrder.id,
+          status: 'completed',
+        }),
+      })
+    );
+    assert.equal(staffFulfillRes.status, 200);
+    const fulfilledData = await staffFulfillRes.json();
+    assert.equal(fulfilledData.order.status, 'completed');
+    assert.equal(
+      fulfilledData.order.payment_status,
+      'unpaid',
+      'Serving an order must NOT implicitly mark it paid'
+    );
+
+    // Staff CANNOT collect payment (payment_status: 'paid') -> 403
+    const staffCollectRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          orderId: testOrder.id,
+          payment_status: 'paid',
+        }),
+      })
+    );
+    assert.equal(staffCollectRes.status, 403);
+
+    // Staff CANNOT apply manual discount -> 403
+    const staffDiscountRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          orderId: testOrder.id,
+          discount_amount: 10000,
+        }),
+      })
+    );
+    assert.equal(staffDiscountRes.status, 403);
+
+    // Staff CANNOT update bank QR settings on /api/shops -> 403
+    const staffBankPatchRes = await shopsPatch(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          theme_config: {
+            primaryColor: '#10b981',
+            layout: 'list',
+            paymentQr: {
+              bankId: 'VCB',
+              accountNo: '9999999999',
+              accountName: 'HACKED BANK',
+            },
+          },
+        }),
+      })
+    );
+    assert.equal(staffBankPatchRes.status, 403);
+
+    // Cashier CAN collect payment -> 200
+    const cashierCollectRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierToken}`,
+        },
+        body: JSON.stringify({
+          orderId: testOrder.id,
+          payment_status: 'paid',
+          payment_method: 'cash',
+          payment_idempotency_key: 'pay-idemp-cashier-1',
+        }),
+      })
+    );
+    assert.equal(cashierCollectRes.status, 200);
+    const paidData = await cashierCollectRes.json();
+    assert.equal(paidData.order.payment_status, 'paid');
+
+    // Clean up membership & order
+    await dbDeleteShopMembership(shopId, staffUserId);
+    await dbDeleteShopMembership(shopId, cashierUserId);
+    await dbUpdateOrderStatus(testOrder.id, { status: 'cancelled' });
+  });
+
+  test('9.3 Shared quote engine calculates Flash Sale, Promo Banner voucher, and manual POS discounts accurately', () => {
+    const quote = computeSharedOrderQuote({
+      lines: [
+        {
+          item_id: 'item-quote-1',
+          name_vi: 'Combo Lẩu Bò',
+          quantity: 2,
+          unit_price: 100000,
+          original_unit_price: 100000,
+          extra_price: 10000,
+          selected_choices: [],
+        },
+      ],
+      themeConfig: {
+        primaryColor: '#10b981',
+        layout: 'list',
+        flashSale: {
+          enabled: true,
+          title: 'Flash Sale 20%',
+          discountType: 'percent',
+          discountValue: 20,
+          itemIds: ['item-quote-1'],
+        },
+        promoBanner: {
+          enabled: true,
+          title: 'Giảm 15k cho đơn từ 100k',
+          discountType: 'fixed_amount',
+          discountValue: 15000,
+          minOrderAmount: 100000,
+          voucherCode: 'QLAOK15K',
+        },
+      },
+      applyShopPromotions: true,
+      discountCode: 'QLAOK15K',
+      canApplyManualDiscount: false,
+    });
+
+    // Subtotal (100,000 + 10,000) * 2 = 220,000; Flash sale 20% off 100,000 * 2 = 40,000; Promo voucher = 15,000 -> total discount 55,000 -> total 165,000
+    assert.equal(quote.subtotal_amount, 220000);
+    assert.equal(quote.flash_discount_amount, 40000);
+    assert.equal(quote.promo_banner_discount_amount, 15000);
+    assert.equal(quote.promo_discount_amount, 55000);
+    assert.equal(quote.discount_amount, 55000);
+    assert.equal(quote.total_amount, 165000);
+  });
+
+  test('9.4 Editing items atomically updates subtotal/discount/bill_version, and paid orders reject item edits (ORDER_ALREADY_PAID)', async () => {
+    const order = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Atomic Bill',
+      source: 'counter_pos',
+      isStaffAuthorized: true,
+      canApplyDiscount: true,
+      discount_amount: 10000,
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    assert.equal(order.subtotal_amount, 65000);
+    assert.equal(order.discount_amount, 10000);
+    assert.equal(order.total_amount, 55000);
+    assert.equal(order.bill_version, 1);
+
+    // Edit items to 2 bowls (130,000) while keeping 10,000 discount -> total 120,000 and bill_version 2
+    const edited = await dbUpdateOrderStatus(order.id, {
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 2,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    assert.ok(edited);
+    assert.equal(edited.subtotal_amount, 130000);
+    assert.equal(edited.discount_amount, 10000);
+    assert.equal(edited.total_amount, 120000);
+    assert.equal(edited.bill_version, 2);
+
+    // Mark order as paid
+    const paid = await dbUpdateOrderStatus(order.id, {
+      payment_status: 'paid',
+      payment_idempotency_key: 'pay-lock-test-1',
+    });
+    assert.equal(paid?.payment_status, 'paid');
+
+    // Repeating same payment_idempotency_key is idempotent
+    const paidIdemp = await dbUpdateOrderStatus(order.id, {
+      payment_status: 'paid',
+      payment_idempotency_key: 'pay-lock-test-1',
+    });
+    assert.equal(paidIdemp?.id, order.id);
+
+    // Editing items on a paid order must throw ORDER_ALREADY_PAID
+    await assert.rejects(
+      async () => {
+        await dbUpdateOrderStatus(order.id, {
+          items: [
+            {
+              item_id: 'item-fnb-1',
+              name_vi: 'Phở Bò',
+              quantity: 3,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        });
+      },
+      (err: Error) => err.message.includes('ORDER_ALREADY_PAID')
+    );
+
+    // Refund transition paid -> refunded
+    const refunded = await dbUpdateOrderStatus(order.id, {
+      payment_status: 'refunded',
+      refund_reason: 'Khách đổi món sau khi thanh toán',
+      refunded_by: 'owner-demo-001',
+    });
+    assert.equal(refunded?.payment_status, 'refunded');
+    assert.equal(refunded?.refund_reason, 'Khách đổi món sau khi thanh toán');
+
+    await dbUpdateOrderStatus(order.id, { status: 'cancelled' });
+  });
+
+  test('9.5 Kitchen waste policy (restock_items: false) records waste without restoring stock, and revenue counts only paid orders', async () => {
+    const wasteItemId = 'unit-test-item-waste-905';
+    await setItemStockMetadata(wasteItemId, 10, 0);
+
+    const order = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Hủy Bếp',
+      items: [
+        {
+          item_id: wasteItemId,
+          name_vi: 'Món Đã Nấu Hủy',
+          quantity: 3,
+          unit_price: 50000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    // Move to preparing (kitchen started cooking)
+    await dbUpdateOrderStatus(order.id, { status: 'preparing' });
+
+    // Cancel with restock_items: false (kitchen waste)
+    const cancelledWaste = await dbUpdateOrderStatus(order.id, {
+      status: 'cancelled',
+      restock_items: false,
+      cancelled_reason: 'Khách bỏ về khi bếp đã chế biến',
+    });
+    assert.equal(cancelledWaste?.status, 'cancelled');
+    assert.equal(cancelledWaste?.waste_recorded, true);
+
+    // Stock must remain 7 (not restored to 10) because kitchen already cooked the items
+    const enrichedAfterWaste = enrichItemsWithInventory([
+      {
+        id: wasteItemId,
+        shop_id: 'shop-fnb-001',
+        category_id: 'cat-fnb-1',
+        sort_order: 1,
+        price: 50000,
+        is_available: true,
+        is_featured: false,
+        name_i18n: { vi: 'Món Đã Nấu Hủy' },
+        desc_i18n: { vi: '' },
+        options_json: [],
+        view_count: 0,
+      },
+    ]);
+    assert.equal(enrichedAfterWaste[0].stock_quantity, 7);
+
+    // Verify completed-but-unpaid order does NOT inflate revenue stats
+    const sampleItems = enrichItemsWithInventory(
+      SEED_ITEMS.filter((i) => i.shop_id === 'shop-fnb-001')
+    );
+    const baselineRevenue = computeShopRevenueAndInventoryStats(
+      'shop-fnb-001',
+      sampleItems
+    ).totalRevenue;
+
+    const servedUnpaid = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Phục Vụ Chưa Thu',
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(servedUnpaid.id, { status: 'completed' });
+
+    const afterServedUnpaidRevenue = computeShopRevenueAndInventoryStats(
+      'shop-fnb-001',
+      sampleItems
+    ).totalRevenue;
+    assert.equal(
+      afterServedUnpaidRevenue,
+      baselineRevenue,
+      'Completed but unpaid order must not be added to collected revenue'
+    );
+
+    await dbUpdateOrderStatus(servedUnpaid.id, { payment_status: 'paid' });
+    const afterPaidRevenue = computeShopRevenueAndInventoryStats(
+      'shop-fnb-001',
+      sampleItems
+    ).totalRevenue;
+    assert.equal(
+      afterPaidRevenue,
+      baselineRevenue + servedUnpaid.total_amount,
+      'Once paid, order total must be added to collected revenue'
+    );
+
+    await dbUpdateOrderStatus(servedUnpaid.id, { status: 'cancelled' });
+  });
+
+  test('9.6 Table bill combines multiple unpaid rounds for the same table session and settles them together', async () => {
+    const sessionId = `sess-table-09-${Date.now()}`;
+    const round1 = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn 09 Gộp Bill',
+      session_id: sessionId,
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const round2 = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn 09 Gộp Bill',
+      session_id: sessionId,
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 2,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+
+    const billBefore = await dbGetTableBill({
+      shop_id: 'shop-fnb-001',
+      session_id: sessionId,
+    });
+    assert.equal(billBefore.order_ids.length, 2);
+    assert.equal(
+      billBefore.total_amount,
+      round1.total_amount + round2.total_amount
+    );
+    assert.equal(billBefore.payment_status, 'unpaid');
+
+    const settledBill = await dbSettleTableBill({
+      shop_id: 'shop-fnb-001',
+      session_id: sessionId,
+      payment_method: 'vietqr',
+      paid_by: 'owner-demo-001',
+    });
+    assert.equal(settledBill.payment_status, 'paid');
+
+    const r1After = await dbGetOrderById(round1.id);
+    const r2After = await dbGetOrderById(round2.id);
+    assert.equal(r1After?.payment_status, 'paid');
+    assert.equal(r2After?.payment_status, 'paid');
+
+    await dbUpdateOrderStatus(round1.id, { status: 'cancelled' });
+    await dbUpdateOrderStatus(round2.id, { status: 'cancelled' });
+  });
+
+  test('9.7 Customer tracking_token allows pre-acceptance order edit while new+unpaid and blocks edit once preparing', async () => {
+    const created = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn QR Khách',
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    assert.ok(created.tracking_token);
+
+    // Customer edit WITH valid trackingToken while status === 'new' -> 200
+    const validCustomerEditRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: created.id,
+          trackingToken: created.tracking_token,
+          customer_note: 'Ít hành, thêm ớt',
+          items: [
+            {
+              item_id: 'item-fnb-1',
+              name_vi: 'Phở Bò',
+              quantity: 2,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(validCustomerEditRes.status, 200);
+    const editedPayload = await validCustomerEditRes.json();
+    assert.equal(editedPayload.order.items[0].quantity, 2);
+
+    // Move order to 'preparing'
+    await dbUpdateOrderStatus(created.id, { status: 'preparing' });
+
+    // Customer edit after kitchen accepted ('preparing') -> 409 conflict
+    const lateCustomerEditRes = await ordersPatch(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: created.id,
+          trackingToken: created.tracking_token,
+          customer_note: 'Đổi ý sau khi bếp đã nấu',
+        }),
+      })
+    );
+    assert.equal(lateCustomerEditRes.status, 409);
+
+    await dbUpdateOrderStatus(created.id, { status: 'cancelled' });
+  });
+
+  test('9.8 Unconfigured bank QR returns isConfigured=false and empty qrImageUrl (no fake demo account 0905123456), and print counters increment per ticket type', async () => {
+    const unconfiguredShop = {
+      ...SEED_SHOPS[0],
+      theme_config: {
+        primaryColor: '#10b981',
+        layout: 'list' as const,
+      },
+    };
+    const qrInfo = getShopPaymentQrInfo(unconfiguredShop, 120000, 'ORD-123');
+    assert.equal(qrInfo.isConfigured, false);
+    assert.equal(qrInfo.qrImageUrl, '');
+    assert.ok(!qrInfo.accountNumber.includes('0905123456'));
+
+    // Configured mobile paymentQr works seamlessly with getShopPaymentQrInfo
+    const configuredShop = {
+      ...SEED_SHOPS[0],
+      theme_config: {
+        primaryColor: '#10b981',
+        layout: 'list' as const,
+        paymentQr: {
+          bankId: 'VCB',
+          accountNo: '0123456789',
+          accountName: 'NGUYEN VAN A',
+        },
+      },
+    };
+    const validQr = getShopPaymentQrInfo(configuredShop, 120000, 'ORD-123');
+    assert.equal(validQr.isConfigured, true);
+    assert.ok(validQr.qrImageUrl.includes('img.vietqr.io/image/VCB-0123456789'));
+
+    // Ticket print counters track kitchen, provisional, and receipt separately
+    const order = await dbCreateOrder({
+      shop_id: 'shop-fnb-001',
+      table_label: 'Bàn Test In Phiếu',
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const afterKitchen1 = await dbRecordOrderPrint(order.id, 'kitchen');
+    assert.equal(afterKitchen1?.order.kitchen_printed_count, 1);
+    assert.equal(afterKitchen1?.order.provisional_printed_count || 0, 0);
+    assert.equal(afterKitchen1?.isReprint, false);
+
+    const afterProvisional1 = await dbRecordOrderPrint(order.id, 'provisional');
+    assert.equal(afterProvisional1?.order.kitchen_printed_count, 1);
+    assert.equal(afterProvisional1?.order.provisional_printed_count, 1);
+
+    const afterReceipt1 = await dbRecordOrderPrint(order.id, 'receipt');
+    assert.equal(afterReceipt1?.order.receipt_printed_count, 1);
+    assert.equal(afterReceipt1?.order.print_count, 3);
+
+    const afterReceipt2 = await dbRecordOrderPrint(order.id, 'receipt');
+    assert.equal(afterReceipt2?.order.receipt_printed_count, 2);
+    assert.equal(afterReceipt2?.isReprint, true);
+
+    await dbUpdateOrderStatus(order.id, { status: 'cancelled' });
+  });
+});

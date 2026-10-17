@@ -3,6 +3,7 @@ import { AppState, AppStateStatus, Vibration } from 'react-native';
 import {
   fetchApi,
   MobileCatalogItem,
+  MobileShopMembership,
   MobileShopOrder,
   supabase,
 } from '../lib/supabase';
@@ -17,12 +18,14 @@ interface UseShopRealtimeOrdersOptions {
   isLoggedIn: boolean;
   shopId?: string;
   onItemsSynced?: (items: MobileCatalogItem[]) => void;
+  onMembershipSynced?: (membership: MobileShopMembership) => void;
 }
 
 export function useShopRealtimeOrders({
   isLoggedIn,
   shopId,
   onItemsSynced,
+  onMembershipSynced,
 }: UseShopRealtimeOrdersOptions) {
   const [orders, setOrders] = useState<MobileShopOrder[]>([]);
   const [liveOrderAlert, setLiveOrderAlert] = useState<LiveOrderAlert | null>(
@@ -36,6 +39,8 @@ export function useShopRealtimeOrders({
   const isFirstLoadRef = useRef(true);
   const onItemsSyncedRef = useRef(onItemsSynced);
   onItemsSyncedRef.current = onItemsSynced;
+  const onMembershipSyncedRef = useRef(onMembershipSynced);
+  onMembershipSyncedRef.current = onMembershipSynced;
 
   const notifyIfBrandNewOrder = useCallback((nextOrders: MobileShopOrder[]) => {
     const newList = nextOrders.filter((o) => o.status === 'new');
@@ -70,7 +75,7 @@ export function useShopRealtimeOrders({
   useEffect(() => () => { scopeRef.current = { ...scopeRef.current, generation: scopeRef.current.generation + 1 }; }, []);
 
   const fetchOrdersFromApi = useCallback(
-    async (targetShopId: string, silent = false) => {
+    async (targetShopId: string, _silent = false) => {
       const scope = scopeRef.current;
       if (!scope.isLoggedIn || targetShopId !== scope.shopId) return;
       const request = ++requestId.current;
@@ -82,11 +87,12 @@ export function useShopRealtimeOrders({
         notifyIfBrandNewOrder(data.orders);
         setOrders(data.orders);
         if (Array.isArray(data.items)) onItemsSyncedRef.current?.(data.items);
+        if (data.membership) onMembershipSyncedRef.current?.(data.membership as MobileShopMembership);
       } catch {
         if (scope !== scopeRef.current || request !== requestId.current) return;
         setRealtimeStatus('fallback');
-        // Never read public theme_config.recent_orders after a failed authenticated request.
-        if (!silent) setOrders([]);
+        // Never read public theme_config.recent_orders after a failed authenticated request,
+        // and preserve previously loaded orders in memory rather than wiping the screen on transient network hiccup.
       }
     },
     [notifyIfBrandNewOrder]

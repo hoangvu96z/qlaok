@@ -20,10 +20,13 @@ import {
   MobileCatalogItem,
   MobileCategory,
   MobileFlashSaleConfig,
+  MobileOrderPaymentStatus,
   MobilePopupConfig,
   MobilePromoBannerConfig,
   MobileShop,
+  MobileShopMembership,
   MobileShopOrder,
+  MobileShopPermission,
   MobileShopThemeConfig,
   supabase,
 } from './src/lib/supabase';
@@ -76,6 +79,9 @@ function Workspace({ userId }: { userId: string }) {
   const [refreshing, setRefreshing] = useState(false);
 
   const [shops, setShops] = useState<MobileShop[]>([]);
+  const [memberships, setMemberships] = useState<
+    Record<string, MobileShopMembership>
+  >({});
   const [activeShopId, setActiveShopId] = useState<string>('');
   const [categories, setCategories] = useState<MobileCategory[]>([]);
   const [items, setItems] = useState<MobileCatalogItem[]>([]);
@@ -139,12 +145,69 @@ function Workspace({ userId }: { userId: string }) {
     [shops, activeShopId]
   );
 
+  const activeMembership = useMemo(
+    () => (activeShop ? memberships[activeShop.id] || null : null),
+    [activeShop, memberships]
+  );
+
+  const hasPerm = useCallback(
+    (perm: MobileShopPermission): boolean => {
+      if (!activeShop) return false;
+      if (activeMembership) {
+        return (
+          activeMembership.is_active &&
+          Array.isArray(activeMembership.permissions) &&
+          activeMembership.permissions.includes(perm)
+        );
+      }
+      return activeShop.owner_id === userId;
+    },
+    [activeShop, activeMembership, userId]
+  );
+
+  const canCollectPayment = hasPerm('payment.collect');
+  const canRefundOrder = hasPerm('payment.refund') || hasPerm('order.refund');
+  const canViewReports = hasPerm('reports.view');
+  const canManageCatalog = hasPerm('catalog.manage');
+  const canAdjustInventory =
+    hasPerm('catalog.manage') || hasPerm('inventory.adjust');
+  const canManagePromotions = hasPerm('promotions.manage');
+  const canManageSettings = hasPerm('settings.manage');
+
   // Tab navigation with Android hardware back-stack & scroll preservation
   const handleCloseModal = useCallback(() => setPrintingOrder(null), []);
   const { activeTab, navigateTab, mountedTabs } = useTabNavigation({
     hasOpenModal: Boolean(printingOrder),
     onCloseModal: handleCloseModal,
   });
+
+  // Redirect to orders tab if user switches to a shop where their role cannot access the current tab
+  useEffect(() => {
+    if (!activeShop) return;
+    if (activeTab === 'overview' && !canViewReports) navigateTab('orders');
+    if (activeTab === 'catalog' && !canManageCatalog && !canAdjustInventory)
+      navigateTab('orders');
+    if (activeTab === 'promotions' && !canManagePromotions)
+      navigateTab('orders');
+    if (activeTab === 'settings' && !canManageSettings) navigateTab('orders');
+  }, [
+    activeShop,
+    activeTab,
+    canViewReports,
+    canManageCatalog,
+    canAdjustInventory,
+    canManagePromotions,
+    canManageSettings,
+    navigateTab,
+  ]);
+
+  const handleMembershipSynced = useCallback(
+    (m: MobileShopMembership) => {
+      if (!m?.shop_id) return;
+      setMemberships((prev) => ({ ...prev, [m.shop_id]: m }));
+    },
+    []
+  );
 
   // Supabase Realtime WebSocket Orders Hook (replaces 3.5s HTTP polling)
   const {
@@ -158,6 +221,7 @@ function Workspace({ userId }: { userId: string }) {
     isLoggedIn,
     shopId: activeShop?.id,
     onItemsSynced: setItems,
+    onMembershipSynced: handleMembershipSynced,
   });
 
   const hydrateThemeAndPromoState = useCallback(
@@ -169,9 +233,8 @@ function Workspace({ userId }: { userId: string }) {
       );
       setBackgroundStyle(tc?.backgroundStyle || 'clean');
 
-      setPromoBanner({ enabled: false, title: '', discountValue: 0, selectedItemIds: [] });
-      setWelcomePopup({ enabled: false, title: '', content: '' });
-      setFlashSale({ enabled: false, title: '', discountType: 'percent', discountValue: 0, itemIds: [] });
+      const defaultToday = new Date().toISOString().slice(0, 10);
+
       if (tc?.promoBanner) {
         setPromoBanner({
           enabled: Boolean(tc.promoBanner.enabled),
@@ -182,6 +245,7 @@ function Workspace({ userId }: { userId: string }) {
             tc.promoBanner.subtitle ||
             'Áp dụng toàn thực đơn khi đặt món qua QR',
           bgGradient: tc.promoBanner.bgGradient || 'amber_rose',
+          ctaText: tc.promoBanner.ctaText,
           discountType: tc.promoBanner.discountType || 'percent',
           discountValue:
             typeof tc.promoBanner.discountValue === 'number'
@@ -195,6 +259,20 @@ function Workspace({ userId }: { userId: string }) {
           selectedItemIds: tc.promoBanner.selectedItemIds || [],
           voucherCode: tc.promoBanner.voucherCode || '',
         });
+      } else {
+        setPromoBanner({
+          enabled: false,
+          badgeText: '🔥 ƯU ĐÃI ĐẶC BIỆT',
+          title: '',
+          subtitle: '',
+          bgGradient: 'amber_rose',
+          discountType: 'percent',
+          discountValue: 15,
+          minOrderAmount: 0,
+          applyScope: 'all',
+          selectedItemIds: [],
+          voucherCode: '',
+        });
       }
 
       if (tc?.welcomePopup) {
@@ -203,11 +281,20 @@ function Workspace({ userId }: { userId: string }) {
           badgeText: tc.welcomePopup.badgeText || '🎁 VOUCHER CHÀO MỪNG',
           title: tc.welcomePopup.title || '',
           content: tc.welcomePopup.content || '',
+          imageUrl: tc.welcomePopup.imageUrl,
           voucherCode: tc.welcomePopup.voucherCode || '',
+          ctaText: tc.welcomePopup.ctaText,
+        });
+      } else {
+        setWelcomePopup({
+          enabled: false,
+          badgeText: '🎁 VOUCHER CHÀO MỪNG',
+          title: '',
+          content: '',
+          voucherCode: '',
         });
       }
 
-      const defaultToday = new Date().toISOString().slice(0, 10);
       if (tc?.flashSale) {
         setFlashSale({
           enabled: Boolean(tc.flashSale.enabled),
@@ -229,11 +316,19 @@ function Workspace({ userId }: { userId: string }) {
               ? tc.flashSale.itemIds
               : loadedItems.slice(0, 3).map((i) => i.id),
         });
-      } else if (loadedItems.length > 0) {
-        setFlashSale((prev) => ({
-          ...prev,
+      } else {
+        setFlashSale({
+          enabled: false,
+          badgeText: '⚡ FLASH SALE GIỜ VÀNG',
+          title: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
+          discountType: 'percent',
+          discountValue: 25,
+          startDate: defaultToday,
+          endDate: defaultToday,
+          startTime: '11:00',
+          endTime: '22:00',
           itemIds: loadedItems.slice(0, 3).map((i) => i.id),
-        }));
+        });
       }
     },
     []
@@ -250,16 +345,39 @@ function Workspace({ userId }: { userId: string }) {
       setOrderFilter('active');
       setCategories([]); setItems([]); setEvents([]); setOrders([]);
       try {
-        const { data: shopsData, error: shopsErr } = await supabase
-          .from('shops')
-          .select('*')
-          .eq('owner_id', userId)
-          .order('created_at', { ascending: true });
+        let loadedShops: MobileShop[] = [];
+        let loadedMemberships: Record<string, MobileShopMembership> = {};
+
+        try {
+          const shopsApiRes = await fetchApi('/api/shops?member=1');
+          const shopsApiData = await shopsApiRes.json();
+          if (Array.isArray(shopsApiData.shops)) {
+            loadedShops = shopsApiData.shops as MobileShop[];
+          }
+          if (
+            shopsApiData.memberships &&
+            typeof shopsApiData.memberships === 'object'
+          ) {
+            loadedMemberships = shopsApiData.memberships as Record<
+              string,
+              MobileShopMembership
+            >;
+          }
+        } catch {
+          const { data: shopsData, error: shopsErr } = await supabase
+            .from('shops')
+            .select('*')
+            .eq('owner_id', userId)
+            .order('created_at', { ascending: true });
+          if (shopsErr) throw shopsErr;
+          loadedShops = (shopsData || []) as MobileShop[];
+        }
 
         if (generation !== loadGeneration.current) return;
-        if (shopsErr) throw shopsErr;
-        const loadedShops = (shopsData || []) as MobileShop[];
         setShops(loadedShops);
+        if (Object.keys(loadedMemberships).length > 0) {
+          setMemberships((prev) => ({ ...prev, ...loadedMemberships }));
+        }
 
         const currentShop =
           loadedShops.find((s) => s.id === requestedShopId) ||
@@ -274,6 +392,11 @@ function Workspace({ userId }: { userId: string }) {
           setEditWifiSsid(currentShop.wifi_info?.ssid || '');
           setEditWifiPass(currentShop.wifi_info?.password || '');
 
+          const shopMembership = loadedMemberships[currentShop.id];
+          const canReadAnalytics = shopMembership
+            ? shopMembership.permissions.includes('reports.view')
+            : currentShop.owner_id === userId;
+
           const [catsRes, itemsRes, eventsRes] = await Promise.all([
             supabase
               .from('categories')
@@ -285,11 +408,13 @@ function Workspace({ userId }: { userId: string }) {
               .select('*')
               .eq('shop_id', currentShop.id)
               .order('sort_order', { ascending: true }),
-            supabase
-              .from('analytics_events')
-              .select('*')
-              .eq('shop_id', currentShop.id)
-              .order('created_at', { ascending: false }),
+            canReadAnalytics
+              ? supabase
+                  .from('analytics_events')
+                  .select('*')
+                  .eq('shop_id', currentShop.id)
+                  .order('created_at', { ascending: false })
+              : Promise.resolve({ data: [], error: null }),
           ]);
 
           if (generation !== loadGeneration.current) return;
@@ -331,7 +456,7 @@ function Workspace({ userId }: { userId: string }) {
     async (
       orderId: string,
       status: 'new' | 'preparing' | 'completed' | 'cancelled',
-      payment_status?: 'unpaid' | 'paid'
+      payment_status?: MobileOrderPaymentStatus
     ) => {
       if (!activeShop) return;
       const shopId = activeShop.id;
@@ -342,7 +467,17 @@ function Workspace({ userId }: { userId: string }) {
         const response = await fetchApi('/api/orders', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shop_id: shopId, orderId, status, payment_status }),
+          body: JSON.stringify({
+            shop_id: shopId,
+            orderId,
+            status,
+            payment_status,
+            ...(payment_status === 'refunded' ? { refund_reason: 'Hoàn tiền xác nhận tại quầy' } : {}),
+            ...(status === 'cancelled' && orders.find((o) => o.id === orderId)?.status !== 'new' ? { restock_items: false } : {}),
+            ...(payment_status === 'paid'
+              ? { payment_idempotency_key: `${orderId}:paid`, expected_total: orders.find((o) => o.id === orderId)?.total_amount }
+              : {}),
+          }),
         });
         const { order } = await response.json();
         if (!order || order.id !== orderId || order.shop_id !== shopId) {
@@ -357,11 +492,18 @@ function Workspace({ userId }: { userId: string }) {
         pendingOrders.current.delete(orderId);
       }
     },
-    [activeShop, setOrders]
+    [activeShop, orders, setOrders]
   );
 
   const handleSaveShopAndTheme = useCallback(async () => {
     if (!activeShop) return;
+    if (!canManageSettings && !canManagePromotions) {
+      Alert.alert(
+        'Không đủ quyền',
+        'Tài khoản hiện tại không có quyền thay đổi cài đặt hoặc khuyến mãi của quán.'
+      );
+      return;
+    }
     const saveGeneration = loadGeneration.current;
     const nextThemeConfig: MobileShopThemeConfig = {
       ...activeShop.theme_config,
@@ -405,6 +547,8 @@ function Workspace({ userId }: { userId: string }) {
     loadShopsAndData(activeShop.id);
   }, [
     activeShop,
+    canManageSettings,
+    canManagePromotions,
     primaryColor,
     layoutMode,
     backgroundStyle,
@@ -664,12 +808,14 @@ function Workspace({ userId }: { userId: string }) {
                 onChangeOrderFilter={setOrderFilter}
                 onUpdateOrderStatus={handleUpdateOrderStatus}
                 onPrintOrder={setPrintingOrder}
+                canCollectPayment={canCollectPayment}
+                canRefundOrder={canRefundOrder}
                 theme={theme}
               />
             </ScrollView>
           )}
 
-          {mountedTabs.overview && (
+          {mountedTabs.overview && canViewReports && (
             <ScrollView
               style={[
                 styles.content,
@@ -692,7 +838,7 @@ function Workspace({ userId }: { userId: string }) {
             </ScrollView>
           )}
 
-          {mountedTabs.catalog && (
+          {mountedTabs.catalog && (canManageCatalog || canAdjustInventory) && (
             <ScrollView
               style={[
                 styles.content,
@@ -705,18 +851,21 @@ function Workspace({ userId }: { userId: string }) {
                 />
               }
             >
-              <CatalogTab key={activeShop?.id}
+              <CatalogTab
+                key={activeShop?.id}
                 activeShop={activeShop}
                 categories={categories}
                 items={items}
                 setItems={setItems}
                 onReloadShopData={loadShopsAndData}
+                canManageCatalog={canManageCatalog}
+                canAdjustInventory={canAdjustInventory}
                 theme={theme}
               />
             </ScrollView>
           )}
 
-          {mountedTabs.promotions && (
+          {mountedTabs.promotions && canManagePromotions && (
             <ScrollView
               style={[
                 styles.content,
@@ -749,7 +898,7 @@ function Workspace({ userId }: { userId: string }) {
             </ScrollView>
           )}
 
-          {mountedTabs.settings && (
+          {mountedTabs.settings && canManageSettings && (
             <ScrollView
               style={[
                 styles.content,
@@ -792,7 +941,7 @@ function Workspace({ userId }: { userId: string }) {
         </View>
       )}
 
-      {/* Bottom Tab Navigation (5 Tabs including Khuyến mãi & Flash Sale) */}
+      {/* Bottom Tab Navigation (Role-aware tabs) */}
       <View
         style={[
           styles.bottomNav,
@@ -819,92 +968,104 @@ function Workspace({ userId }: { userId: string }) {
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.navTab}
-          onPress={() => navigateTab('overview')}
-        >
-          <Ionicons
-            name={activeTab === 'overview' ? 'bar-chart' : 'bar-chart-outline'}
-            size={20}
-            color={activeTab === 'overview' ? '#10b981' : theme.subText}
-          />
-          <Text
-            style={[
-              styles.navTabText,
-              { color: theme.subText },
-              activeTab === 'overview' && styles.navTabTextActive,
-            ]}
+        {canViewReports && (
+          <TouchableOpacity
+            style={styles.navTab}
+            onPress={() => navigateTab('overview')}
           >
-            Doanh thu
-          </Text>
-        </TouchableOpacity>
+            <Ionicons
+              name={
+                activeTab === 'overview' ? 'bar-chart' : 'bar-chart-outline'
+              }
+              size={20}
+              color={activeTab === 'overview' ? '#10b981' : theme.subText}
+            />
+            <Text
+              style={[
+                styles.navTabText,
+                { color: theme.subText },
+                activeTab === 'overview' && styles.navTabTextActive,
+              ]}
+            >
+              Doanh thu
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        <TouchableOpacity
-          style={styles.navTab}
-          onPress={() => navigateTab('catalog')}
-        >
-          <Ionicons
-            name={activeTab === 'catalog' ? 'restaurant' : 'restaurant-outline'}
-            size={20}
-            color={activeTab === 'catalog' ? '#10b981' : theme.subText}
-          />
-          <Text
-            style={[
-              styles.navTabText,
-              { color: theme.subText },
-              activeTab === 'catalog' && styles.navTabTextActive,
-            ]}
+        {(canManageCatalog || canAdjustInventory) && (
+          <TouchableOpacity
+            style={styles.navTab}
+            onPress={() => navigateTab('catalog')}
           >
-            Kho ({items.length})
-          </Text>
-        </TouchableOpacity>
+            <Ionicons
+              name={
+                activeTab === 'catalog' ? 'restaurant' : 'restaurant-outline'
+              }
+              size={20}
+              color={activeTab === 'catalog' ? '#10b981' : theme.subText}
+            />
+            <Text
+              style={[
+                styles.navTabText,
+                { color: theme.subText },
+                activeTab === 'catalog' && styles.navTabTextActive,
+              ]}
+            >
+              Kho ({items.length})
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        <TouchableOpacity
-          style={styles.navTab}
-          onPress={() => navigateTab('promotions')}
-        >
-          <Ionicons
-            name={activeTab === 'promotions' ? 'flash' : 'flash-outline'}
-            size={20}
-            color={activeTab === 'promotions' ? '#f59e0b' : theme.subText}
-          />
-          <Text
-            style={[
-              styles.navTabText,
-              { color: theme.subText },
-              activeTab === 'promotions' && {
-                color: '#f59e0b',
-                fontWeight: '900',
-              },
-            ]}
+        {canManagePromotions && (
+          <TouchableOpacity
+            style={styles.navTab}
+            onPress={() => navigateTab('promotions')}
           >
-            Khuyến mãi
-          </Text>
-        </TouchableOpacity>
+            <Ionicons
+              name={activeTab === 'promotions' ? 'flash' : 'flash-outline'}
+              size={20}
+              color={activeTab === 'promotions' ? '#f59e0b' : theme.subText}
+            />
+            <Text
+              style={[
+                styles.navTabText,
+                { color: theme.subText },
+                activeTab === 'promotions' && {
+                  color: '#f59e0b',
+                  fontWeight: '900',
+                },
+              ]}
+            >
+              Khuyến mãi
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        <TouchableOpacity
-          style={styles.navTab}
-          onPress={() => navigateTab('settings')}
-        >
-          <Ionicons
-            name={
-              activeTab === 'settings'
-                ? 'color-palette'
-                : 'color-palette-outline'
-            }
-            size={20}
-            color={activeTab === 'settings' ? '#10b981' : theme.subText}
-          />
-          <Text
-            style={[
-              styles.navTabText,
-              { color: theme.subText },
-              activeTab === 'settings' && styles.navTabTextActive,
-            ]}
+        {canManageSettings && (
+          <TouchableOpacity
+            style={styles.navTab}
+            onPress={() => navigateTab('settings')}
           >
-            Giao diện
-          </Text>
-        </TouchableOpacity>
+            <Ionicons
+              name={
+                activeTab === 'settings'
+                  ? 'color-palette'
+                  : 'color-palette-outline'
+              }
+              size={20}
+              color={activeTab === 'settings' ? '#10b981' : theme.subText}
+            />
+            <Text
+              style={[
+                styles.navTabText,
+                { color: theme.subText },
+                activeTab === 'settings' && styles.navTabTextActive,
+              ]}
+            >
+              Giao diện
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Thermal Receipt Preview & Print Modal (K80 / K58) */}

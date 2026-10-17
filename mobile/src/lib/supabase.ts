@@ -138,6 +138,55 @@ export interface MobilePopupConfig {
   ctaText?: string;
 }
 
+export type MobileShopRole = 'owner' | 'cashier' | 'staff';
+
+export type MobileShopPermission =
+  | 'orders.view'
+  | 'orders.create'
+  | 'orders.fulfill'
+  | 'orders.edit_items'
+  | 'orders.cancel_unpaid'
+  | 'orders.print_kitchen'
+  | 'orders.print_provisional'
+  | 'payment.collect'
+  | 'discount.apply'
+  | 'payment.refund'
+  | 'catalog.view'
+  | 'catalog.manage'
+  | 'promotions.manage'
+  | 'settings.manage'
+  | 'settings.bank'
+  | 'reports.view'
+  | 'members.manage'
+  | 'order.view'
+  | 'order.refund'
+  | 'inventory.adjust'
+  | 'staff.manage';
+
+export interface MobileShopMembership {
+  id: string;
+  shop_id: string;
+  user_id: string;
+  role: MobileShopRole;
+  permissions: MobileShopPermission[];
+  is_active: boolean;
+}
+
+export type MobileOrderPaymentStatus = 'unpaid' | 'paid' | 'refunded';
+export type MobileTicketPrintType = 'kitchen' | 'provisional' | 'receipt';
+
+export interface MobileShopPaymentConfig {
+  mode?: 'vietqr' | 'custom_qr';
+  bankId?: string;
+  bankBin?: string;
+  bankShortName?: string;
+  accountNumber?: string;
+  accountNo?: string;
+  accountName?: string;
+  customQrUrl?: string;
+  qrImageUrl?: string;
+}
+
 export interface MobileShopThemeConfig {
   primaryColor?: string;
   layout?: 'list' | 'grid';
@@ -147,6 +196,8 @@ export interface MobileShopThemeConfig {
   promoBanner?: MobilePromoBannerConfig;
   flashSale?: MobileFlashSaleConfig;
   welcomePopup?: MobilePopupConfig;
+  paymentConfig?: MobileShopPaymentConfig;
+  paymentQr?: MobileShopPaymentConfig;
   recent_orders?: MobileShopOrder[];
 }
 
@@ -213,12 +264,22 @@ export interface MobileShopOrder {
   shop_id: string;
   order_code: string;
   table_label: string;
+  session_id?: string;
   visitor_lang: string;
   status: 'new' | 'preparing' | 'completed' | 'cancelled';
   payment_method: 'cash' | 'vietqr';
-  payment_status: 'unpaid' | 'paid';
+  payment_status: MobileOrderPaymentStatus;
   items: MobileOrderLineItem[];
+  subtotal_amount?: number;
+  discount_amount?: number;
+  promo_discount_amount?: number;
+  manual_discount_amount?: number;
   total_amount: number;
+  bill_version?: number;
+  print_count?: number;
+  kitchen_printed_count?: number;
+  provisional_printed_count?: number;
+  receipt_printed_count?: number;
   customer_note?: string;
   source?: 'qr_table' | 'counter_pos';
   created_at: string;

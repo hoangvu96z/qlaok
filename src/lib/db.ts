@@ -9,6 +9,7 @@ import type {
   Post,
   Profile,
   Shop,
+  ShopMembership,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
@@ -24,6 +25,10 @@ import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
 import { canAddMoreItems } from './plan-limits';
 import { ALL_LOCALES } from './i18n-helper';
 import { smartFallbackTranslate } from './gemini';
+import {
+  ALL_SHOP_PERMISSIONS,
+  dbGetUserShopMemberships,
+} from './shop-permissions';
 import {
   computeShopRevenueAndInventoryStats,
   dbGetShopOrders,
@@ -191,34 +196,93 @@ function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
 export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
   shops: Shop[];
   profile: Profile;
+  memberships?: Record<string, ShopMembership>;
   source: 'supabase';
 }> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
   if (ownerId) {
-    const [{ data: shops, error: shopsErr }, { data: ownerProfile }] =
-      await Promise.all([
-        sb
-          .from('shops')
-          .select('*')
-          .eq('owner_id', ownerId)
-          .order('created_at', { ascending: true }),
-        sb.from('profiles').select('*').eq('id', ownerId).maybeSingle(),
-      ]);
+    const [
+      { data: ownedShops, error: shopsErr },
+      { data: ownerProfile },
+      userMemberships,
+    ] = await Promise.all([
+      sb
+        .from('shops')
+        .select('*')
+        .eq('owner_id', ownerId)
+        .order('created_at', { ascending: true }),
+      sb.from('profiles').select('*').eq('id', ownerId).maybeSingle(),
+      dbGetUserShopMemberships(ownerId),
+    ]);
 
     if (shopsErr) {
       throw new Error(shopsErr.message);
     }
 
+    const shopMap = new Map<string, Shop>();
+    const membershipsMap: Record<string, ShopMembership> = {};
+    const nowIso = new Date().toISOString();
+
+    for (const raw of (ownedShops || []) as Shop[]) {
+      const hydrated = hydrateShopWithSeedDefaults(raw);
+      shopMap.set(hydrated.id, hydrated);
+      membershipsMap[hydrated.id] = {
+        id: `mem-owner-${hydrated.id}-${ownerId}`,
+        shop_id: hydrated.id,
+        user_id: ownerId,
+        role: 'owner',
+        permissions: [...ALL_SHOP_PERMISSIONS],
+        is_active: true,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+    }
+
+    const extraShopIds = userMemberships
+      .filter((m) => m.is_active && !shopMap.has(m.shop_id))
+      .map((m) => m.shop_id);
+
+    if (extraShopIds.length > 0) {
+      const { data: memberShops } = await sb
+        .from('shops')
+        .select('*')
+        .in('id', extraShopIds);
+
+      for (const raw of (memberShops || []) as Shop[]) {
+        const hydrated = hydrateShopWithSeedDefaults(raw);
+        shopMap.set(hydrated.id, hydrated);
+      }
+
+      for (const sid of extraShopIds) {
+        if (!shopMap.has(sid)) {
+          const seedShop = SEED_SHOPS.find((s) => s.id === sid);
+          if (seedShop) {
+            shopMap.set(seedShop.id, hydrateShopWithSeedDefaults(seedShop));
+          }
+        }
+      }
+    }
+
+    for (const mem of userMemberships) {
+      if (mem.is_active && shopMap.has(mem.shop_id)) {
+        const shop = shopMap.get(mem.shop_id)!;
+        if (shop.owner_id !== ownerId) {
+          membershipsMap[mem.shop_id] = mem;
+        }
+      }
+    }
+
     return {
-      shops: ((shops || []) as Shop[]).map(hydrateShopWithSeedDefaults),
+      shops: Array.from(shopMap.values()),
       profile:
         (ownerProfile as Profile) || {
           ...SEED_PROFILE,
           id: ownerId,
           plan: 'free',
         },
+      memberships: membershipsMap,
       source: 'supabase',
     };
   }
@@ -558,6 +622,15 @@ export async function dbUpsertCategory(
   const sb = getSupabaseDbClient();
 
   if (category.id) {
+    const { data: target, error: lookupError } = await sb.from('categories')
+      .select('shop_id').eq('id', category.id).maybeSingle();
+    if (lookupError) throw new Error(lookupError.message);
+    if (target && target.shop_id !== category.shop_id) {
+      throw new Error('CATEGORY_NOT_IN_SHOP: Không được chuyển danh mục giữa cửa hàng.');
+    }
+  }
+
+  if (category.id) {
     const { data, error } = await sb
       .from('categories')
       .update(category)
@@ -610,6 +683,21 @@ export async function dbUpsertItem(
 ): Promise<CatalogItem> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+
+  const { data: category, error: categoryError } = await sb.from('categories')
+    .select('shop_id').eq('id', item.category_id).maybeSingle();
+  if (categoryError) throw new Error(categoryError.message);
+  if (!category || category.shop_id !== item.shop_id) {
+    throw new Error('CATEGORY_NOT_IN_SHOP: Danh mục không thuộc cửa hàng.');
+  }
+  if (item.id) {
+    const { data: target, error: lookupError } = await sb.from('items')
+      .select('shop_id').eq('id', item.id).maybeSingle();
+    if (lookupError) throw new Error(lookupError.message);
+    if (target && target.shop_id !== item.shop_id) {
+      throw new Error('ITEM_NOT_IN_SHOP: Không được chuyển món giữa cửa hàng.');
+    }
+  }
 
   const {
     stock_quantity: incomingStock,
@@ -674,6 +762,8 @@ export async function dbUpsertItem(
 
   const payload: CatalogItem = {
     id: newItemId,
+    ...(incomingStock !== undefined ? { stock_quantity: incomingStock } : {}),
+    ...(incomingSold !== undefined ? { sold_count: incomingSold } : {}),
     shop_id: item.shop_id,
     category_id: item.category_id,
     sort_order: item.sort_order ?? (count || 0) + 1,

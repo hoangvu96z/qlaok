@@ -8,7 +8,7 @@ import React, {
   useCallback,
 } from 'react';
 import { useRouter } from 'next/navigation';
-import { Profile, Shop } from '@/types/qlaok';
+import { Profile, Shop, ShopMembership } from '@/types/qlaok';
 import {
   clearStoredAuthOwner,
   getAuthHeaders,
@@ -21,6 +21,8 @@ import { createClient } from '@/lib/supabase/client';
 interface DashboardContextValue {
   shops: Shop[];
   activeShop: Shop | null;
+  activeMembership: ShopMembership | null;
+  memberships: Record<string, ShopMembership>;
   profile: Profile | null;
   loading: boolean;
   selectShop: (shopId: string) => void;
@@ -30,6 +32,8 @@ interface DashboardContextValue {
 const DashboardContext = createContext<DashboardContextValue>({
   shops: [],
   activeShop: null,
+  activeMembership: null,
+  memberships: {},
   profile: null,
   loading: true,
   selectShop: () => {},
@@ -39,6 +43,9 @@ const DashboardContext = createContext<DashboardContextValue>({
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [shops, setShops] = useState<Shop[]>([]);
+  const [memberships, setMemberships] = useState<
+    Record<string, ShopMembership>
+  >({});
   const [activeShopId, setActiveShopId] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -103,6 +110,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
       const data = await res.json();
       let loadedShops: Shop[] = data.shops || [];
+      if (data.memberships && typeof data.memberships === 'object') {
+        setMemberships(data.memberships as Record<string, ShopMembership>);
+      }
       const loadedProfile: Profile = {
         ...(data.profile || owner),
         ...(isSuperAdmin(owner)
@@ -163,12 +173,17 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
   const activeShop =
     shops.find((s) => s.id === activeShopId) || shops[0] || null;
+  const activeMembership = activeShop
+    ? memberships[activeShop.id] || null
+    : null;
 
   return (
     <DashboardContext.Provider
       value={{
         shops,
         activeShop,
+        activeMembership,
+        memberships,
         profile,
         loading,
         selectShop,

@@ -8,7 +8,7 @@ import {
   dbUpsertItem,
   getSupabaseDbClient,
 } from '@/lib/db';
-import { requireShopOwnerOrAdmin } from '@/lib/server-auth';
+import { requireShopPermission } from '@/lib/server-auth';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -24,7 +24,11 @@ export async function POST(req: Request) {
 
     if (action === 'upsert_category') {
       const targetShopId = body.category?.shop_id;
-      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      const auth = await requireShopPermission(
+        req,
+        targetShopId,
+        'catalog.manage'
+      );
       if (auth.errorResponse) return auth.errorResponse;
 
       const category = await dbUpsertCategory(body.category);
@@ -33,7 +37,11 @@ export async function POST(req: Request) {
 
     if (action === 'upsert_item') {
       const targetShopId = body.item?.shop_id;
-      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      const auth = await requireShopPermission(
+        req,
+        targetShopId,
+        'catalog.manage'
+      );
       if (auth.errorResponse) return auth.errorResponse;
 
       const item = await dbUpsertItem(body.item);
@@ -42,7 +50,11 @@ export async function POST(req: Request) {
 
     if (action === 'bulk_import') {
       const targetShopId = body.shopId;
-      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      const auth = await requireShopPermission(
+        req,
+        targetShopId,
+        'catalog.manage'
+      );
       if (auth.errorResponse) return auth.errorResponse;
 
       const result = await dbBulkImportCatalog(body.shopId, body.categories);
@@ -74,7 +86,11 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 });
     }
 
-    const auth = await requireShopOwnerOrAdmin(req, item.shop_id);
+    const auth = await requireShopPermission(
+      req,
+      item.shop_id,
+      'catalog.manage'
+    );
     if (auth.errorResponse) return auth.errorResponse;
 
     const ok = await dbDeleteItem(itemId);
@@ -95,7 +111,11 @@ export async function DELETE(req: Request) {
       );
     }
 
-    const auth = await requireShopOwnerOrAdmin(req, category.shop_id);
+    const auth = await requireShopPermission(
+      req,
+      category.shop_id,
+      'catalog.manage'
+    );
     if (auth.errorResponse) return auth.errorResponse;
 
     const ok = await dbDeleteCategory(categoryId);
