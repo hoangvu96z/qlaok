@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { NativeModules, Platform } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
+import { createApiClient } from './api-client';
 
 export const SUPABASE_URL =
   process.env.EXPO_PUBLIC_SUPABASE_URL ||
@@ -72,39 +74,30 @@ export function resolveApiBaseUrl(): string {
     }
   }
 
+  if (__DEV__) return 'http://localhost:3000';
   return PRODUCTION_API_URL;
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
 
-/**
- * Fetch helper with automatic fallback to `PRODUCTION_API_URL` if the dev LAN port :3000 is not running.
- */
-export async function fetchWithApiFallback(
-  path: string,
-  init?: RequestInit
-): Promise<Response> {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const primaryUrl = `${API_BASE_URL}${normalizedPath}`;
-  try {
-    const res = await fetch(primaryUrl, init);
-    if (res.ok || API_BASE_URL === PRODUCTION_API_URL) {
-      return res;
-    }
-  } catch {
-    // If primary LAN/localhost dev server is unreachable, fall back to production API
-    if (API_BASE_URL === PRODUCTION_API_URL) {
-      throw new Error('Không thể kết nối máy chủ API');
-    }
-  }
-  return fetch(`${PRODUCTION_API_URL}${normalizedPath}`, init);
-}
-
+// Native refresh tokens live in OS-protected storage; web uses Supabase's browser storage.
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
+    ...(Platform.OS !== 'web' ? { storage: {
+      getItem: (key: string) => SecureStore.getItemAsync(key),
+      setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
+      removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+    } } : {}),
     persistSession: true,
     autoRefreshToken: true,
+    detectSessionInUrl: false,
   },
+});
+
+export const fetchApi = createApiClient(API_BASE_URL, async () => {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return data.session?.access_token ?? null;
 });
 
 export interface MobilePromoBannerConfig {

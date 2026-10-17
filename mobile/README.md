@@ -21,4 +21,25 @@ npx expo start
 ```
 
 - Tải ứng dụng **Expo Go** trên iPhone (App Store) hoặc Android (Google Play), quét mã QR hiển thị trên terminal để chạy trực tiếp trên điện thoại thật.
-- Biến môi trường Supabase đã được cấu hình sẵn trong [`mobile/.env`](./.env).
+- Tạo `.env` theo `.env.example` trước khi chạy.
+
+## Session và API
+
+Sao chép `.env.example` sang `.env` và điền Supabase cùng API của môi trường cần dùng.
+Trên điện thoại, API local cần IP LAN của máy chạy Next.js. Dev không tự chuyển
+request lỗi sang production; bản release mặc định dùng `https://qlaok.vunph.click`
+nếu không đặt `EXPO_PUBLIC_API_URL`. Không đưa service-role key vào biến Expo.
+
+Ứng dụng yêu cầu đăng nhập Supabase Auth thật; tài khoản demo không bỏ qua xác thực.
+Session native lưu bằng Expo SecureStore, tự refresh khi app foreground và logout
+xóa session local. Danh sách làm việc hiện chỉ có shop thuộc `owner_id` của user;
+phân quyền staff/cashier theo membership chưa triển khai. Cần migration RLS 003
+được quản trị viên áp dụng đúng môi trường để các truy vấn trực tiếp được bảo vệ.
+
+REST gửi Bearer token hiện tại, báo lỗi HTTP và timeout 15 giây. Không dùng dữ liệu
+`theme_config.recent_orders` thay thế khi API từ chối. Xác nhận thu tiền chỉ mở
+biên nhận từ đơn server trả về thành công; thao tác đã phục vụ giữ nguyên payment.
+In trên mobile hiện vẫn là preview/mô phỏng, chưa tích hợp máy in.
+
+Kiểm tra: `npm run typecheck` và `npm test` (Node 24 hỗ trợ strip types).
+Chưa có kiểm thử thiết bị cho cold start, refresh token, SecureStore và máy in.

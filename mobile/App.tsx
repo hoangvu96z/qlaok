@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Alert,
   RefreshControl,
   SafeAreaView,
@@ -9,10 +10,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import type { Session } from '@supabase/supabase-js';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  fetchWithApiFallback,
+  fetchApi,
   formatVnd,
   MobileAnalyticsEvent,
   MobileCatalogItem,
@@ -37,7 +39,37 @@ import { PromotionsTab } from './src/components/tabs/PromotionsTab';
 import { SettingsTab } from './src/components/tabs/SettingsTab';
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(true);
+  const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let authEventReceived = false;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, next) => {
+      authEventReceived = true;
+      if (alive) { setSession(next); setReady(true); }
+    });
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (alive && !authEventReceived) { setSession(error ? null : data.session); setReady(true); }
+    }).catch(() => { if (alive && !authEventReceived) setReady(true); });
+    const refresh = (state: string) => {
+      if (state === 'active') supabase.auth.startAutoRefresh();
+      else supabase.auth.stopAutoRefresh();
+    };
+    refresh(AppState.currentState);
+    const appState = AppState.addEventListener('change', refresh);
+    return () => { alive = false; subscription.unsubscribe(); appState.remove(); supabase.auth.stopAutoRefresh(); };
+  }, []);
+  if (!ready) return <SafeAreaView><ActivityIndicator /></SafeAreaView>;
+  if (!session) return <AuthScreen />;
+  return <Workspace key={session.user.id} userId={session.user.id} />;
+}
+
+function Workspace({ userId }: { userId: string }) {
+  const isLoggedIn = true;
+  const loadGeneration = useRef(0);
+  const scopeRef = useRef('');
+  const pendingOrders = useRef(new Set<string>());
+  useEffect(() => () => { loadGeneration.current++; scopeRef.current = ''; }, []);
   const [isDarkMode, setIsDarkMode] = useState(false);
 
   const [loading, setLoading] = useState(true);
@@ -137,6 +169,9 @@ export default function App() {
       );
       setBackgroundStyle(tc?.backgroundStyle || 'clean');
 
+      setPromoBanner({ enabled: false, title: '', discountValue: 0, selectedItemIds: [] });
+      setWelcomePopup({ enabled: false, title: '', content: '' });
+      setFlashSale({ enabled: false, title: '', discountType: 'percent', discountValue: 0, itemIds: [] });
       if (tc?.promoBanner) {
         setPromoBanner({
           enabled: Boolean(tc.promoBanner.enabled),
@@ -206,21 +241,32 @@ export default function App() {
 
   const loadShopsAndData = useCallback(
     async (targetShopId?: string) => {
+      const generation = ++loadGeneration.current;
+      const requestedShopId = targetShopId || scopeRef.current;
+      scopeRef.current = requestedShopId;
+      if (targetShopId) setActiveShopId(targetShopId);
+      setLoading(true);
+      setPrintingOrder(null);
+      setOrderFilter('active');
+      setCategories([]); setItems([]); setEvents([]); setOrders([]);
       try {
         const { data: shopsData, error: shopsErr } = await supabase
           .from('shops')
           .select('*')
+          .eq('owner_id', userId)
           .order('created_at', { ascending: true });
 
+        if (generation !== loadGeneration.current) return;
         if (shopsErr) throw shopsErr;
         const loadedShops = (shopsData || []) as MobileShop[];
         setShops(loadedShops);
 
         const currentShop =
-          loadedShops.find((s) => s.id === (targetShopId || activeShopId)) ||
+          loadedShops.find((s) => s.id === requestedShopId) ||
           loadedShops[0];
 
         if (currentShop) {
+          scopeRef.current = currentShop.id;
           setActiveShopId(currentShop.id);
           setEditShopName(currentShop.name);
           setEditCity(currentShop.city || 'Đà Nẵng');
@@ -246,6 +292,8 @@ export default function App() {
               .order('created_at', { ascending: false }),
           ]);
 
+          if (generation !== loadGeneration.current) return;
+          for (const result of [catsRes, itemsRes, eventsRes]) if (result.error) throw result.error;
           const normalizedItems = (itemsRes.data || []).map((i) => ({
             ...i,
             price: Number(i.price),
@@ -259,16 +307,18 @@ export default function App() {
           await fetchOrdersFromApi(currentShop.id, true);
         }
       } catch (err) {
+        if (generation !== loadGeneration.current) return;
         Alert.alert(
           'Lỗi kết nối mạng',
           err instanceof Error ? err.message : 'Không thể tải dữ liệu cửa hàng'
         );
       } finally {
+        if (generation !== loadGeneration.current) return;
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [activeShopId, fetchOrdersFromApi, hydrateThemeAndPromoState]
+    [userId, setOrders, fetchOrdersFromApi, hydrateThemeAndPromoState]
   );
 
   useEffect(() => {
@@ -284,44 +334,35 @@ export default function App() {
       payment_status?: 'unpaid' | 'paid'
     ) => {
       if (!activeShop) return;
-      const existingOrder = orders.find((o) => o.id === orderId);
-      const updatedLocal: MobileShopOrder | null = existingOrder
-        ? {
-            ...existingOrder,
-            status,
-            payment_status: payment_status || existingOrder.payment_status,
-          }
-        : null;
-
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId && updatedLocal ? updatedLocal : o))
-      );
-
-      if (payment_status === 'paid' && updatedLocal) {
-        setPrintingOrder(updatedLocal);
-      }
-
+      const shopId = activeShop.id;
+      const generation = loadGeneration.current;
+      if (scopeRef.current !== shopId || pendingOrders.current.has(orderId)) return;
+      pendingOrders.current.add(orderId);
       try {
-        await fetchWithApiFallback('/api/orders', {
+        const response = await fetchApi('/api/orders', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shop_id: activeShop.id,
-            orderId,
-            status,
-            payment_status,
-          }),
+          body: JSON.stringify({ shop_id: shopId, orderId, status, payment_status }),
         });
-        await fetchOrdersFromApi(activeShop.id, true);
-      } catch {
-        Alert.alert('Lỗi mạng', 'Không thể cập nhật trạng thái đơn hàng');
+        const { order } = await response.json();
+        if (!order || order.id !== orderId || order.shop_id !== shopId) {
+          throw new Error('Máy chủ trả về đơn hàng không hợp lệ');
+        }
+        if (scopeRef.current !== shopId || generation !== loadGeneration.current) return;
+        setOrders((prev) => prev.map((o) => o.id === orderId ? order : o));
+        if (payment_status === 'paid' && order.payment_status === 'paid') setPrintingOrder(order);
+      } catch (error) {
+        if (scopeRef.current === shopId && generation === loadGeneration.current) Alert.alert('Không thể cập nhật đơn', error instanceof Error ? error.message : 'Vui lòng thử lại');
+      } finally {
+        pendingOrders.current.delete(orderId);
       }
     },
-    [activeShop, orders, setOrders, fetchOrdersFromApi]
+    [activeShop, setOrders]
   );
 
   const handleSaveShopAndTheme = useCallback(async () => {
     if (!activeShop) return;
+    const saveGeneration = loadGeneration.current;
     const nextThemeConfig: MobileShopThemeConfig = {
       ...activeShop.theme_config,
       primaryColor,
@@ -336,7 +377,7 @@ export default function App() {
     };
 
     try {
-      await fetchWithApiFallback('/api/shops', {
+      await fetchApi('/api/shops', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -351,30 +392,12 @@ export default function App() {
           theme_config: nextThemeConfig,
         }),
       });
-    } catch {
-      // also persist directly via Supabase client
-    }
-
-    const { error } = await supabase
-      .from('shops')
-      .update({
-        name: editShopName.trim(),
-        city: editCity.trim(),
-        phone_contact: editPhone.trim(),
-        wifi_info: {
-          ssid: editWifiSsid.trim(),
-          password: editWifiPass.trim(),
-        },
-        theme_config: nextThemeConfig,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', activeShop.id);
-
-    if (error) {
-      Alert.alert('Lỗi lưu cài đặt', error.message);
+    } catch (error) {
+      Alert.alert('Lỗi lưu cài đặt', error instanceof Error ? error.message : 'Không thể lưu cài đặt');
       return;
     }
 
+    if (saveGeneration !== loadGeneration.current) return;
     Alert.alert(
       'Đã lưu thành công',
       'Giao diện, khuyến mãi, Flash Sale và cài đặt quán đã được áp dụng ngay!'
@@ -417,11 +440,6 @@ export default function App() {
     setRefreshing(true);
     loadShopsAndData(activeShop?.id);
   }, [loadShopsAndData, activeShop?.id]);
-
-  // ================= LOGIN SCREEN =================
-  if (!isLoggedIn) {
-    return <AuthScreen onLoginSuccess={() => setIsLoggedIn(true)} />;
-  }
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
@@ -525,7 +543,10 @@ export default function App() {
 
             <TouchableOpacity
               style={[styles.logoutBtn, { backgroundColor: theme.subCard }]}
-              onPress={() => setIsLoggedIn(false)}
+              onPress={async () => {
+                const { error } = await supabase.auth.signOut({ scope: 'local' });
+                if (error) Alert.alert('Không thể đăng xuất', error.message);
+              }}
             >
               <Text style={[styles.logoutBtnText, { color: theme.subText }]}>
                 Thoát
@@ -684,7 +705,7 @@ export default function App() {
                 />
               }
             >
-              <CatalogTab
+              <CatalogTab key={activeShop?.id}
                 activeShop={activeShop}
                 categories={categories}
                 items={items}

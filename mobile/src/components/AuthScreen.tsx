@@ -8,36 +8,24 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { styles } from '../styles/mobileStyles';
 
-interface AuthScreenProps {
-  onLoginSuccess: () => void;
-}
-
-export const AuthScreen = memo(function AuthScreen({
-  onLoginSuccess,
-}: AuthScreenProps) {
-  const [email, setEmail] = useState('chuquan@qlaok.vn');
-  const [password, setPassword] = useState('qlaok123456');
+export const AuthScreen = memo(function AuthScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
-  const handleLogin = async (demo = false) => {
-    if (demo) {
-      onLoginSuccess();
-      return;
-    }
+  const handleLogin = async () => {
     setAuthLoading(true);
     try {
       const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
-      if (error && email.trim().toLowerCase() !== 'chuquan@qlaok.vn') {
+      if (error) {
         throw error;
       }
-      onLoginSuccess();
     } catch (err) {
       Alert.alert(
         'Đăng nhập thất bại',
@@ -63,21 +51,6 @@ export const AuthScreen = memo(function AuthScreen({
           mãi, Flash Sale &amp; doanh thu trực tiếp
         </Text>
 
-        <TouchableOpacity
-          style={styles.demoButton}
-          onPress={() => handleLogin(true)}
-        >
-          <Ionicons
-            name="flash"
-            size={16}
-            color="#020617"
-            style={{ marginRight: 6 }}
-          />
-          <Text style={styles.demoButtonText}>
-            Vào Nhanh Quầy Thu Ngân mPOS Demo (1 Chạm)
-          </Text>
-        </TouchableOpacity>
-
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Email Chủ quán</Text>
           <TextInput
@@ -101,7 +74,7 @@ export const AuthScreen = memo(function AuthScreen({
 
         <TouchableOpacity
           style={styles.primaryAuthBtn}
-          onPress={() => handleLogin(false)}
+          onPress={() => handleLogin()}
           disabled={authLoading}
         >
           <Text style={styles.primaryAuthBtnText}>

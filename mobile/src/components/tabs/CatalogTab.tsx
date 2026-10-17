@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  fetchWithApiFallback,
+  fetchApi,
   formatVnd,
   MobileCatalogItem,
   MobileCategory,
@@ -99,7 +99,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchWithApiFallback('/api/catalog', {
+      await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,14 +111,9 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
-    } catch {
-      await supabase
-        .from('items')
-        .update({
-          is_available: nextAvail,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', item.id);
+    } catch (error) {
+      Alert.alert('Không thể cập nhật tồn', error instanceof Error ? error.message : 'Vui lòng thử lại');
+      onReloadShopData(activeShop?.id);
     }
   };
 
@@ -139,7 +134,7 @@ export const CatalogTab = memo(function CatalogTab({
         : Math.max(0, Number(newItemStock.replace(/[^0-9]/g, '')));
 
     try {
-      const res = await fetchWithApiFallback('/api/catalog', {
+      const res = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -169,41 +164,9 @@ export const CatalogTab = memo(function CatalogTab({
         setNewItemStock('');
         return;
       }
-    } catch {
-      // fallback direct to database
+    } catch (error) {
+      Alert.alert('Không thể thêm món', error instanceof Error ? error.message : 'Vui lòng thử lại');
     }
-
-    const payload = {
-      id: `item-${Date.now()}`,
-      shop_id: activeShop.id,
-      category_id: targetCatId,
-      sort_order: items.length + 1,
-      price: priceNum,
-      is_available: true,
-      is_featured: false,
-      name_i18n: {
-        vi: newItemName.trim(),
-        en: newItemName.trim(),
-      },
-      desc_i18n: { vi: '' },
-      view_count: 0,
-    };
-
-    const { data, error } = await supabase
-      .from('items')
-      .insert(payload)
-      .select('*')
-      .single();
-
-    if (error) {
-      Alert.alert('Không thể thêm món', error.message);
-      return;
-    }
-
-    setItems((prev) => [...prev, { ...data, price: Number(data.price) }]);
-    setNewItemName('');
-    setNewItemPrice('');
-    setNewItemStock('');
   };
 
   return (

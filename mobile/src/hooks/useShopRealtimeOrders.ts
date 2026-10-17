@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Vibration } from 'react-native';
 import {
-  fetchWithApiFallback,
+  fetchApi,
   MobileCatalogItem,
   MobileShopOrder,
   supabase,
@@ -62,61 +62,43 @@ export function useShopRealtimeOrders({
     isFirstLoadRef.current = false;
   }, []);
 
+  const scopeRef = useRef({ shopId, isLoggedIn, generation: 0 });
+  if (scopeRef.current.shopId !== shopId || scopeRef.current.isLoggedIn !== isLoggedIn) {
+    scopeRef.current = { shopId, isLoggedIn, generation: scopeRef.current.generation + 1 };
+  }
+  const requestId = useRef(0);
+  useEffect(() => () => { scopeRef.current = { ...scopeRef.current, generation: scopeRef.current.generation + 1 }; }, []);
+
   const fetchOrdersFromApi = useCallback(
     async (targetShopId: string, silent = false) => {
-      if (!targetShopId) return;
+      const scope = scopeRef.current;
+      if (!scope.isLoggedIn || targetShopId !== scope.shopId) return;
+      const request = ++requestId.current;
       try {
-        const res = await fetchWithApiFallback(
-          `/api/orders?shopId=${encodeURIComponent(targetShopId)}`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          const loadedOrders: MobileShopOrder[] = data.orders || [];
-          notifyIfBrandNewOrder(loadedOrders);
-          setOrders(loadedOrders);
-
-          if (
-            Array.isArray(data.items) &&
-            data.items.length > 0 &&
-            onItemsSyncedRef.current
-          ) {
-            onItemsSyncedRef.current(data.items);
-          }
-          return;
-        }
+        const res = await fetchApi(`/api/orders?shopId=${encodeURIComponent(targetShopId)}`);
+        const data = await res.json();
+        if (scope !== scopeRef.current || request !== requestId.current) return;
+        if (!Array.isArray(data.orders)) throw new Error('Danh sách đơn không hợp lệ');
+        notifyIfBrandNewOrder(data.orders);
+        setOrders(data.orders);
+        if (Array.isArray(data.items)) onItemsSyncedRef.current?.(data.items);
       } catch {
-        // Fallback to direct Supabase query if API server is unreachable
-      }
-
-      try {
-        const { data: shopRow } = await supabase
-          .from('shops')
-          .select('theme_config')
-          .eq('id', targetShopId)
-          .single();
-
-        const recentOrders =
-          (shopRow?.theme_config as { recent_orders?: MobileShopOrder[] })
-            ?.recent_orders || [];
-
-        if (Array.isArray(recentOrders)) {
-          notifyIfBrandNewOrder(recentOrders);
-          setOrders(recentOrders);
-        }
-      } catch {
-        if (!silent) {
-          // ignore silent background errors
-        }
+        if (scope !== scopeRef.current || request !== requestId.current) return;
+        setRealtimeStatus('fallback');
+        // Never read public theme_config.recent_orders after a failed authenticated request.
+        if (!silent) setOrders([]);
       }
     },
     [notifyIfBrandNewOrder]
   );
 
-  // Reset first-load tracker when switching shops
   useEffect(() => {
     isFirstLoadRef.current = true;
     knownNewOrderIdsRef.current = new Set();
-  }, [shopId]);
+    setOrders([]);
+    setLiveOrderAlert(null);
+    if (isLoggedIn && shopId) void fetchOrdersFromApi(shopId);
+  }, [isLoggedIn, shopId, fetchOrdersFromApi]);
 
   // Subscribe to Supabase Realtime Postgres Changes via WebSocket
   useEffect(() => {
@@ -124,6 +106,7 @@ export function useShopRealtimeOrders({
 
     setRealtimeStatus('connecting');
 
+    let disposed = false;
     const channel = supabase
       .channel(`qlaok-orders-ws-${shopId}`)
       .on(
@@ -134,49 +117,10 @@ export function useShopRealtimeOrders({
           table: 'orders',
           filter: `shop_id=eq.${shopId}`,
         },
-        (payload) => {
-          if (payload.eventType === 'INSERT' && payload.new) {
-            const inserted = payload.new as MobileShopOrder;
-            setOrders((prev) => {
-              const exists = prev.some((o) => o.id === inserted.id);
-              const next = exists
-                ? prev.map((o) => (o.id === inserted.id ? inserted : o))
-                : [inserted, ...prev];
-              notifyIfBrandNewOrder(next);
-              return next;
-            });
-          } else if (payload.eventType === 'UPDATE' && payload.new) {
-            const updated = payload.new as MobileShopOrder;
-            setOrders((prev) =>
-              prev.map((o) => (o.id === updated.id ? updated : o))
-            );
-          } else {
-            fetchOrdersFromApi(shopId, true);
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'shops',
-          filter: `id=eq.${shopId}`,
-        },
-        (payload) => {
-          const updatedShop = payload.new as {
-            theme_config?: { recent_orders?: MobileShopOrder[] };
-          };
-          const recentOrders = updatedShop?.theme_config?.recent_orders;
-          if (Array.isArray(recentOrders)) {
-            notifyIfBrandNewOrder(recentOrders);
-            setOrders(recentOrders);
-          } else {
-            fetchOrdersFromApi(shopId, true);
-          }
-        }
+        () => { void fetchOrdersFromApi(shopId, true); }
       )
       .subscribe((status) => {
+        if (disposed) return;
         if (status === 'SUBSCRIBED') {
           setRealtimeStatus('connected');
         } else if (
@@ -205,6 +149,7 @@ export function useShopRealtimeOrders({
     }, 30000);
 
     return () => {
+      disposed = true;
       supabase.removeChannel(channel);
       appStateSub.remove();
       clearInterval(safetyInterval);

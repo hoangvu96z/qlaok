@@ -247,7 +247,7 @@ export const OrdersTab = memo(function OrdersTab({
                     <TouchableOpacity
                       style={styles.btnComplete}
                       onPress={() =>
-                        onUpdateOrderStatus(order.id, 'completed', 'paid')
+                        onUpdateOrderStatus(order.id, 'completed')
                       }
                     >
                       <View
@@ -264,7 +264,7 @@ export const OrdersTab = memo(function OrdersTab({
                           style={{ marginRight: 4 }}
                         />
                         <Text style={styles.btnCompleteText}>
-                          Thu tiền &amp; In bill
+                          Đã phục vụ
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -275,6 +275,13 @@ export const OrdersTab = memo(function OrdersTab({
                       <Text style={styles.btnCancelText}>Hủy</Text>
                     </TouchableOpacity>
                   </>
+                )}
+
+                {order.payment_status === 'unpaid' && order.status !== 'cancelled' && (
+                  <TouchableOpacity style={styles.btnComplete}
+                    onPress={() => onUpdateOrderStatus(order.id, order.status, 'paid')}>
+                    <Text style={styles.btnCompleteText}>Xác nhận đã thu tiền</Text>
+                  </TouchableOpacity>
                 )}
 
                 <TouchableOpacity
