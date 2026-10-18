@@ -5,6 +5,11 @@
 @layer base {
   :root {
     --brand-primary: #10b981;
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
   }
 
   body {
@@ -93,44 +98,96 @@ html:not(.dark) .theme-surface-page {
   background-color: #f8fafc !important;
   color: #0f172a !important;
 }
-html:not(.dark) .theme-surface-page .bg-slate-950 {
+html:not(.dark) .theme-surface-page .bg-slate-950:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-slate-950\/60:not(.keep-dark-surface) {
   background-color: #f8fafc !important;
 }
-html:not(.dark) .theme-surface-page .bg-slate-900,
-html:not(.dark) .theme-surface-page .bg-slate-900\/90 {
+html:not(.dark) .theme-surface-page .bg-slate-900:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-slate-900\/90:not(.keep-dark-surface) {
   background-color: #ffffff !important;
 }
-html:not(.dark) .theme-surface-page .bg-slate-800,
-html:not(.dark) .theme-surface-page .bg-slate-800\/90,
-html:not(.dark) .theme-surface-page .bg-slate-800\/70,
-html:not(.dark) .theme-surface-page .bg-slate-800\/60 {
+html:not(.dark) .theme-surface-page .bg-slate-800:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-slate-800\/90:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-slate-800\/70:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-slate-800\/60:not(.keep-dark-surface) {
   background-color: #f1f5f9 !important;
 }
-html:not(.dark) .theme-surface-page .border-slate-800,
-html:not(.dark) .theme-surface-page .border-slate-700,
-html:not(.dark) .theme-surface-page .border-slate-700\/80 {
-  border-color: #e2e8f0 !important;
+html:not(.dark) .theme-surface-page .border-slate-800:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .border-slate-700:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .border-slate-700\/80:not(.keep-dark-surface) {
+  border-color: #cbd5e1 !important;
 }
 html:not(.dark) .theme-surface-page .divide-slate-800\/70 > :not([hidden]) ~ :not([hidden]),
 html:not(.dark) .theme-surface-page .divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
   border-color: #e2e8f0 !important;
 }
-html:not(.dark) .theme-surface-page .text-white:not([class*="bg-emerald-"]):not([class*="bg-rose-"]):not([class*="bg-blue-"]):not([class*="bg-indigo-"]):not([class*="bg-amber-"]):not([class*="from-"]),
-html:not(.dark) .theme-surface-page .text-slate-100,
-html:not(.dark) .theme-surface-page .text-slate-200 {
+html:not(.dark) .theme-surface-page .text-white:not(.keep-dark-surface):not([class*="bg-emerald-"]):not([class*="bg-rose-"]):not([class*="bg-blue-"]):not([class*="bg-indigo-"]):not([class*="bg-amber-"]):not([class*="from-"]),
+html:not(.dark) .theme-surface-page .text-slate-100:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-slate-200:not(.keep-dark-surface) {
   color: #0f172a !important;
 }
-html:not(.dark) .theme-surface-page .text-slate-300,
-html:not(.dark) .theme-surface-page .text-slate-400 {
+html:not(.dark) .theme-surface-page .text-slate-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-slate-400:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-slate-500:not(.keep-dark-surface) {
   color: #475569 !important;
 }
-html:not(.dark) .theme-surface-page .text-emerald-300,
-html:not(.dark) .theme-surface-page .text-emerald-400 {
-  color: #059669 !important;
+html:not(.dark) .theme-surface-page .text-emerald-200:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-emerald-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-emerald-400:not(.keep-dark-surface) {
+  color: #047857 !important;
 }
-html:not(.dark) .theme-surface-page .text-amber-300,
-html:not(.dark) .theme-surface-page .text-amber-400 {
-  color: #d97706 !important;
+html:not(.dark) .theme-surface-page .text-amber-200:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-amber-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-amber-400:not(.keep-dark-surface) {
+  color: #b45309 !important;
+}
+html:not(.dark) .theme-surface-page .text-rose-200:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-rose-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-rose-400:not(.keep-dark-surface) {
+  color: #be123c !important;
+}
+html:not(.dark) .theme-surface-page .text-sky-200:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-sky-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-sky-400:not(.keep-dark-surface) {
+  color: #0369a1 !important;
+}
+html:not(.dark) .theme-surface-page .text-purple-200:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-purple-300:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .text-purple-400:not(.keep-dark-surface) {
+  color: #6d28d9 !important;
+}
+html:not(.dark) .theme-surface-page .bg-emerald-500\/10:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-emerald-950\/95:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-emerald-500\/15:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-emerald-500\/20:not(.keep-dark-surface) {
+  background-color: #ecfdf5 !important;
+  border-color: #6ee7b7 !important;
+}
+html:not(.dark) .theme-surface-page .bg-amber-400\/15:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-amber-400\/20:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-amber-500\/10:not(.keep-dark-surface) {
+  background-color: #fffbeb !important;
+  border-color: #fcd34d !important;
+}
+html:not(.dark) .theme-surface-page .bg-rose-500\/10:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-rose-950\/90:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-rose-950\/95:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-rose-500\/15:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-rose-500\/20:not(.keep-dark-surface) {
+  background-color: #fff1f2 !important;
+  border-color: #fda4af !important;
+}
+html:not(.dark) .theme-surface-page .bg-sky-500\/10:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-sky-500\/15:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-sky-500\/20:not(.keep-dark-surface) {
+  background-color: #f0f9ff !important;
+  border-color: #7dd3fc !important;
+}
+html:not(.dark) .theme-surface-page .bg-purple-500\/10:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-purple-500\/15:not(.keep-dark-surface),
+html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
+  background-color: #f5f3ff !important;
+  border-color: #c4b5fd !important;
 }
 
 /* Hide scrollbars for horizontal category pills while keeping scroll functionality */

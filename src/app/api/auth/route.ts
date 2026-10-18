@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
+import {
+  createSupabasePublicAuthClient,
+  ensureSupabaseReadyAndSeeded,
+  getSupabaseDbClient,
+} from '@/lib/db';
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   ensureSuperAdminSeeded,
@@ -19,14 +23,28 @@ import { SEED_PROFILE } from '@/lib/seed-data';
 import type { Profile, Shop } from '@/types/qlaok';
 
 export async function GET(req: Request) {
-  const verified = await verifyRequestUser(req);
-  if (!verified) {
-    return NextResponse.json({ authenticated: false }, { status: 401 });
+  try {
+    const verified = await verifyRequestUser(req);
+    if (!verified) {
+      return NextResponse.json({ authenticated: false }, { status: 401 });
+    }
+    return NextResponse.json({
+      authenticated: true,
+      session: verified,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        authenticated: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Lỗi cấu hình xác thực phiên trên máy chủ.',
+        code: 'SERVER_AUTH_MISCONFIGURED',
+      },
+      { status: 500 }
+    );
   }
-  return NextResponse.json({
-    authenticated: true,
-    session: verified,
-  });
 }
 
 export async function POST(req: Request) {
@@ -88,10 +106,9 @@ export async function POST(req: Request) {
       preVerifiedSyncSession = await verifyRequestUser(req);
       if (!preVerifiedSyncSession && supabaseAccessToken) {
         try {
-          const sb = getSupabaseDbClient();
-          const { data: sbUserRes, error: sbErr } = await sb.auth.getUser(
-            supabaseAccessToken
-          );
+          const authClient = createSupabasePublicAuthClient();
+          const { data: sbUserRes, error: sbErr } =
+            await authClient.auth.getUser(supabaseAccessToken);
           if (!sbErr && sbUserRes?.user?.email) {
             const sbEmail = sbUserRes.user.email.trim().toLowerCase();
             preVerifiedSyncSession = {
@@ -191,7 +208,8 @@ export async function POST(req: Request) {
 
       let newOwnerId = `owner-${crypto.randomUUID()}`;
       try {
-        const signUpRes = await sb.auth.signUp({
+        const authClient = createSupabasePublicAuthClient();
+        const signUpRes = await authClient.auth.signUp({
           email: normalizedEmail,
           password,
           options: {
@@ -262,18 +280,29 @@ export async function POST(req: Request) {
         );
       }
 
+      let seededAdminProfile: Profile | null = null;
       if (isAdminUser) {
-        await ensureSuperAdminSeeded();
+        seededAdminProfile = await ensureSuperAdminSeeded();
       }
 
-      const { data: matchingProfiles } = await sb
+      const { data: matchingProfiles, error: profileLookupErr } = await sb
         .from('profiles')
         .select('*')
         .ilike('email', normalizedEmail)
         .limit(1);
 
+      if (profileLookupErr) {
+        return NextResponse.json(
+          {
+            error: `Không thể truy vấn hồ sơ người dùng từ cơ sở dữ liệu (${profileLookupErr.message}).`,
+            code: 'AUTH_PROFILE_QUERY_FAILED',
+          },
+          { status: 500 }
+        );
+      }
+
       let profile: Profile | null =
-        (matchingProfiles?.[0] as Profile) || null;
+        (matchingProfiles?.[0] as Profile) || seededAdminProfile || null;
 
       const creds = readCredentials();
       const storedCred = creds[normalizedEmail];
@@ -294,8 +323,9 @@ export async function POST(req: Request) {
           writeCredentials(creds);
         }
       } else {
+        const authClient = createSupabasePublicAuthClient();
         const { data: authData, error: authErr } =
-          await sb.auth.signInWithPassword({
+          await authClient.auth.signInWithPassword({
             email: normalizedEmail,
             password,
           });
@@ -309,7 +339,7 @@ export async function POST(req: Request) {
 
         if (authData.user && !profile) {
           const nowIso = new Date().toISOString();
-          const { data: synced } = await sb
+          const { data: synced, error: syncErr } = await sb
             .from('profiles')
             .upsert(
               {
@@ -328,6 +358,16 @@ export async function POST(req: Request) {
             )
             .select('*')
             .single();
+
+          if (syncErr) {
+            return NextResponse.json(
+              {
+                error: `Xác thực thành công nhưng không thể đồng bộ hồ sơ người dùng trong bảng profiles (${syncErr.message}). Kiểm tra SUPABASE_SERVICE_ROLE_KEY và RLS.`,
+                code: 'AUTH_PROFILE_SYNC_FAILED',
+              },
+              { status: 500 }
+            );
+          }
           profile = (synced as Profile) || null;
         }
       }
@@ -351,11 +391,21 @@ export async function POST(req: Request) {
           }
         : profile;
 
-      const { data: ownerShops } = await sb
+      const { data: ownerShops, error: shopsLookupErr } = await sb
         .from('shops')
         .select('*')
         .eq('owner_id', profile.id)
         .order('created_at', { ascending: true });
+
+      if (shopsLookupErr) {
+        return NextResponse.json(
+          {
+            error: `Không thể tải danh sách cửa hàng của tài khoản (${shopsLookupErr.message}).`,
+            code: 'AUTH_SHOPS_QUERY_FAILED',
+          },
+          { status: 500 }
+        );
+      }
 
       const accessToken = issueSessionToken({
         id: finalUser.id,
@@ -375,13 +425,13 @@ export async function POST(req: Request) {
 
     // 4. Sync OTP / OAuth User — MUST prove identity via verified token or Supabase JWT
     if (action === 'sync_user') {
-      let verifiedSession = await verifyRequestUser(req);
+      let verifiedSession = preVerifiedSyncSession ?? (await verifyRequestUser(req));
 
       if (!verifiedSession && supabaseAccessToken) {
         try {
-          const { data: sbUserRes, error: sbErr } = await sb.auth.getUser(
-            supabaseAccessToken
-          );
+          const authClient = createSupabasePublicAuthClient();
+          const { data: sbUserRes, error: sbErr } =
+            await authClient.auth.getUser(supabaseAccessToken);
           if (!sbErr && sbUserRes?.user?.email) {
             const sbEmail = sbUserRes.user.email.trim().toLowerCase();
             verifiedSession = {

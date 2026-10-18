@@ -21,6 +21,14 @@ export interface VerifiedSessionUser {
   exp: number;
 }
 
+export function isServerSigningSecretConfigured(): boolean {
+  const configured =
+    process.env.SESSION_SECRET ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.PAYMENT_WEBHOOK_SECRET;
+  return Boolean(configured && configured.trim().length >= 16);
+}
+
 function getSigningSecret(): string {
   const configured =
     process.env.SESSION_SECRET ||
@@ -229,7 +237,23 @@ export async function requireAuthenticatedUser(req: Request): Promise<
   | { user: VerifiedSessionUser; errorResponse?: undefined }
   | { user?: undefined; errorResponse: NextResponse }
 > {
-  const user = await verifyRequestUser(req);
+  let user: VerifiedSessionUser | null = null;
+  try {
+    user = await verifyRequestUser(req);
+  } catch (err) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            err instanceof Error
+              ? err.message
+              : 'Lỗi cấu hình xác thực phiên trên máy chủ.',
+          code: 'SERVER_AUTH_MISCONFIGURED',
+        },
+        { status: 500 }
+      ),
+    };
+  }
   if (!user) {
     return {
       errorResponse: NextResponse.json(
@@ -248,7 +272,23 @@ export async function requireSuperAdmin(req: Request): Promise<
   | { user: VerifiedSessionUser; errorResponse?: undefined }
   | { user?: undefined; errorResponse: NextResponse }
 > {
-  const user = await verifyRequestUser(req);
+  let user: VerifiedSessionUser | null = null;
+  try {
+    user = await verifyRequestUser(req);
+  } catch (err) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            err instanceof Error
+              ? err.message
+              : 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
+          code: 'SERVER_AUTH_MISCONFIGURED',
+        },
+        { status: 500 }
+      ),
+    };
+  }
   if (!user) {
     return {
       errorResponse: NextResponse.json(

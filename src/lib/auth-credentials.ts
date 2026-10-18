@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getSupabaseDbClient } from '@/lib/db';
+import { requireSupabaseServiceRoleClient } from '@/lib/db';
 import {
   SUPER_ADMIN_EMAIL,
   SUPER_ADMIN_ID,
@@ -86,12 +86,20 @@ export function writeCredentials(creds: CredentialMap): void {
 }
 
 export async function ensureSuperAdminSeeded(): Promise<Profile> {
-  const sb = getSupabaseDbClient();
-  const { data: existingList } = await sb
+  const sb = requireSupabaseServiceRoleClient(
+    'Khởi tạo/kiểm tra hồ sơ Super Admin'
+  );
+  const { data: existingList, error: selectErr } = await sb
     .from('profiles')
     .select('*')
     .ilike('email', SUPER_ADMIN_EMAIL)
     .limit(1);
+
+  if (selectErr) {
+    throw new Error(
+      `SUPER_ADMIN_PROFILE_READ_FAILED: Không thể đọc bảng profiles cho Super Admin (${selectErr.message}).`
+    );
+  }
 
   let adminProfile: Profile | null = (existingList?.[0] as Profile) || null;
 
@@ -104,15 +112,21 @@ export async function ensureSuperAdminSeeded(): Promise<Profile> {
       plan: 'premium' as const,
       plan_expires_at: '2030-12-31T23:59:59Z',
     };
-    const { data: created } = await sb
+    const { data: created, error: upsertErr } = await sb
       .from('profiles')
       .upsert(payload, { onConflict: 'id' })
       .select('*')
       .maybeSingle();
 
-    adminProfile = (created as Profile) || payload;
+    if (upsertErr || !created) {
+      throw new Error(
+        `SUPER_ADMIN_PROFILE_SEED_FAILED: Không thể khởi tạo hồ sơ Super Admin trong bảng profiles (${upsertErr?.message || 'RLS hoặc quyền DB từ chối'}).`
+      );
+    }
+
+    adminProfile = created as Profile;
   } else if (adminProfile.plan !== 'premium') {
-    const { data: upgraded } = await sb
+    const { data: upgraded, error: updateErr } = await sb
       .from('profiles')
       .update({
         plan: 'premium',
@@ -121,9 +135,13 @@ export async function ensureSuperAdminSeeded(): Promise<Profile> {
       .eq('id', adminProfile.id)
       .select('*')
       .maybeSingle();
-    if (upgraded) {
-      adminProfile = upgraded as Profile;
+
+    if (updateErr || !upgraded) {
+      throw new Error(
+        `SUPER_ADMIN_PROFILE_UPGRADE_FAILED: Không thể đồng bộ gói Premium cho Super Admin (${updateErr?.message || 'RLS hoặc quyền DB từ chối'}).`
+      );
     }
+    adminProfile = upgraded as Profile;
   }
 
   // Only seed initial super admin credential if INITIAL_SUPER_ADMIN_PASSWORD is explicitly provided in env

@@ -3,11 +3,10 @@ import { NextResponse } from 'next/server';
 import {
   dbCompletePaymentWebhook,
   ensureSupabaseReadyAndSeeded,
-  getSupabaseDbClient,
+  requireSupabaseServiceRoleClient,
 } from '@/lib/db';
 import {
   isSuperAdminEmail,
-  SUPER_ADMIN_EMAIL,
 } from '@/lib/auth-session';
 import {
   ensureSuperAdminSeeded,
@@ -55,18 +54,30 @@ export async function GET(req: Request) {
       return auth.errorResponse;
     }
 
-    await ensureSupabaseReadyAndSeeded();
+    const sb = requireSupabaseServiceRoleClient(
+      'Super Admin API (/api/admin)'
+    );
+    const readyStatus = await ensureSupabaseReadyAndSeeded();
+    if (!readyStatus.ready) {
+      return NextResponse.json(
+        {
+          error: `Không thể kết nối hoặc khởi tạo cơ sở dữ liệu Supabase (${readyStatus.error || 'UNKNOWN'}).`,
+          code: 'SUPABASE_NOT_READY',
+        },
+        { status: 503 }
+      );
+    }
+
     const adminProfile = await ensureSuperAdminSeeded();
-    const sb = getSupabaseDbClient();
 
     const [
-      { data: profilesData },
-      { data: shopsData },
-      { data: categoriesData },
-      { data: itemsData },
-      { data: postsData },
-      { data: eventsData },
-      { data: transactionsData },
+      profilesRes,
+      shopsRes,
+      categoriesRes,
+      itemsRes,
+      postsRes,
+      eventsRes,
+      transactionsRes,
       allOrders,
     ] = await Promise.all([
       sb.from('profiles').select('*').order('created_at', { ascending: false }),
@@ -85,6 +96,36 @@ export async function GET(req: Request) {
         .order('created_at', { ascending: false }),
       dbGetAllOrders(),
     ]);
+
+    const queryChecks: Array<[string, { message?: string } | null | undefined]> = [
+      ['profiles', profilesRes.error],
+      ['shops', shopsRes.error],
+      ['categories', categoriesRes.error],
+      ['items', itemsRes.error],
+      ['posts', postsRes.error],
+      ['analytics_events', eventsRes.error],
+      ['payment_transactions', transactionsRes.error],
+    ];
+    for (const [tableName, queryErr] of queryChecks) {
+      if (queryErr) {
+        return NextResponse.json(
+          {
+            error: `Lỗi truy vấn bảng dữ liệu quản trị (${tableName}): ${queryErr.message || 'Truy vấn bị từ chối'}`,
+            code: 'ADMIN_DB_QUERY_FAILED',
+            table: tableName,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    const profilesData = profilesRes.data;
+    const shopsData = shopsRes.data;
+    const categoriesData = categoriesRes.data;
+    const itemsData = itemsRes.data;
+    const postsData = postsRes.data;
+    const eventsData = eventsRes.data;
+    const transactionsData = transactionsRes.data;
 
     const profiles = ((profilesData || []) as Profile[]).map((p) =>
       isSuperAdminEmail(p.email)
@@ -373,8 +414,19 @@ export async function POST(req: Request) {
       },
     });
 
-    await ensureSupabaseReadyAndSeeded();
-    const sb = getSupabaseDbClient();
+    const sb = requireSupabaseServiceRoleClient(
+      'Super Admin API (/api/admin)'
+    );
+    const readyStatus = await ensureSupabaseReadyAndSeeded();
+    if (!readyStatus.ready) {
+      return NextResponse.json(
+        {
+          error: `Không thể kết nối hoặc khởi tạo cơ sở dữ liệu Supabase (${readyStatus.error || 'UNKNOWN'}).`,
+          code: 'SUPABASE_NOT_READY',
+        },
+        { status: 503 }
+      );
+    }
 
     // 1. Update Owner Plan / Details
     if (action === 'update_owner_plan') {

@@ -37,13 +37,48 @@ import {
 } from './mpos-store';
 
 let cachedAdminClient: SupabaseClient | null = null;
+let cachedAdminClientKey = '';
+let testDbClientOverride: SupabaseClient | null = null;
 let seedingInProgress: Promise<boolean> | null = null;
 
-export function getSupabaseDbClient(): SupabaseClient {
-  if (cachedAdminClient) return cachedAdminClient;
+export function setSupabaseDbClientForTests(client: unknown | null): void {
+  testDbClientOverride = (client as SupabaseClient | null) ?? null;
+}
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getSupabaseAnonKey();
+export function hasSupabaseServiceRoleKey(): boolean {
+  if (testDbClientOverride) return true;
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!serviceKey) return false;
+  if (serviceKey.startsWith('sb_publishable_')) return false;
+
+  const anonKey = (getSupabaseAnonKey() || '').trim();
+  if (anonKey && serviceKey === anonKey) return false;
+
+  const jwtParts = serviceKey.split('.');
+  if (jwtParts.length === 3 && jwtParts[1]) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(jwtParts[1], 'base64url').toString('utf8')
+      ) as { role?: string };
+      if (payload.role && payload.role !== 'service_role') {
+        return false;
+      }
+    } catch {
+      // non-JWT or opaque key
+    }
+  }
+  return true;
+}
+
+export function getSupabaseDbClient(): SupabaseClient {
+  if (testDbClientOverride) return testDbClientOverride;
+
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const key = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    getSupabaseAnonKey() ||
+    ''
+  ).trim();
 
   if (!url || !key) {
     throw new Error(
@@ -51,13 +86,69 @@ export function getSupabaseDbClient(): SupabaseClient {
     );
   }
 
-  cachedAdminClient = createSupabaseJsClient(url, key, {
+  const cacheSignature = `${url}::${key}`;
+  if (cachedAdminClient && cachedAdminClientKey === cacheSignature) {
+    return cachedAdminClient;
+  }
+
+  const client = createSupabaseJsClient(url, key, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
+      detectSessionInUrl: false,
     },
   });
+
+  cachedAdminClient = client;
+  cachedAdminClientKey = cacheSignature;
   return cachedAdminClient;
+}
+
+/**
+ * Creates a fresh, non-persistent Supabase client for public user Auth flows
+ * (`signInWithPassword`, `signUp`, `getUser`) using the anon/publishable key when
+ * available so user JWT sessions never contaminate the shared service-role DB client.
+ */
+export function createSupabasePublicAuthClient(): SupabaseClient {
+  if (testDbClientOverride) return testDbClientOverride;
+
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const key = (
+    getSupabaseAnonKey() ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    ''
+  ).trim();
+
+  if (!url || !key) {
+    throw new Error(
+      'Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in environment.'
+    );
+  }
+
+  return createSupabaseJsClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
+
+export function requireSupabaseServiceRoleClient(
+  contextLabel = 'Super Admin API'
+): SupabaseClient {
+  if (testDbClientOverride) return testDbClientOverride;
+  if (!isSupabaseConfigured() && !process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    throw new Error(
+      `SUPABASE_NOT_CONFIGURED: ${contextLabel} yêu cầu cấu hình NEXT_PUBLIC_SUPABASE_URL trên máy chủ.`
+    );
+  }
+  if (!hasSupabaseServiceRoleKey()) {
+    throw new Error(
+      `MISSING_SERVICE_ROLE_KEY: ${contextLabel} yêu cầu cấu hình SUPABASE_SERVICE_ROLE_KEY hợp lệ trên máy chủ (sau migration bảo mật RLS 003–005, khóa anon/publishable không được phép truy vấn hoặc ghi dữ liệu quản trị toàn hệ thống).`
+    );
+  }
+  return getSupabaseDbClient();
 }
 
 /**
@@ -68,7 +159,7 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
   ready: boolean;
   error?: string;
 }> {
-  if (!isSupabaseConfigured()) {
+  if (!testDbClientOverride && !isSupabaseConfigured()) {
     return { ready: false, error: 'SUPABASE_NOT_CONFIGURED' };
   }
 
