@@ -21,12 +21,17 @@ import {
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import {
+  AppLanguageSwitcher,
+  useAppI18n,
+} from '@/components/ui/AppI18nProvider';
 
 type AuthMode = 'password_login' | 'register' | 'otp';
 
 function LoginFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { t, tx } = useAppI18n();
   const initialMode =
     searchParams.get('mode') === 'register' ? 'register' : 'password_login';
   const [mode, setMode] = useState<AuthMode>(initialMode);
@@ -77,7 +82,10 @@ function LoginFormContent() {
       });
       const data = await res.json();
       if (!res.ok || !data.user) {
-        throw new Error(data.error || 'Không thể mở tài khoản Demo.');
+        throw new Error(
+          data.error ||
+            tx('Không thể mở tài khoản dùng thử.', 'Could not open demo account.')
+        );
       }
       setStoredAuthOwner(data.user, data.accessToken);
       if (data.shops?.[0]?.id && typeof window !== 'undefined') {
@@ -87,7 +95,10 @@ function LoginFormContent() {
     } catch (err) {
       setMessage({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Lỗi mở tài khoản Demo.',
+        text:
+          err instanceof Error
+            ? err.message
+            : tx('Lỗi mở tài khoản dùng thử.', 'Failed to open demo account.'),
       });
     } finally {
       setLoading(false);
@@ -113,7 +124,11 @@ function LoginFormContent() {
         const data = await res.json();
         if (!res.ok) {
           throw new Error(
-            data.error || 'Email hoặc mật khẩu không chính xác.'
+            data.error ||
+              tx(
+                'Email hoặc mật khẩu không đúng.',
+                'Incorrect email or password.'
+              )
           );
         }
 
@@ -137,7 +152,9 @@ function LoginFormContent() {
 
       if (mode === 'register') {
         if (!fullName.trim()) {
-          throw new Error('Vui lòng nhập họ và tên Chủ quán.');
+          throw new Error(
+            tx('Vui lòng nhập họ và tên chủ quán.', 'Please enter owner full name.')
+          );
         }
 
         const res = await fetch('/api/auth', {
@@ -153,7 +170,10 @@ function LoginFormContent() {
         });
         const data = await res.json();
         if (!res.ok) {
-          throw new Error(data.error || 'Không thể đăng ký tài khoản.');
+          throw new Error(
+            data.error ||
+              tx('Không thể tạo tài khoản.', 'Could not create account.')
+          );
         }
 
         setStoredAuthOwner(data.user, data.accessToken);
@@ -172,7 +192,12 @@ function LoginFormContent() {
       if (mode === 'otp') {
         const supabase = createClient();
         if (!supabase) {
-          throw new Error('Tính năng đăng nhập OTP chưa được kích hoạt.');
+          throw new Error(
+            tx(
+              'Đăng nhập mã OTP chưa được kích hoạt.',
+              'OTP sign-in is not enabled.'
+            )
+          );
         }
 
         if (!otpSent) {
@@ -186,7 +211,11 @@ function LoginFormContent() {
           setOtpSent(true);
           setMessage({
             type: 'success',
-            text: `Đã gửi mã đăng nhập / Magic Link tới ${email}. Vui lòng kiểm tra hộp thư!`,
+            text: tx(
+              'Đã gửi mã xác nhận tới {email}. Vui lòng kiểm tra hộp thư.',
+              'Verification code sent to {email}. Please check your inbox.',
+              { email }
+            ),
           });
         } else {
           const { data, error } = await supabase.auth.verifyOtp({
@@ -232,7 +261,10 @@ function LoginFormContent() {
         text:
           err instanceof Error
             ? err.message
-            : 'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.',
+            : tx(
+                'Đăng nhập thất bại. Vui lòng kiểm tra lại.',
+                'Sign-in failed. Please check your details.'
+              ),
       });
     } finally {
       setLoading(false);
@@ -241,29 +273,30 @@ function LoginFormContent() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white theme-surface-page flex flex-col justify-center items-center p-4">
-      <div className="w-full max-w-md flex justify-end mb-2">
+      <div className="w-full max-w-md flex items-center justify-end gap-2 mb-2">
+        <AppLanguageSwitcher variant="dark" />
         <ThemeToggle />
       </div>
       <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-2xl space-y-5">
         <div className="text-center space-y-2">
           <Link
             href="/"
+            aria-label={t('auth.backToHome')}
+            title={t('auth.backToHome')}
             className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black text-2xl shadow-lg"
           >
             Q
           </Link>
           <h1 className="text-2xl font-black tracking-tight">
             {mode === 'register'
-              ? 'Đăng Ký Tài Khoản Chủ Quán'
-              : 'Đăng Nhập Qlaok CMS'}
+              ? t('auth.registerTitle')
+              : t('auth.loginTitle')}
           </h1>
-          <p className="text-xs text-slate-400">
-            Quản lý Menu 5 ngôn ngữ, Bảng giá, Tồn kho &amp; Đơn hàng mPOS cho cửa hàng của bạn
-          </p>
+          <p className="text-xs text-slate-400">{t('auth.subtitle')}</p>
           {supabaseEnabled && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-bold text-emerald-400">
               <CheckCircle2 className="h-3 w-3" />
-              Bảo mật &amp; Đồng bộ Thời gian thực
+              {tx('Bảo mật & đồng bộ tự động', 'Secure cloud sync')}
             </span>
           )}
         </div>
@@ -282,7 +315,7 @@ function LoginFormContent() {
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Đăng nhập
+            {t('auth.tabLogin')}
           </button>
           <button
             type="button"
@@ -296,7 +329,7 @@ function LoginFormContent() {
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Đăng ký mới
+            {t('auth.tabRegister')}
           </button>
           <button
             type="button"
@@ -310,7 +343,7 @@ function LoginFormContent() {
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Email OTP
+            {tx('Mã OTP', 'Email OTP')}
           </button>
         </div>
 
@@ -332,7 +365,7 @@ function LoginFormContent() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Họ và tên Chủ quán *
+                  {t('auth.fullNameLabel')} *
                 </label>
                 <div className="relative">
                   <User className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -340,7 +373,7 @@ function LoginFormContent() {
                     type="text"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Nguyễn Văn A"
+                    placeholder={tx('Nguyễn Văn A', 'Alex Nguyen')}
                     required
                     className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-3 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
                   />
@@ -348,7 +381,7 @@ function LoginFormContent() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Số điện thoại / Zalo
+                  {t('onboarding.phoneLabel')}
                 </label>
                 <div className="relative">
                   <Phone className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -366,7 +399,7 @@ function LoginFormContent() {
 
           <div>
             <label className="block text-xs font-bold text-slate-300 mb-1">
-              Email Chủ quán *
+              {t('auth.emailLabel')} *
             </label>
             <div className="relative">
               <Mail className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -384,7 +417,7 @@ function LoginFormContent() {
           {mode !== 'otp' && (
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Mật khẩu *
+                {t('auth.passwordLabel')} *
               </label>
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -394,7 +427,10 @@ function LoginFormContent() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   minLength={6}
-                  placeholder="Nhập mật khẩu (tối thiểu 6 ký tự)"
+                  placeholder={tx(
+                    'Tối thiểu 6 ký tự',
+                    'At least 6 characters'
+                  )}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
                 />
               </div>
@@ -404,7 +440,7 @@ function LoginFormContent() {
           {mode === 'otp' && otpSent && (
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Mã OTP (6 số trong email)
+                {tx('Mã OTP (6 số trong email)', 'OTP code (6 digits in email)')}
               </label>
               <div className="relative">
                 <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -412,7 +448,7 @@ function LoginFormContent() {
                   type="text"
                   value={otpToken}
                   onChange={(e) => setOtpToken(e.target.value)}
-                  placeholder="Nhập mã OTP..."
+                  placeholder={tx('Nhập mã OTP...', 'Enter OTP code...')}
                   required
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-mono font-bold text-white focus:border-emerald-500 focus:outline-none"
                 />
@@ -427,14 +463,14 @@ function LoginFormContent() {
           >
             <span>
               {loading
-                ? 'Đang xác thực tài khoản...'
+                ? t('auth.submitting')
                 : mode === 'password_login'
-                  ? 'Đăng nhập vào Quản trị Quán'
+                  ? t('auth.loginSubmit')
                   : mode === 'register'
-                    ? 'Đăng ký & Bắt đầu Tạo Quán →'
+                    ? t('auth.registerSubmit')
                     : otpSent
-                      ? 'Xác nhận mã OTP'
-                      : 'Gửi mã OTP qua Email'}
+                      ? tx('Xác nhận mã OTP', 'Verify OTP code')
+                      : tx('Gửi mã OTP qua Email', 'Send OTP via Email')}
             </span>
             {!loading && <ArrowRight className="h-4 w-4" />}
           </button>
@@ -445,8 +481,8 @@ function LoginFormContent() {
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span>
               {mode === 'register'
-                ? 'Đã có tài khoản Chủ quán?'
-                : 'Chưa có tài khoản Chủ quán?'}
+                ? tx('Đã có tài khoản?', 'Already have an account?')
+                : tx('Chưa có tài khoản?', 'Need an account?')}
             </span>
             <button
               type="button"
@@ -457,8 +493,8 @@ function LoginFormContent() {
               className="font-bold text-emerald-400 hover:underline"
             >
               {mode === 'register'
-                ? 'Đăng nhập ngay →'
-                : 'Đăng ký miễn phí →'}
+                ? tx('Đăng nhập →', 'Sign in →')
+                : tx('Đăng ký miễn phí →', 'Sign up free →')}
             </button>
           </div>
 
@@ -469,7 +505,12 @@ function LoginFormContent() {
             className="w-full flex items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950/70 hover:bg-slate-800/80 py-2 px-3 text-[11px] font-semibold text-slate-400 hover:text-emerald-300 transition-colors"
           >
             <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-            <span>Xem thử CMS với Tài khoản Demo (3 cửa hàng mẫu)</span>
+            <span>
+              {tx(
+                'Dùng thử',
+                'Try demo'
+              )}
+            </span>
           </button>
         </div>
       </div>

@@ -33,6 +33,7 @@ import {
 } from '@/types/qlaok';
 import { formatCurrency, QUICK_TAGS_BY_VERTICAL } from '@/lib/i18n-helper';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export interface PosOrderLine {
   lineId: string;
@@ -77,6 +78,16 @@ const TABLE_PRESETS = [
   'Bàn 08',
   'Giao hàng (Ship)',
 ];
+
+function formatTablePresetLabel(label: string, locale: 'vi' | 'en'): string {
+  if (locale === 'vi') return label;
+  if (label === 'Mang về / Tại quầy') return 'Takeaway / Counter';
+  if (label === 'Tại quầy') return 'Counter';
+  if (label === 'Giao hàng (Ship)') return 'Delivery';
+  const match = /^Bàn\s+(\d+)$/i.exec(label.trim());
+  if (match) return `Table ${match[1]}`;
+  return label;
+}
 
 function getVnDateKey(dateInput: Date | string | number = new Date()): string {
   const ts = new Date(dateInput).getTime();
@@ -182,6 +193,7 @@ export function PosCounterWorkspace({
   onPrintOrder,
   onUpdateOrder,
 }: PosCounterWorkspaceProps) {
+  const { locale, t, tx } = useAppI18n();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
   );
@@ -731,7 +743,11 @@ export function PosCounterWorkspace({
       const resData = await res.json().catch(() => null);
       if (!res.ok) {
         setSubmitError(
-          resData?.error || 'Không thể lưu đơn hàng. Vui lòng thử lại.'
+          resData?.error ||
+            tx(
+              'Không thể lưu đơn hàng. Vui lòng thử lại.',
+              'Could not save order. Please try again.'
+            )
         );
         return;
       }
@@ -754,7 +770,12 @@ export function PosCounterWorkspace({
         onOrderCreated(savedOrder, shouldPrint);
       }
     } catch {
-      setSubmitError('Lỗi kết nối máy chủ khi lưu đơn hàng.');
+      setSubmitError(
+        tx(
+          'Lỗi kết nối máy chủ khi lưu đơn hàng.',
+          'Server connection error while saving order.'
+        )
+      );
     } finally {
       setSubmitting(false);
     }
@@ -783,7 +804,7 @@ export function PosCounterWorkspace({
         <div className="flex items-center gap-2.5 min-w-0">
           <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 py-1 text-xs font-black text-slate-950">
             <Sparkles className="h-3.5 w-3.5" />
-            <span>POS THU NGÂN</span>
+            <span>{tx('POS THU NGÂN', 'COUNTER POS')}</span>
           </span>
           <span className="truncate text-sm font-extrabold text-white">
             {shop.name}
@@ -796,26 +817,36 @@ export function PosCounterWorkspace({
             type="button"
             onClick={() => setShowTodayOrdersModal(true)}
             className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
-            title="Xem danh sách đơn trong ngày & in lại hóa đơn"
+            title={tx(
+              'Xem danh sách đơn trong ngày & in lại hóa đơn',
+              "View today's orders & reprint receipts"
+            )}
           >
             <Banknote className="h-3.5 w-3.5 text-emerald-400" />
             <span>
-              Ca hôm nay: <strong className="text-white">{todayStats.count} đơn</strong> •{' '}
+              {tx('Ca hôm nay:', 'Today:')}{' '}
+              <strong className="text-white">
+                {todayStats.count} {tx('đơn', 'orders')}
+              </strong>{' '}
+              •{' '}
               <strong className="text-amber-300">
                 {formatCurrency(todayStats.revenue, shop.currency)}
               </strong>
             </span>
             <span className="rounded-md bg-emerald-500 px-1.5 py-0.5 text-[10px] font-black text-slate-950">
-              Xem đơn
+              {tx('Xem đơn', 'Orders')}
             </span>
           </button>
 
           <Link
             href="/dashboard/reports"
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-slate-700"
-            title="Tra cứu sổ đơn theo ngày & xuất file Excel / CSV"
+            title={tx(
+              'Tra cứu sổ đơn theo ngày & xuất file Excel / CSV',
+              'View daily order ledger & export Excel / CSV'
+            )}
           >
-            <span>📊 Sổ đơn &amp; Xuất Excel</span>
+            <span>📊 {tx('Sổ đơn & Xuất Excel', 'Reports & Export')}</span>
           </Link>
 
           <Link
@@ -823,7 +854,9 @@ export function PosCounterWorkspace({
             className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-700"
           >
             <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
-            <span>Cấu hình Option / Topping món</span>
+            <span>
+              {tx('Cấu hình Option / Topping món', 'Item Options / Toppings')}
+            </span>
           </Link>
 
           <button
@@ -834,12 +867,12 @@ export function PosCounterWorkspace({
             {isFullscreen ? (
               <>
                 <Minimize2 className="h-3.5 w-3.5" />
-                <span>Thu nhỏ</span>
+                <span>{tx('Thu nhỏ', 'Exit Fullscreen')}</span>
               </>
             ) : (
               <>
                 <Maximize2 className="h-3.5 w-3.5" />
-                <span>Toàn màn hình POS</span>
+                <span>{tx('Toàn màn hình POS', 'Fullscreen POS')}</span>
               </>
             )}
           </button>
@@ -854,7 +887,7 @@ export function PosCounterWorkspace({
             onClick={() => setSubmitError(null)}
             className="rounded-lg bg-white/20 px-2 py-0.5 text-[11px] font-black hover:bg-white/30"
           >
-            Đóng
+            {t('common.close')}
           </button>
         </div>
       )}
@@ -870,11 +903,17 @@ export function PosCounterWorkspace({
                 <div className="flex items-center gap-1.5 text-xs font-black">
                   <Edit3 className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">
-                    ĐANG SỬA ĐƠN #{activeEditingOrder.order_code} ({activeEditingOrder.table_label})
+                    {tx(
+                      `ĐANG SỬA ĐƠN #${activeEditingOrder.order_code} (${activeEditingOrder.table_label})`,
+                      `EDITING ORDER #${activeEditingOrder.order_code} (${formatTablePresetLabel(activeEditingOrder.table_label, locale)})`
+                    )}
                   </span>
                 </div>
                 <p className="text-[10px] font-bold text-slate-900 truncate">
-                  Thêm/bớt món, đổi Option hoặc bấm Lưu cập nhật đơn trước khi thanh toán
+                  {tx(
+                    'Thêm/bớt món, đổi Option hoặc bấm Lưu cập nhật đơn trước khi thanh toán',
+                    'Add/remove items, edit options, or save order changes before checkout'
+                  )}
                 </p>
               </div>
               <button
@@ -882,7 +921,7 @@ export function PosCounterWorkspace({
                 onClick={clearEditingOrder}
                 className="shrink-0 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-black text-white hover:bg-slate-800"
               >
-                Thoát sửa
+                {tx('Thoát sửa', 'Exit edit')}
               </button>
             </div>
           )}
@@ -896,13 +935,18 @@ export function PosCounterWorkspace({
                 className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-black text-slate-900 shadow-2xs hover:border-emerald-500"
               >
                 <Utensils className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                <span className="truncate">{tableLabel}</span>
+                <span className="truncate">
+                  {formatTablePresetLabel(tableLabel, locale)}
+                </span>
               </button>
 
               {showTablePicker && (
                 <div className="absolute left-0 top-10 z-30 w-64 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl space-y-2">
                   <div className="text-[11px] font-bold text-slate-500 px-1">
-                    Chọn nhanh Bàn / Mang về:
+                    {tx(
+                      'Chọn nhanh Bàn / Mang về:',
+                      'Quick select Table / Takeaway:'
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     {TABLE_PRESETS.map((preset) => (
@@ -919,7 +963,7 @@ export function PosCounterWorkspace({
                             : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                         }`}
                       >
-                        {preset}
+                        {formatTablePresetLabel(preset, locale)}
                       </button>
                     ))}
                   </div>
@@ -927,7 +971,10 @@ export function PosCounterWorkspace({
                     type="text"
                     value={tableLabel}
                     onChange={(e) => setTableLabel(e.target.value)}
-                    placeholder="Hoặc nhập tên bàn / tên khách..."
+                    placeholder={tx(
+                      'Hoặc nhập tên bàn / tên khách...',
+                      'Or enter table / customer name...'
+                    )}
                     className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
@@ -944,7 +991,7 @@ export function PosCounterWorkspace({
                 className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Xóa hết món</span>
+                <span>{tx('Xóa hết món', 'Clear all')}</span>
               </button>
             )}
           </div>
@@ -955,10 +1002,10 @@ export function PosCounterWorkspace({
               <div className="flex h-full flex-col items-center justify-center p-6 text-center text-slate-400">
                 <Utensils className="h-10 w-10 stroke-[1.5] mb-2 text-slate-300" />
                 <p className="text-sm font-bold text-slate-600">
-                  Phiếu gọi món đang trống
+                  {t('pos.cartTitle')}
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5 max-w-[240px]">
-                  Bấm vào món ăn/đồ uống ở khung bên phải để thêm vào hóa đơn
+                  {t('pos.emptyCart')}
                 </p>
               </div>
             ) : (
@@ -966,6 +1013,10 @@ export function PosCounterWorkspace({
                 const isSelected = line.lineId === selectedLineId;
                 const { basePrice, extraPrice, finalLineTotal } =
                   calcLineAmounts(line);
+                const lineName =
+                  locale === 'en' && line.item.name_i18n.en
+                    ? line.item.name_i18n.en
+                    : line.item.name_i18n.vi;
 
                 return (
                   <div
@@ -979,7 +1030,7 @@ export function PosCounterWorkspace({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-xs sm:text-sm font-black text-slate-900 leading-snug">
-                        {line.item.name_i18n.vi}
+                        {lineName}
                       </span>
                       <span className="text-xs sm:text-sm font-black text-slate-900 shrink-0">
                         {formatCurrency(finalLineTotal, shop.currency)}
@@ -992,16 +1043,21 @@ export function PosCounterWorkspace({
                         <strong className="font-extrabold text-slate-800">
                           {line.quantity}
                         </strong>{' '}
-                        Món x {formatCurrency(basePrice, shop.currency)}
+                        {tx('Món', 'x')} x{' '}
+                        {formatCurrency(basePrice, shop.currency)}
                         {extraPrice > 0 && (
                           <span className="text-amber-700 font-bold">
                             {' '}
-                            (+Topping {formatCurrency(extraPrice, shop.currency)})
+                            (+{tx('Topping', 'Add-on')}{' '}
+                            {formatCurrency(extraPrice, shop.currency)})
                           </span>
                         )}
                         {line.discountPercent > 0 && (
                           <span className="ml-1.5 inline-flex items-center rounded bg-rose-100 px-1.5 py-0.2 text-[10px] font-bold text-rose-700">
-                            Giảm {line.discountPercent}%
+                            {tx(
+                              `Giảm ${line.discountPercent}%`,
+                              `-${line.discountPercent}%`
+                            )}
                           </span>
                         )}
                       </div>
@@ -1028,11 +1084,14 @@ export function PosCounterWorkspace({
                         <button
                           type="button"
                           onClick={() => handleOpenEditSelectedLineModal(line)}
-                          title="Chọn lại Option / Topping / Ghi chú"
+                          title={tx(
+                            'Chọn lại Option / Topping / Ghi chú',
+                            'Edit options / toppings / notes'
+                          )}
                           className="flex h-6 items-center gap-0.5 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100"
                         >
                           <Edit3 className="h-2.5 w-2.5" />
-                          <span>Option</span>
+                          <span>{tx('Option', 'Options')}</span>
                         </button>
                         <button
                           type="button"
@@ -1049,21 +1108,27 @@ export function PosCounterWorkspace({
                       line.quickTags.length > 0 ||
                       line.customNote) && (
                       <div className="mt-1.5 flex flex-wrap gap-1">
-                        {line.selectedChoices.map((c) => (
-                          <span
-                            key={c.id}
-                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
-                              c.extra_price > 0
-                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                                : 'bg-emerald-100 text-emerald-900'
-                            }`}
-                          >
-                            + {c.label_i18n.vi}
-                            {c.extra_price > 0
-                              ? ` (+${formatCurrency(c.extra_price, shop.currency)})`
-                              : ''}
-                          </span>
-                        ))}
+                        {line.selectedChoices.map((c) => {
+                          const choiceLabel =
+                            locale === 'en' && c.label_i18n.en
+                              ? c.label_i18n.en
+                              : c.label_i18n.vi;
+                          return (
+                            <span
+                              key={c.id}
+                              className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                                c.extra_price > 0
+                                  ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                  : 'bg-emerald-100 text-emerald-900'
+                              }`}
+                            >
+                              + {choiceLabel}
+                              {c.extra_price > 0
+                                ? ` (+${formatCurrency(c.extra_price, shop.currency)})`
+                                : ''}
+                            </span>
+                          );
+                        })}
                         {line.quickTags.map((tag, i) => (
                           <span
                             key={i}
@@ -1089,7 +1154,7 @@ export function PosCounterWorkspace({
           <div className="border-t-2 border-slate-200 bg-slate-50 px-4 py-2.5 space-y-1 shrink-0">
             <div className="flex items-center justify-between text-xs text-slate-600">
               <span>
-                Tạm tính ({totals.totalQty} món):
+                {t('pos.subtotal')} ({totals.totalQty} {tx('món', 'items')}):
               </span>
               <span className="font-bold text-slate-800">
                 {formatCurrency(totals.subtotal, shop.currency)}
@@ -1097,7 +1162,7 @@ export function PosCounterWorkspace({
             </div>
             {totals.totalDiscount > 0 && (
               <div className="flex items-center justify-between text-xs text-rose-600">
-                <span>Chiết khấu / Giảm giá:</span>
+                <span>{t('pos.discount')}:</span>
                 <span className="font-bold">
                   -{formatCurrency(totals.totalDiscount, shop.currency)}
                 </span>
@@ -1105,7 +1170,7 @@ export function PosCounterWorkspace({
             )}
             <div className="flex items-baseline justify-between pt-0.5">
               <span className="text-sm font-black uppercase text-slate-900">
-                Tổng thu (Total):
+                {t('pos.total')}:
               </span>
               <span className="text-xl font-black text-emerald-600">
                 {formatCurrency(totals.grandTotal, shop.currency)}
@@ -1122,7 +1187,9 @@ export function PosCounterWorkspace({
               className="flex items-center justify-center gap-1 rounded-lg bg-white py-2 px-2 text-xs font-bold text-slate-800 hover:bg-emerald-50 hover:text-emerald-800 disabled:opacity-45"
             >
               <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-600" />
-              <span className="truncate">Option / Topping</span>
+              <span className="truncate">
+                {tx('Option / Topping', 'Options / Toppings')}
+              </span>
             </button>
 
             <button
@@ -1132,7 +1199,7 @@ export function PosCounterWorkspace({
               className="flex items-center justify-center gap-1 rounded-lg bg-white py-2 px-2 text-xs font-bold text-slate-800 hover:bg-emerald-50 hover:text-emerald-800 disabled:opacity-45"
             >
               <MessageSquarePlus className="h-3.5 w-3.5 text-amber-600" />
-              <span className="truncate">Ghi chú món</span>
+              <span className="truncate">{tx('Ghi chú món', 'Item Note')}</span>
             </button>
 
             <button
@@ -1151,12 +1218,12 @@ export function PosCounterWorkspace({
               {paymentMethod === 'vietqr' ? (
                 <>
                   <QrCode className="h-3.5 w-3.5" />
-                  <span className="truncate">CK VietQR</span>
+                  <span className="truncate">{tx('CK VietQR', 'VietQR')}</span>
                 </>
               ) : (
                 <>
                   <Banknote className="h-3.5 w-3.5 text-emerald-700" />
-                  <span className="truncate">Tiền mặt</span>
+                  <span className="truncate">{tx('Tiền mặt', 'Cash')}</span>
                 </>
               )}
             </button>
@@ -1173,7 +1240,8 @@ export function PosCounterWorkspace({
               >
                 <Check className="h-4 w-4 stroke-[2.5]" />
                 <span>
-                  Lưu cập nhật đơn #{activeEditingOrder.order_code} (Chưa thu tiền)
+                  {t('pos.saveOrderChanges')} #{activeEditingOrder.order_code} (
+                  {tx('Chưa thu tiền', 'Unpaid')})
                 </span>
               </button>
             </div>
@@ -1193,21 +1261,21 @@ export function PosCounterWorkspace({
               </div>
               <span className="text-xs sm:text-sm font-black uppercase tracking-wide text-center leading-tight">
                 {submitting
-                  ? 'Đang lưu...'
+                  ? t('common.saving')
                   : paymentMethod === 'vietqr'
                     ? activeEditingOrder
-                      ? 'Lưu & In Bill QR'
-                      : 'In Bill Kèm QR'
+                      ? tx('Lưu & In Bill QR', 'Save & Print QR')
+                      : tx('In Bill Kèm QR', 'Print QR Bill')
                     : activeEditingOrder
-                      ? 'Lưu & Thu Tiền'
-                      : 'Thanh Toán'}
+                      ? tx('Lưu & Thu Tiền', 'Save & Charge')
+                      : t('pos.collectAndComplete')}
               </span>
               <span className="text-[11px] font-bold text-emerald-100 text-center">
                 {paymentMethod === 'vietqr'
-                  ? '🖨️ In mã QR ra bill'
+                  ? tx('🖨️ In mã QR ra bill', '🖨️ Print QR on receipt')
                   : autoPrintOnPay
-                    ? '🖨️ Tự động in bill'
-                    : 'Lưu & Báo bếp'}
+                    ? tx('🖨️ Tự động in bill', '🖨️ Auto-print receipt')
+                    : tx('Lưu & Báo bếp', 'Save & Send to kitchen')}
               </span>
             </button>
 
@@ -1232,7 +1300,7 @@ export function PosCounterWorkspace({
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
-                SL (Qty)
+                {tx('SL (Qty)', 'Qty')}
               </button>
 
               {['4', '5', '6'].map((digit) => (
@@ -1254,7 +1322,7 @@ export function PosCounterWorkspace({
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
-                % Giảm
+                {tx('% Giảm', '% Disc')}
               </button>
 
               {['7', '8', '9'].map((digit) => (
@@ -1276,7 +1344,7 @@ export function PosCounterWorkspace({
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
-                Giá
+                {tx('Giá', 'Price')}
               </button>
 
               <button
@@ -1327,11 +1395,17 @@ export function PosCounterWorkspace({
                 }`}
               >
                 <Home className="h-3.5 w-3.5" />
-                <span>Tất cả ({items.length})</span>
+                <span>
+                  {t('common.all')} ({items.length})
+                </span>
               </button>
 
               {categories.map((cat) => {
                 const active = selectedCategoryId === cat.id;
+                const catName =
+                  locale === 'en' && cat.name_i18n.en
+                    ? cat.name_i18n.en
+                    : cat.name_i18n.vi;
                 return (
                   <button
                     key={cat.id}
@@ -1343,7 +1417,7 @@ export function PosCounterWorkspace({
                         : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                     }`}
                   >
-                    {cat.name_i18n.vi}
+                    {catName}
                   </button>
                 );
               })}
@@ -1356,7 +1430,7 @@ export function PosCounterWorkspace({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm món ăn, đồ uống..."
+                placeholder={t('pos.searchPlaceholder')}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-8 py-1.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
               />
               {searchQuery && (
@@ -1376,10 +1450,13 @@ export function PosCounterWorkspace({
             {filteredItems.length === 0 ? (
               <div className="flex h-60 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
                 <p className="text-sm font-bold text-slate-700">
-                  Không tìm thấy món phù hợp
+                  {tx('Không tìm thấy món phù hợp', 'No matching items found')}
                 </p>
                 <p className="text-xs text-slate-400 mt-1">
-                  Hãy thử từ khóa khác hoặc chọn danh mục &ldquo;Tất cả&rdquo;
+                  {tx(
+                    'Hãy thử từ khóa khác hoặc chọn danh mục "Tất cả"',
+                    'Try another keyword or select the "All" category'
+                  )}
                 </p>
               </div>
             ) : (
@@ -1395,6 +1472,14 @@ export function PosCounterWorkspace({
                   const inTicketQty = lines
                     .filter((l) => l.item.id === item.id)
                     .reduce((s, l) => s + l.quantity, 0);
+                  const itemName =
+                    locale === 'en' && item.name_i18n.en
+                      ? item.name_i18n.en
+                      : item.name_i18n.vi;
+                  const itemDesc =
+                    locale === 'en' && item.desc_i18n?.en
+                      ? item.desc_i18n.en
+                      : item.desc_i18n?.vi;
 
                   return (
                     <div
@@ -1413,7 +1498,7 @@ export function PosCounterWorkspace({
                         {item.image_url ? (
                           <img
                             src={item.image_url}
-                            alt={item.name_i18n.vi}
+                            alt={itemName}
                             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                           />
                         ) : (
@@ -1442,7 +1527,7 @@ export function PosCounterWorkspace({
                                   : 'bg-slate-900/70'
                               }`}
                             >
-                              Kho: {stock}
+                              {tx('Kho:', 'Stock:')} {stock}
                             </span>
                           )
                         )}
@@ -1455,7 +1540,10 @@ export function PosCounterWorkspace({
                               e.stopPropagation();
                               handleProductCardClick(item, true);
                             }}
-                            title="Chọn Option / Độ ngọt / Đá / Topping / Ghi chú"
+                            title={tx(
+                              'Chọn Option / Độ ngọt / Đá / Topping / Ghi chú',
+                              'Select Options / Sweetness / Ice / Toppings / Note'
+                            )}
                             className={`absolute bottom-1.5 right-1.5 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold shadow-xs transition ${
                               hasOptions
                                 ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
@@ -1465,8 +1553,8 @@ export function PosCounterWorkspace({
                             <SlidersHorizontal className="h-2.5 w-2.5" />
                             <span>
                               {hasOptions
-                                ? `${item.options_json!.length} Option`
-                                : 'Ghi chú'}
+                                ? `${item.options_json!.length} ${tx('Option', 'Options')}`
+                                : tx('Ghi chú', 'Note')}
                             </span>
                           </button>
                         )}
@@ -1474,7 +1562,7 @@ export function PosCounterWorkspace({
                         {isSoldOut && (
                           <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
                             <span className="rounded-lg bg-rose-600 px-2.5 py-1 text-xs font-black text-white uppercase">
-                              Hết hàng
+                              {tx('Hết hàng', 'Sold out')}
                             </span>
                           </div>
                         )}
@@ -1484,11 +1572,11 @@ export function PosCounterWorkspace({
                       <div className="flex flex-1 flex-col justify-between p-2.5 space-y-1">
                         <div>
                           <h4 className="line-clamp-2 text-xs font-extrabold text-slate-900 leading-snug">
-                            {item.name_i18n.vi}
+                            {itemName}
                           </h4>
-                          {item.desc_i18n?.vi && (
+                          {itemDesc && (
                             <p className="mt-0.5 line-clamp-1 text-[10px] text-slate-500">
-                              {item.desc_i18n.vi}
+                              {itemDesc}
                             </p>
                           )}
                         </div>
@@ -1500,7 +1588,9 @@ export function PosCounterWorkspace({
                                 key={g.id}
                                 className="inline-flex items-center rounded bg-amber-50 border border-amber-200/80 px-1.5 py-0.5 text-[9px] font-bold text-amber-900 truncate max-w-full"
                               >
-                                {g.name_i18n.vi}
+                                {locale === 'en' && g.name_i18n.en
+                                  ? g.name_i18n.en
+                                  : g.name_i18n.vi}
                               </span>
                             ))}
                           </div>
@@ -1524,18 +1614,32 @@ export function PosCounterWorkspace({
               <div className="min-w-0">
                 <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400">
                   {optionModalState.mode === 'edit_line'
-                    ? 'Chỉnh sửa Option / Topping món'
-                    : 'Chọn Option / Topping & Ghi chú'}
+                    ? tx(
+                        'Chỉnh sửa Option / Topping món',
+                        'Edit Item Options / Toppings'
+                      )
+                    : tx(
+                        'Chọn Option / Topping & Ghi chú',
+                        'Select Options / Toppings & Note'
+                      )}
                 </span>
                 <h3 className="truncate text-base sm:text-lg font-black">
-                  {optionModalState.item.name_i18n.vi} —{' '}
+                  {locale === 'en' && optionModalState.item.name_i18n.en
+                    ? optionModalState.item.name_i18n.en
+                    : optionModalState.item.name_i18n.vi}{' '}
+                  —{' '}
                   <span className="text-emerald-400">
                     {formatCurrency(optionModalState.item.price, shop.currency)}
                   </span>
                 </h3>
-                {optionModalState.item.desc_i18n?.vi && (
+                {(locale === 'en'
+                  ? optionModalState.item.desc_i18n?.en ||
+                    optionModalState.item.desc_i18n?.vi
+                  : optionModalState.item.desc_i18n?.vi) && (
                   <p className="text-xs text-slate-300 mt-0.5 line-clamp-2">
-                    {optionModalState.item.desc_i18n.vi}
+                    {locale === 'en' && optionModalState.item.desc_i18n?.en
+                      ? optionModalState.item.desc_i18n.en
+                      : optionModalState.item.desc_i18n?.vi}
                   </p>
                 )}
               </div>
@@ -1563,11 +1667,17 @@ export function PosCounterWorkspace({
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <h4 className="text-xs font-black uppercase tracking-wide text-slate-900">
-                            {group.name_i18n.vi}
+                            {locale === 'en' && group.name_i18n.en
+                              ? group.name_i18n.en
+                              : group.name_i18n.vi}
                           </h4>
-                          {group.desc_i18n?.vi && (
+                          {(locale === 'en'
+                            ? group.desc_i18n?.en || group.desc_i18n?.vi
+                            : group.desc_i18n?.vi) && (
                             <p className="text-[11px] text-slate-500">
-                              {group.desc_i18n.vi}
+                              {locale === 'en' && group.desc_i18n?.en
+                                ? group.desc_i18n.en
+                                : group.desc_i18n?.vi}
                             </p>
                           )}
                         </div>
@@ -1579,8 +1689,11 @@ export function PosCounterWorkspace({
                           }`}
                         >
                           {group.required
-                            ? 'Bắt buộc (Chọn 1)'
-                            : 'Chọn thêm / Topping (Chọn nhiều)'}
+                            ? tx('Bắt buộc (Chọn 1)', 'Required (Pick 1)')
+                            : tx(
+                                'Chọn thêm / Topping (Chọn nhiều)',
+                                'Optional / Toppings (Multi-select)'
+                              )}
                         </span>
                       </div>
 
@@ -1590,6 +1703,10 @@ export function PosCounterWorkspace({
                             optionModalState.selectedChoices.some(
                               (c) => c.id === choice.id
                             );
+                          const choiceLabel =
+                            locale === 'en' && choice.label_i18n.en
+                              ? choice.label_i18n.en
+                              : choice.label_i18n.vi;
                           return (
                             <button
                               key={choice.id}
@@ -1609,7 +1726,7 @@ export function PosCounterWorkspace({
                             >
                               <div className="flex items-start justify-between gap-1.5">
                                 <span className="text-xs font-extrabold text-slate-900 leading-snug">
-                                  {choice.label_i18n.vi}
+                                  {choiceLabel}
                                 </span>
                                 <span
                                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
@@ -1626,14 +1743,20 @@ export function PosCounterWorkspace({
 
                               {choice.desc_i18n?.vi && (
                                 <p className="mt-0.5 text-[10px] text-slate-500 line-clamp-1">
-                                  {choice.desc_i18n.vi}
+                                  {locale === 'en' && choice.desc_i18n.en
+                                    ? choice.desc_i18n.en
+                                    : choice.desc_i18n.vi}
                                 </p>
                               )}
 
                               <div className="mt-1.5">
                                 {choice.extra_price > 0 ? (
                                   <span className="inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-black text-amber-900">
-                                    +{formatCurrency(choice.extra_price, shop.currency)}
+                                    +
+                                    {formatCurrency(
+                                      choice.extra_price,
+                                      shop.currency
+                                    )}
                                   </span>
                                 ) : (
                                   <span className="text-[10px] font-semibold text-slate-400">
@@ -1651,13 +1774,16 @@ export function PosCounterWorkspace({
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-600 flex items-center justify-between gap-2">
                   <span>
-                    Món này chưa cấu hình nhóm Option/Topping có cộng tiền riêng.
+                    {tx(
+                      'Món này chưa cấu hình nhóm Option/Topping có cộng tiền riêng.',
+                      'No paid option/topping groups configured for this item yet.'
+                    )}
                   </span>
                   <Link
                     href="/dashboard/catalog"
                     className="shrink-0 font-bold text-emerald-700 underline"
                   >
-                    + Cấu hình trong Menu
+                    {tx('+ Cấu hình trong Menu', '+ Configure in Menu')}
                   </Link>
                 </div>
               )}
@@ -1665,27 +1791,37 @@ export function PosCounterWorkspace({
               {/* Fast Counter Quick Tags (Ít đá, Ít đường, Không hành, Mang về...) */}
               <div className="space-y-2">
                 <label className="block text-xs font-black uppercase tracking-wide text-slate-600">
-                  Ghi chú nhanh tại quầy (Bấm để chọn):
+                  {tx(
+                    'Ghi chú nhanh tại quầy (Bấm để chọn):',
+                    'Quick counter tags (Tap to toggle):'
+                  )}
                 </label>
                 <div className="flex flex-wrap gap-1.5">
                   {[
-                    'Ít đường',
-                    'Nhiều đường',
-                    'Không đường',
-                    'Ít đá',
-                    'Đá riêng',
-                    'Không đá',
-                    ...verticalQuickTags.map((t) => t.i18n.vi),
+                    { vi: 'Ít đường', en: 'Less sugar' },
+                    { vi: 'Nhiều đường', en: 'Extra sugar' },
+                    { vi: 'Không đường', en: 'No sugar' },
+                    { vi: 'Ít đá', en: 'Less ice' },
+                    { vi: 'Đá riêng', en: 'Ice on side' },
+                    { vi: 'Không đá', en: 'No ice' },
+                    ...verticalQuickTags.map((tagObj) => ({
+                      vi: tagObj.i18n.vi,
+                      en: tagObj.i18n.en || tagObj.i18n.vi,
+                    })),
                   ]
-                    .filter((v, idx, arr) => arr.indexOf(v) === idx)
-                    .map((tagVi) => {
-                      const active =
-                        optionModalState.quickTags.includes(tagVi);
+                    .filter(
+                      (v, idx, arr) =>
+                        arr.findIndex((item) => item.vi === v.vi) === idx
+                    )
+                    .map((tagPair) => {
+                      const active = optionModalState.quickTags.includes(
+                        tagPair.vi
+                      );
                       return (
                         <button
-                          key={tagVi}
+                          key={tagPair.vi}
                           type="button"
-                          onClick={() => toggleModalQuickTag(tagVi)}
+                          onClick={() => toggleModalQuickTag(tagPair.vi)}
                           className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
                             active
                               ? 'border-slate-900 bg-slate-900 text-white'
@@ -1693,7 +1829,7 @@ export function PosCounterWorkspace({
                           }`}
                         >
                           {active ? '✓ ' : '+ '}
-                          {tagVi}
+                          {locale === 'en' ? tagPair.en : tagPair.vi}
                         </button>
                       );
                     })}
@@ -1703,7 +1839,10 @@ export function PosCounterWorkspace({
               {/* Custom Free-Text Note */}
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Ghi chú thêm cho pha chế / bếp:
+                  {tx(
+                    'Ghi chú thêm cho pha chế / bếp:',
+                    'Additional note for bar / kitchen:'
+                  )}
                 </label>
                 <input
                   type="text"
@@ -1714,7 +1853,7 @@ export function PosCounterWorkspace({
                       customNote: e.target.value,
                     })
                   }
-                  placeholder="VD: Làm ấm, để riêng nước sốt, khách dị ứng đậu phộng..."
+                  placeholder={t('pos.customerNotePlaceholder')}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
               </div>
@@ -1768,8 +1907,8 @@ export function PosCounterWorkspace({
                   >
                     <span>
                       {optionModalState.mode === 'edit_line'
-                        ? 'Cập nhật dòng món'
-                        : 'Thêm vào phiếu POS'}
+                        ? tx('Cập nhật dòng món', 'Update item line')
+                        : tx('Thêm vào phiếu POS', 'Add to POS ticket')}
                     </span>
                     <span>{formatCurrency(modalTotal, shop.currency)}</span>
                   </button>
@@ -1793,7 +1932,8 @@ export function PosCounterWorkspace({
               <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl space-y-4 text-center">
                 <div className="flex items-center justify-between">
                   <span className="rounded-xl bg-blue-100 px-3 py-1 text-xs font-black text-blue-800">
-                    💳 Thanh toán QR tại quầy • {tableLabel}
+                    💳 {tx('Thanh toán QR tại quầy', 'Counter QR Payment')} •{' '}
+                    {formatTablePresetLabel(tableLabel, locale)}
                   </span>
                   <button
                     type="button"
@@ -1817,21 +1957,25 @@ export function PosCounterWorkspace({
 
                 <div className="rounded-2xl bg-slate-50 p-3 text-xs space-y-1 text-left">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Ngân hàng / Ví:</span>
+                    <span className="text-slate-500">
+                      {tx('Ngân hàng / Ví:', 'Bank / Wallet:')}
+                    </span>
                     <span className="font-bold text-slate-900">
                       {qrInfo.bankShortName}
                     </span>
                   </div>
                   {qrInfo.accountNumber && (
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Số tài khoản:</span>
+                      <span className="text-slate-500">
+                        {tx('Số tài khoản:', 'Account No.:')}
+                      </span>
                       <span className="font-mono font-black text-slate-900">
                         {qrInfo.accountNumber}
                       </span>
                     </div>
                   )}
                   <div className="flex justify-between pt-1 border-t border-slate-200">
-                    <span className="text-slate-500">Tổng thu khách:</span>
+                    <span className="text-slate-500">{t('pos.total')}:</span>
                     <span className="text-sm font-black text-emerald-600">
                       {formatCurrency(totals.grandTotal, shop.currency)}
                     </span>
@@ -1848,8 +1992,11 @@ export function PosCounterWorkspace({
                     <Printer className="h-4 w-4" />
                     <span>
                       {submitting
-                        ? 'Đang lưu...'
-                        : 'Đã nhận chuyển khoản & In Hóa Đơn'}
+                        ? t('common.saving')
+                        : tx(
+                            'Đã nhận chuyển khoản & In Hóa Đơn',
+                            'Transfer Received & Print Receipt'
+                          )}
                     </span>
                   </button>
                   <button
@@ -1858,7 +2005,12 @@ export function PosCounterWorkspace({
                     onClick={() => submitPosOrder(false)}
                     className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
                   >
-                    <span>Tạo đơn chờ thanh toán (In mã QR trên bill)</span>
+                    <span>
+                      {tx(
+                        'Tạo đơn chưa thu',
+                        'Create unpaid order'
+                      )}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -1879,10 +2031,17 @@ export function PosCounterWorkspace({
             <div className="flex items-center justify-between gap-3 bg-slate-900 px-5 py-4 text-white">
               <div>
                 <h3 className="text-sm sm:text-base font-black">
-                  Thống Kê &amp; Đơn Hàng Ca Hôm Nay • {shop.name}
+                  {tx(
+                    'Thống Kê & Đơn Hàng Ca Hôm Nay',
+                    "Today's Shift Summary & Orders"
+                  )}{' '}
+                  • {shop.name}
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Đồng bộ trực tiếp từ cơ sở dữ liệu máy chủ (tự động lưu vĩnh viễn)
+                  {tx(
+                    'Đồng bộ trực tiếp từ cơ sở dữ liệu máy chủ (tự động lưu vĩnh viễn)',
+                    'Synced directly with server database (saved permanently)'
+                  )}
                 </p>
               </div>
               <button
@@ -1898,37 +2057,38 @@ export function PosCounterWorkspace({
             <div className="grid grid-cols-3 gap-2.5 bg-slate-50 border-b border-slate-200 px-5 py-3.5">
               <div className="rounded-2xl bg-white border border-emerald-200 p-3">
                 <div className="text-[11px] font-bold text-slate-500">
-                  Tổng doanh thu hôm nay
+                  {tx('Tổng doanh thu hôm nay', "Today's Paid Revenue")}
                 </div>
                 <div className="mt-0.5 text-base sm:text-lg font-black text-emerald-600">
                   {formatCurrency(todayStats.revenue, shop.currency)}
                 </div>
                 <div className="text-[10px] font-semibold text-slate-500">
-                  {todayStats.count} đơn hợp lệ trong ngày
+                  {todayStats.count}{' '}
+                  {tx('đơn hợp lệ trong ngày', 'valid orders today')}
                 </div>
               </div>
 
               <div className="rounded-2xl bg-white border border-slate-200 p-3">
                 <div className="text-[11px] font-bold text-slate-500">
-                  Tiền mặt tại quầy
+                  {tx('Tiền mặt tại quầy', 'Counter Cash')}
                 </div>
                 <div className="mt-0.5 text-base sm:text-lg font-black text-slate-900">
                   {formatCurrency(todayStats.cashRev, shop.currency)}
                 </div>
                 <div className="text-[10px] font-semibold text-slate-500">
-                  Thu trực tiếp
+                  {tx('Thu trực tiếp', 'Collected in cash')}
                 </div>
               </div>
 
               <div className="rounded-2xl bg-white border border-blue-200 p-3">
                 <div className="text-[11px] font-bold text-blue-700">
-                  Chuyển khoản QR
+                  {tx('Chuyển khoản QR', 'QR Transfer')}
                 </div>
                 <div className="mt-0.5 text-base sm:text-lg font-black text-blue-700">
                   {formatCurrency(todayStats.qrRev, shop.currency)}
                 </div>
                 <div className="text-[10px] font-semibold text-slate-500">
-                  VietQR / Ngân hàng
+                  {tx('VietQR / Ngân hàng', 'VietQR / Bank')}
                 </div>
               </div>
             </div>
@@ -1937,7 +2097,10 @@ export function PosCounterWorkspace({
             <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-4 space-y-2.5">
               {todayStats.todayOrders.length === 0 ? (
                 <div className="py-12 text-center text-xs font-semibold text-slate-500">
-                  Chưa có đơn hàng nào phát sinh trong ngày hôm nay.
+                  {tx(
+                    'Chưa có đơn hàng nào phát sinh trong ngày hôm nay.',
+                    'No orders recorded today yet.'
+                  )}
                 </div>
               ) : (
                 todayStats.todayOrders.map((ord) => (
@@ -1948,7 +2111,7 @@ export function PosCounterWorkspace({
                     <div className="space-y-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="rounded-lg bg-slate-900 px-2.5 py-0.5 text-xs font-black text-amber-400">
-                          {ord.table_label}
+                          {formatTablePresetLabel(ord.table_label, locale)}
                         </span>
                         <span className="text-xs font-black text-slate-900">
                           #{ord.order_code}
@@ -1961,15 +2124,22 @@ export function PosCounterWorkspace({
                           }`}
                         >
                           {ord.payment_status === 'paid'
-                            ? '✓ Đã thanh toán'
-                            : '⏳ Chờ thanh toán'}{' '}
-                          ({ord.payment_method === 'vietqr' ? 'QR' : 'Tiền mặt'})
+                            ? `✓ ${t('orders.paymentPaid')}`
+                            : `⏳ ${t('orders.paymentUnpaid')}`}{' '}
+                          (
+                          {ord.payment_method === 'vietqr'
+                            ? 'QR'
+                            : tx('Tiền mặt', 'Cash')}
+                          )
                         </span>
                         <span className="text-[11px] font-semibold text-slate-400">
-                          {new Date(ord.created_at).toLocaleTimeString('vi-VN', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
+                          {new Date(ord.created_at).toLocaleTimeString(
+                            locale === 'en' ? 'en-US' : 'vi-VN',
+                            {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            }
+                          )}
                         </span>
                       </div>
                       <div className="text-xs text-slate-600 truncate">
@@ -1989,10 +2159,13 @@ export function PosCounterWorkspace({
                           type="button"
                           onClick={() => loadOrderIntoPos(ord)}
                           className="inline-flex items-center gap-1 rounded-xl border border-amber-400 bg-amber-100 px-2.5 py-1.5 text-[11px] font-black text-amber-950 hover:bg-amber-200"
-                          title="Mở đơn này vào màn hình POS để thêm/bớt món hoặc đổi Option"
+                          title={tx(
+                            'Mở đơn này vào màn hình POS để thêm/bớt món hoặc đổi Option',
+                            'Load this order into POS to add/remove items or change options'
+                          )}
                         >
                           <Edit3 className="h-3.5 w-3.5 text-amber-700" />
-                          <span>Sửa món (Mở POS)</span>
+                          <span>{t('orders.actionEdit')}</span>
                         </button>
                       )}
 
@@ -2004,7 +2177,7 @@ export function PosCounterWorkspace({
                           }
                           className="rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-emerald-500"
                         >
-                          Đã thu tiền
+                          {tx('Đã thu tiền', 'Mark Paid')}
                         </button>
                       )}
 
@@ -2019,7 +2192,7 @@ export function PosCounterWorkspace({
                           }
                           className="rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-black text-emerald-800 hover:bg-emerald-100"
                         >
-                          Hoàn tất
+                          {tx('Đã thu & Hoàn tất', 'Mark paid & complete')}
                         </button>
                       )}
 
@@ -2033,7 +2206,7 @@ export function PosCounterWorkspace({
                           className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-slate-100 px-2.5 py-1.5 text-[11px] font-black text-slate-800 hover:bg-slate-200"
                         >
                           <Printer className="h-3.5 w-3.5" />
-                          <span>In lại Bill</span>
+                          <span>{tx('In lại Bill', 'Reprint Bill')}</span>
                         </button>
                       )}
                     </div>

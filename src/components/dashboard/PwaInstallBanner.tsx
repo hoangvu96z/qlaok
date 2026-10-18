@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Smartphone, Download, X, Share } from 'lucide-react';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -9,6 +10,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 export function PwaInstallBanner() {
+  const { t } = useAppI18n();
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(true);
@@ -19,7 +21,6 @@ export function PwaInstallBanner() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Register Service Worker for PWA
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {
         // ignore sw registration errors in dev
@@ -32,8 +33,12 @@ export function PwaInstallBanner() {
         true;
     setIsStandalone(standalone);
 
-    const hidden = localStorage.getItem('qlaok_pwa_banner_dismissed') === '1';
-    setDismissed(hidden);
+    try {
+      const hidden = localStorage.getItem('qlaok_pwa_banner_dismissed') === '1';
+      setDismissed(hidden);
+    } catch {
+      // ignore storage errors
+    }
 
     const ua = window.navigator.userAgent.toLowerCase();
     setIsIos(/iphone|ipad|ipod/.test(ua));
@@ -64,7 +69,11 @@ export function PwaInstallBanner() {
   const handleDismiss = () => {
     setDismissed(true);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('qlaok_pwa_banner_dismissed', '1');
+      try {
+        localStorage.setItem('qlaok_pwa_banner_dismissed', '1');
+      } catch {
+        // ignore storage errors
+      }
     }
   };
 
@@ -77,10 +86,10 @@ export function PwaInstallBanner() {
           </div>
           <div className="min-w-0">
             <p className="text-xs font-black text-slate-900">
-              Cài đặt App Qlaok CMS lên điện thoại (PWA)
+              {t('installBanner.title')}
             </p>
             <p className="text-[11px] text-slate-600 truncate">
-              Mở toàn màn hình, gạt hết món & xem doanh thu tức thì như ứng dụng Native
+              {t('installBanner.subtitle')}
             </p>
           </div>
         </div>
@@ -93,14 +102,15 @@ export function PwaInstallBanner() {
               className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 active:scale-95"
             >
               <Download className="h-3.5 w-3.5" />
-              <span>Cài App</span>
+              <span>{t('installBanner.cta')}</span>
             </button>
           )}
           <button
             type="button"
             onClick={handleDismiss}
+            aria-label={t('installBanner.closeAria')}
+            title={t('installBanner.closeAria')}
             className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200/60 hover:text-slate-700"
-            title="Ẩn thông báo"
           >
             <X className="h-4 w-4" />
           </button>
@@ -110,10 +120,7 @@ export function PwaInstallBanner() {
       {showIosGuide && (
         <div className="mt-2.5 rounded-xl bg-slate-900 p-3 text-xs text-slate-200 flex items-center gap-2">
           <Share className="h-4 w-4 text-emerald-400 shrink-0" />
-          <span>
-            Trên Safari iPhone/iPad: Bấm nút <strong>Chia sẻ (Share)</strong> ở thanh dưới cùng → chọn{' '}
-            <strong>&quot;Thêm vào MH chính&quot; (Add to Home Screen)</strong>.
-          </span>
+          <span>{t('installBanner.iosGuide')}</span>
         </div>
       )}
     </div>

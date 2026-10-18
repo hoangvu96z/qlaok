@@ -20,6 +20,7 @@ import { formatCurrency } from '@/lib/i18n-helper';
 import { escapeHtml } from '@/lib/escape-html';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface ReceiptPrintModalProps {
   order: ShopOrder | null;
@@ -40,6 +41,7 @@ export function ReceiptPrintModal({
   onConfirmPaid,
   onOrderUpdated,
 }: ReceiptPrintModalProps) {
+  const { locale, t, tx } = useAppI18n();
   const defaultTicketType: TicketPrintType =
     initialTicketType ||
     (order?.payment_status === 'paid' ? 'receipt' : 'provisional');
@@ -105,10 +107,11 @@ export function ReceiptPrintModal({
     ticketType !== 'kitchen' &&
     includeQrOnBill &&
     qrInfo.isConfigured &&
-    Boolean(qrInfo.qrImageUrl) && activeOrder.payment_status === 'unpaid';
+    Boolean(qrInfo.qrImageUrl) &&
+    activeOrder.payment_status === 'unpaid';
 
   const formattedDate = new Date(activeOrder.created_at).toLocaleString(
-    'vi-VN',
+    locale === 'en' ? 'en-US' : 'vi-VN',
     {
       day: '2-digit',
       month: '2-digit',
@@ -120,10 +123,12 @@ export function ReceiptPrintModal({
 
   const ticketHeaderTitle =
     ticketType === 'kitchen'
-      ? 'PHIẾU BẾP / CHẾ BIẾN'
+      ? tx('PHIẾU BẾP / CHẾ BIẾN', 'KITCHEN TICKET')
       : ticketType === 'provisional'
-        ? (activeOrder.payment_status === 'unpaid' ? 'PHIẾU TẠM TÍNH (CHƯA THU TIỀN)' : 'BẢN KÊ MÓN')
-        : 'BIÊN LAI ĐÃ THANH TOÁN';
+        ? activeOrder.payment_status === 'unpaid'
+          ? tx('PHIẾU TẠM TÍNH (CHƯA THU TIỀN)', 'PROVISIONAL BILL (UNPAID)')
+          : tx('BẢN KÊ MÓN', 'ORDER SUMMARY')
+        : tx('BIÊN LAI ĐÃ THANH TOÁN', 'PAID RECEIPT');
 
   const handlePrintThermalReceipt = async () => {
     if (typeof window === 'undefined') return;
@@ -146,17 +151,33 @@ export function ReceiptPrintModal({
       });
       if (!res.ok) {
         const error = await res.json().catch(() => null);
-        throw new Error(error?.error || 'Không thể ghi nhận lần in');
+        throw new Error(
+          error?.error || tx('Không thể ghi nhận lần in', 'Could not record print')
+        );
       }
       {
         const data = await res.json();
-        if (!data?.order) throw new Error('Máy chủ trả về phiếu không hợp lệ');
-        if (data.order.bill_version !== activeOrder.bill_version ||
-            data.order.payment_status !== activeOrder.payment_status ||
-            Number(data.order.total_amount) !== Number(activeOrder.total_amount)) {
+        if (!data?.order) {
+          throw new Error(
+            tx(
+              'Máy chủ trả về phiếu không hợp lệ',
+              'Server returned an invalid ticket'
+            )
+          );
+        }
+        if (
+          data.order.bill_version !== activeOrder.bill_version ||
+          data.order.payment_status !== activeOrder.payment_status ||
+          Number(data.order.total_amount) !== Number(activeOrder.total_amount)
+        ) {
           setLocalOrder(data.order);
           onOrderUpdated?.(data.order);
-          throw new Error('Đơn hàng đã thay đổi. Vui lòng kiểm tra lại phiếu trước khi in.');
+          throw new Error(
+            tx(
+              'Đơn hàng đã thay đổi. Vui lòng kiểm tra lại phiếu trước khi in.',
+              'Order has changed. Please review the ticket before printing.'
+            )
+          );
         }
         if (data?.order) {
           setLocalOrder(data.order);
@@ -168,7 +189,11 @@ export function ReceiptPrintModal({
         }
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Không thể chuẩn bị phiếu in');
+      window.alert(
+        error instanceof Error && error.message
+          ? error.message
+          : tx('Không thể chuẩn bị phiếu in', 'Could not prepare receipt for printing')
+      );
       return;
     }
 
@@ -190,7 +215,7 @@ export function ReceiptPrintModal({
             ? `<div style="font-size:10px;color:#334155;font-weight:700;">[${escapeHtml(line.quick_tags.join(', '))}]</div>`
             : '';
         const noteText = line.custom_note
-          ? `<div style="font-size:10px;color:#475569;font-style:italic;">Ghi chú: ${escapeHtml(line.custom_note)}</div>`
+          ? `<div style="font-size:10px;color:#475569;font-style:italic;">${escapeHtml(tx('Ghi chú', 'Note'))}: ${escapeHtml(line.custom_note)}</div>`
           : '';
 
         if (ticketType === 'kitchen') {
@@ -226,11 +251,11 @@ export function ReceiptPrintModal({
       ticketType !== 'kitchen' && discount > 0
         ? `
           <div style="display:flex;justify-content:space-between;font-size:12px;margin:3px 0;">
-            <span>Tạm tính:</span>
+            <span>${escapeHtml(t('pos.subtotal'))}:</span>
             <span>${escapeHtml(formatCurrency(subtotal, shop.currency))}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:12px;margin:3px 0;font-weight:700;">
-            <span>Khuyến mãi / Giảm giá:</span>
+            <span>${escapeHtml(t('pos.discount'))}:</span>
             <span>-${escapeHtml(formatCurrency(discount, shop.currency))}</span>
           </div>
         `
@@ -241,7 +266,7 @@ export function ReceiptPrintModal({
         ? `<div style="margin-top:6px;font-size:11px;border-top:1px dashed #94a3b8;padding-top:6px;">
           📶 Wi-Fi: <strong>${escapeHtml(shop.wifi_info.ssid)}</strong> ${
             shop.wifi_info.password
-              ? `• Mật khẩu: <strong>${escapeHtml(shop.wifi_info.password)}</strong>`
+              ? `• ${escapeHtml(tx('Mật khẩu', 'Pass'))}: <strong>${escapeHtml(shop.wifi_info.password)}</strong>`
               : ''
           }
         </div>`
@@ -251,37 +276,37 @@ export function ReceiptPrintModal({
       ? `
         <div style="margin-top:10px;text-align:center;border-top:1px dashed #000;padding-top:8px;">
           <div style="font-size:11px;font-weight:900;margin-bottom:4px;text-transform:uppercase;">
-            QUÉT MÃ QR ĐỂ CHUYỂN KHOẢN THANH TOÁN
+            ${escapeHtml(tx('QUÉT MÃ QR ĐỂ CHUYỂN KHOẢN THANH TOÁN', 'SCAN QR TO PAY BY BANK TRANSFER'))}
           </div>
           <img src="${escapeHtml(qrInfo.qrImageUrl)}" alt="VietQR" style="width:165px;height:165px;object-fit:contain;margin:4px auto;display:block;border:1px solid #cbd5e1;padding:4px;border-radius:6px;background:#fff;" />
           <div style="font-size:10px;line-height:1.4;margin-top:4px;">
-            <div>Ngân hàng: <strong>${escapeHtml(qrInfo.bankShortName)}</strong></div>
-            ${qrInfo.accountNumber ? `<div>STK: <strong>${escapeHtml(qrInfo.accountNumber)}</strong></div>` : ''}
-            <div>Chủ TK: <strong>${escapeHtml(qrInfo.accountName)}</strong></div>
-            <div>Nội dung CK: <strong>${escapeHtml(qrInfo.transferContent)}</strong></div>
+            <div>${escapeHtml(tx('Ngân hàng', 'Bank'))}: <strong>${escapeHtml(qrInfo.bankShortName)}</strong></div>
+            ${qrInfo.accountNumber ? `<div>${escapeHtml(tx('STK', 'Acct'))}: <strong>${escapeHtml(qrInfo.accountNumber)}</strong></div>` : ''}
+            <div>${escapeHtml(tx('Chủ TK', 'Name'))}: <strong>${escapeHtml(qrInfo.accountName)}</strong></div>
+            <div>${escapeHtml(tx('Nội dung CK', 'Memo'))}: <strong>${escapeHtml(qrInfo.transferContent)}</strong></div>
           </div>
         </div>
       `
       : '';
 
     const reprintBadgeHtml = isReprint
-      ? `<div style="display:inline-block;margin-top:4px;padding:2px 6px;border:1px solid #000;font-size:10px;font-weight:900;">BẢN IN LẠI (Lần #${printNumber})</div>`
+      ? `<div style="display:inline-block;margin-top:4px;padding:2px 6px;border:1px solid #000;font-size:10px;font-weight:900;">${escapeHtml(tx('BẢN IN LẠI (Lần #{count})', 'REPRINT (#{count})', { count: printNumber }))}</div>`
       : '';
 
     const totalsSectionHtml =
       ticketType === 'kitchen'
         ? activeOrder.customer_note
-          ? `<div style="margin-top:6px;padding:6px;border:1px solid #000;font-size:12px;font-weight:700;">Ghi chú đơn: ${escapeHtml(activeOrder.customer_note)}</div>`
+          ? `<div style="margin-top:6px;padding:6px;border:1px solid #000;font-size:12px;font-weight:700;">${escapeHtml(tx('Ghi chú đơn', 'Order note'))}: ${escapeHtml(activeOrder.customer_note)}</div>`
           : ''
         : `
           ${discountRowHtml}
           <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:900;margin:6px 0;padding-top:4px;border-top:1px solid #000;">
-            <span>TỔNG CỘNG:</span>
+            <span>${escapeHtml(tx('TỔNG CỘNG:', 'TOTAL:'))}</span>
             <span>${escapeHtml(formatCurrency(activeOrder.total_amount, shop.currency))}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px;">
-            <span>Hình thức: ${activeOrder.payment_method === 'vietqr' ? 'Chuyển khoản QR' : 'Tiền mặt'}</span>
-            <strong>${activeOrder.payment_status === 'paid' ? '✓ ĐÃ THU TIỀN' : activeOrder.payment_status === 'refunded' ? '↩ ĐÃ HOÀN TIỀN' : 'TẠM TÍNH / CHỜ THU TIỀN'}</strong>
+            <span>${escapeHtml(tx('Hình thức', 'Method'))}: ${escapeHtml(activeOrder.payment_method === 'vietqr' ? t('orders.paymentMethodQr') : t('orders.paymentMethodCash'))}</span>
+            <strong>${escapeHtml(activeOrder.payment_status === 'paid' ? tx('✓ ĐÃ THU TIỀN', '✓ PAID') : activeOrder.payment_status === 'refunded' ? tx('↩ ĐÃ HOÀN TIỀN', '↩ REFUNDED') : tx('TẠM TÍNH / CHỜ THU TIỀN', 'UNPAID / PROVISIONAL'))}</strong>
           </div>
         `;
 
@@ -290,7 +315,7 @@ export function ReceiptPrintModal({
       <html>
         <head>
           <meta charset="utf-8" />
-          <title>${ticketHeaderTitle} #${escapeHtml(activeOrder.order_code)} - ${escapeHtml(shop.name)}</title>
+          <title>${escapeHtml(ticketHeaderTitle)} #${escapeHtml(activeOrder.order_code)} - ${escapeHtml(shop.name)}</title>
           <style>
             @page {
               size: ${paperSize} auto;
@@ -315,23 +340,23 @@ export function ReceiptPrintModal({
         <body>
           <div style="text-align:center;border-bottom:1px dashed #000;padding-bottom:8px;margin-bottom:8px;">
             <div style="font-size:15px;font-weight:900;text-transform:uppercase;">${escapeHtml(shop.name)}</div>
-            ${ticketType !== 'kitchen' && shop.address ? `<div style="font-size:11px;margin-top:2px;">Đ/C: ${escapeHtml(shop.address)}</div>` : ''}
-            ${ticketType !== 'kitchen' && shop.phone_contact ? `<div style="font-size:11px;">SĐT: ${escapeHtml(shop.phone_contact)}</div>` : ''}
+            ${ticketType !== 'kitchen' && shop.address ? `<div style="font-size:11px;margin-top:2px;">${escapeHtml(tx('Đ/C', 'Addr'))}: ${escapeHtml(shop.address)}</div>` : ''}
+            ${ticketType !== 'kitchen' && shop.phone_contact ? `<div style="font-size:11px;">${escapeHtml(tx('SĐT', 'Tel'))}: ${escapeHtml(shop.phone_contact)}</div>` : ''}
           </div>
 
           <div style="text-align:center;margin-bottom:8px;">
-            <div style="font-size:14px;font-weight:900;">${ticketHeaderTitle}</div>
-            <div style="font-size:11px;">Mã đơn: <strong>#${escapeHtml(activeOrder.order_code)}</strong> • <strong>${escapeHtml(activeOrder.table_label)}</strong></div>
-            <div style="font-size:10px;color:#334155;">Giờ tạo: ${formattedDate} • Bill v${billVersion}</div>
+            <div style="font-size:14px;font-weight:900;">${escapeHtml(ticketHeaderTitle)}</div>
+            <div style="font-size:11px;">${escapeHtml(tx('Mã đơn', 'Order'))}: <strong>#${escapeHtml(activeOrder.order_code)}</strong> • <strong>${escapeHtml(activeOrder.table_label)}</strong></div>
+            <div style="font-size:10px;color:#334155;">${escapeHtml(tx('Giờ tạo', 'Time'))}: ${escapeHtml(formattedDate)} • Bill v${billVersion}</div>
             ${reprintBadgeHtml}
           </div>
 
           <table style="border-top:1px dashed #000;border-bottom:1px dashed #000;margin-bottom:8px;">
             <thead>
               <tr style="border-bottom:1px solid #000;font-size:11px;">
-                <th style="text-align:left;padding:4px 0;">Món</th>
-                <th style="text-align:${ticketType === 'kitchen' ? 'right' : 'center'};padding:4px;">SL</th>
-                ${ticketType !== 'kitchen' ? '<th style="text-align:right;padding:4px 0;">T.Tiền</th>' : ''}
+                <th style="text-align:left;padding:4px 0;">${escapeHtml(tx('Món', 'Item'))}</th>
+                <th style="text-align:${ticketType === 'kitchen' ? 'right' : 'center'};padding:4px;">${escapeHtml(tx('SL', 'Qty'))}</th>
+                ${ticketType !== 'kitchen' ? `<th style="text-align:right;padding:4px 0;">${escapeHtml(tx('T.Tiền', 'Amount'))}</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -348,7 +373,7 @@ export function ReceiptPrintModal({
               ? `
           <div style="text-align:center;margin-top:8px;font-size:11px;">
             ${wifiHtml}
-            <div style="margin-top:6px;font-weight:700;">Cảm ơn Quý khách & Hẹn gặp lại!</div>
+            <div style="margin-top:6px;font-weight:700;">${escapeHtml(tx('Cảm ơn Quý khách & Hẹn gặp lại!', 'Thank you & see you again!'))}</div>
             <div style="font-size:9px;color:#64748b;margin-top:2px;">Powered by Qlaok Smart POS</div>
           </div>`
               : ''
@@ -421,11 +446,18 @@ export function ReceiptPrintModal({
             </div>
             <div>
               <h3 className="text-sm sm:text-base font-black text-slate-900">
-                In Phiếu Bếp / Tạm Tính / Biên Lai
+                {t('receipt.modalTitle', { size: paperSize })}
               </h3>
               <p className="text-[11px] text-slate-500">
-                Đơn #{activeOrder.order_code} • {activeOrder.table_label} • Bill
-                v{billVersion}
+                {tx(
+                  'Đơn #{code} • {table} • Bill v{version}',
+                  'Order #{code} • {table} • Bill v{version}',
+                  {
+                    code: activeOrder.order_code,
+                    table: activeOrder.table_label,
+                    version: billVersion,
+                  }
+                )}
               </p>
             </div>
           </div>
@@ -433,6 +465,8 @@ export function ReceiptPrintModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label={t('common.close')}
+            title={t('common.close')}
             className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
           >
             <X className="h-5 w-5" />
@@ -451,7 +485,7 @@ export function ReceiptPrintModal({
             }`}
           >
             <ChefHat className="h-3.5 w-3.5" />
-            <span>Phiếu Bếp</span>
+            <span>{t('receipt.ticketKitchen')}</span>
           </button>
           <button
             type="button"
@@ -463,7 +497,7 @@ export function ReceiptPrintModal({
             }`}
           >
             <FileText className="h-3.5 w-3.5" />
-            <span>Tạm Tính</span>
+            <span>{t('receipt.ticketProvisional')}</span>
           </button>
           <button
             type="button"
@@ -476,7 +510,7 @@ export function ReceiptPrintModal({
             }`}
           >
             <Receipt className="h-3.5 w-3.5" />
-            <span>Biên Lai Thu</span>
+            <span>{t('receipt.ticketReceipt')}</span>
           </button>
         </div>
 
@@ -492,7 +526,7 @@ export function ReceiptPrintModal({
                   : 'text-slate-600'
               }`}
             >
-              Khổ K80 (80mm)
+              {tx('Khổ K80 (80mm)', '80mm (K80)')}
             </button>
             <button
               type="button"
@@ -503,7 +537,7 @@ export function ReceiptPrintModal({
                   : 'text-slate-600'
               }`}
             >
-              Khổ K58 (58mm)
+              {tx('Khổ K58 (58mm)', '58mm (K58)')}
             </button>
           </div>
 
@@ -518,8 +552,8 @@ export function ReceiptPrintModal({
               />
               <span>
                 {qrInfo.isConfigured
-                  ? 'Kèm mã QR trên bill'
-                  : 'Chưa cài STK ngân hàng'}
+                  ? tx('Kèm mã QR trên bill', 'Include QR on bill')
+                  : tx('Chưa cài STK ngân hàng', 'Bank account not set')}
               </span>
             </label>
           )}
@@ -530,10 +564,17 @@ export function ReceiptPrintModal({
           <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800">
             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
             <div>
-              <p className="font-black">Chưa cấu hình tài khoản ngân hàng</p>
+              <p className="font-black">
+                {tx(
+                  'Chưa cấu hình tài khoản ngân hàng',
+                  'Bank account not configured'
+                )}
+              </p>
               <p>
-                Hệ thống đã chặn tạo mã QR mặc định. Vui lòng cài đặt STK ngân
-                hàng của quán trong mục Cài đặt thanh toán để in mã VietQR.
+                {tx(
+                  'Vui lòng cài đặt số tài khoản ngân hàng của quán trong mục Cài đặt thanh toán để in mã QR.',
+                  'Please configure your store bank account in Store Settings to print a payment QR code.'
+                )}
               </p>
             </div>
           </div>
@@ -544,11 +585,14 @@ export function ReceiptPrintModal({
           <div className="flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-2.5 text-[11px] text-rose-800">
             <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
             <div>
-              <p className="font-black">Đơn hàng chưa thu tiền</p>
+              <p className="font-black">
+                {tx('Đơn hàng chưa thu tiền', 'Order is unpaid')}
+              </p>
               <p>
-                Biên lai đã thanh toán chỉ được in sau khi xác nhận thu tiền
-                thành công. Bạn có thể chuyển sang tab <strong>Tạm Tính</strong>{' '}
-                để gửi bill cho khách kiểm tra.
+                {tx(
+                  'Biên lai đã thanh toán chỉ được in sau khi xác nhận thu tiền thành công. Bạn có thể chuyển sang tab Tạm tính để gửi bill cho khách kiểm tra.',
+                  'Paid receipts can only be printed after payment is confirmed. Switch to Provisional bill to print an unpaid summary for the guest.'
+                )}
               </p>
             </div>
           </div>
@@ -579,7 +623,9 @@ export function ReceiptPrintModal({
               {ticketType !== 'kitchen' && shop.phone_contact && (
                 <p className="text-[10px] text-slate-600 flex items-center justify-center gap-1">
                   <Phone className="h-3 w-3 shrink-0" />
-                  <span>Hotline: {shop.phone_contact}</span>
+                  <span>
+                    {tx('SĐT', 'Tel')}: {shop.phone_contact}
+                  </span>
                 </p>
               )}
             </div>
@@ -597,7 +643,11 @@ export function ReceiptPrintModal({
               </p>
               {currentPrintCount >= 1 && (
                 <span className="inline-block mt-1 rounded border border-slate-900 px-1.5 py-0.5 text-[10px] font-black text-slate-900">
-                  BẢN IN LẠI (Đã in {currentPrintCount} lần)
+                  {tx(
+                    'BẢN IN LẠI (Đã in {count} lần)',
+                    'REPRINT (Printed {count}x)',
+                    { count: currentPrintCount }
+                  )}
                 </span>
               )}
             </div>
@@ -605,11 +655,11 @@ export function ReceiptPrintModal({
             {/* Line Items Table */}
             <div className="border-t border-b border-dashed border-slate-400 py-2 space-y-1.5">
               <div className="flex justify-between text-[10px] font-black text-slate-500 border-b border-slate-200 pb-1">
-                <span>TÊN MÓN</span>
+                <span>{tx('TÊN MÓN', 'ITEM')}</span>
                 <span>
                   {ticketType === 'kitchen'
-                    ? 'SỐ LƯỢNG'
-                    : 'SL x Đ.GIÁ = T.TIỀN'}
+                    ? tx('SỐ LƯỢNG', 'QTY')
+                    : tx('SL x Đ.GIÁ = T.TIỀN', 'QTY x PRICE = TOTAL')}
                 </span>
               </div>
 
@@ -651,7 +701,7 @@ export function ReceiptPrintModal({
                     )}
                     {line.custom_note && (
                       <p className="text-[10px] italic text-slate-500">
-                        Ghi chú: {line.custom_note}
+                        {tx('Ghi chú', 'Note')}: {line.custom_note}
                       </p>
                     )}
                   </div>
@@ -663,7 +713,7 @@ export function ReceiptPrintModal({
             {ticketType === 'kitchen' ? (
               activeOrder.customer_note ? (
                 <div className="rounded-lg border border-slate-900 p-2 text-[11px] font-bold text-slate-900">
-                  Ghi chú đơn: {activeOrder.customer_note}
+                  {tx('Ghi chú đơn', 'Order note')}: {activeOrder.customer_note}
                 </div>
               ) : null
             ) : (
@@ -671,18 +721,18 @@ export function ReceiptPrintModal({
                 {discount > 0 && (
                   <>
                     <div className="flex justify-between text-[11px] text-slate-600">
-                      <span>Tạm tính:</span>
+                      <span>{t('pos.subtotal')}:</span>
                       <span>{formatCurrency(subtotal, shop.currency)}</span>
                     </div>
                     <div className="flex justify-between text-[11px] font-bold text-rose-600">
-                      <span>Khuyến mãi / Giảm giá:</span>
+                      <span>{t('pos.discount')}:</span>
                       <span>-{formatCurrency(discount, shop.currency)}</span>
                     </div>
                   </>
                 )}
 
                 <div className="flex justify-between items-baseline pt-1 border-t border-slate-900 text-sm font-black text-slate-950">
-                  <span>TỔNG CỘNG:</span>
+                  <span>{tx('TỔNG CỘNG:', 'TOTAL:')}</span>
                   <span className="text-base text-emerald-700">
                     {formatCurrency(activeOrder.total_amount, shop.currency)}
                   </span>
@@ -690,10 +740,10 @@ export function ReceiptPrintModal({
 
                 <div className="flex justify-between items-center text-[10px] pt-0.5">
                   <span className="text-slate-600">
-                    TT:{' '}
+                    {tx('TT:', 'Pay:')}{' '}
                     {activeOrder.payment_method === 'vietqr'
-                      ? 'Chuyển khoản QR'
-                      : 'Tiền mặt'}
+                      ? t('orders.paymentMethodQr')
+                      : t('orders.paymentMethodCash')}
                   </span>
                   <span
                     className={`font-black ${
@@ -705,10 +755,10 @@ export function ReceiptPrintModal({
                     }`}
                   >
                     {activeOrder.payment_status === 'paid'
-                      ? '✓ ĐÃ THU TIỀN'
+                      ? tx('✓ ĐÃ THU TIỀN', '✓ PAID')
                       : activeOrder.payment_status === 'refunded'
-                        ? '↩ ĐÃ HOÀN TIỀN'
-                        : '⏳ TẠM TÍNH / CHƯA THU'}
+                        ? tx('↩ ĐÃ HOÀN TIỀN', '↩ REFUNDED')
+                        : tx('⏳ TẠM TÍNH / CHƯA THU', '⏳ UNPAID')}
                   </span>
                 </div>
               </div>
@@ -719,7 +769,12 @@ export function ReceiptPrintModal({
               <div className="border-t border-dashed border-slate-300 pt-2.5 text-center space-y-1.5">
                 <p className="text-[10px] font-black uppercase text-slate-900 flex items-center justify-center gap-1">
                   <QrCode className="h-3 w-3 text-emerald-600" />
-                  <span>Quét Mã QR Để Chuyển Khoản</span>
+                  <span>
+                    {tx(
+                      'Quét Mã QR Để Chuyển Khoản',
+                      'Scan QR To Pay By Transfer'
+                    )}
+                  </span>
                 </p>
                 <img
                   src={qrInfo.qrImageUrl}
@@ -728,18 +783,21 @@ export function ReceiptPrintModal({
                 />
                 <div className="text-[10px] text-slate-700 leading-snug space-y-0.5">
                   <p>
-                    NH: <strong>{qrInfo.bankShortName}</strong>
+                    {tx('NH', 'Bank')}: <strong>{qrInfo.bankShortName}</strong>
                   </p>
                   {qrInfo.accountNumber && (
                     <p>
-                      STK: <strong>{qrInfo.accountNumber}</strong>
+                      {tx('STK', 'Acct')}:{' '}
+                      <strong>{qrInfo.accountNumber}</strong>
                     </p>
                   )}
                   <p>
-                    Chủ TK: <strong>{qrInfo.accountName}</strong>
+                    {tx('Chủ TK', 'Name')}:{' '}
+                    <strong>{qrInfo.accountName}</strong>
                   </p>
                   <p>
-                    ND: <strong>{qrInfo.transferContent}</strong>
+                    {tx('ND', 'Memo')}:{' '}
+                    <strong>{qrInfo.transferContent}</strong>
                   </p>
                 </div>
               </div>
@@ -760,7 +818,10 @@ export function ReceiptPrintModal({
                   </p>
                 )}
                 <p className="font-bold text-slate-900">
-                  Cảm ơn Quý khách &amp; Hẹn gặp lại!
+                  {tx(
+                    'Cảm ơn Quý khách & Hẹn gặp lại!',
+                    'Thank you & see you again!'
+                  )}
                 </p>
                 <p className="text-[9px] text-slate-400 flex items-center justify-center gap-1">
                   <Sparkles className="h-2.5 w-2.5" />
@@ -779,7 +840,7 @@ export function ReceiptPrintModal({
               onClick={onClose}
               className="rounded-2xl border border-slate-200 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-100"
             >
-              Đóng
+              {t('common.close')}
             </button>
             <button
               type="button"
@@ -791,15 +852,7 @@ export function ReceiptPrintModal({
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 px-5 text-xs sm:text-sm font-black text-white shadow-lg hover:bg-emerald-500 active:scale-98 transition disabled:opacity-40"
             >
               <Printer className="h-4 w-4" />
-              <span>
-                🖨️{' '}
-                {ticketType === 'kitchen'
-                  ? 'In Phiếu Bếp'
-                  : ticketType === 'provisional'
-                    ? 'In Phiếu Tạm Tính'
-                    : 'In Biên Lai Đã Thu'}{' '}
-                ({paperSize})
-              </span>
+              <span>{t('receipt.printNow', { size: paperSize })}</span>
             </button>
           </div>
 
@@ -814,7 +867,14 @@ export function ReceiptPrintModal({
                   try {
                     await onConfirmPaid(activeOrder);
                   } catch (error) {
-                    window.alert(error instanceof Error ? error.message : 'Không thể xác nhận thanh toán');
+                    window.alert(
+                      error instanceof Error && error.message
+                        ? error.message
+                        : tx(
+                            'Không thể xác nhận thanh toán',
+                            'Could not confirm payment'
+                          )
+                    );
                   } finally {
                     setConfirmingPaid(false);
                   }
@@ -824,8 +884,11 @@ export function ReceiptPrintModal({
                 <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                 <span>
                   {confirmingPaid
-                    ? 'Đang xác nhận...'
-                    : '✓ Xác nhận khách đã chuyển khoản / Thu tiền xong'}
+                    ? t('common.saving')
+                    : tx(
+                        '✓ Xác nhận khách đã thanh toán xong',
+                        '✓ Confirm payment received'
+                      )}
                 </span>
               </button>
             )}

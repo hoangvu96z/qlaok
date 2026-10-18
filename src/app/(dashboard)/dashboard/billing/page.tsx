@@ -13,17 +13,22 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
+import { getPlanCopy as localizedPlanCopy } from '@/lib/plan-copy';
 import { PaymentTransaction, PlanTier } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export default function DashboardBillingPage() {
   const { profile, refreshDashboard } = useDashboard();
+  const { locale, t, tx } = useAppI18n();
   const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
   const [activeOrder, setActiveOrder] = useState<PaymentTransaction | null>(
     null
   );
   const [simulating, setSimulating] = useState(false);
   const [toast, setToast] = useState('');
+
+  const getPlanCopy = (tier: PlanTier) => localizedPlanCopy(tier, locale);
 
   const loadBilling = async () => {
     const query = profile?.id
@@ -84,7 +89,10 @@ export default function DashboardBillingPage() {
         await refreshDashboard();
         await loadBilling();
         setToast(
-          '🎉 Thanh toán VietQR thành công! Gói cước đã được nâng cấp tự động.'
+          tx(
+            '🎉 Thanh toán VietQR thành công! Gói cước đã được nâng cấp.',
+            '🎉 VietQR payment confirmed! Your plan has been upgraded.'
+          )
         );
         setTimeout(() => setToast(''), 4000);
       }
@@ -104,7 +112,13 @@ export default function DashboardBillingPage() {
       }),
     });
     await refreshDashboard();
-    setToast(`Đã chuyển chế độ thử nghiệm sang gói: ${PLAN_CONFIGS[plan].name}`);
+    setToast(
+      tx(
+        'Đã chuyển nhanh sang: {plan}',
+        'Switched test plan to: {plan}',
+        { plan: getPlanCopy(plan).name }
+      )
+    );
     setTimeout(() => setToast(''), 3000);
   };
 
@@ -119,17 +133,20 @@ export default function DashboardBillingPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-            Gói Cước & Thanh Toán Tự Động VietQR
+            {tx('Gói dịch vụ', 'Plans')}
           </h1>
           <p className="text-xs text-slate-500">
-            Tích hợp cổng VietQR động & Webhook SePay/PayOS kích hoạt gói trong 3 giây
+            {tx(
+              'Nâng cấp gói qua mã chuyển khoản VietQR và kích hoạt tự động trong vài giây.',
+              'Upgrade via VietQR bank transfer with automatic plan activation in seconds.'
+            )}
           </p>
         </div>
 
         {/* Instant Sandbox Plan Switcher for Testing */}
         <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5">
           <span className="px-2 text-[11px] font-bold text-slate-500">
-            Test nhanh gói:
+            {tx('Đổi nhanh gói (thử nghiệm):', 'Quick test switch:')}
           </span>
           {(['free', 'basic', 'premium'] as PlanTier[]).map((tier) => (
             <button
@@ -152,6 +169,7 @@ export default function DashboardBillingPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {(['free', 'basic', 'premium'] as PlanTier[]).map((tier) => {
           const cfg = PLAN_CONFIGS[tier];
+          const copy = getPlanCopy(tier);
           const isCurrent = currentPlan === tier;
           const isPremium = tier === 'premium';
 
@@ -164,29 +182,29 @@ export default function DashboardBillingPage() {
                   : 'border-slate-200 bg-white shadow-2xs'
               }`}
             >
-              {cfg.badgeText && (
+              {copy.badgeText && (
                 <span className="absolute -top-3 right-5 rounded-full bg-emerald-600 px-3 py-0.5 text-[10px] font-black uppercase text-white shadow-xs">
-                  {cfg.badgeText}
+                  {copy.badgeText}
                 </span>
               )}
 
               <div className="space-y-4">
                 <div>
                   <h3 className="text-base font-black text-slate-900">
-                    {cfg.name}
+                    {copy.name}
                   </h3>
                   <div className="mt-2 flex items-baseline gap-1">
                     <span className="text-3xl font-black text-slate-950">
                       {formatCurrency(cfg.priceMonthly)}
                     </span>
                     <span className="text-xs font-semibold text-slate-400">
-                      / tháng
+                      {tx('/ tháng', '/ month')}
                     </span>
                   </div>
                 </div>
 
                 <ul className="space-y-2.5 border-t border-slate-100 pt-4">
-                  {cfg.features.map((feat, i) => (
+                  {copy.features.map((feat, i) => (
                     <li
                       key={i}
                       className="flex items-start gap-2 text-xs font-medium text-slate-700"
@@ -202,7 +220,7 @@ export default function DashboardBillingPage() {
                 {isCurrent ? (
                   <div className="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-slate-100 py-3 text-xs font-extrabold text-slate-600">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    <span>Đang sử dụng gói này</span>
+                    <span>{tx('Đang sử dụng gói này', 'Current plan')}</span>
                   </div>
                 ) : (
                   <button
@@ -215,8 +233,12 @@ export default function DashboardBillingPage() {
                     }`}
                   >
                     {tier === 'free'
-                      ? 'Chuyển về Gói Miễn Phí'
-                      : `Thanh toán VietQR (${formatCurrency(cfg.priceMonthly)})`}
+                      ? tx('Chuyển về Gói Miễn Phí', 'Switch to Free Plan')
+                      : tx(
+                          'Thanh toán VietQR ({price})',
+                          'Pay via VietQR ({price})',
+                          { price: formatCurrency(cfg.priceMonthly) }
+                        )}
                   </button>
                 )}
               </div>
@@ -235,7 +257,7 @@ export default function DashboardBillingPage() {
             >
               <img
                 src={`https://img.vietqr.io/image/MB-0905123456-compact2.png?amount=${activeOrder.amount}&addInfo=${activeOrder.order_code}&accountName=QLAOK%20SAAS`}
-                alt="VietQR Payment"
+                alt={tx('Mã thanh toán VietQR', 'VietQR Payment')}
                 className="h-56 w-56 object-contain"
               />
             </div>
@@ -243,23 +265,33 @@ export default function DashboardBillingPage() {
             <div className="flex-1 space-y-3">
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-xs font-extrabold text-amber-900">
                 <QrCode className="h-3.5 w-3.5" />
-                Đang chờ thanh toán qua VietQR (SePay / PayOS Auto-Webhook)
+                {tx(
+                  'Đang chờ thanh toán qua VietQR',
+                  'Waiting for VietQR bank transfer'
+                )}
               </span>
 
               <h3 className="text-lg font-black text-slate-900">
-                Nâng cấp lên {PLAN_CONFIGS[activeOrder.target_plan].name}
+                {tx('Nâng cấp lên {plan}', 'Upgrade to {plan}', {
+                  plan: getPlanCopy(activeOrder.target_plan).name,
+                })}
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
                 <div>
-                  <span className="text-slate-400 block">Số tiền chuyển khoản:</span>
+                  <span className="text-slate-400 block">
+                    {tx('Số tiền chuyển khoản:', 'Transfer amount:')}
+                  </span>
                   <strong className="text-base text-emerald-700">
                     {formatCurrency(activeOrder.amount)}
                   </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block">
-                    Nội dung chuyển khoản (Tự động):
+                    {tx(
+                      'Nội dung chuyển khoản (bắt buộc đúng):',
+                      'Transfer memo (exact match):'
+                    )}
                   </span>
                   <strong className="text-base font-mono text-rose-600">
                     {activeOrder.order_code}
@@ -279,13 +311,21 @@ export default function DashboardBillingPage() {
                   {simulating ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>Đang xử lý Webhook...</span>
+                      <span>
+                        {tx(
+                          'Đang xác nhận thanh toán...',
+                          'Confirming payment...'
+                        )}
+                      </span>
                     </>
                   ) : (
                     <>
                       <Zap className="h-4 w-4" />
                       <span>
-                        ⚡ Giả Lập Đã Chuyển Khoản Thành Công (Test Webhook)
+                        {tx(
+                          '⚡ Giả lập đã chuyển khoản thành công',
+                          '⚡ Simulate successful transfer'
+                        )}
                       </span>
                     </>
                   )}
@@ -296,7 +336,7 @@ export default function DashboardBillingPage() {
                   onClick={() => setActiveOrder(null)}
                   className="rounded-xl border border-slate-200 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-50"
                 >
-                  Đóng
+                  {t('common.close')}
                 </button>
               </div>
             </div>
@@ -307,44 +347,52 @@ export default function DashboardBillingPage() {
       {/* Payment Transaction History */}
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-3">
         <h3 className="text-sm font-extrabold text-slate-900">
-          Lịch sử giao dịch nâng cấp gói
+          {tx('Lịch sử giao dịch nâng cấp gói', 'Plan Upgrade History')}
         </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-slate-400">
-                <th className="py-2 font-bold">Mã đơn (Order Code)</th>
-                <th className="py-2 font-bold">Gói nâng cấp</th>
-                <th className="py-2 font-bold">Số tiền</th>
-                <th className="py-2 font-bold">Trạng thái</th>
-                <th className="py-2 font-bold">Mã tham chiếu NH</th>
+                <th className="py-2 font-bold">
+                  {tx('Mã giao dịch', 'Order code')}
+                </th>
+                <th className="py-2 font-bold">
+                  {tx('Gói nâng cấp', 'Target plan')}
+                </th>
+                <th className="py-2 font-bold">{tx('Số tiền', 'Amount')}</th>
+                <th className="py-2 font-bold">{tx('Trạng thái', 'Status')}</th>
+                <th className="py-2 font-bold">
+                  {tx('Mã tham chiếu NH', 'Bank reference')}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {transactions.map((tx) => (
-                <tr key={tx.id}>
+              {transactions.map((item) => (
+                <tr key={item.id}>
                   <td className="py-2.5 font-mono font-bold text-slate-900">
-                    {tx.order_code}
+                    {item.order_code}
                   </td>
                   <td className="py-2.5 uppercase font-bold text-slate-700">
-                    {tx.target_plan}
+                    {item.target_plan}
                   </td>
                   <td className="py-2.5 font-bold text-slate-900">
-                    {formatCurrency(tx.amount)}
+                    {formatCurrency(item.amount)}
                   </td>
                   <td className="py-2.5">
                     <span
                       className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
-                        tx.status === 'completed'
+                        item.status === 'completed'
                           ? 'bg-emerald-100 text-emerald-800'
                           : 'bg-amber-100 text-amber-800'
                       }`}
                     >
-                      {tx.status === 'completed' ? 'Thành công' : 'Đang chờ'}
+                      {item.status === 'completed'
+                        ? tx('Thành công', 'Completed')
+                        : tx('Đang chờ', 'Pending')}
                     </span>
                   </td>
                   <td className="py-2.5 font-mono text-slate-500">
-                    {tx.bank_ref_id || '—'}
+                    {item.bank_ref_id || '—'}
                   </td>
                 </tr>
               ))}

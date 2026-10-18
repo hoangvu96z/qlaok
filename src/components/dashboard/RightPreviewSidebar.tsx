@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { CatalogItem, Shop } from '@/types/qlaok';
 import { StorefrontPhonePreview } from '@/components/storefront/StorefrontCustomDecor';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface RightPreviewSidebarProps {
   shop: Shop;
@@ -30,9 +31,14 @@ export function RightPreviewSidebar({
   isOpen,
   onToggle,
   onOpenPopupPreview,
-  subtitle = 'Hiển thị trực tiếp theo cài đặt đang chỉnh sửa',
+  subtitle,
   children,
 }: RightPreviewSidebarProps) {
+  const { tx } = useAppI18n();
+  const displaySubtitle =
+    subtitle ||
+    tx('Cập nhật trực tiếp theo cài đặt', 'Updates live as you edit');
+
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -54,39 +60,44 @@ export function RightPreviewSidebar({
         />
       )}
 
-      {/* Floating Right Edge Trigger Tab when Slide-bar is collapsed */}
+      {/* Floating Right Edge Trigger Tab when Sidebar is collapsed */}
       {!isOpen && (
         <button
           type="button"
           onClick={onToggle}
-          title="Mở thanh xem trước màn hình khách (Slide-bar bên phải)"
+          title={tx(
+            'Mở khung xem trước màn hình khách',
+            'Open customer screen preview'
+          )}
           className="fixed right-0 top-24 z-40 flex items-center gap-2 rounded-l-2xl border border-r-0 border-emerald-500/40 bg-slate-950 px-3.5 py-3 text-xs font-black text-white shadow-2xl transition-all hover:bg-emerald-600 hover:pr-5"
         >
           <PanelRightOpen className="h-4 w-4 text-emerald-400" />
           <Smartphone className="h-4 w-4 text-emerald-400" />
-          <span className="hidden sm:inline">Mở Preview Khách</span>
-          <span className="sm:hidden">Preview</span>
+          <span className="hidden sm:inline">
+            {tx('Xem trước', 'Preview')}
+          </span>
+          <span className="sm:hidden">{tx('Xem', 'Preview')}</span>
         </button>
       )}
 
-      {/* Docked Right Sidebar (Slide-bar bên phải) */}
+      {/* Docked Right Sidebar */}
       <aside
-        aria-label="Xem trước màn hình khách"
+        aria-label={tx('Xem trước màn hình khách', 'Customer screen preview')}
         className={`fixed inset-y-0 right-0 z-40 w-[340px] sm:w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
           isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
       >
-        {/* Prominent Left-edge Handle Tab to Collapse Slide-bar */}
+        {/* Prominent Left-edge Handle Tab to Collapse Sidebar */}
         {isOpen && (
           <button
             type="button"
             onClick={onToggle}
-            title="Thu gọn thanh xem trước bên phải (Phím tắt: Esc)"
+            title={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
             className="flex absolute -left-10 top-24 z-50 flex-col items-center justify-center gap-1 rounded-l-2xl border border-r-0 border-slate-700 bg-slate-900 px-2 py-3 text-white shadow-xl hover:bg-emerald-600 transition-colors cursor-pointer"
           >
             <ChevronRight className="h-4 w-4 text-emerald-400" />
             <span className="text-[9px] font-black uppercase tracking-tighter leading-none [writing-mode:vertical-rl]">
-              Thu gọn
+              {tx('Thu gọn', 'Hide')}
             </span>
           </button>
         )}
@@ -100,15 +111,15 @@ export function RightPreviewSidebar({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <h3 className="truncate text-xs font-black text-slate-900 dark:text-white">
-                  Preview Khách
+                  {tx('Màn hình khách', 'Customer View')}
                 </h3>
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-black uppercase text-emerald-600 dark:text-emerald-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Live
+                  {tx('Trực tiếp', 'Live')}
                 </span>
               </div>
               <p className="truncate text-[10px] text-slate-500 dark:text-slate-400">
-                {subtitle}
+                {displaySubtitle}
               </p>
             </div>
           </div>
@@ -118,20 +129,20 @@ export function RightPreviewSidebar({
               href={`/s/${shop.slug}/menu?src=table`}
               target="_blank"
               rel="noopener noreferrer"
-              title="Mở trang thực tế trên tab mới"
+              title={tx('Mở trang thực tế trên tab mới', 'Open live page in new tab')}
               className="inline-flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 hover:border-emerald-400 hover:text-emerald-600 transition"
             >
               <ExternalLink className="h-3 w-3" />
-              <span>Mở thật</span>
+              <span>{tx('Mở trang', 'Open')}</span>
             </a>
             <button
               type="button"
               onClick={onToggle}
-              title="Thu gọn thanh xem trước bên phải (Esc)"
+              title={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
               className="inline-flex items-center gap-1 rounded-xl bg-slate-900 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-rose-600 transition cursor-pointer shadow-xs"
             >
               <PanelRightClose className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Thu gọn</span>
+              <span>{tx('Thu gọn', 'Hide')}</span>
               <X className="h-3 w-3 opacity-75" />
             </button>
           </div>

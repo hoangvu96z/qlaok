@@ -1,5 +1,7 @@
 'use client';
 
+import { appLanguageName } from '@/lib/app-i18n';
+
 import React, { useState, useEffect } from 'react';
 import {
   X,
@@ -30,6 +32,15 @@ import {
   ITEM_OPTION_GROUP_PRESETS,
   normalizeAndTranslateOptionGroups,
 } from '@/lib/item-options-presets';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
+
+const PRESET_BUTTON_LABELS: Record<string, { vi: string; en: string }> = {
+  sugar_level: { vi: '+ Mức đường', en: '+ Sugar level' },
+  ice_level: { vi: '+ Mức đá', en: '+ Ice level' },
+  drink_size: { vi: '+ Kích cỡ (M/L)', en: '+ Size (M/L)' },
+  drink_toppings: { vi: '+ Topping đồ uống', en: '+ Drink toppings' },
+  food_addons: { vi: '+ Món gọi thêm', en: '+ Extra add-ons' },
+};
 
 interface TranslationEditorModalProps {
   isOpen: boolean;
@@ -52,6 +63,7 @@ export function TranslationEditorModal({
   defaultCategoryId,
   onSaved,
 }: TranslationEditorModalProps) {
+  const { locale, t, tx } = useAppI18n();
   const [categoryId, setCategoryId] = useState('');
   const [price, setPrice] = useState('45000');
   const [compareAtPrice, setCompareAtPrice] = useState('');
@@ -168,13 +180,16 @@ export function TranslationEditorModal({
   const handleAddBlankOptionGroup = () => {
     const newGroup: ItemOptionGroup = {
       id: `grp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      name_i18n: { vi: 'Nhóm tùy chọn mới (VD: Topping / Độ ngọt)' },
+      name_i18n: {
+        vi: 'Nhóm tùy chọn mới',
+        en: 'New option group',
+      },
       desc_i18n: { vi: '' },
       required: false,
       choices: [
         {
           id: `ch-${Date.now()}-1`,
-          label_i18n: { vi: 'Lựa chọn 1' },
+          label_i18n: { vi: 'Lựa chọn 1', en: 'Option 1' },
           desc_i18n: { vi: '' },
           extra_price: 0,
         },
@@ -234,7 +249,10 @@ export function TranslationEditorModal({
   const handleAiTranslate = async () => {
     if (!nameI18n.vi.trim()) {
       setErrorMsg(
-        'Vui lòng nhập Tên món / dịch vụ bằng Tiếng Việt trước khi dịch AI.'
+        tx(
+          'Vui lòng nhập tên món bằng Tiếng Việt trước khi dịch.',
+          'Please enter the Vietnamese item name before translating.'
+        )
       );
       return;
     }
@@ -254,7 +272,9 @@ export function TranslationEditorModal({
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Dịch tự động thất bại');
+        throw new Error(
+          data.error || tx('Dịch tự động thất bại', 'Auto-translation failed')
+        );
       }
       if (data.name_i18n) {
         setNameI18n(data.name_i18n);
@@ -267,7 +287,9 @@ export function TranslationEditorModal({
       setActiveTab('en');
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Lỗi khi dịch tự động'
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi dịch tự động', 'Auto-translation error')
       );
     } finally {
       setTranslating(false);
@@ -287,7 +309,10 @@ export function TranslationEditorModal({
     } catch (err) {
       console.error('Image compression/upload error:', err);
       setErrorMsg(
-        'Không thể nén/tải ảnh lên. Bạn có thể dán trực tiếp URL ảnh.'
+        tx(
+          'Không thể tải ảnh lên. Bạn có thể dán trực tiếp link ảnh.',
+          'Could not upload image. You can paste an image URL instead.'
+        )
       );
     } finally {
       setUploadingImage(false);
@@ -297,11 +322,16 @@ export function TranslationEditorModal({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nameI18n.vi.trim()) {
-      setErrorMsg('Tên Tiếng Việt không được để trống.');
+      setErrorMsg(
+        tx(
+          'Tên Tiếng Việt không được để trống.',
+          'Vietnamese item name is required.'
+        )
+      );
       return;
     }
     if (!categoryId) {
-      setErrorMsg('Vui lòng chọn danh mục.');
+      setErrorMsg(tx('Vui lòng chọn danh mục.', 'Please select a category.'));
       return;
     }
 
@@ -337,7 +367,9 @@ export function TranslationEditorModal({
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Không thể lưu món');
+        throw new Error(
+          data.error || tx('Không thể lưu món', 'Could not save item')
+        );
       }
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -349,7 +381,11 @@ export function TranslationEditorModal({
       onSaved();
       onClose();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Lỗi khi lưu dữ liệu');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi lưu dữ liệu', 'Failed to save item')
+      );
     } finally {
       setSaving(false);
     }
@@ -367,17 +403,28 @@ export function TranslationEditorModal({
             <div>
               <h3 className="text-base font-extrabold text-slate-900">
                 {editingItem
-                  ? `Cấu hình Món, Mô tả, Option/Topping & 8 Ngôn ngữ (${editingItem.name_i18n.vi})`
-                  : 'Thêm Món Mới (Kèm Mô Tả, Option/Topping & AI Dịch 8 Ngôn Ngữ)'}
+                  ? tx('Chỉnh sửa món ({name})', 'Edit item ({name})', {
+                      name:
+                        (locale === 'en' && editingItem.name_i18n.en) ||
+                        editingItem.name_i18n.vi,
+                    })
+                  : tx(
+                      'Thêm món mới & dịch 8 ngôn ngữ',
+                      'Add item & 8-language translation'
+                    )}
               </h3>
               <p className="text-xs text-slate-500">
-                Cài đặt giá bán, mô tả chi tiết cho khách đọc, nhóm tùy chọn (Đường/Đá/Size/Topping cộng tiền) và tự động đồng bộ sang Menu QR &amp; POS
+                {tx(
+                  'Cài đặt giá bán, mô tả, tùy chọn đi kèm và bản dịch trên thực đơn QR.',
+                  'Set price, description, add-on options, and translations for the QR menu.'
+                )}
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label={t('common.close')}
             className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200/70 text-slate-600 hover:bg-slate-300"
           >
             <X className="h-4 w-4" />
@@ -399,19 +446,21 @@ export function TranslationEditorModal({
             {/* Dish Image Upload */}
             <div className="lg:col-span-5 rounded-2xl border border-slate-200 bg-slate-50 p-3.5 flex items-center gap-3.5">
               <label
-                title="Bấm để chọn ảnh món từ máy"
+                title={tx('Chọn ảnh món từ máy', 'Upload item image')}
                 className="group relative flex h-20 w-20 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-emerald-400 bg-white shadow-2xs"
               >
                 {imageUrl ? (
                   <img
                     src={imageUrl}
-                    alt="Preview"
+                    alt={tx('Ảnh món', 'Item preview')}
                     className="h-full w-full object-cover"
                   />
                 ) : (
                   <div className="flex flex-col items-center gap-1 text-emerald-700">
                     <Upload className="h-5 w-5" />
-                    <span className="text-[10px] font-extrabold">Chọn ảnh</span>
+                    <span className="text-[10px] font-extrabold">
+                      {tx('Chọn ảnh', 'Upload')}
+                    </span>
                   </div>
                 )}
                 <input
@@ -425,7 +474,7 @@ export function TranslationEditorModal({
               <div className="flex-1 min-w-0 space-y-2">
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-xs font-extrabold text-slate-900">
-                    📷 Hình ảnh món ăn
+                    📷 {tx('Ảnh món', 'Item photo')}
                   </span>
                   {imageUrl && (
                     <button
@@ -433,7 +482,7 @@ export function TranslationEditorModal({
                       onClick={() => setImageUrl('')}
                       className="text-[10px] font-bold text-rose-600 hover:underline"
                     >
-                      Xoá ảnh
+                      {tx('Xoá ảnh', 'Remove')}
                     </button>
                   )}
                 </div>
@@ -441,7 +490,9 @@ export function TranslationEditorModal({
                 <label className="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-2xs hover:bg-emerald-500">
                   <Upload className="h-3.5 w-3.5" />
                   <span>
-                    {uploadingImage ? 'Đang tải...' : 'Tải ảnh từ máy'}
+                    {uploadingImage
+                      ? tx('Đang tải...', 'Uploading...')
+                      : tx('Tải ảnh lên', 'Upload photo')}
                   </span>
                   <input
                     type="file"
@@ -455,7 +506,10 @@ export function TranslationEditorModal({
                   type="text"
                   value={imageUrl}
                   onChange={(e) => setImageUrl(e.target.value)}
-                  placeholder="Hoặc dán link ảnh https://..."
+                  placeholder={tx(
+                    'Hoặc dán link ảnh https://...',
+                    'Or paste image URL https://...'
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] text-slate-800 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
@@ -466,7 +520,7 @@ export function TranslationEditorModal({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Danh mục *
+                    {tx('Danh mục *', 'Category *')}
                   </label>
                   <select
                     value={categoryId}
@@ -475,7 +529,7 @@ export function TranslationEditorModal({
                   >
                     {categories.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.name_i18n.vi}
+                        {(locale === 'en' && c.name_i18n.en) || c.name_i18n.vi}
                       </option>
                     ))}
                   </select>
@@ -483,7 +537,7 @@ export function TranslationEditorModal({
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Giá bán chuẩn (VNĐ) *
+                    {tx('Giá bán (VNĐ) *', 'Price (VND) *')}
                   </label>
                   <input
                     type="number"
@@ -497,14 +551,14 @@ export function TranslationEditorModal({
                 {vertical === 'service' ? (
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Thời lượng (Phút)
+                      {tx('Thời lượng (phút)', 'Duration (mins)')}
                     </label>
                     <div className="relative">
                       <input
                         type="number"
                         value={durationMins}
                         onChange={(e) => setDurationMins(e.target.value)}
-                        placeholder="VD: 60"
+                        placeholder={tx('VD: 60', 'e.g. 60')}
                         className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                       />
                       <Clock className="pointer-events-none absolute right-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
@@ -513,13 +567,13 @@ export function TranslationEditorModal({
                 ) : (
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Giá gốc gạch ngang
+                      {tx('Giá gốc gạch ngang', 'Compare-at price')}
                     </label>
                     <input
                       type="number"
                       value={compareAtPrice}
                       onChange={(e) => setCompareAtPrice(e.target.value)}
-                      placeholder="Tuỳ chọn"
+                      placeholder={tx('Tuỳ chọn', 'Optional')}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -534,7 +588,9 @@ export function TranslationEditorModal({
                     onChange={(e) => setIsFeatured(e.target.checked)}
                     className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                   />
-                  <span>★ Đánh dấu Món Best Seller / Nổi bật</span>
+                  <span>
+                    {tx('★ Món bán chạy / Nổi bật', '★ Best seller / Featured')}
+                  </span>
                 </label>
 
                 <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
@@ -544,7 +600,7 @@ export function TranslationEditorModal({
                     onChange={(e) => setIsAvailable(e.target.checked)}
                     className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                   />
-                  <span>Đang còn hàng phục vụ</span>
+                  <span>{tx('Đang còn món', 'In stock / Available')}</span>
                 </label>
               </div>
             </div>
@@ -555,7 +611,12 @@ export function TranslationEditorModal({
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-emerald-950">
                 <FileText className="h-4 w-4 text-emerald-600" />
-                <span>1. Tên Món &amp; Mô Tả Chi Tiết Cho Thực Khách Đọc (Tiếng Việt)</span>
+                <span>
+                  {tx(
+                    '1. Tên món & mô tả gốc (Tiếng Việt)',
+                    '1. Source Name & Description (Vietnamese)'
+                  )}
+                </span>
               </span>
 
               <button
@@ -567,12 +628,19 @@ export function TranslationEditorModal({
                 {translating ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Đang dịch 8 ngôn ngữ...</span>
+                    <span>
+                      {tx('Đang dịch 8 ngôn ngữ...', 'Translating 8 languages...')}
+                    </span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-3.5 w-3.5" />
-                    <span>✨ Dịch tự động Tên, Mô tả &amp; Option sang 8 ngôn ngữ</span>
+                    <span>
+                      {tx(
+                        '✨ Dịch tự động sang 8 ngôn ngữ',
+                        '✨ Auto-translate to 8 languages'
+                      )}
+                    </span>
                   </>
                 )}
               </button>
@@ -581,7 +649,7 @@ export function TranslationEditorModal({
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
               <div className="md:col-span-5">
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  Tên món / đồ uống / dịch vụ (Tiếng Việt) *
+                  {tx('Tên món / dịch vụ (Tiếng Việt) *', 'Item / service name (Vietnamese) *')}
                 </label>
                 <input
                   type="text"
@@ -589,14 +657,20 @@ export function TranslationEditorModal({
                   onChange={(e) =>
                     setNameI18n((prev) => ({ ...prev, vi: e.target.value }))
                   }
-                  placeholder="VD: Trà sữa Ô Long Kem Cheese, Phở Bò Tái Lăn..."
+                  placeholder={tx(
+                    'VD: Trà sữa Ô Long Kem Cheese, Phở Bò...',
+                    'e.g. Oolong Cheese Milk Tea, Beef Pho...'
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-bold text-slate-900 focus:border-emerald-600 focus:outline-none"
                 />
               </div>
 
               <div className="md:col-span-7">
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  Mô tả chi tiết nguyên liệu / hương vị (Hiển thị trên Menu khách &amp; POS)
+                  {tx(
+                    'Mô tả thành phần / hương vị',
+                    'Ingredients / flavor description'
+                  )}
                 </label>
                 <textarea
                   rows={2}
@@ -604,7 +678,10 @@ export function TranslationEditorModal({
                   onChange={(e) =>
                     setDescI18n((prev) => ({ ...prev, vi: e.target.value }))
                   }
-                  placeholder="VD: Trà Ô Long nướng đậm vị kết hợp sữa tươi thanh mát, dùng kèm trân châu đường đen hoặc kem cheese mặn béo..."
+                  placeholder={tx(
+                    'VD: Trà Ô Long nướng đậm vị kết hợp sữa tươi và kem cheese...',
+                    'e.g. Roasted Oolong tea with fresh milk and savory cream cheese...'
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-800 focus:border-emerald-600 focus:outline-none"
                 />
               </div>
@@ -618,11 +695,18 @@ export function TranslationEditorModal({
                 <h4 className="text-xs sm:text-sm font-black text-slate-900 flex items-center gap-1.5">
                   <SlidersHorizontal className="h-4 w-4 text-amber-600" />
                   <span>
-                    2. Tùy Chọn Món &amp; Topping Kèm Giá Cộng Thêm ({optionGroups.length} nhóm)
+                    {tx(
+                      '2. Tùy chọn & Topping đi kèm ({count} nhóm)',
+                      '2. Options & Add-ons ({count} groups)',
+                      { count: optionGroups.length }
+                    )}
                   </span>
                 </h4>
                 <p className="text-[11px] text-slate-600">
-                  Thêm các nhóm tùy chọn như <strong>Ít đường / Nhiều đường</strong> (+0đ), <strong>Mức đá</strong> (+0đ), <strong>Size L</strong> (+10.000đ) hoặc <strong>Topping Trân châu, Kem Cheese, Thêm thịt</strong> (+giá tiền). Đồng bộ trực tiếp lên Menu QR của khách và màn hình POS tại quầy!
+                  {tx(
+                    'Thêm mức đường, đá, kích cỡ hoặc topping cộng thêm tiền trên thực đơn QR và tại quầy.',
+                    'Add sugar, ice, size, or paid toppings shown on the QR menu and counter.'
+                  )}
                 </p>
               </div>
 
@@ -632,26 +716,29 @@ export function TranslationEditorModal({
                 className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-black text-white shadow-xs hover:bg-slate-800"
               >
                 <Plus className="h-3.5 w-3.5 text-amber-400" />
-                <span>Tạo nhóm tùy chọn mới</span>
+                <span>{tx('Tạo nhóm tùy chọn', 'Add option group')}</span>
               </button>
             </div>
 
             {/* 1-Click Quick Preset Templates */}
             <div className="space-y-1.5">
               <span className="block text-[11px] font-extrabold text-slate-600">
-                ⚡ Chèn nhanh nhóm mẫu phổ biến (1 chạm):
+                ⚡ {tx('Chèn nhanh nhóm mẫu:', 'Quick presets:')}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {ITEM_OPTION_GROUP_PRESETS.map((preset) => (
-                  <button
-                    key={preset.key}
-                    type="button"
-                    onClick={() => handleAddPresetGroup(preset.createGroup)}
-                    className="inline-flex items-center gap-1 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-slate-800 shadow-2xs hover:bg-amber-100/70 hover:border-amber-400 transition"
-                  >
-                    <span>{preset.label}</span>
-                  </button>
-                ))}
+                {ITEM_OPTION_GROUP_PRESETS.map((preset) => {
+                  const lbl = PRESET_BUTTON_LABELS[preset.key];
+                  return (
+                    <button
+                      key={preset.key}
+                      type="button"
+                      onClick={() => handleAddPresetGroup(preset.createGroup)}
+                      className="inline-flex items-center gap-1 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-slate-800 shadow-2xs hover:bg-amber-100/70 hover:border-amber-400 transition"
+                    >
+                      <span>{lbl ? tx(lbl.vi, lbl.en) : preset.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -659,10 +746,16 @@ export function TranslationEditorModal({
             {optionGroups.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-white/80 p-5 text-center space-y-1">
                 <p className="text-xs font-bold text-slate-600">
-                  Món này hiện chưa có nhóm Option / Topping nào.
+                  {tx(
+                    'Món này chưa có nhóm tùy chọn hoặc topping.',
+                    'No option groups or toppings yet.'
+                  )}
                 </p>
                 <p className="text-[11px] text-slate-400">
-                  Bấm một trong các nút <strong>+ Nhóm Mức Đường / Mức Đá / Size / Topping</strong> phía trên để thêm nhanh trong 1 giây!
+                  {tx(
+                    'Chọn một nhóm mẫu phía trên để thêm nhanh.',
+                    'Click a preset button above to add one in a second.'
+                  )}
                 </p>
               </div>
             ) : (
@@ -676,7 +769,11 @@ export function TranslationEditorModal({
                     <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-start border-b border-slate-100 pb-3">
                       <div className="md:col-span-4">
                         <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
-                          Tên nhóm tùy chọn #{gIdx + 1} *
+                          {tx(
+                            'Tên nhóm #{index} *',
+                            'Group name #{index} *',
+                            { index: gIdx + 1 }
+                          )}
                         </label>
                         <input
                           type="text"
@@ -687,14 +784,17 @@ export function TranslationEditorModal({
                               name_i18n: { ...g.name_i18n, vi: e.target.value },
                             }))
                           }
-                          placeholder="VD: Mức đường, Chọn Size, Topping thêm..."
+                          placeholder={tx(
+                            'VD: Mức đường, Chọn Size, Topping...',
+                            'e.g. Sugar level, Size, Toppings...'
+                          )}
                           className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                         />
                       </div>
 
                       <div className="md:col-span-4">
                         <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
-                          Mô tả / Ghi chú nhóm cho khách đọc
+                          {tx('Ghi chú nhóm', 'Group note')}
                         </label>
                         <input
                           type="text"
@@ -708,14 +808,17 @@ export function TranslationEditorModal({
                               },
                             }))
                           }
-                          placeholder="VD: Chọn 1 mức ngọt hoặc Chọn nhiều topping..."
+                          placeholder={tx(
+                            'VD: Chọn 1 mức ngọt hoặc nhiều topping...',
+                            'e.g. Pick 1 level or multiple toppings...'
+                          )}
                           className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 focus:border-emerald-500 focus:bg-white focus:outline-none"
                         />
                       </div>
 
                       <div className="md:col-span-3">
                         <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
-                          Kiểu chọn trên Menu &amp; POS
+                          {tx('Kiểu chọn', 'Selection rule')}
                         </label>
                         <select
                           value={group.required ? 'single_required' : 'multi_optional'}
@@ -732,10 +835,10 @@ export function TranslationEditorModal({
                           }`}
                         >
                           <option value="single_required">
-                            🔘 Bắt buộc chọn 1 (Đường/Đá/Size)
+                            {tx('🔘 Bắt buộc chọn 1', '🔘 Required (pick 1)')}
                           </option>
                           <option value="multi_optional">
-                            ☑️ Chọn nhiều / Không bắt buộc (Topping)
+                            {tx('☑️ Tùy chọn (chọn nhiều)', '☑️ Optional (multi-select)')}
                           </option>
                         </select>
                       </div>
@@ -744,7 +847,8 @@ export function TranslationEditorModal({
                         <button
                           type="button"
                           onClick={() => handleRemoveOptionGroup(group.id)}
-                          title="Xóa nhóm tùy chọn này"
+                          title={tx('Xóa nhóm này', 'Remove group')}
+                          aria-label={tx('Xóa nhóm này', 'Remove group')}
                           className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -755,10 +859,18 @@ export function TranslationEditorModal({
                     {/* Choices List inside Group */}
                     <div className="space-y-2">
                       <div className="hidden sm:grid sm:grid-cols-12 gap-2 px-1 text-[10px] font-extrabold uppercase text-slate-400">
-                        <div className="col-span-4">Tên lựa chọn / Topping *</div>
-                        <div className="col-span-5">Mô tả thêm (để khách đọc hiểu)</div>
-                        <div className="col-span-2">Giá cộng thêm (+đ)</div>
-                        <div className="col-span-1 text-right">Xóa</div>
+                        <div className="col-span-4">
+                          {tx('Tên lựa chọn *', 'Option label *')}
+                        </div>
+                        <div className="col-span-5">
+                          {tx('Mô tả ngắn', 'Short note')}
+                        </div>
+                        <div className="col-span-2">
+                          {tx('Giá cộng (+đ)', 'Extra (+VND)')}
+                        </div>
+                        <div className="col-span-1 text-right">
+                          {t('common.delete')}
+                        </div>
                       </div>
 
                       {group.choices.map((choice) => (
@@ -779,7 +891,10 @@ export function TranslationEditorModal({
                                   },
                                 }))
                               }
-                              placeholder="VD: Ít đường (70%) hoặc Trân châu trắng"
+                              placeholder={tx(
+                                'VD: Ít đường (70%) hoặc Trân châu',
+                                'e.g. Less sugar (70%) or Boba'
+                              )}
                               className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-900"
                             />
                           </div>
@@ -797,7 +912,10 @@ export function TranslationEditorModal({
                                   },
                                 }))
                               }
-                              placeholder="Mô tả ngắn (VD: Ngọt thanh / Giòn sần sật...)"
+                              placeholder={tx(
+                                'Mô tả ngắn (VD: Ngọt thanh / Giòn...)',
+                                'Short note (e.g. Lightly sweet / Crispy...)'
+                              )}
                               className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600"
                             />
                           </div>
@@ -837,7 +955,8 @@ export function TranslationEditorModal({
                                 handleRemoveChoice(group.id, choice.id)
                               }
                               className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                              title="Xóa lựa chọn"
+                              title={tx('Xóa lựa chọn', 'Remove option')}
+                              aria-label={tx('Xóa lựa chọn', 'Remove option')}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -851,7 +970,13 @@ export function TranslationEditorModal({
                         className="inline-flex items-center gap-1 rounded-xl border border-dashed border-emerald-400 bg-emerald-50/50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100/70"
                       >
                         <Plus className="h-3.5 w-3.5" />
-                        <span>Thêm lựa chọn / Topping vào nhóm &ldquo;{group.name_i18n.vi}&rdquo;</span>
+                        <span>
+                          {tx(
+                            'Thêm lựa chọn vào "{name}"',
+                            'Add option to "{name}"',
+                            { name: group.name_i18n.vi }
+                          )}
+                        </span>
                       </button>
                     </div>
                   </div>
@@ -864,7 +989,10 @@ export function TranslationEditorModal({
           <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-bold text-slate-700">
-                3. Kiểm tra &amp; Chỉnh sửa bản dịch 8 ngôn ngữ:
+                {tx(
+                  '3. Kiểm tra bản dịch 8 ngôn ngữ:',
+                  '3. Review 8-language translations:'
+                )}
               </span>
               <div className="flex flex-wrap items-center gap-1 rounded-xl bg-slate-100 p-1">
                 {ALL_LOCALES.map((loc) => {
@@ -881,7 +1009,7 @@ export function TranslationEditorModal({
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      <FlagIcon locale={loc} className="h-3.5 w-5" />
+                      <FlagIcon locale={loc} title={appLanguageName(loc, locale)} className="h-3.5 w-5" />
                       <span>{meta.short}</span>
                       {hasValue && (
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -895,9 +1023,9 @@ export function TranslationEditorModal({
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-1">
               <div className="md:col-span-5">
                 <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 mb-1">
-                  <span>Tên hiển thị (</span>
-                  <FlagIcon locale={activeTab} className="h-3 w-4" />
-                  <span>{LOCALE_META[activeTab].label})</span>
+                  <span>{tx('Tên hiển thị (', 'Display name (')}</span>
+                  <FlagIcon locale={activeTab} title={appLanguageName(activeTab, locale)} className="h-3 w-4" />
+                  <span>{appLanguageName(activeTab, locale)})</span>
                 </label>
                 <input
                   type="text"
@@ -908,16 +1036,20 @@ export function TranslationEditorModal({
                       [activeTab]: e.target.value,
                     }))
                   }
-                  placeholder={`Bản dịch tên sang ${LOCALE_META[activeTab].label}...`}
+                  placeholder={tx(
+                    'Bản dịch tên sang {lang}...',
+                    'Translated name in {lang}...',
+                    { lang: appLanguageName(activeTab, locale) }
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
               </div>
 
               <div className="md:col-span-7">
                 <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 mb-1">
-                  <span>Mô tả món (</span>
-                  <FlagIcon locale={activeTab} className="h-3 w-4" />
-                  <span>{LOCALE_META[activeTab].label})</span>
+                  <span>{tx('Mô tả món (', 'Description (')}</span>
+                  <FlagIcon locale={activeTab} title={appLanguageName(activeTab, locale)} className="h-3 w-4" />
+                  <span>{appLanguageName(activeTab, locale)})</span>
                 </label>
                 <textarea
                   rows={2}
@@ -928,7 +1060,11 @@ export function TranslationEditorModal({
                       [activeTab]: e.target.value,
                     }))
                   }
-                  placeholder={`Bản dịch mô tả sang ${LOCALE_META[activeTab].label}...`}
+                  placeholder={tx(
+                    'Bản dịch mô tả sang {lang}...',
+                    'Translated description in {lang}...',
+                    { lang: appLanguageName(activeTab, locale) }
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
               </div>
@@ -942,7 +1078,7 @@ export function TranslationEditorModal({
               onClick={onClose}
               className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100"
             >
-              Hủy
+              {t('common.cancel')}
             </button>
             <button
               type="submit"
@@ -952,12 +1088,12 @@ export function TranslationEditorModal({
               {saving ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Đang lưu...</span>
+                  <span>{t('common.saving')}</span>
                 </>
               ) : (
                 <>
                   <Check className="h-4 w-4" />
-                  <span>Lưu Món, Mô Tả &amp; Option vào Cửa Hàng</span>
+                  <span>{tx('Lưu món vào thực đơn', 'Save item to menu')}</span>
                 </>
               )}
             </button>

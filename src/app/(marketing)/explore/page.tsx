@@ -6,19 +6,20 @@ import {
   Search,
   MapPin,
   Wifi,
-  QrCode,
-  UtensilsCrossed,
-  Scissors,
-  ShoppingBag,
   ArrowRight,
-  Clock,
+  Store,
 } from 'lucide-react';
 import { BusinessVertical, Shop } from '@/types/qlaok';
 import { checkShopOpenStatus, LOCALE_META } from '@/lib/i18n-helper';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import {
+  AppLanguageSwitcher,
+  useAppI18n,
+} from '@/components/ui/AppI18nProvider';
 
 export default function ExploreDirectoryPage() {
+  const { t, tx } = useAppI18n();
   const [shops, setShops] = useState<Shop[]>([]);
   const [selectedVertical, setSelectedVertical] = useState<
     BusinessVertical | 'all'
@@ -53,32 +54,50 @@ export default function ExploreDirectoryPage() {
     return matchVert && matchCity && matchSearch;
   });
 
+  const handleResetFilters = () => {
+    setSelectedVertical('all');
+    setSelectedCity('all');
+    setSearchQuery('');
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
-        <div className="mx-auto max-w-6xl px-4 py-3.5 flex items-center justify-between gap-4">
+        <div className="mx-auto max-w-6xl px-4 py-3.5 flex items-center justify-between gap-3">
           <Link href="/" className="flex items-center gap-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white font-black text-lg">
               Q
             </div>
-            <span className="text-base font-black text-slate-900">
-              Qlaok Directory
-            </span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-base font-black text-slate-900">
+                Qlaok Directory
+              </span>
+              <span className="hidden sm:inline text-xs font-bold text-slate-500">
+                {tx('· Khám phá quán', '· Explore Stores')}
+              </span>
+            </div>
           </Link>
 
           <div className="flex items-center gap-2">
+            <AppLanguageSwitcher />
+            <Link
+              href="/pricing"
+              className="hidden sm:inline-flex rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
+            >
+              {tx('Bảng giá', 'Pricing')}
+            </Link>
             <Link
               href="/dashboard"
               className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
             >
-              Quản trị CMS
+              {tx('Quản lý quán', 'Manage Store')}
             </Link>
             <Link
               href="/onboarding"
               className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500"
             >
-              + Đăng ký quán miễn phí
+              {tx('+ Tạo quán mới', '+ Create Store')}
             </Link>
           </div>
         </div>
@@ -87,10 +106,16 @@ export default function ExploreDirectoryPage() {
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 space-y-6">
         <div className="space-y-2">
           <h1 className="text-2xl sm:text-3xl font-black text-slate-900">
-            Khám Phá Cửa Hàng Sử Dụng Menu Đa Ngôn Ngữ Qlaok
+            {tx(
+              'Khám phá quán',
+              'Explore stores'
+            )}
           </h1>
           <p className="text-xs sm:text-sm text-slate-600">
-            Danh bạ các quán ăn, cà phê, tiệm Nail/Spa và cửa hàng đặc sản hỗ trợ thực đơn 5 ngôn ngữ (Việt, Anh, Hàn, Nhật, Trung) kèm giá niêm yết minh bạch.
+            {tx(
+              'Danh bạ các quán ăn, cà phê, tiệm Nail/Spa và cửa hàng đặc sản hỗ trợ thực đơn đa ngôn ngữ kèm giá niêm yết minh bạch.',
+              'Browse restaurants, cafes, nail & spa salons, and specialty shops offering multilingual digital menus with transparent pricing.'
+            )}
           </p>
         </div>
 
@@ -103,7 +128,11 @@ export default function ExploreDirectoryPage() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm tên quán, món phở, gội đầu dưỡng sinh, đặc sản..."
+                aria-label={tx('Tìm kiếm cửa hàng', 'Search stores')}
+                placeholder={tx(
+                  'Tìm tên quán, món phở, gội đầu dưỡng sinh, đặc sản...',
+                  'Search store name, pho, spa services, specialty gifts...'
+                )}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
               />
             </div>
@@ -111,9 +140,19 @@ export default function ExploreDirectoryPage() {
             <select
               value={selectedCity}
               onChange={(e) => setSelectedCity(e.target.value)}
+              aria-label={tx(
+                'Lọc theo tỉnh hoặc thành phố',
+                'Filter by city or province'
+              )}
               className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-bold text-slate-800"
             >
-              <option value="all">📍 Tất cả khu vực ({shops.length})</option>
+              <option value="all">
+                {tx(
+                  '📍 Tất cả khu vực ({count})',
+                  '📍 All locations ({count})',
+                  { count: shops.length }
+                )}
+              </option>
               {cities.map((c) => (
                 <option key={c} value={c}>
                   📍 {c}
@@ -124,10 +163,28 @@ export default function ExploreDirectoryPage() {
 
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
             {[
-              { id: 'all', label: 'Tất cả ngành nghề' },
-              { id: 'fnb', label: '🍜 Ẩm thực F&B (Quán ăn, Cafe)' },
-              { id: 'service', label: '💆‍♀️ Dịch vụ (Tiệm Nail, Spa, Massage)' },
-              { id: 'retail', label: '🛍️ Bán lẻ & Đặc sản quà biếu' },
+              {
+                id: 'all',
+                label: tx('Tất cả ngành hàng', 'All categories'),
+              },
+              {
+                id: 'fnb',
+                label: tx('🍜 Quán ăn & Cafe', '🍜 Food & Cafe'),
+              },
+              {
+                id: 'service',
+                label: tx(
+                  '💆‍♀️ Nail, Spa & Dịch vụ',
+                  '💆‍♀️ Nail, Spa & Services'
+                ),
+              },
+              {
+                id: 'retail',
+                label: tx(
+                  '🛍️ Bán lẻ & Đặc sản',
+                  '🛍️ Retail & Specialties'
+                ),
+              },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -150,7 +207,34 @@ export default function ExploreDirectoryPage() {
         {/* Store Cards Grid */}
         {loading ? (
           <div className="p-12 text-center text-xs font-semibold text-slate-500">
-            Đang tải danh sách cửa hàng...
+            {tx('Đang tải danh sách cửa hàng...', 'Loading stores...')}
+          </div>
+        ) : filteredShops.length === 0 ? (
+          <div className="rounded-3xl border border-slate-200 bg-white p-10 text-center space-y-3 shadow-2xs">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
+              <Store className="h-6 w-6" />
+            </div>
+            <h2 className="text-base font-black text-slate-900">
+              {tx(
+                'Không tìm thấy cửa hàng phù hợp',
+                'No matching stores found'
+              )}
+            </h2>
+            <p className="mx-auto max-w-md text-xs text-slate-500">
+              {tx(
+                'Thử từ khóa khác hoặc xóa bộ lọc khu vực và ngành hàng để xem tất cả cửa hàng.',
+                'Try a different keyword or reset the location and category filters to view all stores.'
+              )}
+            </p>
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
+              >
+                {t('common.clearFilters')}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -179,7 +263,9 @@ export default function ExploreDirectoryPage() {
                             : 'bg-rose-600 text-white'
                         }`}
                       >
-                        {openStatus.isOpen ? '● Đang mở cửa' : 'Đã đóng cửa'}
+                        {openStatus.isOpen
+                          ? tx('● Đang mở cửa', '● Open now')
+                          : tx('Đã đóng cửa', 'Closed')}
                       </span>
 
                       <div className="absolute bottom-3 left-3 right-3 text-white">
@@ -213,7 +299,8 @@ export default function ExploreDirectoryPage() {
                         </div>
                         {shop.wifi_info?.ssid && (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
-                            <Wifi className="h-3 w-3" /> Free Wi-Fi
+                            <Wifi className="h-3 w-3" />{' '}
+                            {tx('Wi-Fi miễn phí', 'Free Wi-Fi')}
                           </span>
                         )}
                       </div>
@@ -225,7 +312,7 @@ export default function ExploreDirectoryPage() {
                       href={`/s/${shop.slug}?src=door`}
                       className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white py-2 px-3 text-xs font-bold text-slate-800 hover:bg-slate-100"
                     >
-                      <span>Trang Cửa Hàng</span>
+                      <span>{tx('Trang quán', 'Store Page')}</span>
                     </Link>
                     <Link
                       href={`/s/${shop.slug}/menu?src=table`}
@@ -235,7 +322,7 @@ export default function ExploreDirectoryPage() {
                       }}
                       className="flex items-center justify-center gap-1 rounded-xl py-2 px-3 text-xs font-black text-white shadow-2xs hover:opacity-95"
                     >
-                      <span>Xem Menu QR</span>
+                      <span>{tx('Xem Menu QR', 'QR Menu')}</span>
                       <ArrowRight className="h-3.5 w-3.5" />
                     </Link>
                   </div>

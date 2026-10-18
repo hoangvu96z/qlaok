@@ -1,5 +1,7 @@
 'use client';
 
+import { appLanguageName } from '@/lib/app-i18n';
+
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Megaphone,
@@ -36,6 +38,7 @@ import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
@@ -65,6 +68,7 @@ const BANNER_GRADIENT_SWATCHES: Array<{
 
 export default function DashboardPostsPage() {
   const { activeShop, refreshDashboard } = useDashboard();
+  const { locale, t, tx } = useAppI18n();
 
   const [studioTab, setStudioTab] = useState<StudioTab>('discount_banner');
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
@@ -434,10 +438,13 @@ export default function DashboardPostsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-black text-slate-900">
-            Khuyến Mãi, Giảm Giá &amp; Flash Sale ({activeShop.name})
+            {tx('Khuyến mãi', 'Promotions')}
           </h1>
           <p className="text-xs text-slate-500">
-            Thiết lập giảm giá theo % hoặc số tiền, chọn món ưu đãi, bật Flash Sale giờ vàng và xem trực tiếp trên Slide-bar bên phải
+            {tx(
+              'Thiết lập giảm giá theo % hoặc số tiền, chọn món ưu đãi, bật giờ vàng và xem trước ở khung bên phải.',
+              'Set % or fixed discounts, pick promo items, schedule flash sales, and preview in the right panel.'
+            )}
           </p>
         </div>
 
@@ -453,7 +460,9 @@ export default function DashboardPostsPage() {
           >
             <Smartphone className="h-3.5 w-3.5 text-emerald-600" />
             <span>
-              {isPreviewSidebarOpen ? 'Ẩn Slide-bar Xem Trước' : 'Mở Slide-bar Xem Trước'}
+              {isPreviewSidebarOpen
+                ? tx('Ẩn khung xem trước', 'Hide preview')
+                : tx('Mở khung xem trước', 'Show preview')}
             </span>
           </button>
 
@@ -463,7 +472,7 @@ export default function DashboardPostsPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
           >
             <Eye className="h-3.5 w-3.5 text-amber-500" />
-            <span>Xem Thử Popup</span>
+            <span>{tx('Xem thử Popup', 'Preview Popup')}</span>
           </button>
 
           <button
@@ -475,12 +484,16 @@ export default function DashboardPostsPage() {
             {savedSuccess ? (
               <>
                 <Check className="h-4 w-4" />
-                <span>Đã Lưu Khuyến Mãi!</span>
+                <span>{tx('Đã lưu khuyến mãi!', 'Promotions saved!')}</span>
               </>
             ) : (
               <>
                 <Save className="h-4 w-4" />
-                <span>{savingPromo ? 'Đang lưu...' : 'Lưu & Áp Dụng Ngay'}</span>
+                <span>
+                  {savingPromo
+                    ? t('common.saving')
+                    : tx('Lưu & áp dụng', 'Save & Apply')}
+                </span>
               </>
             )}
           </button>
@@ -499,10 +512,10 @@ export default function DashboardPostsPage() {
           }`}
         >
           <Flame className="h-4 w-4 text-amber-400" />
-          <span>1. Giảm Giá Hóa Đơn / Theo Món &amp; Banner</span>
+          <span>{tx('1. Giảm giá & Banner', '1. Discounts & Banner')}</span>
           {promoBanner.enabled && (
             <span className="rounded-full bg-emerald-500 px-1.5 py-0.5 text-[9px] text-white">
-              BẬT
+              {tx('BẬT', 'ON')}
             </span>
           )}
         </button>
@@ -517,10 +530,10 @@ export default function DashboardPostsPage() {
           }`}
         >
           <Zap className="h-4 w-4 text-amber-300" />
-          <span>2. Flash Sale Giờ Vàng</span>
+          <span>{tx('2. Flash Sale Giờ Vàng', '2. Flash Sale')}</span>
           {flashSale.enabled && (
             <span className="rounded-full bg-amber-300 px-1.5 py-0.5 text-[9px] text-slate-950">
-              BẬT
+              {tx('BẬT', 'ON')}
             </span>
           )}
         </button>
@@ -535,11 +548,15 @@ export default function DashboardPostsPage() {
           }`}
         >
           <Megaphone className="h-4 w-4" />
-          <span>3. Bản Tin Đa Ngôn Ngữ ({posts.length})</span>
+          <span>
+            {tx('3. Bản tin đa ngôn ngữ ({count})', '3. Announcements ({count})', {
+              count: posts.length,
+            })}
+          </span>
         </button>
       </div>
 
-      {/* Main Controls Area (Full Width alongside Right Slide-Bar Preview) */}
+      {/* Main Controls Area */}
       <div className="space-y-5">
         <div className="space-y-5">
           {/* TAB 1: DISCOUNT & BANNER / POPUP */}
@@ -551,10 +568,16 @@ export default function DashboardPostsPage() {
                   <Flame className="h-5 w-5 text-orange-500" />
                   <div>
                     <h2 className="text-sm font-black text-slate-900">
-                      Chương Trình Giảm Giá &amp; Banner Đầu Menu
+                      {tx(
+                        'Chương trình giảm giá & Banner đầu thực đơn',
+                        'Discount Program & Top Menu Banner'
+                      )}
                     </h2>
                     <p className="text-[11px] text-slate-500">
-                      Tự động tính tiền giảm trên giỏ hàng của khách và hiển thị Banner nổi bật
+                      {tx(
+                        'Tự động trừ tiền giảm trên giỏ hàng của khách và hiển thị banner nổi bật',
+                        'Automatically applies discounts to guest carts and displays a top banner'
+                      )}
                     </p>
                   </div>
                 </div>
@@ -572,7 +595,9 @@ export default function DashboardPostsPage() {
                     className="h-4 w-4 rounded border-slate-300 text-emerald-600"
                   />
                   <span className="text-xs font-extrabold text-slate-900">
-                    {promoBanner.enabled ? 'Đang bật' : 'Đang tắt'}
+                    {promoBanner.enabled
+                      ? t('common.enabled')
+                      : t('common.disabled')}
                   </span>
                 </label>
               </div>
@@ -581,7 +606,7 @@ export default function DashboardPostsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-2">
-                    Hình thức giảm giá
+                    {tx('Hình thức giảm giá', 'Discount type')}
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <button
@@ -600,7 +625,7 @@ export default function DashboardPostsPage() {
                       }`}
                     >
                       <Percent className="h-3.5 w-3.5" />
-                      <span>Theo %</span>
+                      <span>{tx('Theo %', 'Percentage (%)')}</span>
                     </button>
 
                     <button
@@ -619,14 +644,19 @@ export default function DashboardPostsPage() {
                       }`}
                     >
                       <Banknote className="h-3.5 w-3.5" />
-                      <span>Số tiền (đ)</span>
+                      <span>{tx('Số tiền (đ)', 'Fixed amount (VND)')}</span>
                     </button>
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-2">
-                    Mức giảm ({promoBanner.discountType === 'fixed_amount' ? 'VNĐ' : '%'})
+                    {tx('Mức giảm ({unit})', 'Discount value ({unit})', {
+                      unit:
+                        promoBanner.discountType === 'fixed_amount'
+                          ? 'VND'
+                          : '%',
+                    })}
                   </label>
                   <div className="space-y-2">
                     <input
@@ -674,15 +704,18 @@ export default function DashboardPostsPage() {
               {/* Step B: Minimum Order Value */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-2">
-                  Đơn hàng tối thiểu để được giảm
+                  {tx('Đơn hàng tối thiểu', 'Minimum order amount')}
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
                   {[
-                    { label: 'Không giới hạn (0đ)', val: 0 },
-                    { label: 'Từ 50.000đ', val: 50000 },
-                    { label: 'Từ 100.000đ', val: 100000 },
-                    { label: 'Từ 200.000đ', val: 200000 },
-                    { label: 'Từ 300.000đ', val: 300000 },
+                    {
+                      label: tx('Không giới hạn (0đ)', 'No minimum (0đ)'),
+                      val: 0,
+                    },
+                    { label: tx('Từ 50.000đ', 'From 50,000đ'), val: 50000 },
+                    { label: tx('Từ 100.000đ', 'From 100,000đ'), val: 100000 },
+                    { label: tx('Từ 200.000đ', 'From 200,000đ'), val: 200000 },
+                    { label: tx('Từ 300.000đ', 'From 300,000đ'), val: 300000 },
                   ].map((chip) => (
                     <button
                       key={chip.val}
@@ -714,7 +747,7 @@ export default function DashboardPostsPage() {
                         minOrderAmount: Math.max(0, Number(e.target.value)),
                       })
                     }
-                    placeholder="Tự nhập số tiền..."
+                    placeholder={tx('Tự nhập số tiền...', 'Custom amount...')}
                     className="w-36 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-900"
                   />
                 </div>
@@ -723,7 +756,7 @@ export default function DashboardPostsPage() {
               {/* Step C: Scope — All Menu vs Selected Products */}
               <div className="space-y-3">
                 <label className="block text-xs font-bold text-slate-700">
-                  Phạm vi sản phẩm áp dụng
+                  {tx('Phạm vi áp dụng', 'Applicable items')}
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <button
@@ -743,10 +776,13 @@ export default function DashboardPostsPage() {
                     <ShoppingBag className="h-4 w-4 text-emerald-600 shrink-0" />
                     <div>
                       <span className="block text-xs font-extrabold">
-                        Toàn bộ thực đơn
+                        {tx('Toàn bộ thực đơn', 'Entire menu')}
                       </span>
                       <span className="block text-[10px] text-slate-500">
-                        Giảm trên tổng hóa đơn
+                        {tx(
+                          'Giảm trên tổng hóa đơn',
+                          'Discount applies to order total'
+                        )}
                       </span>
                     </div>
                   </button>
@@ -768,10 +804,17 @@ export default function DashboardPostsPage() {
                     <Check className="h-4 w-4 text-emerald-600 shrink-0" />
                     <div>
                       <span className="block text-xs font-extrabold">
-                        Chọn một số món cụ thể ({(promoBanner.selectedItemIds || []).length})
+                        {tx(
+                          'Chọn món cụ thể ({count})',
+                          'Selected items ({count})',
+                          { count: (promoBanner.selectedItemIds || []).length }
+                        )}
                       </span>
                       <span className="block text-[10px] text-slate-500">
-                        Chỉ giảm giá các món được tích chọn
+                        {tx(
+                          'Chỉ giảm giá các món được chọn',
+                          'Discount applies only to checked items'
+                        )}
                       </span>
                     </div>
                   </button>
@@ -782,7 +825,14 @@ export default function DashboardPostsPage() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-700">
-                        Tích chọn các món được giảm giá ({(promoBanner.selectedItemIds || []).length}/{shopItems.length} món):
+                        {tx(
+                          'Chọn món giảm giá ({selected}/{total}):',
+                          'Select discounted items ({selected}/{total}):',
+                          {
+                            selected: (promoBanner.selectedItemIds || []).length,
+                            total: shopItems.length,
+                          }
+                        )}
                       </span>
                       <div className="flex gap-2">
                         <button
@@ -795,7 +845,7 @@ export default function DashboardPostsPage() {
                           }
                           className="text-[11px] font-bold text-emerald-700 hover:underline"
                         >
-                          Chọn tất cả
+                          {tx('Chọn tất cả', 'Select all')}
                         </button>
                         <button
                           type="button"
@@ -807,7 +857,7 @@ export default function DashboardPostsPage() {
                           }
                           className="text-[11px] font-bold text-slate-500 hover:underline"
                         >
-                          Bỏ chọn
+                          {tx('Bỏ chọn', 'Clear')}
                         </button>
                       </div>
                     </div>
@@ -880,7 +930,7 @@ export default function DashboardPostsPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Màu Banner
+                      {tx('Màu Banner', 'Banner color')}
                     </label>
                     <div className="flex items-center gap-2.5">
                       {BANNER_GRADIENT_SWATCHES.map((sw) => {
@@ -910,7 +960,7 @@ export default function DashboardPostsPage() {
 
                   <div className="flex-1 min-w-[180px]">
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Mã Voucher (Tùy chọn)
+                      {tx('Mã ưu đãi (tùy chọn)', 'Voucher code (optional)')}
                     </label>
                     <input
                       type="text"
@@ -926,7 +976,7 @@ export default function DashboardPostsPage() {
                           voucherCode: code,
                         }));
                       }}
-                      placeholder="VD: QLAOK15"
+                      placeholder={tx('VD: QLAOK15', 'e.g. QLAOK15')}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-mono font-bold text-emerald-700"
                     />
                   </div>
@@ -935,7 +985,7 @@ export default function DashboardPostsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tiêu đề hiển thị trên Banner
+                      {tx('Tiêu đề Banner', 'Banner title')}
                     </label>
                     <input
                       type="text"
@@ -952,7 +1002,7 @@ export default function DashboardPostsPage() {
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Mô tả phụ
+                      {tx('Mô tả phụ', 'Subtitle')}
                     </label>
                     <input
                       type="text"
@@ -974,10 +1024,16 @@ export default function DashboardPostsPage() {
                     <Gift className="h-5 w-5 text-rose-500 shrink-0" />
                     <div>
                       <p className="text-xs font-extrabold text-slate-900">
-                        Bật thêm Popup Chào Mừng tự động khi khách vừa quét QR
+                        {tx(
+                          'Hiển thị thêm Popup chào mừng khi khách vừa quét QR',
+                          'Also show a Welcome Popup when guests scan QR'
+                        )}
                       </p>
                       <p className="text-[11px] text-slate-600">
-                        Popup sẽ hiển thị mã voucher và chương trình ưu đãi này ngay khi mở trang
+                        {tx(
+                          'Popup hiển thị mã ưu đãi và chương trình giảm giá ngay khi mở trang',
+                          'Popup displays this voucher code and offer right when the menu opens'
+                        )}
                       </p>
                     </div>
                   </div>
@@ -1011,10 +1067,16 @@ export default function DashboardPostsPage() {
                   </div>
                   <div>
                     <h2 className="text-sm font-black text-slate-900">
-                      Flash Sale Giờ Vàng (Đếm Ngược Trực Tiếp)
+                      {tx(
+                        'Flash Sale Giờ Vàng (Đếm ngược)',
+                        'Flash Sale (Countdown)'
+                      )}
                     </h2>
                     <p className="text-[11px] text-slate-500">
-                      Tạo kệ hàng Flash Sale có đồng hồ đếm ngược và tự động gạch giá gốc trên Menu
+                      {tx(
+                        'Tạo kệ hàng giờ vàng có đồng hồ đếm ngược và gạch giá gốc trên thực đơn',
+                        'Create a countdown shelf with automatic strike-through prices on the menu'
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1032,7 +1094,9 @@ export default function DashboardPostsPage() {
                     className="h-4 w-4 rounded border-rose-300 text-rose-600"
                   />
                   <span className="text-xs font-extrabold text-rose-900">
-                    {flashSale.enabled ? 'Đang chạy Flash Sale' : 'Đang tắt'}
+                    {flashSale.enabled
+                      ? t('common.enabled')
+                      : t('common.disabled')}
                   </span>
                 </label>
               </div>
@@ -1041,7 +1105,7 @@ export default function DashboardPostsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Kiểu giảm Flash Sale
+                    {tx('Kiểu giảm Flash Sale', 'Flash Sale discount type')}
                   </label>
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
@@ -1059,7 +1123,7 @@ export default function DashboardPostsPage() {
                           : 'border-slate-200 bg-slate-50 text-slate-600'
                       }`}
                     >
-                      Theo %
+                      {tx('Theo %', 'Percentage (%)')}
                     </button>
                     <button
                       type="button"
@@ -1076,14 +1140,16 @@ export default function DashboardPostsPage() {
                           : 'border-slate-200 bg-slate-50 text-slate-600'
                       }`}
                     >
-                      Số tiền (đ)
+                      {tx('Số tiền (đ)', 'Fixed amount (VND)')}
                     </button>
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Mức giảm ({flashSale.discountType === 'percent' ? '%' : 'đ'})
+                    {tx('Mức giảm ({unit})', 'Discount value ({unit})', {
+                      unit: flashSale.discountType === 'percent' ? '%' : 'VND',
+                    })}
                   </label>
                   <input
                     type="number"
@@ -1108,7 +1174,7 @@ export default function DashboardPostsPage() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Tiêu đề chương trình Flash Sale
+                  {tx('Tiêu đề chương trình Flash Sale', 'Flash Sale title')}
                 </label>
                 <input
                   type="text"
@@ -1116,7 +1182,10 @@ export default function DashboardPostsPage() {
                   onChange={(e) =>
                     setFlashSale((prev) => ({ ...prev, title: e.target.value }))
                   }
-                  placeholder="VD: Giờ Vàng Giá Sốc - Giảm 25% Món Best Seller"
+                  placeholder={tx(
+                    'VD: Giờ Vàng Giá Sốc - Giảm 25% Món Bán Chạy',
+                    'e.g. Happy Hour Flash Sale - 25% Off Best Sellers'
+                  )}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-900"
                 />
               </div>
@@ -1125,7 +1194,11 @@ export default function DashboardPostsPage() {
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-700">
-                    Chọn sản phẩm đưa lên kệ Flash Sale ({flashSale.itemIds.length} món):
+                    {tx(
+                      'Chọn món đưa lên kệ Flash Sale ({count} món):',
+                      'Select Flash Sale items ({count}):',
+                      { count: flashSale.itemIds.length }
+                    )}
                   </span>
                   <div className="flex gap-2">
                     <button
@@ -1138,7 +1211,7 @@ export default function DashboardPostsPage() {
                       }
                       className="text-[11px] font-bold text-rose-600 hover:underline"
                     >
-                      Chọn 4 món đầu
+                      {tx('Chọn 4 món đầu', 'Pick first 4')}
                     </button>
                     <button
                       type="button"
@@ -1150,7 +1223,7 @@ export default function DashboardPostsPage() {
                       }
                       className="text-[11px] font-bold text-emerald-700 hover:underline"
                     >
-                      Chọn tất cả
+                      {tx('Chọn tất cả', 'Select all')}
                     </button>
                   </div>
                 </div>
@@ -1223,7 +1296,12 @@ export default function DashboardPostsPage() {
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
                     <Megaphone className="h-4 w-4 text-emerald-600" />
-                    <span>Đăng Bản Tin / Thông Báo Đa Ngôn Ngữ</span>
+                    <span>
+                      {tx(
+                        'Đăng bản tin / thông báo đa ngôn ngữ',
+                        'Publish Multilingual Announcement'
+                      )}
+                    </span>
                   </h2>
 
                   <button
@@ -1235,12 +1313,22 @@ export default function DashboardPostsPage() {
                     {translating ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>Đang dịch 8 thứ tiếng...</span>
+                        <span>
+                          {tx(
+                            'Đang dịch 8 ngôn ngữ...',
+                            'Translating 8 languages...'
+                          )}
+                        </span>
                       </>
                     ) : (
                       <>
                         <Sparkles className="h-3.5 w-3.5" />
-                        <span>✨ Dịch tự động 8 ngôn ngữ</span>
+                        <span>
+                          {tx(
+                            '✨ Dịch tự động 8 ngôn ngữ',
+                            '✨ Auto-translate 8 languages'
+                          )}
+                        </span>
                       </>
                     )}
                   </button>
@@ -1258,7 +1346,7 @@ export default function DashboardPostsPage() {
                           : 'text-slate-600'
                       }`}
                     >
-                      <FlagIcon locale={loc} className="h-3.5 w-5" />
+                      <FlagIcon locale={loc} title={appLanguageName(loc, locale)} className="h-3.5 w-5" />
                       <span>{LOCALE_META[loc].short}</span>
                     </button>
                   ))}
@@ -1267,7 +1355,9 @@ export default function DashboardPostsPage() {
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tiêu đề ({LOCALE_META[activeLangTab].label}) *
+                      {tx('Tiêu đề ({lang}) *', 'Title ({lang}) *', {
+                        lang: appLanguageName(activeLangTab, locale),
+                      })}
                     </label>
                     <input
                       type="text"
@@ -1278,14 +1368,19 @@ export default function DashboardPostsPage() {
                           [activeLangTab]: e.target.value,
                         }))
                       }
-                      placeholder="VD: Khuyến mãi mua 2 tặng 1 cuối tuần..."
+                      placeholder={tx(
+                        'VD: Khuyến mãi mua 2 tặng 1 cuối tuần...',
+                        'e.g. Weekend Buy 2 Get 1 Free promo...'
+                      )}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-900"
                     />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Nội dung chi tiết ({LOCALE_META[activeLangTab].label})
+                      {tx('Nội dung chi tiết ({lang})', 'Details ({lang})', {
+                        lang: appLanguageName(activeLangTab, locale),
+                      })}
                     </label>
                     <textarea
                       rows={2}
@@ -1296,7 +1391,7 @@ export default function DashboardPostsPage() {
                           [activeLangTab]: e.target.value,
                         }))
                       }
-                      placeholder="Mô tả chi tiết..."
+                      placeholder={tx('Mô tả chi tiết...', 'Details...')}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs text-slate-800"
                     />
                   </div>
@@ -1310,7 +1405,12 @@ export default function DashboardPostsPage() {
                       onChange={(e) => setIsPinned(e.target.checked)}
                       className="h-4 w-4 rounded border-slate-300 text-emerald-600"
                     />
-                    <span>📌 Ghim đầu trang cửa hàng</span>
+                    <span>
+                      {tx(
+                        '📌 Ghim đầu trang cửa hàng',
+                        '📌 Pin to top of store page'
+                      )}
+                    </span>
                   </label>
 
                   <button
@@ -1319,7 +1419,11 @@ export default function DashboardPostsPage() {
                     className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
                   >
                     <Plus className="h-4 w-4" />
-                    <span>{savingPost ? 'Đang đăng...' : 'Đăng Thông Báo'}</span>
+                    <span>
+                      {savingPost
+                        ? tx('Đang đăng...', 'Publishing...')
+                        : tx('Đăng thông báo', 'Publish')}
+                    </span>
                   </button>
                 </div>
               </form>
@@ -1338,7 +1442,7 @@ export default function DashboardPostsPage() {
                       <div className="flex items-center gap-2">
                         {post.is_pinned && (
                           <span className="rounded-full bg-amber-400/30 px-2 py-0.5 text-[10px] font-bold text-amber-900">
-                            📌 Đang ghim
+                            {tx('📌 Đang ghim', '📌 Pinned')}
                           </span>
                         )}
                         <h3 className="text-sm font-bold text-slate-900">
@@ -1354,6 +1458,8 @@ export default function DashboardPostsPage() {
                       <button
                         type="button"
                         onClick={() => handleTogglePin(post)}
+                        title={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
+                        aria-label={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
                         className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500"
                       >
                         <Pin className="h-3.5 w-3.5" />
@@ -1361,6 +1467,8 @@ export default function DashboardPostsPage() {
                       <button
                         type="button"
                         onClick={() => handleDeletePost(post.id)}
+                        title={t('common.delete')}
+                        aria-label={t('common.delete')}
                         className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-rose-600"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1373,14 +1481,17 @@ export default function DashboardPostsPage() {
           )}
         </div>
 
-        {/* Right Slide-Bar Interactive Smartphone Viewer */}
+        {/* Right Preview Sidebar Interactive Smartphone Viewer */}
         <RightPreviewSidebar
           shop={previewShop}
           items={shopItems}
           isOpen={isPreviewSidebarOpen}
           onToggle={togglePreviewSidebar}
           onOpenPopupPreview={() => setPreviewPopupOpen(true)}
-          subtitle="Xem trực tiếp Banner, Giảm giá & Flash Sale trên màn hình khách"
+          subtitle={tx(
+            'Xem trực tiếp Banner, Giảm giá & Flash Sale trên màn hình khách',
+            'Live preview of Banner, Discounts & Flash Sale on guest screen'
+          )}
         >
           <button
             type="button"
@@ -1388,7 +1499,12 @@ export default function DashboardPostsPage() {
             className="w-full rounded-2xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 flex items-center justify-center gap-1.5 transition"
           >
             <Eye className="h-3.5 w-3.5 text-amber-600" />
-            <span>Mở thử Popup Chào Mừng toàn màn hình</span>
+            <span>
+              {tx(
+                'Mở thử Popup chào mừng toàn màn hình',
+                'Preview full-screen Welcome Popup'
+              )}
+            </span>
           </button>
         </RightPreviewSidebar>
       </div>

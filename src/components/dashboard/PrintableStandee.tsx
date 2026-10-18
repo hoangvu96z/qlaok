@@ -6,6 +6,7 @@ import { toPng } from 'html-to-image';
 import { Download, Wifi, ExternalLink, Copy, Check } from 'lucide-react';
 import { Shop } from '@/types/qlaok';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface PrintableStandeeProps {
   shop: Shop;
@@ -22,6 +23,7 @@ export function PrintableStandee({
   showWifi = true,
   accentColor,
 }: PrintableStandeeProps) {
+  const { t, tx } = useAppI18n();
   const standeeRef = useRef<HTMLDivElement>(null);
   const [downloading, setDownloading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -82,8 +84,14 @@ export function PrintableStandee({
         >
           <p className="text-[10px] font-extrabold uppercase tracking-widest opacity-90">
             {qrType === 'door'
-              ? '🏪 MÃ QR DÁN CỬA / QUẦY LỄ TÂN'
-              : '🍽️ MÃ QR ĐẶT TẠI BÀN / GHẾ DỊCH VỤ'}
+              ? tx(
+                  '🏪 MÃ QR DÁN CỬA / QUẦY LỄ TÂN',
+                  '🏪 DOOR / FRONT DESK QR CODE'
+                )
+              : tx(
+                  '🍽️ MÃ QR ĐẶT TẠI BÀN / GHẾ DỊCH VỤ',
+                  '🍽️ TABLE / SEAT MENU QR CODE'
+                )}
           </p>
           <h3 className="text-lg font-black tracking-tight mt-0.5 truncate">
             {shop.name}
@@ -207,7 +215,7 @@ export function PrintableStandee({
           className="w-full flex items-center justify-between border-t border-slate-100 pt-2.5 text-[10px] font-bold text-slate-400"
         >
           <span>Powered by Qlaok.vn</span>
-          <span>Quét là OK ✨</span>
+          <span>{tx('Quét là OK ✨', 'Scan & Order ✨')}</span>
         </div>
       </div>
 
@@ -226,7 +234,9 @@ export function PrintableStandee({
         >
           <Download className="h-4 w-4" />
           <span>
-            {downloading ? 'Đang xuất ảnh...' : 'Tải ảnh PNG in A6'}
+            {downloading
+              ? tx('Đang xuất ảnh...', 'Exporting PNG...')
+              : tx('Tải ảnh in A6', 'Download A6 PNG')}
           </span>
         </button>
 
@@ -234,17 +244,17 @@ export function PrintableStandee({
           type="button"
           onClick={handleCopyLink}
           className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-          title="Copy đường dẫn QR"
+          title={tx('Sao chép đường dẫn QR', 'Copy QR link')}
         >
           {copiedUrl ? (
             <>
               <Check className="h-3.5 w-3.5 text-emerald-600" />
-              <span>Đã copy</span>
+              <span>{t('common.copied')}</span>
             </>
           ) : (
             <>
               <Copy className="h-3.5 w-3.5" />
-              <span>Copy Link</span>
+              <span>{t('common.copy')}</span>
             </>
           )}
         </button>
@@ -254,10 +264,10 @@ export function PrintableStandee({
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-          title="Mở thử giao diện khi khách quét"
+          title={tx('Mở thử trang khi khách quét', 'Open guest view')}
         >
           <ExternalLink className="h-3.5 w-3.5" />
-          <span>Mở thử</span>
+          <span>{tx('Mở thử', 'Test')}</span>
         </a>
       </div>
     </div>

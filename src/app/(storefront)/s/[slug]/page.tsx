@@ -45,6 +45,7 @@ export default function StorefrontDoorPage() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   const [loading, setLoading] = useState(true);
   const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
 

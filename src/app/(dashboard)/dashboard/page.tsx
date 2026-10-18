@@ -1,5 +1,7 @@
 'use client';
 
+import { appLanguageName } from '@/lib/app-i18n';
+
 import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import {
@@ -25,6 +27,7 @@ import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface AnalyticsSummary {
   scanDoorCount: number;
@@ -84,6 +87,7 @@ interface AnalyticsSummary {
 
 export default function DashboardOverviewPage() {
   const { activeShop } = useDashboard();
+  const { locale, tx } = useAppI18n();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [chartType, setChartType] = useState<'area' | 'bar'>('area');
@@ -131,7 +135,7 @@ export default function DashboardOverviewPage() {
   if (!activeShop) {
     return (
       <div className="p-8 text-center text-sm text-slate-500">
-        Đang tải dữ liệu cửa hàng...
+        {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
       </div>
     );
   }
@@ -174,12 +178,48 @@ export default function DashboardOverviewPage() {
   const posSourcePct = summary?.sourceBreakdown?.counter_pos.percentage ?? 25;
 
   const hourlySlots = summary?.hourlyBreakdown || [
-    { slot: '06h-09h', label: 'Sáng (6-9h)', orders: 2, revenue: 165000, percentage: 45 },
-    { slot: '09h-12h', label: 'Trưa (9-12h)', orders: 4, revenue: 380000, percentage: 100 },
-    { slot: '12h-15h', label: 'Chiều (12-15h)', orders: 3, revenue: 290000, percentage: 76 },
-    { slot: '15h-18h', label: 'Xế (15-18h)', orders: 2, revenue: 185000, percentage: 48 },
-    { slot: '18h-21h', label: 'Tối (18-21h)', orders: 4, revenue: 350000, percentage: 92 },
-    { slot: '21h-24h', label: 'Đêm (21-24h)', orders: 1, revenue: 95000, percentage: 25 },
+    {
+      slot: '06h-09h',
+      label: tx('Sáng (6-9h)', 'Morning (6-9h)'),
+      orders: 2,
+      revenue: 165000,
+      percentage: 45,
+    },
+    {
+      slot: '09h-12h',
+      label: tx('Trưa (9-12h)', 'Midday (9-12h)'),
+      orders: 4,
+      revenue: 380000,
+      percentage: 100,
+    },
+    {
+      slot: '12h-15h',
+      label: tx('Chiều (12-15h)', 'Afternoon (12-15h)'),
+      orders: 3,
+      revenue: 290000,
+      percentage: 76,
+    },
+    {
+      slot: '15h-18h',
+      label: tx('Xế (15-18h)', 'Late afternoon (15-18h)'),
+      orders: 2,
+      revenue: 185000,
+      percentage: 48,
+    },
+    {
+      slot: '18h-21h',
+      label: tx('Tối (18-21h)', 'Evening (18-21h)'),
+      orders: 4,
+      revenue: 350000,
+      percentage: 92,
+    },
+    {
+      slot: '21h-24h',
+      label: tx('Đêm (21-24h)', 'Night (21-24h)'),
+      orders: 1,
+      revenue: 95000,
+      percentage: 25,
+    },
   ];
   const peakSlot = [...hourlySlots].sort((a, b) => b.revenue - a.revenue)[0];
 
@@ -201,12 +241,12 @@ export default function DashboardOverviewPage() {
           <div className="inline-flex items-center gap-1.5 rounded-full bg-white/15 border border-white/25 px-3 py-0.5 text-xs font-bold text-emerald-100">
             <Sparkles className="h-3.5 w-3.5" />
             <span>
-              Ngành:{' '}
+              {tx('Mô hình:', 'Category:')}{' '}
               {activeShop.vertical === 'fnb'
-                ? 'Ẩm thực F&B (mPOS & QR Bàn)'
+                ? tx('Ẩm thực & Đồ uống (F&B)', 'Food & Beverage (F&B)')
                 : activeShop.vertical === 'service'
-                  ? 'Spa / Nail / Dịch vụ'
-                  : 'Bán lẻ & Đặc sản'}
+                  ? tx('Spa / Nail / Dịch vụ', 'Spa / Nail / Services')
+                  : tx('Bán lẻ & Đặc sản', 'Retail & Specialties')}
             </span>
           </div>
           <h1
@@ -216,7 +256,7 @@ export default function DashboardOverviewPage() {
             {activeShop.name}
           </h1>
           <p className="text-xs sm:text-sm text-emerald-100">
-            Đường dẫn QR:{' '}
+            {tx('Đường dẫn QR:', 'QR link:')}{' '}
             <code className="rounded bg-black/30 px-2 py-0.5 font-mono text-amber-300">
               qlaok.vn/s/{activeShop.slug}
             </code>
@@ -231,10 +271,11 @@ export default function DashboardOverviewPage() {
           >
             <BellRing className="h-4 w-4" />
             <span>
-              Màn hình Quầy mPOS (
-              {(summary?.newOrdersCount || 0) +
-                (summary?.preparingOrdersCount || 0)}{' '}
-              đơn)
+              {tx('Bán hàng & Đơn ({count})', 'Counter & Orders ({count})', {
+                count:
+                  (summary?.newOrdersCount || 0) +
+                  (summary?.preparingOrdersCount || 0),
+              })}
             </span>
           </Link>
           <Link
@@ -243,7 +284,7 @@ export default function DashboardOverviewPage() {
             className="keep-white-bg keep-dark-text inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-950 shadow-md hover:bg-emerald-50 border border-emerald-200 transition-transform active:scale-95"
           >
             <BarChart3 className="h-4 w-4 text-emerald-700" />
-            <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
+            <span>📊 {tx('Báo cáo & Xuất file', 'Reports & Export')}</span>
           </Link>
           <Link
             href="/dashboard/ai-scanner"
@@ -251,7 +292,7 @@ export default function DashboardOverviewPage() {
             className="keep-white-bg keep-dark-text inline-flex items-center gap-1.5 rounded-2xl bg-white px-4 py-2.5 text-xs font-black text-emerald-950 shadow-md hover:bg-emerald-50 border border-emerald-200 transition-transform active:scale-95"
           >
             <ScanLine className="h-4 w-4 text-emerald-700" />
-            <span>Quét Menu Giấy AI</span>
+            <span>{tx('Quét ảnh thực đơn', 'Scan Menu Photo')}</span>
           </Link>
           <Link
             href="/dashboard/qr-studio"
@@ -263,17 +304,17 @@ export default function DashboardOverviewPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border-2 px-4 py-2.5 text-xs font-black text-white shadow-md hover:opacity-90 transition-transform active:scale-95"
           >
             <QrCode className="h-4 w-4 text-emerald-200" />
-            <span>In QR Bàn</span>
+            <span>{tx('In mã QR', 'Print QR')}</span>
           </Link>
         </div>
       </div>
 
-      {/* Primary mPOS Revenue & Inventory KPIs */}
+      {/* Primary Revenue & Inventory KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="rounded-3xl border-2 border-emerald-200 bg-white p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-emerald-700">
-              Doanh thu hôm nay
+              {tx('Doanh thu hôm nay', "Today's revenue")}
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
               <Banknote className="h-4 w-4" />
@@ -285,16 +326,24 @@ export default function DashboardOverviewPage() {
               : formatCurrency(summary?.todayRevenue ?? 0, activeShop.currency)}
           </p>
           <p className="mt-0.5 text-[11px] font-medium text-slate-500">
-            {summary?.todayOrdersCount ?? 0} đơn hôm nay • TB{' '}
-            {formatCurrency(summary?.avgOrderValue ?? 0, activeShop.currency)}
-            /đơn
+            {tx(
+              '{orders} đơn hôm nay • TB {avg}/đơn',
+              '{orders} orders today • Avg {avg}/order',
+              {
+                orders: summary?.todayOrdersCount ?? 0,
+                avg: formatCurrency(
+                  summary?.avgOrderValue ?? 0,
+                  activeShop.currency
+                ),
+              }
+            )}
           </p>
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600">
-              Tổng doanh thu lũy kế
+              {tx('Tổng doanh thu lũy kế', 'Total revenue')}
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
               <BarChart3 className="h-4 w-4" />
@@ -306,7 +355,9 @@ export default function DashboardOverviewPage() {
               : formatCurrency(summary?.totalRevenue ?? 0, activeShop.currency)}
           </p>
           <p className="mt-0.5 text-[11px] text-slate-500">
-            Tổng {summary?.totalOrdersCount ?? 0} đơn hàng thành công
+            {tx('Tổng {count} đơn hoàn tất', '{count} total orders', {
+              count: summary?.totalOrdersCount ?? 0,
+            })}
           </p>
         </div>
 
@@ -316,18 +367,28 @@ export default function DashboardOverviewPage() {
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-amber-700">
-              Đơn tại quầy &amp; bếp
+              {tx('Đơn tại quầy & bếp', 'Counter & kitchen')}
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
               <BellRing className="h-4 w-4" />
             </div>
           </div>
           <p className="mt-2 text-2xl font-black text-slate-900">
-            {loading ? '...' : `${summary?.newOrdersCount ?? 0} đơn mới`}
+            {loading
+              ? '...'
+              : tx('{count} đơn mới', '{count} new orders', {
+                  count: summary?.newOrdersCount ?? 0,
+                })}
           </p>
           <p className="mt-0.5 text-[11px] font-semibold text-amber-700">
-            {summary?.preparingOrdersCount ?? 0} đang làm •{' '}
-            {summary?.completedOrdersCount ?? 0} hoàn tất →
+            {tx(
+              '{prep} đang làm • {done} hoàn tất →',
+              '{prep} preparing • {done} completed →',
+              {
+                prep: summary?.preparingOrdersCount ?? 0,
+                done: summary?.completedOrdersCount ?? 0,
+              }
+            )}
           </p>
         </Link>
 
@@ -337,17 +398,25 @@ export default function DashboardOverviewPage() {
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600">
-              Cảnh báo Tồn kho
+              {tx('Cảnh báo tồn kho', 'Stock alerts')}
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-rose-50 text-rose-600">
               <Package className="h-4 w-4" />
             </div>
           </div>
           <p className="mt-2 text-2xl font-black text-slate-900">
-            {loading ? '...' : `${summary?.lowStockCount ?? 0} sắp hết`}
+            {loading
+              ? '...'
+              : tx('{count} sắp hết', '{count} low stock', {
+                  count: summary?.lowStockCount ?? 0,
+                })}
           </p>
           <p className="mt-0.5 text-[11px] text-rose-600 font-semibold">
-            {summary?.outOfStockCount ?? 0} món tạm hết hàng • Cập nhật kho →
+            {tx(
+              '{count} món tạm hết • Cập nhật →',
+              '{count} sold out • Update →',
+              { count: summary?.outOfStockCount ?? 0 }
+            )}
           </p>
         </Link>
       </div>
@@ -361,14 +430,21 @@ export default function DashboardOverviewPage() {
               <BarChart3 className="h-5 w-5 text-emerald-600" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Biểu Đồ Doanh Thu &amp; Đơn Hàng 7 Ngày
+                  {tx(
+                    'Doanh thu & Đơn hàng 7 ngày',
+                    '7-Day Revenue & Orders'
+                  )}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Tổng 7 ngày:{' '}
+                  {tx('Tổng 7 ngày:', '7-day total:')}{' '}
                   <strong className="text-emerald-600">
                     {formatCurrency(total7dRev, activeShop.currency)}
                   </strong>{' '}
-                  ({total7dOrders} đơn)
+                  (
+                  {tx('{count} đơn', '{count} orders', {
+                    count: total7dOrders,
+                  })}
+                  )
                 </p>
               </div>
             </div>
@@ -383,7 +459,7 @@ export default function DashboardOverviewPage() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Đường xu hướng
+                {tx('Đường xu hướng', 'Trend line')}
               </button>
               <button
                 type="button"
@@ -394,7 +470,7 @@ export default function DashboardOverviewPage() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Cột phân kênh
+                {tx('Cột phân kênh', 'Stacked bars')}
               </button>
             </div>
           </div>
@@ -515,7 +591,18 @@ export default function DashboardOverviewPage() {
                       <div
                         style={{ height: `${heightPct}%` }}
                         className="w-full rounded-lg overflow-hidden flex flex-col justify-end transition-all duration-500"
-                        title={`${day.label}: ${formatCurrency(day.revenue, activeShop.currency)} (${day.orders} đơn)`}
+                        title={tx(
+                          '{label}: {rev} ({orders} đơn)',
+                          '{label}: {rev} ({orders} orders)',
+                          {
+                            label: day.label,
+                            rev: formatCurrency(
+                              day.revenue,
+                              activeShop.currency
+                            ),
+                            orders: day.orders,
+                          }
+                        )}
                       >
                         <div
                           style={{ height: `${100 - vqShare}%` }}
@@ -540,18 +627,18 @@ export default function DashboardOverviewPage() {
             <div className="flex items-center gap-4">
               <span className="inline-flex items-center gap-1.5 font-semibold">
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                VietQR Chuyển khoản
+                {tx('Chuyển khoản VietQR', 'VietQR transfer')}
               </span>
               <span className="inline-flex items-center gap-1.5 font-semibold">
                 <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
-                Tiền mặt tại quầy
+                {tx('Tiền mặt tại quầy', 'Cash at counter')}
               </span>
             </div>
             <Link
               href="/dashboard/orders"
               className="font-bold text-emerald-600 hover:underline"
             >
-              Chi tiết sổ đơn →
+              {tx('Xem đơn hàng →', 'View orders →')}
             </Link>
           </div>
         </div>
@@ -563,10 +650,16 @@ export default function DashboardOverviewPage() {
               <PieChart className="h-5 w-5 text-emerald-600" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Cơ Cấu Thanh Toán &amp; Nguồn Đơn
+                  {tx(
+                    'Thanh toán & Nguồn đơn',
+                    'Payment Methods & Order Sources'
+                  )}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Tỷ trọng doanh thu VietQR vs Tiền mặt &amp; Kênh gọi món
+                  {tx(
+                    'Tỷ trọng doanh thu VietQR / Tiền mặt và kênh gọi món',
+                    'Share of VietQR vs. Cash and ordering channel'
+                  )}
                 </p>
               </div>
             </div>
@@ -616,7 +709,7 @@ export default function DashboardOverviewPage() {
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-semibold text-slate-600">
                     <span className="h-2 w-2 rounded-full bg-amber-500" />
-                    Tiền mặt
+                    {tx('Tiền mặt', 'Cash')}
                   </span>
                   <strong className="text-slate-900">{cashPct}%</strong>
                 </div>
@@ -651,7 +744,7 @@ export default function DashboardOverviewPage() {
                     {qrSourcePct}%
                   </span>
                   <span className="text-[9px] font-bold text-sky-600 uppercase">
-                    QR Bàn
+                    {tx('QR Bàn', 'Table QR')}
                   </span>
                 </div>
               </div>
@@ -659,14 +752,14 @@ export default function DashboardOverviewPage() {
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-semibold text-slate-600">
                     <span className="h-2 w-2 rounded-full bg-sky-600" />
-                    Khách quét QR
+                    {tx('Khách quét QR', 'Table QR')}
                   </span>
                   <strong className="text-slate-900">{qrSourcePct}%</strong>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-semibold text-slate-600">
                     <span className="h-2 w-2 rounded-full bg-purple-500" />
-                    Tại quầy POS
+                    {tx('Tại quầy', 'Counter')}
                   </span>
                   <strong className="text-slate-900">{posSourcePct}%</strong>
                 </div>
@@ -676,7 +769,7 @@ export default function DashboardOverviewPage() {
 
           <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3.5 py-2.5 flex items-center justify-between text-xs">
             <span className="font-semibold text-slate-600">
-              Doanh thu VietQR:
+              {tx('Doanh thu VietQR:', 'VietQR revenue:')}
             </span>
             <strong className="text-emerald-600">
               {formatCurrency(
@@ -697,16 +790,21 @@ export default function DashboardOverviewPage() {
               <Clock className="h-5 w-5 text-amber-500" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Biểu Đồ Khung Giờ Cao Điểm Trong Ngày
+                  {tx('Khung giờ cao điểm', 'Peak Hours')}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Phân bổ mật độ khách &amp; doanh thu theo 6 khung giờ
+                  {tx(
+                    'Phân bổ lượng đơn và doanh thu theo 6 khung giờ',
+                    'Order volume and revenue across 6 time slots'
+                  )}
                 </p>
               </div>
             </div>
             {peakSlot && peakSlot.revenue > 0 && (
               <span className="rounded-full bg-amber-50 border border-amber-200 px-2.5 py-1 text-[10px] font-black text-amber-700">
-                Đông nhất: {peakSlot.slot}
+                {tx('Đông nhất: {slot}', 'Peak: {slot}', {
+                  slot: peakSlot.slot,
+                })}
               </span>
             )}
           </div>
@@ -723,7 +821,7 @@ export default function DashboardOverviewPage() {
                   className="flex flex-col items-center justify-end h-full gap-1.5"
                 >
                   <span className="text-[9px] font-bold text-slate-500">
-                    {slot.orders} đơn
+                    {tx('{count} đơn', '{count} ord', { count: slot.orders })}
                   </span>
                   <div className="w-full flex items-end justify-center h-24 bg-slate-50 rounded-xl overflow-hidden p-1">
                     <div
@@ -735,7 +833,18 @@ export default function DashboardOverviewPage() {
                             ? 'bg-emerald-500'
                             : 'bg-slate-200'
                       }`}
-                      title={`${slot.label}: ${formatCurrency(slot.revenue, activeShop.currency)} (${slot.orders} đơn)`}
+                      title={tx(
+                        '{label}: {rev} ({orders} đơn)',
+                        '{label}: {rev} ({orders} orders)',
+                        {
+                          label: slot.label,
+                          rev: formatCurrency(
+                            slot.revenue,
+                            activeShop.currency
+                          ),
+                          orders: slot.orders,
+                        }
+                      )}
                     />
                   </div>
                   <span className="text-[10px] font-extrabold text-slate-700">
@@ -747,9 +856,16 @@ export default function DashboardOverviewPage() {
           </div>
 
           <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Gợi ý bố trí nhân sự quầy &amp; bàn theo khung giờ vàng</span>
+            <span>
+              {tx(
+                'Gợi ý sắp xếp nhân sự theo khung giờ đông khách',
+                'Staffing reference by busy hours'
+              )}
+            </span>
             <span className="font-bold text-slate-700">
-              Tổng {summary?.totalOrdersCount ?? 0} đơn
+              {tx('Tổng {count} đơn', 'Total {count} orders', {
+                count: summary?.totalOrdersCount ?? 0,
+              })}
             </span>
           </div>
         </div>
@@ -761,54 +877,90 @@ export default function DashboardOverviewPage() {
               <Activity className="h-5 w-5 text-sky-600" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Phễu Chuyển Đổi Khách Quét QR → Đặt Món
+                  {tx('Hành trình khách quét QR → Đặt món', 'QR Scan → Order Funnel')}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Hành trình từ lúc khách quét mã QR đến khi hoàn tất thanh toán
+                  {tx(
+                    'Từ lúc khách quét mã QR đến khi hoàn tất thanh toán',
+                    'From scanning the QR code to completing payment'
+                  )}
                 </p>
               </div>
             </div>
             <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-1 text-[10px] font-black text-emerald-700">
-              Copy Wi-Fi: {summary?.wifiCopyCount ?? 0}
+              {tx('Chép Wi-Fi: {count}', 'Wi-Fi copies: {count}', {
+                count: summary?.wifiCopyCount ?? 0,
+              })}
             </span>
           </div>
 
           <div className="space-y-2.5 pt-1">
             {[
               {
-                step: '1. Quét mã QR Cửa & Bàn',
+                step: tx('1. Quét mã QR Cửa & Bàn', '1. Scan Door & Table QR'),
                 value: totalQrScans,
-                unit: `lượt (Cửa: ${summary?.scanDoorCount ?? 0} • Bàn: ${summary?.scanTableCount ?? 0})`,
+                unit: tx(
+                  'lượt (Cửa: {door} • Bàn: {table})',
+                  'scans (Door: {door} • Table: {table})',
+                  {
+                    door: summary?.scanDoorCount ?? 0,
+                    table: summary?.scanTableCount ?? 0,
+                  }
+                ),
                 pct: 100,
                 color: 'bg-sky-500',
               },
               {
-                step: '2. Xem thực đơn & Dịch ngôn ngữ',
+                step: tx(
+                  '2. Xem thực đơn & đổi ngôn ngữ',
+                  '2. View menu & switch language'
+                ),
                 value: totalItemViews,
-                unit: 'lượt xem món',
+                unit: tx('lượt xem món', 'item views'),
                 pct: Math.min(
                   95,
-                  Math.max(45, Math.round((totalItemViews / Math.max(totalQrScans, 1)) * 100))
+                  Math.max(
+                    45,
+                    Math.round(
+                      (totalItemViews / Math.max(totalQrScans, 1)) * 100
+                    )
+                  )
                 ),
                 color: 'bg-indigo-500',
               },
               {
-                step: '3. Gửi đơn gọi món / Đưa màn hình',
+                step: tx(
+                  '3. Gửi đơn gọi món / Đưa màn hình',
+                  '3. Place order / Show screen to staff'
+                ),
                 value: totalOrdersSubmitted,
-                unit: 'lượt gọi món',
+                unit: tx('lượt gọi món', 'orders placed'),
                 pct: Math.min(
                   85,
-                  Math.max(28, Math.round((totalOrdersSubmitted / Math.max(totalQrScans, 1)) * 100))
+                  Math.max(
+                    28,
+                    Math.round(
+                      (totalOrdersSubmitted / Math.max(totalQrScans, 1)) * 100
+                    )
+                  )
                 ),
                 color: 'bg-amber-500',
               },
               {
-                step: '4. Đơn hoàn tất & Thanh toán',
+                step: tx(
+                  '4. Đơn hoàn tất & Thanh toán',
+                  '4. Completed & Paid orders'
+                ),
                 value: completedOrders,
-                unit: 'đơn thành công',
+                unit: tx('đơn hoàn tất', 'completed orders'),
                 pct: Math.min(
                   75,
-                  Math.max(20, Math.round((completedOrders / Math.max(totalQrScans, 1)) * 100))
+                  Math.max(
+                    20,
+                    Math.round(
+                      (completedOrders / Math.max(totalQrScans, 1)) * 100
+                    )
+                  )
                 ),
                 color: 'bg-emerald-500',
               },
@@ -844,10 +996,13 @@ export default function DashboardOverviewPage() {
               <ShoppingBag className="h-5 w-5 text-amber-500" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Top Món Bán Chạy &amp; Tồn Kho
+                  {tx('Món bán chạy & Tồn kho', 'Best Sellers & Stock')}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Thống kê theo số lượng bán thực tế &amp; lượng tồn còn lại
+                  {tx(
+                    'Thống kê theo số lượng bán thực tế và tồn kho còn lại',
+                    'Ranked by units sold and remaining stock'
+                  )}
                 </p>
               </div>
             </div>
@@ -855,7 +1010,7 @@ export default function DashboardOverviewPage() {
               href="/dashboard/catalog"
               className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 hover:underline"
             >
-              <span>Nhập kho</span>
+              <span>{tx('Cập nhật kho', 'Manage stock')}</span>
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -883,7 +1038,7 @@ export default function DashboardOverviewPage() {
                       {item.name_vi}
                     </p>
                     <p className="truncate text-[11px] text-slate-500">
-                      Doanh thu:{' '}
+                      {tx('Doanh thu:', 'Revenue:')}{' '}
                       <strong className="text-emerald-600">
                         {formatCurrency(item.revenue, activeShop.currency)}
                       </strong>
@@ -893,7 +1048,9 @@ export default function DashboardOverviewPage() {
 
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="rounded-lg bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[11px] font-bold text-emerald-800">
-                    Đã bán: {item.sold_count}
+                    {tx('Đã bán: {count}', 'Sold: {count}', {
+                      count: item.sold_count,
+                    })}
                   </span>
                   <span
                     className={`rounded-lg px-2 py-0.5 text-[11px] font-bold border ${
@@ -905,7 +1062,7 @@ export default function DashboardOverviewPage() {
                           : 'bg-slate-100 border-slate-200 text-slate-700'
                     }`}
                   >
-                    Tồn:{' '}
+                    {tx('Tồn:', 'Stock:')}{' '}
                     {item.stock_quantity === null ||
                     item.stock_quantity === undefined
                       ? '∞'
@@ -924,15 +1081,18 @@ export default function DashboardOverviewPage() {
               <Languages className="h-5 w-5 text-emerald-600" />
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Biểu Đồ Ngôn Ngữ Khách Quét QR
+                  {tx('Ngôn ngữ khách quét QR', 'Visitor Languages')}
                 </h2>
                 <p className="text-[11px] text-slate-500">
-                  Tỷ lệ khách Việt Nam &amp; Quốc tế (Anh, Hàn, Nhật, Trung, TBN, Ý, Nga)
+                  {tx(
+                    'Tỷ lệ khách Việt Nam và quốc tế (Anh, Hàn, Nhật, Trung, TBN, Ý, Nga)',
+                    'Share of Vietnamese and international guests (EN, KO, JA, ZH, ES, IT, RU)'
+                  )}
                 </p>
               </div>
             </div>
             <span className="text-xs font-semibold text-slate-400">
-              8 ngôn ngữ
+              {tx('8 ngôn ngữ', '8 languages')}
             </span>
           </div>
 
@@ -945,11 +1105,15 @@ export default function DashboardOverviewPage() {
                     <span className="font-bold text-slate-800 flex items-center gap-2">
                       <FlagIcon locale={entry.lang} className="h-4 w-5.5" />
                       <span>
-                        {meta.label} ({meta.nativeName})
+                        {appLanguageName(entry.lang, locale)} ({meta.nativeName})
                       </span>
                     </span>
                     <span className="font-extrabold text-slate-900">
-                      {entry.percentage}% ({entry.count} lượt)
+                      {entry.percentage}% (
+                      {tx('{count} lượt', '{count} views', {
+                        count: entry.count,
+                      })}
+                      )
                     </span>
                   </div>
                   <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Sparkles,
@@ -1104,6 +1105,7 @@ export function StorefrontPhonePreview({
   items?: CatalogItem[];
   onOpenPopupPreview?: () => void;
 }) {
+  const { tx } = useAppI18n();
   const [previewTab, setPreviewTab] = useState<'menu' | 'door'>('menu');
   const [previewLocale, setPreviewLocale] = useState<SupportedLocale>('vi');
 
@@ -1192,7 +1194,7 @@ export function StorefrontPhonePreview({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 w-full max-w-[330px]">
         <div className="inline-flex items-center gap-1.5 text-xs font-extrabold text-slate-700">
           <Smartphone className="h-4 w-4 text-emerald-600" />
-          <span>Xem trước màn hình khách</span>
+          <span>{tx('Xem trước', 'Preview')}</span>
         </div>
         <div className="inline-flex rounded-xl bg-slate-200/80 p-0.5 text-[11px] font-bold">
           <button
@@ -1204,7 +1206,7 @@ export function StorefrontPhonePreview({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Trang Menu
+            {tx('Menu', 'Menu')}
           </button>
           <button
             type="button"
@@ -1215,7 +1217,7 @@ export function StorefrontPhonePreview({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Trang Cửa
+            {tx('Thông tin', 'Info')}
           </button>
         </div>
       </div>

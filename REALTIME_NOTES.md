@@ -43,13 +43,20 @@
 
 ## Frontend integration and verification
 
-- Web counter uses authenticated fetch SSE (`order-live-sync.ts`) because legacy
-  Qlaok HMAC sessions cannot authorize Supabase Postgres Changes directly.
+- Both the dashboard shell (`src/app/(dashboard)/dashboard/layout.tsx`) and the web
+  counter (`src/app/(dashboard)/dashboard/orders/page.tsx`) use authenticated fetch SSE
+  (`order-live-sync.ts` with `getAuthHeaders()`) because legacy Qlaok HMAC sessions
+  cannot authorize Supabase Postgres Changes directly. The legacy 3.5-second
+  unauthenticated shell polling loop has been removed.
 - While connected, no interval reloads orders/catalog. On failure only, data sync
   runs every 30 seconds; reconnects back off to 30 seconds. Hidden tabs disconnect
   and stop polling. Resume/subscription-ready refreshes canonical API data.
 - Events are debounced and requests serialized, with a trailing refresh for an
-  event received during a request. Shop-switch generations reject stale responses.
+  event received during a request. Shop-switch generations reject stale responses
+  and clear old-shop badges and toast notifications; language changes use a
+  translation ref without tearing down the live subscription or clearing known order IDs.
+  Duplicate sound/browser alerts are suppressed in the shell when `/dashboard/orders`
+  is active and already handling order alerts.
 - Catalog loads on entry/manual refresh. Order refreshes reuse catalog items already
   returned by `/api/orders`, without a separate `/api/catalog` request each time.
   Catalog lookup now filters the shop in SQL and limits it to one row.
@@ -61,8 +68,8 @@
   authentication rejection, hidden screens and unmount cleanup. SQL test verifies
   publication membership and migration replay safety in isolated PostgreSQL.
 - Browser fixture test: actual Next UI rendered `LIVE-1` on an injected SSE event;
-  idle counts remained catalog=2, orders=4 (dev Strict Mode initial loads included),
-  and browser console had no errors. Screenshot `/tmp/qlaok-realtime-ui/live-order.png`.
+  idle counts remained bounded without 3.5-second shell polling, and browser console
+  had no errors. Screenshot `/tmp/qlaok-realtime-ui/live-order.png`.
 - Deployment runs `scripts/check-order-realtime.mjs` on VPS using runtime config,
   verifies SUBSCRIBED on real `public.orders`, and logs no keys/order payloads.
   SSE response disables proxy buffering. Revalidation failures close the stream

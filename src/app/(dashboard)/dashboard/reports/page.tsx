@@ -24,6 +24,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { ShopOrder } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
@@ -111,6 +112,7 @@ function escapeHtml(val: string | number | null | undefined): string {
 
 export default function OrdersReportAndExportPage() {
   const { activeShop } = useDashboard();
+  const { t, tx } = useAppI18n();
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
@@ -174,14 +176,18 @@ export default function OrdersReportAndExportPage() {
         return {
           start: nowKey,
           end: nowKey,
-          label: `Hôm nay (${formatDateKeyVi(nowKey)})`,
+          label: tx('Hôm nay ({date})', 'Today ({date})', {
+            date: formatDateKeyVi(nowKey),
+          }),
         };
       case 'yesterday': {
         const yKey = shiftDateKey(nowKey, -1);
         return {
           start: yKey,
           end: yKey,
-          label: `Hôm qua (${formatDateKeyVi(yKey)})`,
+          label: tx('Hôm qua ({date})', 'Yesterday ({date})', {
+            date: formatDateKeyVi(yKey),
+          }),
         };
       }
       case '7days': {
@@ -189,7 +195,10 @@ export default function OrdersReportAndExportPage() {
         return {
           start: sKey,
           end: nowKey,
-          label: `7 ngày qua (${formatDateKeyVi(sKey)} - ${formatDateKeyVi(nowKey)})`,
+          label: tx('7 ngày qua ({start} - {end})', 'Last 7 days ({start} - {end})', {
+            start: formatDateKeyVi(sKey),
+            end: formatDateKeyVi(nowKey),
+          }),
         };
       }
       case '30days': {
@@ -197,7 +206,10 @@ export default function OrdersReportAndExportPage() {
         return {
           start: sKey,
           end: nowKey,
-          label: `30 ngày qua (${formatDateKeyVi(sKey)} - ${formatDateKeyVi(nowKey)})`,
+          label: tx('30 ngày qua ({start} - {end})', 'Last 30 days ({start} - {end})', {
+            start: formatDateKeyVi(sKey),
+            end: formatDateKeyVi(nowKey),
+          }),
         };
       }
       case 'this_month': {
@@ -205,7 +217,10 @@ export default function OrdersReportAndExportPage() {
         return {
           start: sKey,
           end: nowKey,
-          label: `Tháng này (${formatDateKeyVi(sKey)} - ${formatDateKeyVi(nowKey)})`,
+          label: tx('Tháng này ({start} - {end})', 'This month ({start} - {end})', {
+            start: formatDateKeyVi(sKey),
+            end: formatDateKeyVi(nowKey),
+          }),
         };
       }
       case 'single_day': {
@@ -213,7 +228,9 @@ export default function OrdersReportAndExportPage() {
         return {
           start: dKey,
           end: dKey,
-          label: `Ngày ${formatDateKeyVi(dKey)}`,
+          label: tx('Ngày {date}', 'Date {date}', {
+            date: formatDateKeyVi(dKey),
+          }),
         };
       }
       case 'custom_range': {
@@ -224,7 +241,10 @@ export default function OrdersReportAndExportPage() {
         return {
           start,
           end,
-          label: `Từ ${formatDateKeyVi(start)} đến ${formatDateKeyVi(end)}`,
+          label: tx('Từ {start} đến {end}', '{start} to {end}', {
+            start: formatDateKeyVi(start),
+            end: formatDateKeyVi(end),
+          }),
         };
       }
       case 'all':
@@ -232,10 +252,10 @@ export default function OrdersReportAndExportPage() {
         return {
           start: '0000-01-01',
           end: '9999-12-31',
-          label: 'Tất cả thời gian',
+          label: tx('Tất cả thời gian', 'All time'),
         };
     }
-  }, [rangeMode, singleDate, customFrom, customTo]);
+  }, [rangeMode, singleDate, customFrom, customTo, tx]);
 
   // Filter orders according to selected date bounds + status + payment + source + search
   const filteredOrders = useMemo(() => {
@@ -419,7 +439,7 @@ export default function OrdersReportAndExportPage() {
     for (const ord of filteredOrders) {
       if (ord.status === 'cancelled') continue;
       for (const line of ord.items || []) {
-        const key = line.name_vi || line.item_id || 'Món khác';
+        const key = line.name_vi || line.item_id || tx('Món khác', 'Other item');
         const curr = map.get(key) || {
           itemName: key,
           orderAppearances: 0,
@@ -439,27 +459,27 @@ export default function OrdersReportAndExportPage() {
     return Array.from(map.values()).sort(
       (a, b) => b.quantitySold - a.quantitySold || b.revenue - a.revenue
     );
-  }, [filteredOrders]);
+  }, [filteredOrders, tx]);
 
   // Export 1: CSV Summary by Order (1 row = 1 order)
   const handleExportOrdersCsv = () => {
     if (!activeShop) return;
     const headers = [
-      'STT',
-      'Mã Đơn',
-      'Ngày (VN)',
-      'Giờ Tạo (VN)',
-      'Bàn / Vị Trí',
-      'Nguồn Đơn',
-      'Chi Tiết Món Đã Gọi',
-      'Tổng Số Món',
-      'Tạm Tính',
-      'Giảm Giá',
-      'Tổng Thu',
-      'Phương Thức Thanh Toán',
-      'Trạng Thái Thu Tiền',
-      'Trạng Thái Đơn',
-      'Ghi Chú Bàn',
+      tx('STT', 'No.'),
+      tx('Mã Đơn', 'Order Code'),
+      tx('Ngày (VN)', 'Date (VN)'),
+      tx('Giờ Tạo (VN)', 'Created Time (VN)'),
+      tx('Bàn / Vị Trí', 'Table / Location'),
+      tx('Nguồn Đơn', 'Source'),
+      tx('Chi Tiết Món Đã Gọi', 'Ordered Items'),
+      tx('Tổng Số Món', 'Total Items'),
+      tx('Tạm Tính', 'Subtotal'),
+      tx('Giảm Giá', 'Discount'),
+      tx('Tổng Thu', 'Total Amount'),
+      tx('Phương Thức Thanh Toán', 'Payment Method'),
+      tx('Trạng Thái Thu Tiền', 'Payment Status'),
+      tx('Trạng Thái Đơn', 'Order Status'),
+      tx('Ghi Chú Bàn', 'Table Note'),
     ];
 
     const rows = filteredOrders.map((ord, index) => {
@@ -483,21 +503,27 @@ export default function OrdersReportAndExportPage() {
         dateKey,
         fullTime,
         ord.table_label,
-        ord.source === 'counter_pos' ? 'Tại quầy (POS)' : 'Khách quét QR',
+        ord.source === 'counter_pos'
+          ? tx('Tại quầy (POS)', 'Counter POS')
+          : tx('Khách quét QR', 'Table QR'),
         itemsText,
         totalQty,
         ord.subtotal_amount ?? ord.total_amount,
         ord.discount_amount ?? 0,
         ord.total_amount,
-        ord.payment_method === 'vietqr' ? 'Chuyển khoản VietQR' : 'Tiền mặt',
-        ord.payment_status === 'paid' ? 'Đã thu tiền' : 'Chưa thu tiền',
+        ord.payment_method === 'vietqr'
+          ? tx('Chuyển khoản VietQR', 'VietQR Transfer')
+          : tx('Tiền mặt', 'Cash'),
+        ord.payment_status === 'paid'
+          ? tx('Đã thu tiền', 'Paid')
+          : tx('Chưa thu tiền', 'Unpaid'),
         ord.status === 'completed'
-          ? 'Hoàn tất'
+          ? tx('Hoàn tất', 'Completed')
           : ord.status === 'preparing'
-            ? 'Đang chế biến'
+            ? tx('Đang chế biến', 'Preparing')
             : ord.status === 'new'
-              ? 'Mới chờ nhận'
-              : 'Đã hủy',
+              ? tx('Mới chờ nhận', 'New')
+              : tx('Đã hủy', 'Cancelled'),
         ord.customer_note || '',
       ];
     });
@@ -524,21 +550,21 @@ export default function OrdersReportAndExportPage() {
   const handleExportLineItemsCsv = () => {
     if (!activeShop) return;
     const headers = [
-      'STT',
-      'Mã Đơn',
-      'Ngày (VN)',
-      'Giờ Tạo (VN)',
-      'Bàn / Vị Trí',
-      'Tên Món',
-      'Số Lượng',
-      'Đơn Giá Gốc',
-      'Phụ Thu Topping/Option',
-      'Thành Tiền Món',
-      'Option / Topping Đã Chọn',
-      'Ghi Chú Món',
-      'Phương Thức TT',
-      'Trạng Thái TT',
-      'Trạng Thái Đơn',
+      tx('STT', 'No.'),
+      tx('Mã Đơn', 'Order Code'),
+      tx('Ngày (VN)', 'Date (VN)'),
+      tx('Giờ Tạo (VN)', 'Created Time (VN)'),
+      tx('Bàn / Vị Trí', 'Table / Location'),
+      tx('Tên Món', 'Item Name'),
+      tx('Số Lượng', 'Quantity'),
+      tx('Đơn Giá Gốc', 'Base Price'),
+      tx('Phụ Thu Topping/Option', 'Add-on Price'),
+      tx('Thành Tiền Món', 'Line Total'),
+      tx('Option / Topping Đã Chọn', 'Selected Options'),
+      tx('Ghi Chú Món', 'Item Note'),
+      tx('Phương Thức TT', 'Payment Method'),
+      tx('Trạng Thái TT', 'Payment Status'),
+      tx('Trạng Thái Đơn', 'Order Status'),
     ];
 
     const rows: Array<Array<string | number>> = [];
@@ -567,15 +593,19 @@ export default function OrdersReportAndExportPage() {
           lineTotal,
           optText,
           line.custom_note || '',
-          ord.payment_method === 'vietqr' ? 'Chuyển khoản VietQR' : 'Tiền mặt',
-          ord.payment_status === 'paid' ? 'Đã thu tiền' : 'Chưa thu tiền',
+          ord.payment_method === 'vietqr'
+            ? tx('Chuyển khoản VietQR', 'VietQR Transfer')
+            : tx('Tiền mặt', 'Cash'),
+          ord.payment_status === 'paid'
+            ? tx('Đã thu tiền', 'Paid')
+            : tx('Chưa thu tiền', 'Unpaid'),
           ord.status === 'completed'
-            ? 'Hoàn tất'
+            ? tx('Hoàn tất', 'Completed')
             : ord.status === 'preparing'
-              ? 'Đang chế biến'
+              ? tx('Đang chế biến', 'Preparing')
               : ord.status === 'new'
-                ? 'Mới chờ nhận'
-                : 'Đã hủy',
+                ? tx('Mới chờ nhận', 'New')
+                : tx('Đã hủy', 'Cancelled'),
         ]);
       }
     }
@@ -625,20 +655,20 @@ export default function OrdersReportAndExportPage() {
             <td>${escapeHtml(dateKey)}</td>
             <td>${escapeHtml(fullTime)}</td>
             <td>${escapeHtml(ord.table_label)}</td>
-            <td>${ord.source === 'counter_pos' ? 'Tại quầy (POS)' : 'Khách quét QR'}</td>
+            <td>${ord.source === 'counter_pos' ? tx('Tại quầy (POS)', 'Counter POS') : tx('Khách quét QR', 'Table QR')}</td>
             <td>${escapeHtml(itemsText)}</td>
             <td style="text-align:center;">${totalQty}</td>
             <td style="text-align:right;font-weight:bold;">${Number(ord.total_amount || 0)}</td>
-            <td>${ord.payment_method === 'vietqr' ? 'Chuyển khoản VietQR' : 'Tiền mặt'}</td>
-            <td>${ord.payment_status === 'paid' ? 'Đã thu tiền' : 'Chưa thu tiền'}</td>
+            <td>${ord.payment_method === 'vietqr' ? tx('Chuyển khoản VietQR', 'VietQR Transfer') : tx('Tiền mặt', 'Cash')}</td>
+            <td>${ord.payment_status === 'paid' ? tx('Đã thu tiền', 'Paid') : tx('Chưa thu tiền', 'Unpaid')}</td>
             <td>${
               ord.status === 'completed'
-                ? 'Hoàn tất'
+                ? tx('Hoàn tất', 'Completed')
                 : ord.status === 'preparing'
-                  ? 'Đang chế biến'
+                  ? tx('Đang chế biến', 'Preparing')
                   : ord.status === 'new'
-                    ? 'Mới chờ nhận'
-                    : 'Đã hủy'
+                    ? tx('Mới chờ nhận', 'New')
+                    : tx('Đã hủy', 'Cancelled')
             }</td>
             <td>${escapeHtml(ord.customer_note || '')}</td>
           </tr>
@@ -672,54 +702,54 @@ export default function OrdersReportAndExportPage() {
         </style>
       </head>
       <body>
-        <h2>BÁO CÁO ĐƠN HÀNG &amp; DOANH THU — ${escapeHtml(activeShop.name.toUpperCase())}</h2>
-        <p><strong>Kỳ báo cáo:</strong> ${escapeHtml(effectiveDateBounds.label)} | <strong>Thời điểm xuất file:</strong> ${escapeHtml(getVnDateTimeString(new Date()))}</p>
+        <h2>${tx('BÁO CÁO ĐƠN HÀNG & DOANH THU', 'ORDERS & REVENUE REPORT')} — ${escapeHtml(activeShop.name.toUpperCase())}</h2>
+        <p><strong>${tx('Kỳ báo cáo:', 'Period:')}</strong> ${escapeHtml(effectiveDateBounds.label)} | <strong>${tx('Thời điểm xuất file:', 'Exported at:')}</strong> ${escapeHtml(getVnDateTimeString(new Date()))}</p>
 
         <table class="summary-box">
           <tr>
-            <th colspan="2">TỔNG HỢP KẾT QUẢ KINH DOANH TRONG KỲ</th>
+            <th colspan="2">${tx('TỔNG HỢP KẾT QUẢ KINH DOANH TRONG KỲ', 'PERIOD SUMMARY')}</th>
           </tr>
           <tr>
-            <td><strong>Tổng số đơn hợp lệ:</strong></td>
-            <td><strong>${kpiStats.validCount} đơn (${kpiStats.totalItemsSold} món bán ra)</strong></td>
+            <td><strong>${tx('Tổng số đơn hợp lệ:', 'Valid orders:')}</strong></td>
+            <td><strong>${tx('{orders} đơn ({items} món bán ra)', '{orders} orders ({items} items sold)', { orders: kpiStats.validCount, items: kpiStats.totalItemsSold })}</strong></td>
           </tr>
           <tr>
-            <td><strong>Doanh thu Tiền mặt (Cash):</strong></td>
-            <td>${kpiStats.cashRevenue} (${kpiStats.cashCount} đơn)</td>
+            <td><strong>${tx('Doanh thu Tiền mặt:', 'Cash revenue:')}</strong></td>
+            <td>${kpiStats.cashRevenue} (${tx('{count} đơn', '{count} orders', { count: kpiStats.cashCount })})</td>
           </tr>
           <tr>
-            <td><strong>Doanh thu Chuyển khoản (VietQR):</strong></td>
-            <td>${kpiStats.vietqrRevenue} (${kpiStats.vietqrCount} đơn)</td>
+            <td><strong>${tx('Doanh thu Chuyển khoản (VietQR):', 'VietQR transfer revenue:')}</strong></td>
+            <td>${kpiStats.vietqrRevenue} (${tx('{count} đơn', '{count} orders', { count: kpiStats.vietqrCount })})</td>
           </tr>
           <tr>
-            <td><strong>TỔNG DOANH THU THỰC NHẬN:</strong></td>
+            <td><strong>${tx('TỔNG DOANH THU THỰC NHẬN:', 'NET REVENUE:')}</strong></td>
             <td style="font-size:15px;font-weight:bold;color:#059669;">${kpiStats.totalRevenue}</td>
           </tr>
         </table>
 
-        <h3>1. DANH SÁCH CHI TIẾT ĐƠN HÀNG (${filteredOrders.length} ĐƠN)</h3>
+        <h3>1. ${tx('DANH SÁCH CHI TIẾT ĐƠN HÀNG ({count} ĐƠN)', 'ORDER DETAILS ({count} ORDERS)', { count: filteredOrders.length })}</h3>
         <table>
           <thead>
             <tr>
-              <th>STT</th>
-              <th>Mã Đơn</th>
-              <th>Ngày (VN)</th>
-              <th>Giờ Tạo (VN)</th>
-              <th>Bàn / Vị Trí</th>
-              <th>Nguồn Đơn</th>
-              <th>Chi Tiết Món &amp; Option</th>
-              <th>SL Món</th>
-              <th>Tổng Tiền (${escapeHtml(activeShop.currency)})</th>
-              <th>Phương Thức TT</th>
-              <th>Trạng Thái TT</th>
-              <th>Trạng Thái Đơn</th>
-              <th>Ghi Chú</th>
+              <th>${tx('STT', 'No.')}</th>
+              <th>${tx('Mã Đơn', 'Order Code')}</th>
+              <th>${tx('Ngày (VN)', 'Date (VN)')}</th>
+              <th>${tx('Giờ Tạo (VN)', 'Time (VN)')}</th>
+              <th>${tx('Bàn / Vị Trí', 'Table')}</th>
+              <th>${tx('Nguồn Đơn', 'Source')}</th>
+              <th>${tx('Chi Tiết Món & Option', 'Items & Options')}</th>
+              <th>${tx('SL Món', 'Qty')}</th>
+              <th>${tx('Tổng Tiền', 'Total')} (${escapeHtml(activeShop.currency)})</th>
+              <th>${tx('Phương Thức TT', 'Payment Method')}</th>
+              <th>${tx('Trạng Thái TT', 'Payment Status')}</th>
+              <th>${tx('Trạng Thái Đơn', 'Order Status')}</th>
+              <th>${tx('Ghi Chú', 'Note')}</th>
             </tr>
           </thead>
           <tbody>
             ${orderRowsHtml}
             <tr style="background-color:#ecfdf5;font-weight:bold;">
-              <td colspan="7" style="text-align:right;">TỔNG CỘNG (${kpiStats.validCount} đơn hợp lệ):</td>
+              <td colspan="7" style="text-align:right;">${tx('TỔNG CỘNG ({count} đơn hợp lệ):', 'TOTAL ({count} valid orders):', { count: kpiStats.validCount })}</td>
               <td style="text-align:center;">${kpiStats.totalItemsSold}</td>
               <td style="text-align:right;">${kpiStats.totalRevenue}</td>
               <td colspan="4"></td>
@@ -727,15 +757,15 @@ export default function OrdersReportAndExportPage() {
           </tbody>
         </table>
 
-        <h3>2. THỐNG KÊ SỐ LƯỢNG &amp; DOANH THU THEO TỪNG MÓN BÁN RA</h3>
+        <h3>2. ${tx('THỐNG KÊ SỐ LƯỢNG & DOANH THU THEO TỪNG MÓN BÁN RA', 'REVENUE & QUANTITY BY ITEM')}</h3>
         <table>
           <thead>
             <tr>
-              <th>STT</th>
-              <th>Tên Món</th>
-              <th>Số Lần Gọi</th>
-              <th>Tổng Số Lượng Bán</th>
-              <th>Doanh Thu Món (${escapeHtml(activeShop.currency)})</th>
+              <th>${tx('STT', 'No.')}</th>
+              <th>${tx('Tên Món', 'Item Name')}</th>
+              <th>${tx('Số Lần Gọi', 'Orders')}</th>
+              <th>${tx('Tổng Số Lượng Bán', 'Qty Sold')}</th>
+              <th>${tx('Doanh Thu Món', 'Revenue')} (${escapeHtml(activeShop.currency)})</th>
             </tr>
           </thead>
           <tbody>
@@ -759,7 +789,7 @@ export default function OrdersReportAndExportPage() {
   if (!activeShop) {
     return (
       <div className="p-8 text-center text-sm text-slate-500">
-        Đang tải dữ liệu cửa hàng...
+        {tx('Đang tải dữ liệu cửa hàng...', 'Loading shop data...')}
       </div>
     );
   }
@@ -775,18 +805,25 @@ export default function OrdersReportAndExportPage() {
               className="inline-flex items-center gap-1 rounded-xl bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-700 hover:text-white"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Quay lại POS &amp; Bếp</span>
+              <span>{tx('Quay lại POS & Bếp', 'Back to POS & Kitchen')}</span>
             </Link>
             <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-0.5 text-xs font-black text-emerald-300">
               <FileSpreadsheet className="h-3.5 w-3.5" />
-              <span>BÁO CÁO &amp; XUẤT FILE ĐƠN HÀNG</span>
+              <span>{tx('BÁO CÁO & XUẤT FILE', 'REPORTS & EXPORT')}</span>
             </span>
           </div>
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-            Tra cứu lịch sử đơn hàng &amp; Xuất báo cáo Excel / CSV
+            {tx(
+              'Báo cáo',
+              'Reports'
+            )}
           </h1>
           <p className="text-xs text-slate-300">
-            Lọc đơn hàng theo từng ngày hoặc khoảng ngày tùy chỉnh ({effectiveDateBounds.label}) • Múi giờ Việt Nam (GMT+7)
+            {tx(
+              'Lọc đơn theo ngày ({period}) • Múi giờ Việt Nam (GMT+7)',
+              'Filter orders by date ({period}) • Vietnam Time (GMT+7)',
+              { period: effectiveDateBounds.label }
+            )}
           </p>
         </div>
 
@@ -799,7 +836,7 @@ export default function OrdersReportAndExportPage() {
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 shadow-md hover:bg-emerald-400 disabled:opacity-45 transition"
           >
             <FileSpreadsheet className="h-4 w-4" />
-            <span>Xuất Excel Đầy Đủ (.xls)</span>
+            <span>{tx('Xuất Excel (.xls)', 'Export Excel (.xls)')}</span>
           </button>
 
           <button
@@ -809,7 +846,7 @@ export default function OrdersReportAndExportPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-extrabold text-white hover:bg-slate-700 disabled:opacity-45 transition"
           >
             <Download className="h-4 w-4 text-emerald-400" />
-            <span>Xuất CSV Theo Đơn</span>
+            <span>{tx('CSV theo đơn', 'Orders CSV')}</span>
           </button>
 
           <button
@@ -819,14 +856,15 @@ export default function OrdersReportAndExportPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-extrabold text-white hover:bg-slate-700 disabled:opacity-45 transition"
           >
             <Utensils className="h-4 w-4 text-amber-400" />
-            <span>Xuất CSV Chi Tiết Món</span>
+            <span>{tx('CSV chi tiết món', 'Items CSV')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => fetchOrders(false)}
             className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2.5 text-slate-200 hover:bg-slate-700"
-            title="Làm mới dữ liệu"
+            title={t('common.refresh')}
+            aria-label={t('common.refresh')}
           >
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -839,18 +877,21 @@ export default function OrdersReportAndExportPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-slate-700 mr-1">
               <Calendar className="h-4 w-4 text-emerald-600" />
-              <span>Chọn kỳ báo cáo:</span>
+              <span>{tx('Kỳ báo cáo:', 'Period:')}</span>
             </span>
 
             {[
-              { id: 'today', label: 'Hôm nay' },
-              { id: 'yesterday', label: 'Hôm qua' },
-              { id: '7days', label: '7 ngày qua' },
-              { id: '30days', label: '30 ngày qua' },
-              { id: 'this_month', label: 'Tháng này' },
-              { id: 'single_day', label: '📅 Chọn 1 ngày' },
-              { id: 'custom_range', label: '📆 Tùy chỉnh (Từ ngày → Đến ngày)' },
-              { id: 'all', label: 'Tất cả lịch sử' },
+              { id: 'today', label: tx('Hôm nay', 'Today') },
+              { id: 'yesterday', label: tx('Hôm qua', 'Yesterday') },
+              { id: '7days', label: tx('7 ngày qua', 'Last 7 days') },
+              { id: '30days', label: tx('30 ngày qua', 'Last 30 days') },
+              { id: 'this_month', label: tx('Tháng này', 'This month') },
+              { id: 'single_day', label: tx('📅 Chọn 1 ngày', '📅 Single day') },
+              {
+                id: 'custom_range',
+                label: tx('📆 Tùy chỉnh ngày', '📆 Custom range'),
+              },
+              { id: 'all', label: tx('Tất cả lịch sử', 'All time') },
             ].map((preset) => (
               <button
                 key={preset.id}
@@ -874,7 +915,8 @@ export default function OrdersReportAndExportPage() {
                 type="button"
                 onClick={() => setSingleDate((d) => shiftDateKey(d, -1))}
                 className="rounded-lg bg-white p-1 text-slate-700 hover:bg-slate-100 border border-slate-200"
-                title="Ngày hôm trước"
+                title={tx('Ngày hôm trước', 'Previous day')}
+                aria-label={tx('Ngày hôm trước', 'Previous day')}
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
@@ -888,7 +930,8 @@ export default function OrdersReportAndExportPage() {
                 type="button"
                 onClick={() => setSingleDate((d) => shiftDateKey(d, 1))}
                 className="rounded-lg bg-white p-1 text-slate-700 hover:bg-slate-100 border border-slate-200"
-                title="Ngày tiếp theo"
+                title={tx('Ngày tiếp theo', 'Next day')}
+                aria-label={tx('Ngày tiếp theo', 'Next day')}
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
@@ -898,7 +941,9 @@ export default function OrdersReportAndExportPage() {
           {rangeMode === 'custom_range' && (
             <div className="flex flex-wrap items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-2xl px-3.5 py-2">
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-700">Từ ngày:</span>
+                <span className="text-xs font-bold text-slate-700">
+                  {tx('Từ ngày:', 'From:')}
+                </span>
                 <input
                   type="date"
                   value={customFrom}
@@ -908,7 +953,9 @@ export default function OrdersReportAndExportPage() {
               </div>
               <span className="text-slate-400 font-bold">→</span>
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-700">Đến ngày:</span>
+                <span className="text-xs font-bold text-slate-700">
+                  {tx('Đến ngày:', 'To:')}
+                </span>
                 <input
                   type="date"
                   value={customTo}
@@ -928,7 +975,10 @@ export default function OrdersReportAndExportPage() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm mã đơn #ORD, bàn, tên món..."
+              placeholder={tx(
+                'Tìm mã đơn #ORD, bàn, tên món...',
+                'Search #ORD, table, item...'
+              )}
               className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-xs font-bold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
             />
           </div>
@@ -950,12 +1000,24 @@ export default function OrdersReportAndExportPage() {
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
-              <option value="valid_only">Trạng thái: Đơn hợp lệ (Trừ đơn hủy)</option>
-              <option value="all">Trạng thái: Tất cả (Kể cả đã hủy)</option>
-              <option value="completed">Trạng thái: Đã hoàn tất</option>
-              <option value="preparing">Trạng thái: Đang chế biến</option>
-              <option value="new">Trạng thái: Mới chờ nhận</option>
-              <option value="cancelled">Trạng thái: Đã hủy</option>
+              <option value="valid_only">
+                {tx('Trạng thái: Đơn hợp lệ', 'Status: Valid orders')}
+              </option>
+              <option value="all">
+                {tx('Trạng thái: Tất cả (cả đơn hủy)', 'Status: All (incl. cancelled)')}
+              </option>
+              <option value="completed">
+                {tx('Trạng thái: Đã hoàn tất', 'Status: Completed')}
+              </option>
+              <option value="preparing">
+                {tx('Trạng thái: Đang chế biến', 'Status: Preparing')}
+              </option>
+              <option value="new">
+                {tx('Trạng thái: Mới chờ nhận', 'Status: New')}
+              </option>
+              <option value="cancelled">
+                {tx('Trạng thái: Đã hủy', 'Status: Cancelled')}
+              </option>
             </select>
           </div>
 
@@ -969,9 +1031,15 @@ export default function OrdersReportAndExportPage() {
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
-              <option value="all">Thu tiền: Tất cả</option>
-              <option value="paid">Thu tiền: Đã thu tiền</option>
-              <option value="unpaid">Thu tiền: Chưa thu tiền</option>
+              <option value="all">
+                {tx('Thu tiền: Tất cả', 'Payment: All')}
+              </option>
+              <option value="paid">
+                {tx('Thu tiền: Đã thu tiền', 'Payment: Paid')}
+              </option>
+              <option value="unpaid">
+                {tx('Thu tiền: Chưa thu tiền', 'Payment: Unpaid')}
+              </option>
             </select>
           </div>
 
@@ -985,9 +1053,15 @@ export default function OrdersReportAndExportPage() {
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
-              <option value="all">Phương thức: Tất cả</option>
-              <option value="cash">Phương thức: Tiền mặt</option>
-              <option value="vietqr">Phương thức: Chuyển khoản VietQR</option>
+              <option value="all">
+                {tx('Phương thức: Tất cả', 'Method: All')}
+              </option>
+              <option value="cash">
+                {tx('Phương thức: Tiền mặt', 'Method: Cash')}
+              </option>
+              <option value="vietqr">
+                {tx('Phương thức: VietQR', 'Method: VietQR')}
+              </option>
             </select>
           </div>
 
@@ -1001,9 +1075,15 @@ export default function OrdersReportAndExportPage() {
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
-              <option value="all">Nguồn đơn: Tất cả</option>
-              <option value="counter_pos">Nguồn: Tại quầy (POS)</option>
-              <option value="qr_table">Nguồn: Khách quét QR</option>
+              <option value="all">
+                {tx('Nguồn đơn: Tất cả', 'Source: All')}
+              </option>
+              <option value="counter_pos">
+                {tx('Nguồn: Tại quầy (POS)', 'Source: Counter POS')}
+              </option>
+              <option value="qr_table">
+                {tx('Nguồn: Khách quét QR', 'Source: Table QR')}
+              </option>
             </select>
           </div>
         </div>
@@ -1014,24 +1094,31 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600">
-              Tổng số đơn ({effectiveDateBounds.label})
+              {tx('Tổng số đơn ({period})', 'Total orders ({period})', {
+                period: effectiveDateBounds.label,
+              })}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
               <ShoppingBag className="h-4 w-4" />
             </span>
           </div>
           <p className="mt-2 text-2xl font-black text-slate-900">
-            {kpiStats.validCount} đơn
+            {tx('{count} đơn', '{count} orders', { count: kpiStats.validCount })}
           </p>
           <p className="text-[11px] font-semibold text-slate-500">
-            Tổng số lượng bán: <strong>{kpiStats.totalItemsSold} món</strong>
+            {tx('Đã bán:', 'Items sold:')}{' '}
+            <strong>
+              {tx('{count} món', '{count} items', {
+                count: kpiStats.totalItemsSold,
+              })}
+            </strong>
           </p>
         </div>
 
         <div className="rounded-3xl bg-white border-2 border-emerald-300 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-emerald-800">
-              Tổng doanh thu trong kỳ
+              {tx('Doanh thu trong kỳ', 'Period revenue')}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
               <TrendingUp className="h-4 w-4" />
@@ -1041,7 +1128,7 @@ export default function OrdersReportAndExportPage() {
             {formatCurrency(kpiStats.totalRevenue, activeShop.currency)}
           </p>
           <p className="text-[11px] font-semibold text-slate-500">
-            Trung bình/đơn:{' '}
+            {tx('Trung bình/đơn:', 'Avg/order:')}{' '}
             <strong>
               {formatCurrency(kpiStats.avgOrderValue, activeShop.currency)}
             </strong>
@@ -1051,7 +1138,7 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-amber-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-amber-800">
-              Thu Tiền Mặt (Cash)
+              {tx('Thu Tiền Mặt', 'Cash Revenue')}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
               <Banknote className="h-4 w-4" />
@@ -1061,14 +1148,16 @@ export default function OrdersReportAndExportPage() {
             {formatCurrency(kpiStats.cashRevenue, activeShop.currency)}
           </p>
           <p className="text-[11px] font-semibold text-slate-500">
-            {kpiStats.cashCount} đơn thanh toán tiền mặt
+            {tx('{count} đơn tiền mặt', '{count} cash orders', {
+              count: kpiStats.cashCount,
+            })}
           </p>
         </div>
 
         <div className="rounded-3xl bg-white border border-blue-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-blue-800">
-              Chuyển Khoản (VietQR)
+              {tx('Chuyển Khoản (VietQR)', 'VietQR Transfer')}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
               <QrCode className="h-4 w-4" />
@@ -1078,7 +1167,9 @@ export default function OrdersReportAndExportPage() {
             {formatCurrency(kpiStats.vietqrRevenue, activeShop.currency)}
           </p>
           <p className="text-[11px] font-semibold text-slate-500">
-            {kpiStats.vietqrCount} đơn chuyển khoản QR
+            {tx('{count} đơn chuyển khoản QR', '{count} VietQR orders', {
+              count: kpiStats.vietqrCount,
+            })}
           </p>
         </div>
       </div>
@@ -1095,7 +1186,9 @@ export default function OrdersReportAndExportPage() {
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
             }`}
           >
-            📋 Danh sách tất cả đơn hàng ({filteredOrders.length})
+            {tx('📋 Danh sách đơn ({count})', '📋 Orders ({count})', {
+              count: filteredOrders.length,
+            })}
           </button>
           <button
             type="button"
@@ -1106,7 +1199,11 @@ export default function OrdersReportAndExportPage() {
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
             }`}
           >
-            📅 Tổng hợp theo từng ngày ({dailySummaryList.length} ngày)
+            {tx(
+              '📅 Theo ngày ({count} ngày)',
+              '📅 Daily summary ({count} days)',
+              { count: dailySummaryList.length }
+            )}
           </button>
           <button
             type="button"
@@ -1117,12 +1214,16 @@ export default function OrdersReportAndExportPage() {
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
             }`}
           >
-            🍜 Thống kê theo từng món ({itemSummaryList.length} món)
+            {tx('🍜 Theo món ({count} món)', '🍜 By item ({count} items)', {
+              count: itemSummaryList.length,
+            })}
           </button>
         </div>
 
         <span className="text-xs font-bold text-slate-500">
-          Đang hiển thị <strong>{filteredOrders.length}</strong> đơn hàng trong kỳ{' '}
+          {tx('Hiển thị', 'Showing')}{' '}
+          <strong>{filteredOrders.length}</strong>{' '}
+          {tx('đơn trong kỳ', 'orders in')}{' '}
           <strong>{effectiveDateBounds.label}</strong>
         </span>
       </div>
@@ -1132,15 +1233,21 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
           {loading ? (
             <div className="p-12 text-center text-xs font-semibold text-slate-500">
-              Đang tải dữ liệu đơn hàng...
+              {tx('Đang tải dữ liệu đơn hàng...', 'Loading orders...')}
             </div>
           ) : filteredOrders.length === 0 ? (
             <div className="p-12 text-center space-y-2">
               <p className="text-sm font-bold text-slate-800">
-                Không có đơn hàng nào khớp với khoảng thời gian / bộ lọc đã chọn
+                {tx(
+                  'Không có đơn hàng nào khớp với bộ lọc đã chọn',
+                  'No orders match the selected filters'
+                )}
               </p>
               <p className="text-xs text-slate-500">
-                Hãy thử chọn &ldquo;7 ngày qua&rdquo;, &ldquo;Tháng này&rdquo; hoặc &ldquo;Tất cả lịch sử&rdquo; để xem toàn bộ đơn.
+                {tx(
+                  'Hãy thử chọn "7 ngày qua", "Tháng này" hoặc "Tất cả lịch sử" để xem toàn bộ đơn.',
+                  'Try selecting "Last 7 days", "This month", or "All time" to view all orders.'
+                )}
               </p>
             </div>
           ) : (
@@ -1148,19 +1255,33 @@ export default function OrdersReportAndExportPage() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-3 text-center">STT</th>
-                    <th className="py-3.5 px-3">Mã Đơn</th>
-                    <th className="py-3.5 px-3">Ngày &amp; Giờ (VN)</th>
-                    <th className="py-3.5 px-3">Bàn / Vị Trí</th>
-                    <th className="py-3.5 px-3">Nguồn</th>
-                    <th className="py-3.5 px-3 min-w-[260px]">
-                      Chi Tiết Món Đã Gọi &amp; Option
+                    <th className="py-3.5 px-3 text-center">
+                      {tx('STT', 'No.')}
                     </th>
-                    <th className="py-3.5 px-3 text-center">SL Món</th>
-                    <th className="py-3.5 px-3 text-right">Tổng Tiền</th>
-                    <th className="py-3.5 px-3">Thanh Toán</th>
-                    <th className="py-3.5 px-3">Trạng Thái</th>
-                    <th className="py-3.5 px-3 text-right">Thao Tác</th>
+                    <th className="py-3.5 px-3">{tx('Mã Đơn', 'Code')}</th>
+                    <th className="py-3.5 px-3">
+                      {tx('Ngày & Giờ (VN)', 'Date & Time (VN)')}
+                    </th>
+                    <th className="py-3.5 px-3">
+                      {tx('Bàn / Vị Trí', 'Table')}
+                    </th>
+                    <th className="py-3.5 px-3">{tx('Nguồn', 'Source')}</th>
+                    <th className="py-3.5 px-3 min-w-[260px]">
+                      {tx('Chi Tiết Món & Option', 'Ordered Items & Options')}
+                    </th>
+                    <th className="py-3.5 px-3 text-center">
+                      {tx('SL Món', 'Qty')}
+                    </th>
+                    <th className="py-3.5 px-3 text-right">
+                      {tx('Tổng Tiền', 'Total')}
+                    </th>
+                    <th className="py-3.5 px-3">
+                      {tx('Thanh Toán', 'Payment')}
+                    </th>
+                    <th className="py-3.5 px-3">{tx('Trạng Thái', 'Status')}</th>
+                    <th className="py-3.5 px-3 text-right">
+                      {tx('Thao Tác', 'Actions')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
@@ -1214,8 +1335,8 @@ export default function OrdersReportAndExportPage() {
                             }`}
                           >
                             {ord.source === 'counter_pos'
-                              ? '🖥️ Tại quầy POS'
-                              : '📱 Khách QR'}
+                              ? tx('🖥️ Tại quầy POS', '🖥️ Counter POS')
+                              : tx('📱 Khách QR', '📱 Table QR')}
                           </span>
                         </td>
                         <td className="py-3 px-3">
@@ -1269,13 +1390,13 @@ export default function OrdersReportAndExportPage() {
                               }`}
                             >
                               {ord.payment_status === 'paid'
-                                ? '✓ Đã thu tiền'
-                                : '⏳ Chưa thu tiền'}
+                                ? tx('✓ Đã thu tiền', '✓ Paid')
+                                : tx('⏳ Chưa thu tiền', '⏳ Unpaid')}
                             </span>
                             <span className="text-[11px] font-semibold text-slate-500">
                               {ord.payment_method === 'vietqr'
-                                ? 'CK VietQR'
-                                : 'Tiền mặt'}
+                                ? tx('CK VietQR', 'VietQR')
+                                : tx('Tiền mặt', 'Cash')}
                             </span>
                           </div>
                         </td>
@@ -1294,22 +1415,22 @@ export default function OrdersReportAndExportPage() {
                             {ord.status === 'completed' ? (
                               <>
                                 <CheckCircle2 className="h-3 w-3" />
-                                <span>Hoàn tất</span>
+                                <span>{tx('Hoàn tất', 'Completed')}</span>
                               </>
                             ) : ord.status === 'preparing' ? (
                               <>
                                 <ChefHat className="h-3 w-3" />
-                                <span>Đang làm</span>
+                                <span>{tx('Đang làm', 'Preparing')}</span>
                               </>
                             ) : ord.status === 'new' ? (
                               <>
                                 <Clock className="h-3 w-3" />
-                                <span>Chờ nhận</span>
+                                <span>{tx('Chờ nhận', 'New')}</span>
                               </>
                             ) : (
                               <>
                                 <XCircle className="h-3 w-3" />
-                                <span>Đã hủy</span>
+                                <span>{tx('Đã hủy', 'Cancelled')}</span>
                               </>
                             )}
                           </span>
@@ -1321,7 +1442,7 @@ export default function OrdersReportAndExportPage() {
                             className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-800 hover:bg-slate-100"
                           >
                             <Printer className="h-3.5 w-3.5 text-emerald-600" />
-                            <span>In Bill</span>
+                            <span>{tx('In Bill', 'Print Bill')}</span>
                           </button>
                         </td>
                       </tr>
@@ -1331,16 +1452,23 @@ export default function OrdersReportAndExportPage() {
                 <tfoot>
                   <tr className="border-t-2 border-slate-300 bg-emerald-50/80 text-xs font-black text-slate-900">
                     <td colSpan={6} className="py-3.5 px-3 text-right uppercase">
-                      Tổng cộng ({kpiStats.validCount} đơn hợp lệ):
+                      {tx(
+                        'Tổng cộng ({count} đơn hợp lệ):',
+                        'Total ({count} valid orders):',
+                        { count: kpiStats.validCount }
+                      )}
                     </td>
                     <td className="py-3.5 px-3 text-center text-sm">
-                      {kpiStats.totalItemsSold} món
+                      {tx('{count} món', '{count} items', {
+                        count: kpiStats.totalItemsSold,
+                      })}
                     </td>
                     <td className="py-3.5 px-3 text-right text-base text-emerald-700">
                       {formatCurrency(kpiStats.totalRevenue, activeShop.currency)}
                     </td>
                     <td colSpan={3} className="py-3.5 px-3 text-[11px] text-slate-600">
-                      TM: {formatCurrency(kpiStats.cashRevenue, activeShop.currency)} • QR:{' '}
+                      {tx('TM:', 'Cash:')}{' '}
+                      {formatCurrency(kpiStats.cashRevenue, activeShop.currency)} • QR:{' '}
                       {formatCurrency(kpiStats.vietqrRevenue, activeShop.currency)}
                     </td>
                   </tr>
@@ -1356,20 +1484,35 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
           {dailySummaryList.length === 0 ? (
             <div className="p-12 text-center text-xs font-semibold text-slate-500">
-              Không có dữ liệu doanh thu ngày trong khoảng thời gian này.
+              {tx(
+                'Không có dữ liệu doanh thu ngày trong khoảng thời gian này.',
+                'No daily revenue data in this period.'
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-4">Ngày (VN)</th>
-                    <th className="py-3.5 px-4 text-center">Tổng Số Đơn</th>
-                    <th className="py-3.5 px-4 text-center">Số Món Bán Ra</th>
-                    <th className="py-3.5 px-4 text-right">Thu Tiền Mặt</th>
-                    <th className="py-3.5 px-4 text-right">Thu VietQR</th>
-                    <th className="py-3.5 px-4 text-right">Tổng Doanh Thu Ngày</th>
-                    <th className="py-3.5 px-4 text-right">Thao Tác</th>
+                    <th className="py-3.5 px-4">{tx('Ngày (VN)', 'Date (VN)')}</th>
+                    <th className="py-3.5 px-4 text-center">
+                      {tx('Tổng Số Đơn', 'Total Orders')}
+                    </th>
+                    <th className="py-3.5 px-4 text-center">
+                      {tx('Số Món Bán Ra', 'Items Sold')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Thu Tiền Mặt', 'Cash Revenue')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Thu VietQR', 'VietQR Revenue')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Tổng Doanh Thu Ngày', 'Daily Revenue')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Thao Tác', 'Actions')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
@@ -1379,10 +1522,14 @@ export default function OrdersReportAndExportPage() {
                         📅 {formatDateKeyVi(d.dateKey)}
                       </td>
                       <td className="py-3.5 px-4 text-center font-black text-slate-800">
-                        {d.ordersCount} đơn
+                        {tx('{count} đơn', '{count} orders', {
+                          count: d.ordersCount,
+                        })}
                       </td>
                       <td className="py-3.5 px-4 text-center font-bold text-slate-700">
-                        {d.itemsSold} món
+                        {tx('{count} món', '{count} items', {
+                          count: d.itemsSold,
+                        })}
                       </td>
                       <td className="py-3.5 px-4 text-right font-bold text-slate-700">
                         {formatCurrency(d.cashRevenue, activeShop.currency)}
@@ -1403,7 +1550,7 @@ export default function OrdersReportAndExportPage() {
                           }}
                           className="rounded-xl bg-slate-100 px-3 py-1.5 text-[11px] font-black text-slate-800 hover:bg-emerald-600 hover:text-white transition"
                         >
-                          Xem chi tiết ngày này →
+                          {tx('Xem chi tiết ngày →', 'View day details →')}
                         </button>
                       </td>
                     </tr>
@@ -1420,19 +1567,34 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
           {itemSummaryList.length === 0 ? (
             <div className="p-12 text-center text-xs font-semibold text-slate-500">
-              Không có món ăn nào được bán trong khoảng thời gian này.
+              {tx(
+                'Không có món ăn nào được bán trong khoảng thời gian này.',
+                'No items sold in this period.'
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-4 text-center">Hạng</th>
-                    <th className="py-3.5 px-4">Tên Món Ăn / Đồ Uống</th>
-                    <th className="py-3.5 px-4 text-center">Số Đơn Có Gọi</th>
-                    <th className="py-3.5 px-4 text-center">Tổng SL Bán Ra</th>
-                    <th className="py-3.5 px-4 text-right">Doanh Thu Món</th>
-                    <th className="py-3.5 px-4 text-right">Tỷ Trọng Doanh Thu</th>
+                    <th className="py-3.5 px-4 text-center">
+                      {tx('Hạng', 'Rank')}
+                    </th>
+                    <th className="py-3.5 px-4">
+                      {tx('Tên Món Ăn / Đồ Uống', 'Item Name')}
+                    </th>
+                    <th className="py-3.5 px-4 text-center">
+                      {tx('Số Đơn Có Gọi', 'Orders')}
+                    </th>
+                    <th className="py-3.5 px-4 text-center">
+                      {tx('Tổng SL Bán Ra', 'Qty Sold')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Doanh Thu Món', 'Item Revenue')}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">
+                      {tx('Tỷ Trọng Doanh Thu', 'Revenue Share')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
@@ -1452,11 +1614,15 @@ export default function OrdersReportAndExportPage() {
                           {item.itemName}
                         </td>
                         <td className="py-3.5 px-4 text-center font-bold text-slate-600">
-                          {item.orderAppearances} đơn
+                          {tx('{count} đơn', '{count} orders', {
+                            count: item.orderAppearances,
+                          })}
                         </td>
                         <td className="py-3.5 px-4 text-center">
                           <span className="rounded-lg bg-emerald-100 px-2.5 py-1 font-black text-emerald-900">
-                            {item.quantitySold} phần
+                            {tx('{count} phần', '{count} sold', {
+                              count: item.quantitySold,
+                            })}
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-right font-black text-sm text-emerald-700">

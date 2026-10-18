@@ -19,9 +19,14 @@ import { BusinessVertical, Profile } from '@/types/qlaok';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { getAuthHeaders, getStoredAuthOwner } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import {
+  AppLanguageSwitcher,
+  useAppI18n,
+} from '@/components/ui/AppI18nProvider';
 
 export default function OnboardingWizardPage() {
   const router = useRouter();
+  const { t, tx } = useAppI18n();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [ownerProfile, setOwnerProfile] = useState<Profile | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -79,7 +84,9 @@ export default function OnboardingWizardPage() {
   const handleCompleteOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!shopName.trim()) {
-      setErrorMsg('Vui lòng nhập tên cửa hàng.');
+      setErrorMsg(
+        tx('Vui lòng nhập tên cửa hàng.', 'Please enter store name.')
+      );
       setStep(1);
       return;
     }
@@ -170,7 +177,10 @@ export default function OnboardingWizardPage() {
       });
       const shopData = await shopRes.json();
       if (!shopRes.ok) {
-        throw new Error(shopData.error || 'Không thể tạo cửa hàng');
+        throw new Error(
+          shopData.error ||
+            tx('Không thể tạo cửa hàng', 'Could not create store')
+        );
       }
 
       const createdShop = shopData.shop;
@@ -210,7 +220,11 @@ export default function OnboardingWizardPage() {
 
       router.push('/dashboard/qr-studio');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Lỗi khi khởi tạo quán');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi tạo quán', 'Error creating store')
+      );
     } finally {
       setCreating(false);
     }
@@ -221,7 +235,7 @@ export default function OnboardingWizardPage() {
       <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
         <p className="text-xs font-bold text-slate-400">
-          Đang kiểm tra tài khoản Chủ quán...
+          {tx('Đang kiểm tra tài khoản...', 'Checking account...')}
         </p>
       </div>
     );
@@ -229,7 +243,8 @@ export default function OnboardingWizardPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white theme-surface-page flex flex-col justify-center items-center p-4">
-      <div className="w-full max-w-xl flex justify-end mb-2">
+      <div className="w-full max-w-xl flex items-center justify-end gap-2 mb-2">
+        <AppLanguageSwitcher variant="dark" />
         <ThemeToggle />
       </div>
       <div className="w-full max-w-xl rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-2xl space-y-6">
@@ -242,7 +257,7 @@ export default function OnboardingWizardPage() {
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-slate-950 font-black">
               Q
             </span>
-            <span>Qlaok Setup Wizard</span>
+            <span>{t('onboarding.title')}</span>
           </Link>
 
           <div className="flex items-center gap-1.5">
@@ -268,13 +283,16 @@ export default function OnboardingWizardPage() {
           <div className="space-y-5">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                Bước 1 / 3
+                {tx('Bước 1 / 3', 'Step 1 / 3')}
               </span>
               <h1 className="text-xl sm:text-2xl font-black mt-1">
-                Cửa hàng của bạn thuộc lĩnh vực nào?
+                {tx(
+                  'Chọn ngành hàng & tên quán',
+                  'Choose category & store name'
+                )}
               </h1>
               <p className="text-xs text-slate-400 mt-1">
-                Qlaok sẽ tự động thiết kế bố cục Menu / Bảng giá phù hợp nhất với ngành của bạn.
+                {t('onboarding.subtitle')}
               </p>
             </div>
 
@@ -283,20 +301,29 @@ export default function OnboardingWizardPage() {
                 {
                   id: 'fnb' as BusinessVertical,
                   icon: UtensilsCrossed,
-                  title: 'Ẩm thực (F&B)',
-                  desc: 'Quán ăn, Nhà hàng, Cafe, Trà sữa, Quán nhậu',
+                  title: tx('Ẩm thực (F&B)', 'Food & Beverage'),
+                  desc: tx(
+                    'Quán ăn, nhà hàng, cafe, trà sữa',
+                    'Restaurants, cafes, bubble tea, bars'
+                  ),
                 },
                 {
                   id: 'service' as BusinessVertical,
                   icon: Scissors,
-                  title: 'Dịch vụ & Spa',
-                  desc: 'Tiệm Nail, Spa, Gội đầu dưỡng sinh, Massage, Salon',
+                  title: tx('Dịch vụ & Spa', 'Spa & Services'),
+                  desc: tx(
+                    'Nail, spa, gội đầu dưỡng sinh, salon',
+                    'Nail salons, spas, massage, hair salons'
+                  ),
                 },
                 {
                   id: 'retail' as BusinessVertical,
                   icon: ShoppingBag,
-                  title: 'Bán lẻ & Đặc sản',
-                  desc: 'Shop lưu niệm, Đặc sản địa phương, Tạp hóa',
+                  title: tx('Bán lẻ & Đặc sản', 'Retail & Specialty'),
+                  desc: tx(
+                    'Quà lưu niệm, đặc sản, tạp hóa',
+                    'Souvenirs, local specialties, minimarts'
+                  ),
                 },
               ].map((v) => {
                 const Icon = v.icon;
@@ -331,26 +358,32 @@ export default function OnboardingWizardPage() {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Tên cửa hàng của bạn *
+                  {t('onboarding.shopNameLabel')} *
                 </label>
                 <input
                   type="text"
                   value={shopName}
                   onChange={(e) => setShopName(e.target.value)}
-                  placeholder="VD: Bún Chả Cô Ba, Mộc Spa & Nail, Đặc Sản Hội An..."
+                  placeholder={tx(
+                    'VD: Bún Chả Cô Ba, Mộc Spa, Đặc Sản Hội An...',
+                    'e.g., Co Ba Noodle, Moc Spa, Hoi An Gifts...'
+                  )}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm font-bold text-white focus:border-emerald-500 focus:outline-none"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Khẩu hiệu ngắn (Tagline - Không bắt buộc)
+                  {tx('Lời giới thiệu ngắn (tùy chọn)', 'Short tagline (optional)')}
                 </label>
                 <input
                   type="text"
                   value={taglineVi}
                   onChange={(e) => setTaglineVi(e.target.value)}
-                  placeholder="VD: Hương vị truyền thống từ 1995..."
+                  placeholder={tx(
+                    'VD: Hương vị truyền thống từ 1995...',
+                    'e.g., Traditional flavors since 1995...'
+                  )}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-white focus:border-emerald-500 focus:outline-none"
                 />
               </div>
@@ -361,7 +394,12 @@ export default function OnboardingWizardPage() {
                 type="button"
                 onClick={() => {
                   if (!shopName.trim()) {
-                    setErrorMsg('Vui lòng nhập tên cửa hàng trước khi tiếp tục.');
+                    setErrorMsg(
+                      tx(
+                        'Vui lòng nhập tên cửa hàng trước khi tiếp tục.',
+                        'Please enter your store name to continue.'
+                      )
+                    );
                     return;
                   }
                   setErrorMsg('');
@@ -369,7 +407,7 @@ export default function OnboardingWizardPage() {
                 }}
                 className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 text-xs font-black text-slate-950 hover:bg-emerald-400"
               >
-                <span>Tiếp tục Bước 2</span>
+                <span>{tx('Tiếp tục bước 2', 'Next: Step 2')}</span>
                 <ArrowRight className="h-4 w-4" />
               </button>
             </div>
@@ -381,20 +419,23 @@ export default function OnboardingWizardPage() {
           <div className="space-y-5">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                Bước 2 / 3
+                {tx('Bước 2 / 3', 'Step 2 / 3')}
               </span>
               <h2 className="text-xl sm:text-2xl font-black mt-1">
-                Địa chỉ & Wi-Fi 1 Chạm Cho Khách
+                {tx('Địa chỉ & Wi-Fi cho khách', 'Address & Guest Wi-Fi')}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Khách quét QR ở cửa có thể copy mật khẩu Wi-Fi chỉ với 1 chạm mà không cần hỏi nhân viên.
+                {tx(
+                  'Khách quét mã QR có thể chép mật khẩu Wi-Fi ngay với 1 chạm.',
+                  'Guests scanning your QR can copy the Wi-Fi password in one tap.'
+                )}
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Tỉnh / Thành phố (34 tỉnh thành)
+                  {t('onboarding.cityLabel')}
                 </label>
                 <select
                   value={city}
@@ -403,20 +444,20 @@ export default function OnboardingWizardPage() {
                 >
                   {VIETNAM_PROVINCES_34.map((prov) => (
                     <option key={prov.code} value={prov.name}>
-                      {prov.name} ({prov.region})
+                      {prov.name}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Số điện thoại / Zalo nhận đơn
+                  {t('onboarding.phoneLabel')}
                 </label>
                 <input
                   type="text"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="VD: 0905123456"
+                  placeholder="0905123456"
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs font-bold text-white"
                 />
               </div>
@@ -424,13 +465,16 @@ export default function OnboardingWizardPage() {
 
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Địa chỉ chi tiết
+                {tx('Địa chỉ chi tiết', 'Street address')}
               </label>
               <input
                 type="text"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder="VD: 128 Trần Phú, Quận Hải Châu..."
+                placeholder={tx(
+                  'VD: 128 Trần Phú, Hải Châu...',
+                  'e.g., 128 Tran Phu St...'
+                )}
                 className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white"
               />
             </div>
@@ -438,25 +482,25 @@ export default function OnboardingWizardPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
               <div>
                 <label className="block text-xs font-bold text-emerald-400 mb-1">
-                  📶 Tên Wi-Fi của quán (SSID)
+                  📶 {t('onboarding.wifiNameLabel')}
                 </label>
                 <input
                   type="text"
                   value={wifiSsid}
                   onChange={(e) => setWifiSsid(e.target.value)}
-                  placeholder="VD: QuanNgon_Free5G"
+                  placeholder="QuanNgon_Free5G"
                   className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-bold text-white"
                 />
               </div>
               <div>
                 <label className="block text-xs font-bold text-emerald-400 mb-1">
-                  🔑 Mật khẩu Wi-Fi
+                  🔑 {t('onboarding.wifiPassLabel')}
                 </label>
                 <input
                   type="text"
                   value={wifiPassword}
                   onChange={(e) => setWifiPassword(e.target.value)}
-                  placeholder="VD: 88888888"
+                  placeholder="88888888"
                   className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-mono font-bold text-white"
                 />
               </div>
@@ -469,7 +513,7 @@ export default function OnboardingWizardPage() {
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-300"
               >
                 <ArrowLeft className="h-4 w-4" />
-                <span>Quay lại</span>
+                <span>{t('common.back')}</span>
               </button>
 
               <button
@@ -477,32 +521,35 @@ export default function OnboardingWizardPage() {
                 onClick={() => setStep(3)}
                 className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 text-xs font-black text-slate-950 hover:bg-emerald-400"
               >
-                <span>Tiếp tục Bước 3</span>
+                <span>{tx('Tiếp tục bước 3', 'Next: Step 3')}</span>
                 <ArrowRight className="h-4 w-4" />
               </button>
             </div>
           </div>
         )}
 
-        {/* STEP 3: First Item with AI 5-Language Auto Translation */}
+        {/* STEP 3: First Item with AI Auto Translation */}
         {step === 3 && (
           <form onSubmit={handleCompleteOnboarding} className="space-y-5">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                Bước 3 / 3 • Hoàn tất
+                {tx('Bước 3 / 3 • Hoàn tất', 'Step 3 / 3 • Finish')}
               </span>
               <h2 className="text-xl sm:text-2xl font-black mt-1">
-                Thêm món / dịch vụ đầu tiên (AI Tự Dịch 5 Ngôn Ngữ)
+                {tx('Thêm món / dịch vụ đầu tiên', 'Add your first item')}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Chỉ cần gõ Tiếng Việt, AI sẽ tự động dịch sang Tiếng Anh, Hàn, Nhật, Trung và sinh ngay 2 mã QR cho quán.
+                {tx(
+                  'Nhập tên Tiếng Việt, hệ thống sẽ tự dịch đa ngôn ngữ và tạo bộ mã QR cho quán.',
+                  'Enter the Vietnamese item name to auto-translate and generate your store QR codes.'
+                )}
               </p>
             </div>
 
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Tên Danh mục đầu tiên
+                  {tx('Danh mục đầu tiên', 'First category')}
                 </label>
                 <input
                   type="text"
@@ -515,7 +562,10 @@ export default function OnboardingWizardPage() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Tên món / dịch vụ (Tiếng Việt) *
+                    {tx(
+                      'Tên món / dịch vụ (Tiếng Việt) *',
+                      'Item / service name (Vietnamese) *'
+                    )}
                   </label>
                   <input
                     type="text"
@@ -527,7 +577,7 @@ export default function OnboardingWizardPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Giá tiền (VNĐ) *
+                    {tx('Giá bán (VNĐ) *', 'Price (VND) *')}
                   </label>
                   <input
                     type="number"
@@ -547,7 +597,7 @@ export default function OnboardingWizardPage() {
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-300"
               >
                 <ArrowLeft className="h-4 w-4" />
-                <span>Quay lại</span>
+                <span>{t('common.back')}</span>
               </button>
 
               <button
@@ -558,12 +608,17 @@ export default function OnboardingWizardPage() {
                 {creating ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Đang dịch AI & Tạo 2 Mã QR...</span>
+                    <span>
+                      {tx(
+                        'Đang tạo quán & mã QR...',
+                        'Creating store & QR codes...'
+                      )}
+                    </span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-4 w-4" />
-                    <span>Hoàn Tất & Nhận Ngay 2 Mã QR</span>
+                    <span>{t('onboarding.submitButton')}</span>
                   </>
                 )}
               </button>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -45,6 +45,10 @@ import {
   SUPER_ADMIN_EMAIL,
 } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import {
+  AppLanguageSwitcher,
+  useAppI18n,
+} from '@/components/ui/AppI18nProvider';
 import { formatCurrency } from '@/lib/i18n-helper';
 import type {
   AnalyticsEvent,
@@ -159,6 +163,9 @@ const LANG_LABELS: Record<SupportedLocale, string> = {
 
 export default function SuperAdminPortalPage() {
   const router = useRouter();
+  const { locale, t, tx } = useAppI18n();
+  const translateRef = useRef(tx);
+  translateRef.current = tx;
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [adminUser, setAdminUser] = useState<Profile | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -221,7 +228,7 @@ export default function SuperAdminPortalPage() {
     []
   );
 
-  const parseApiJson = async (res: Response): Promise<Record<string, unknown>> => {
+  const parseApiJson = useCallback(async (res: Response): Promise<Record<string, unknown>> => {
     try {
       const parsed = await res.json();
       if (parsed && typeof parsed === 'object') {
@@ -230,10 +237,14 @@ export default function SuperAdminPortalPage() {
       return {};
     } catch {
       return {
-        error: `Phản hồi máy chủ không hợp lệ (HTTP ${res.status}).`,
+        error: translateRef.current(
+          'Phản hồi máy chủ không hợp lệ (HTTP {status}).',
+          'Invalid server response (HTTP {status}).',
+          { status: res.status }
+        ),
       };
     }
-  };
+  }, []);
 
   useEffect(() => {
     // If Super Admin was impersonating a shop owner and returned to /admin, restore Super Admin session
@@ -270,7 +281,10 @@ export default function SuperAdminPortalPage() {
       if (res.status === 401 || res.status === 403) {
         const authErrMsg =
           apiError ||
-          'Phiên đăng nhập Super Admin đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.';
+          translateRef.current(
+            'Phiên đăng nhập Super Admin đã hết hạn. Vui lòng đăng nhập lại.',
+            'Super Admin session expired. Please sign in again.'
+          );
         clearStoredAuthOwner();
         setData(null);
         setAdminUser(null);
@@ -280,20 +294,27 @@ export default function SuperAdminPortalPage() {
       }
       if (!res.ok) {
         throw new Error(
-          apiError || `Không thể tải dữ liệu Super Admin (HTTP ${res.status}).`
+          apiError ||
+            translateRef.current(
+              'Không thể tải dữ liệu Super Admin (HTTP {status}).',
+              'Could not load Super Admin data (HTTP {status}).',
+              { status: res.status }
+            )
         );
       }
       setData(json as unknown as AdminDashboardData);
       setLoadError(null);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Lỗi kết nối API Super Admin';
+        err instanceof Error
+          ? err.message
+          : translateRef.current('Lỗi kết nối API Super Admin', 'Super Admin API connection error');
       setLoadError(message);
       showToastMessage('error', message);
     } finally {
       setLoading(false);
     }
-  }, [adminUser, showToastMessage]);
+  }, [adminUser, showToastMessage, parseApiJson]);
 
   useEffect(() => {
     if (adminUser) {
@@ -310,7 +331,11 @@ export default function SuperAdminPortalPage() {
       const normalized = loginEmail.trim().toLowerCase();
       if (normalized !== SUPER_ADMIN_EMAIL) {
         throw new Error(
-          `Chỉ tài khoản Super Admin (${SUPER_ADMIN_EMAIL}) mới được phép truy cập trang này.`
+          tx(
+            'Chỉ tài khoản Super Admin ({email}) mới được phép truy cập trang này.',
+            'Only the Super Admin account ({email}) can access this portal.',
+            { email: SUPER_ADMIN_EMAIL }
+          )
         );
       }
 
@@ -329,7 +354,13 @@ export default function SuperAdminPortalPage() {
           ? json.error.trim()
           : null;
       if (!res.ok || !json.user) {
-        throw new Error(apiError || 'Mật khẩu Super Admin không chính xác.');
+        throw new Error(
+          apiError ||
+            tx(
+              'Mật khẩu Super Admin không chính xác.',
+              'Incorrect Super Admin password.'
+            )
+        );
       }
 
       const profile: Profile = {
@@ -345,11 +376,15 @@ export default function SuperAdminPortalPage() {
       setAdminUser(profile);
       showToastMessage(
         'success',
-        `Chào mừng Super Admin ${profile.email} quay trở lại!`
+        tx('Chào mừng Super Admin {email}!', 'Welcome back, Super Admin {email}!', {
+          email: profile.email,
+        })
       );
     } catch (err) {
       setLoginError(
-        err instanceof Error ? err.message : 'Lỗi đăng nhập Super Admin'
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi đăng nhập Super Admin', 'Super Admin sign-in failed')
       );
     } finally {
       setLoginLoading(false);
@@ -378,7 +413,10 @@ export default function SuperAdminPortalPage() {
       if (res.status === 401 || res.status === 403) {
         const authErrMsg =
           apiError ||
-          'Phiên đăng nhập Super Admin đã hết hạn. Vui lòng đăng nhập lại.';
+          tx(
+            'Phiên đăng nhập Super Admin đã hết hạn. Vui lòng đăng nhập lại.',
+            'Super Admin session expired. Please sign in again.'
+          );
         clearStoredAuthOwner();
         setData(null);
         setAdminUser(null);
@@ -387,7 +425,7 @@ export default function SuperAdminPortalPage() {
         return false;
       }
       if (!res.ok) {
-        throw new Error(apiError || 'Thao tác thất bại');
+        throw new Error(apiError || tx('Thao tác thất bại', 'Action failed'));
       }
       showToastMessage('success', successMsg);
       await fetchAdminData();
@@ -395,7 +433,9 @@ export default function SuperAdminPortalPage() {
     } catch (err) {
       showToastMessage(
         'error',
-        err instanceof Error ? err.message : 'Có lỗi xảy ra'
+        err instanceof Error
+          ? err.message
+          : tx('Có lỗi xảy ra', 'An error occurred')
       );
       return false;
     } finally {
@@ -426,7 +466,11 @@ export default function SuperAdminPortalPage() {
         password: newOwnerPassword || 'qlaok123456',
         plan: newOwnerPlan,
       },
-      `Đã tạo tài khoản Chủ quán ${newOwnerEmail} (gói ${newOwnerPlan.toUpperCase()})!`
+      tx(
+        'Đã tạo tài khoản Chủ quán {email} (gói {plan})!',
+        'Created shop owner {email} ({plan} plan)!',
+        { email: newOwnerEmail, plan: newOwnerPlan.toUpperCase() }
+      )
     );
     if (ok) {
       setNewOwnerEmail('');
@@ -439,7 +483,11 @@ export default function SuperAdminPortalPage() {
 
   const handleResetOwnerPassword = async (owner: EnrichedOwner) => {
     const newPass = window.prompt(
-      `Nhập mật khẩu mới cho tài khoản ${owner.email} (tối thiểu 6 ký tự):`,
+      tx(
+        'Nhập mật khẩu mới cho tài khoản {email} (tối thiểu 6 ký tự):',
+        'Enter new password for {email} (min 6 characters):',
+        { email: owner.email }
+      ),
       'qlaok123456'
     );
     if (!newPass) return;
@@ -450,7 +498,11 @@ export default function SuperAdminPortalPage() {
         email: owner.email,
         newPassword: newPass,
       },
-      `Đã cập nhật mật khẩu mới cho ${owner.email}!`
+      tx(
+        'Đã cập nhật mật khẩu mới cho {email}!',
+        'Updated password for {email}!',
+        { email: owner.email }
+      )
     );
   };
 
@@ -469,14 +521,21 @@ export default function SuperAdminPortalPage() {
       });
       const json = await res.json();
       if (!res.ok) {
-        throw new Error(json.error || 'Lỗi dịch thuật tự động');
+        throw new Error(
+          json.error || tx('Lỗi dịch thuật tự động', 'Auto-translation error')
+        );
       }
       setAiTestOutput(json.name_i18n || json.translations || json);
-      showToastMessage('success', 'Dịch tự động 5 ngôn ngữ thành công!');
+      showToastMessage(
+        'success',
+        tx('Dịch tự động thành công!', 'Auto-translation succeeded!')
+      );
     } catch (err) {
       showToastMessage(
         'error',
-        err instanceof Error ? err.message : 'Lỗi kết nối dịch thuật tự động'
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi kết nối dịch thuật', 'Translation service error')
       );
     } finally {
       setAiTestLoading(false);
@@ -496,12 +555,18 @@ export default function SuperAdminPortalPage() {
       <div className="min-h-screen bg-slate-950 text-white theme-surface-page flex items-center justify-center">
         <div
           role="status"
-          aria-label="Đang kiểm tra phiên đăng nhập Super Admin"
+          aria-label={tx(
+            'Đang kiểm tra phiên đăng nhập Super Admin',
+            'Checking Super Admin session'
+          )}
           className="flex flex-col items-center gap-3"
         >
           <div className="h-10 w-10 animate-spin rounded-full border-4 border-amber-400 border-t-transparent" />
           <p className="text-xs font-bold text-slate-300">
-            Đang kiểm tra quyền truy cập Super Admin...
+            {tx(
+              'Đang kiểm tra quyền truy cập Super Admin...',
+              'Checking Super Admin access...'
+            )}
           </p>
         </div>
       </div>
@@ -539,18 +604,26 @@ export default function SuperAdminPortalPage() {
         )}
 
         <div className="w-full max-w-md rounded-3xl border border-amber-500/30 bg-slate-900 p-6 sm:p-8 shadow-2xl space-y-6">
+          <div className="flex items-center justify-end gap-2">
+            <AppLanguageSwitcher variant="dark" />
+            <ThemeToggle />
+          </div>
+
           <div className="text-center space-y-2">
             <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-400 text-slate-950 shadow-lg">
               <ShieldCheck className="h-8 w-8" />
             </div>
             <span className="inline-block rounded-full bg-amber-400/15 border border-amber-400/30 px-3 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-300">
-              Qlaok Super Admin Portal
+              {t('admin.title')}
             </span>
             <h1 className="text-2xl font-black tracking-tight text-white">
-              Quản Trị Toàn Hệ Thống
+              {tx('Quản Trị Toàn Hệ Thống', 'System Administration')}
             </h1>
             <p className="text-xs text-slate-400">
-              Khu vực điều hành tối cao dành riêng cho Super Admin{' '}
+              {tx(
+                'Khu vực điều hành dành riêng cho Super Admin',
+                'Dedicated administration portal for Super Admin'
+              )}{' '}
               <strong className="text-amber-300">{SUPER_ADMIN_EMAIL}</strong>
             </p>
           </div>
@@ -570,7 +643,7 @@ export default function SuperAdminPortalPage() {
           <form onSubmit={handleAdminLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Email Super Admin
+                {tx('Email Super Admin', 'Super Admin Email')}
               </label>
               <div className="relative">
                 <Mail className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
@@ -586,7 +659,7 @@ export default function SuperAdminPortalPage() {
 
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Mật khẩu Quản trị
+                {tx('Mật khẩu Quản trị', 'Admin Password')}
               </label>
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
@@ -594,7 +667,10 @@ export default function SuperAdminPortalPage() {
                   type="password"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="Nhập mật khẩu Super Admin..."
+                  placeholder={tx(
+                    'Nhập mật khẩu Super Admin...',
+                    'Enter Super Admin password...'
+                  )}
                   required
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
                 />
@@ -608,8 +684,8 @@ export default function SuperAdminPortalPage() {
             >
               <span>
                 {loginLoading
-                  ? 'Đang xác thực quyền Super Admin...'
-                  : 'Mở Bảng Điều Khiển Super Admin'}
+                  ? tx('Đang xác thực...', 'Verifying...')
+                  : tx('Mở Bảng Quản Trị', 'Open Admin Console')}
               </span>
               <ArrowRight className="h-4 w-4" />
             </button>
@@ -617,13 +693,13 @@ export default function SuperAdminPortalPage() {
 
           <div className="border-t border-slate-800 pt-4 flex items-center justify-between text-xs text-slate-400">
             <Link href="/" className="hover:text-white">
-              ← Trang chủ Qlaok
+              {tx('← Trang chủ Qlaok', '← Qlaok Home')}
             </Link>
             <Link
               href="/login"
               className="font-bold text-emerald-400 hover:underline"
             >
-              Đăng nhập Chủ quán →
+              {tx('Đăng nhập Chủ quán →', 'Shop Owner Login →')}
             </Link>
           </div>
         </div>
@@ -676,38 +752,42 @@ export default function SuperAdminPortalPage() {
   }> = [
     {
       id: 'overview',
-      label: 'Toàn cảnh Hệ thống',
+      label: t('admin.tabOverview'),
       icon: LayoutDashboard,
     },
     {
       id: 'owners',
-      label: 'Chủ quán & Gói cước',
+      label: t('admin.tabAccounts'),
       icon: Users,
       badge: kpis?.totalOwners,
     },
     {
       id: 'shops',
-      label: 'Tất cả Cửa hàng',
+      label: t('admin.tabShops'),
       icon: Store,
       badge: kpis?.totalShops,
     },
     {
       id: 'orders',
-      label: 'Đơn mPOS Toàn sàn',
+      label: t('admin.tabOrders'),
       icon: Receipt,
-      badge: kpis?.newOrdersCount ? `${kpis.newOrdersCount} mới` : kpis?.totalOrders,
+      badge: kpis?.newOrdersCount
+        ? tx('{count} mới', '{count} new', { count: kpis.newOrdersCount })
+        : kpis?.totalOrders,
     },
     {
       id: 'billing',
-      label: 'Doanh thu SaaS & VietQR',
+      label: t('admin.tabBilling'),
       icon: CreditCard,
       badge: kpis?.pendingTransactionsCount
-        ? `${kpis.pendingTransactionsCount} chờ`
+        ? tx('{count} chờ', '{count} pending', {
+            count: kpis.pendingTransactionsCount,
+          })
         : undefined,
     },
     {
       id: 'system',
-      label: 'Trạng thái Hệ thống',
+      label: t('admin.tabSystem'),
       icon: Cpu,
     },
   ];
@@ -750,7 +830,7 @@ export default function SuperAdminPortalPage() {
             </div>
             <div className="min-w-0">
               <span className="block text-xs font-black text-white tracking-tight truncate">
-                QLAOK SUPER ADMIN
+                {t('admin.title')}
               </span>
               <span className="block text-[10px] font-bold text-amber-400 truncate">
                 {SUPER_ADMIN_EMAIL}
@@ -761,7 +841,8 @@ export default function SuperAdminPortalPage() {
             type="button"
             onClick={fetchAdminData}
             disabled={loading || actionBusy}
-            title="Làm mới dữ liệu"
+            title={t('admin.refreshData')}
+            aria-label={t('admin.refreshData')}
             className="shrink-0 rounded-xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white hover:border-amber-400"
           >
             <RefreshCw
@@ -813,7 +894,7 @@ export default function SuperAdminPortalPage() {
             className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"
           >
             <Store className="h-4 w-4" />
-            <span>Mở CMS Quán Của Tôi</span>
+            <span>{t('admin.backToCms')}</span>
           </Link>
           <div className="flex items-center justify-between rounded-xl bg-slate-950 px-3 py-2 border border-slate-800">
             <div className="min-w-0">
@@ -827,7 +908,8 @@ export default function SuperAdminPortalPage() {
             <button
               type="button"
               onClick={handleLogout}
-              title="Đăng xuất"
+              title={t('admin.logout')}
+              aria-label={t('admin.logout')}
               className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-rose-400"
             >
               <LogOut className="h-4 w-4" />
@@ -844,48 +926,46 @@ export default function SuperAdminPortalPage() {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 border border-amber-400/30 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
-                  👑 Super Admin Control Center
+                  👑 {t('admin.title')}
                 </span>
                 {loading && !data ? (
                   <span
                     data-testid="admin-api-status"
                     className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 border border-sky-500/30 px-2.5 py-0.5 text-[10px] font-bold text-sky-300"
                   >
-                    ● Đang đồng bộ API Quản trị...
+                    ● {tx('Đang đồng bộ...', 'Syncing...')}
                   </span>
                 ) : loadError ? (
                   <span
                     data-testid="admin-api-status"
                     className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 border border-rose-500/40 px-2.5 py-0.5 text-[10px] font-bold text-rose-300"
                   >
-                    ● Lỗi kết nối API Quản trị
+                    ● {tx('Lỗi kết nối API', 'API connection error')}
                   </span>
                 ) : isApiHealthy ? (
                   <span
                     data-testid="admin-api-status"
                     className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300"
                   >
-                    ● API Quản trị Trực tuyến
+                    ● {tx('Trực tuyến', 'Online')}
                   </span>
                 ) : (
                   <span
                     data-testid="admin-api-status"
                     className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 border border-amber-400/30 px-2.5 py-0.5 text-[10px] font-bold text-amber-300"
                   >
-                    ● Chưa đồng bộ dữ liệu
+                    ● {tx('Chưa đồng bộ', 'Not synced')}
                   </span>
                 )}
               </div>
               <h1 className="mt-1.5 text-xl sm:text-2xl font-black text-white">
-                {NAV_TABS.find((t) => t.id === activeTab)?.label}
+                {NAV_TABS.find((tab) => tab.id === activeTab)?.label}
               </h1>
-              <p className="text-xs text-slate-400">
-                Quản trị toàn diện Chủ quán, Cửa hàng, Đơn mPOS, Doanh thu gói cước
-                &amp; Hạ tầng Qlaok
-              </p>
+              <p className="text-xs text-slate-400">{t('admin.subtitle')}</p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <AppLanguageSwitcher variant="dark" />
               <ThemeToggle />
               <Link
                 href="/explore"
@@ -893,7 +973,7 @@ export default function SuperAdminPortalPage() {
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200 hover:border-slate-600"
               >
                 <Globe className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Danh bạ Quán (/explore)</span>
+                <span>{tx('Danh bạ Quán (/explore)', 'Directory (/explore)')}</span>
               </Link>
               <button
                 type="button"
@@ -904,7 +984,7 @@ export default function SuperAdminPortalPage() {
                 <RefreshCw
                   className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
                 />
-                <span>Đồng bộ Dữ liệu</span>
+                <span>{t('admin.refreshData')}</span>
               </button>
             </div>
           </div>
@@ -923,14 +1003,19 @@ export default function SuperAdminPortalPage() {
                   </div>
                   <div className="space-y-1">
                     <h2 className="text-base font-black text-rose-200">
-                      Không thể tải dữ liệu Quản trị Hệ thống
+                      {tx(
+                        'Không thể tải dữ liệu Quản trị',
+                        'Could not load admin data'
+                      )}
                     </h2>
                     <p className="text-xs font-bold text-rose-300 leading-relaxed">
                       {loadError}
                     </p>
                     <p className="text-[11px] text-slate-400">
-                      Kiểm tra kết nối và thử tải lại. Nếu lỗi vẫn tiếp diễn,
-                      hãy lưu nội dung thông báo để kiểm tra cấu hình máy chủ.
+                      {tx(
+                        'Kiểm tra kết nối và thử tải lại.',
+                        'Check your connection and try reloading.'
+                      )}
                     </p>
                   </div>
                 </div>
@@ -944,7 +1029,7 @@ export default function SuperAdminPortalPage() {
                     <RefreshCw
                       className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
                     />
-                    <span>Thử tải lại dữ liệu</span>
+                    <span>{tx('Thử tải lại', 'Retry')}</span>
                   </button>
                   <button
                     type="button"
@@ -952,7 +1037,7 @@ export default function SuperAdminPortalPage() {
                     className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2.5 text-xs font-bold text-slate-200 hover:border-rose-400"
                   >
                     <LogOut className="h-3.5 w-3.5 text-rose-400" />
-                    <span>Đăng nhập lại</span>
+                    <span>{tx('Đăng nhập lại', 'Sign in again')}</span>
                   </button>
                 </div>
               </div>
@@ -972,11 +1057,16 @@ export default function SuperAdminPortalPage() {
                 </div>
                 <div>
                   <h2 className="text-sm font-black text-white">
-                    Đang tải dữ liệu Quản trị Toàn Hệ thống...
+                    {tx(
+                      'Đang tải dữ liệu quản trị...',
+                      'Loading administration data...'
+                    )}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Đang đồng bộ danh sách Chủ quán, Cửa hàng, Đơn mPOS và trạng
-                    thái hạ tầng từ máy chủ Qlaok.
+                    {tx(
+                      'Đang đồng bộ danh sách Chủ quán, Cửa hàng, Đơn hàng và trạng thái hệ thống.',
+                      'Syncing shop owners, stores, orders, and system status.'
+                    )}
                   </p>
                 </div>
               </div>
@@ -1003,7 +1093,7 @@ export default function SuperAdminPortalPage() {
                 <div className="rounded-3xl border border-amber-500/30 bg-slate-900 p-5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-400">
-                      Doanh thu Gói SaaS &amp; MRR
+                      {tx('Doanh thu Gói cước & MRR', 'Plan Revenue & MRR')}
                     </span>
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-amber-400/30 bg-amber-400/15 text-amber-400">
                       <CreditCard className="h-4 w-4" />
@@ -1013,9 +1103,10 @@ export default function SuperAdminPortalPage() {
                     {formatCurrency(kpis.totalSaasRevenue, 'VND')}
                   </p>
                   <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
-                    <span>MRR ước tính:</span>
+                    <span>{tx('MRR ước tính:', 'Estimated MRR:')}</span>
                     <strong className="text-white">
-                      {formatCurrency(kpis.estimatedMrr, 'VND')}/tháng
+                      {formatCurrency(kpis.estimatedMrr, 'VND')}
+                      {tx('/tháng', '/mo')}
                     </strong>
                   </div>
                 </div>
@@ -1023,7 +1114,7 @@ export default function SuperAdminPortalPage() {
                 <div className="rounded-3xl border border-emerald-500/30 bg-slate-900 p-5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-400">
-                      Tổng GMV Đơn mPOS Toàn Sàn
+                      {tx('Tổng GMV Đơn hàng Toàn sàn', 'Total Platform GMV')}
                     </span>
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
                       <TrendingUp className="h-4 w-4" />
@@ -1033,7 +1124,11 @@ export default function SuperAdminPortalPage() {
                     {formatCurrency(kpis.globalMposGmv, 'VND')}
                   </p>
                   <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
-                    <span>Hôm nay ({kpis.totalOrders} tổng đơn):</span>
+                    <span>
+                      {tx('Hôm nay ({count} đơn):', 'Today ({count} orders):', {
+                        count: kpis.totalOrders,
+                      })}
+                    </span>
                     <strong className="text-emerald-300">
                       +{formatCurrency(kpis.todayMposGmv, 'VND')}
                     </strong>
@@ -1043,16 +1138,20 @@ export default function SuperAdminPortalPage() {
                 <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-400">
-                      Chủ Quán &amp; Cửa Hàng Hoạt Động
+                      {tx('Chủ Quán & Cửa Hàng', 'Shop Owners & Stores')}
                     </span>
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-sky-500/30 bg-sky-500/15 text-sky-400">
                       <Store className="h-4 w-4" />
                     </span>
                   </div>
                   <p className="text-2xl font-black text-white">
-                    {kpis.totalShops} Quán{' '}
+                    {tx('{shops} Quán', '{shops} Shops', {
+                      shops: kpis.totalShops,
+                    })}{' '}
                     <span className="text-sm font-bold text-slate-400">
-                      / {kpis.totalOwners} Chủ quán
+                      / {tx('{owners} Chủ quán', '{owners} Owners', {
+                        owners: kpis.totalOwners,
+                      })}
                     </span>
                   </p>
                   <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
@@ -1062,7 +1161,9 @@ export default function SuperAdminPortalPage() {
                       {kpis.verticalBreakdown.retail}
                     </span>
                     <strong className="text-sky-300">
-                      {kpis.totalItems} món/dịch vụ
+                      {tx('{count} món/dịch vụ', '{count} items', {
+                        count: kpis.totalItems,
+                      })}
                     </strong>
                   </div>
                 </div>
@@ -1070,18 +1171,28 @@ export default function SuperAdminPortalPage() {
                 <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-400">
-                      Tổng Lượt Quét QR Toàn Hệ Thống
+                      {tx('Lượt Quét QR Toàn Sàn', 'Total QR Scans')}
                     </span>
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-purple-500/30 bg-purple-500/15 text-purple-400">
                       <QrCode className="h-4 w-4" />
                     </span>
                   </div>
                   <p className="text-2xl font-black text-white">
-                    {kpis.totalQrScans.toLocaleString('vi-VN')} lượt
+                    {kpis.totalQrScans.toLocaleString(
+                      locale === 'en' ? 'en-US' : 'vi-VN'
+                    )}{' '}
+                    {tx('lượt', 'scans')}
                   </p>
                   <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800">
                     <span>
-                      Cửa: {kpis.scanDoorCount} • Bàn: {kpis.scanTableCount}
+                      {tx(
+                        'Cửa: {door} • Bàn: {table}',
+                        'Door: {door} • Table: {table}',
+                        {
+                          door: kpis.scanDoorCount,
+                          table: kpis.scanTableCount,
+                        }
+                      )}
                     </span>
                     <strong className="text-purple-300">
                       Wi-Fi: {kpis.wifiCopyCount}
@@ -1097,10 +1208,13 @@ export default function SuperAdminPortalPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        Phân Bổ Gói Cước Chủ Quán (SaaS Tiers)
+                        {tx('Phân Bổ Gói Cước Chủ Quán', 'Owner Plan Distribution')}
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Tỷ lệ tài khoản Free vs Basic (39k) vs Premium (69k)
+                        {tx(
+                          'Tỷ lệ tài khoản Free vs Basic (39k) vs Premium (69k)',
+                          'Free vs Basic (39k) vs Premium (69k) accounts'
+                        )}
                       </p>
                     </div>
                     <button
@@ -1108,54 +1222,62 @@ export default function SuperAdminPortalPage() {
                       onClick={() => setActiveTab('owners')}
                       className="text-xs font-bold text-amber-400 hover:underline"
                     >
-                      Quản lý Chủ quán →
+                      {tx('Quản lý Chủ quán →', 'Manage Owners →')}
                     </button>
                   </div>
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3.5 text-center">
                       <span className="text-[10px] font-black uppercase text-slate-400">
-                        Gói FREE
+                        {tx('Gói FREE', 'FREE Plan')}
                       </span>
                       <p className="mt-1 text-2xl font-black text-white">
                         {kpis.planBreakdown.free}
                       </p>
-                      <p className="text-[11px] text-slate-500">0đ / tháng</p>
+                      <p className="text-[11px] text-slate-500">
+                        {tx('0đ / tháng', '0đ / mo')}
+                      </p>
                     </div>
                     <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-center">
                       <span className="text-[10px] font-black uppercase text-emerald-300">
-                        Gói BASIC
+                        {tx('Gói BASIC', 'BASIC Plan')}
                       </span>
                       <p className="mt-1 text-2xl font-black text-emerald-400">
                         {kpis.planBreakdown.basic}
                       </p>
                       <p className="text-[11px] text-emerald-300">
-                        39.000đ / tháng
+                        {tx('39.000đ / tháng', '39,000đ / mo')}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-center">
                       <span className="text-[10px] font-black uppercase text-amber-300">
-                        Gói PREMIUM
+                        {tx('Gói PREMIUM', 'PREMIUM Plan')}
                       </span>
                       <p className="mt-1 text-2xl font-black text-amber-400">
                         {kpis.planBreakdown.premium}
                       </p>
                       <p className="text-[11px] text-amber-300">
-                        69.000đ / tháng
+                        {tx('69.000đ / tháng', '69,000đ / mo')}
                       </p>
                     </div>
                   </div>
                 </div>
 
-                {/* 5-Language Visitor Breakdown */}
+                {/* Visitor Language Breakdown */}
                 <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        Phân Bổ 5 Ngôn Ngữ Khách Quét QR Toàn Sàn
+                        {tx(
+                          'Ngôn Ngữ Khách Quét QR Toàn Sàn',
+                          'Visitor Languages Across All Shops'
+                        )}
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Thống kê ngôn ngữ khách du lịch &amp; nội địa sử dụng
+                        {tx(
+                          'Thống kê ngôn ngữ khách du lịch & nội địa sử dụng',
+                          'Languages used by international & local guests'
+                        )}
                       </p>
                     </div>
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
@@ -1165,14 +1287,19 @@ export default function SuperAdminPortalPage() {
 
                   {kpis.langBreakdown.length === 0 ? (
                     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs text-slate-400 flex items-center justify-between gap-3">
-                      <span>Chưa có dữ liệu ngôn ngữ khách quét QR.</span>
+                      <span>
+                        {tx(
+                          'Chưa có dữ liệu ngôn ngữ khách quét QR.',
+                          'No visitor language data yet.'
+                        )}
+                      </span>
                       <button
                         type="button"
                         onClick={fetchAdminData}
                         disabled={loading || actionBusy}
                         className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:border-amber-400"
                       >
-                        Làm mới
+                        {t('common.refresh')}
                       </button>
                     </div>
                   ) : (
@@ -1184,7 +1311,11 @@ export default function SuperAdminPortalPage() {
                               {LANG_LABELS[item.lang]}
                             </span>
                             <span className="font-bold text-slate-400">
-                              {item.count} sự kiện ({item.percentage}%)
+                              {tx(
+                                '{count} sự kiện ({pct}%)',
+                                '{count} events ({pct}%)',
+                                { count: item.count, pct: item.percentage }
+                              )}
                             </span>
                           </div>
                           <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
@@ -1207,10 +1338,16 @@ export default function SuperAdminPortalPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        Bảng Xếp Hạng Cửa Hàng Toàn Hệ Thống
+                        {tx(
+                          'Bảng Xếp Hạng Cửa Hàng',
+                          'Top Performing Shops'
+                        )}
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Bấm &ldquo;Mở CMS Quán&rdquo; để quản trị thay chủ quán ngay lập tức
+                        {tx(
+                          'Bấm "Quản lý Quán" để hỗ trợ chủ quán ngay lập tức',
+                          'Click "Manage Shop" to assist the shop owner'
+                        )}
                       </p>
                     </div>
                     <button
@@ -1218,18 +1355,19 @@ export default function SuperAdminPortalPage() {
                       onClick={() => setActiveTab('shops')}
                       className="text-xs font-bold text-amber-400 hover:underline"
                     >
-                      Xem tất cả ({data?.shops.length || 0}) →
+                      {tx('Xem tất cả ({count}) →', 'View all ({count}) →', {
+                        count: data?.shops.length || 0,
+                      })}
                     </button>
                   </div>
 
                   {(data?.shops || []).length === 0 ? (
                     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-6 text-center space-y-3">
                       <p className="text-xs font-bold text-slate-300">
-                        Chưa có cửa hàng nào trong danh sách quản trị.
-                      </p>
-                      <p className="text-[11px] text-slate-400">
-                        Bạn có thể đồng bộ lại dữ liệu từ máy chủ hoặc khởi tạo
-                        cửa hàng mới.
+                        {tx(
+                          'Chưa có cửa hàng nào trong danh sách.',
+                          'No shops found.'
+                        )}
                       </p>
                       <div className="flex flex-wrap items-center justify-center gap-2">
                         <button
@@ -1239,14 +1377,14 @@ export default function SuperAdminPortalPage() {
                           className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
-                          <span>Tải lại dữ liệu</span>
+                          <span>{t('admin.refreshData')}</span>
                         </button>
                         <Link
                           href="/onboarding"
                           className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"
                         >
                           <Plus className="h-3.5 w-3.5" />
-                          <span>Tạo Cửa Hàng Mới</span>
+                          <span>{tx('Tạo Cửa Hàng Mới', 'New Shop')}</span>
                         </Link>
                       </div>
                     </div>
@@ -1255,16 +1393,20 @@ export default function SuperAdminPortalPage() {
                       <table className="w-full text-left border-collapse text-xs">
                         <thead>
                           <tr className="border-b border-slate-800 text-slate-400">
-                            <th className="py-2.5 pr-3 font-bold">Cửa hàng</th>
-                            <th className="py-2.5 px-3 font-bold">Chủ quán</th>
-                            <th className="py-2.5 px-3 font-bold text-right">
-                              Món / Đơn
+                            <th className="py-2.5 pr-3 font-bold">
+                              {tx('Cửa hàng', 'Shop')}
+                            </th>
+                            <th className="py-2.5 px-3 font-bold">
+                              {tx('Chủ quán', 'Owner')}
                             </th>
                             <th className="py-2.5 px-3 font-bold text-right">
-                              Doanh thu mPOS
+                              {tx('Món / Đơn', 'Items / Orders')}
+                            </th>
+                            <th className="py-2.5 px-3 font-bold text-right">
+                              {tx('Doanh thu', 'Revenue')}
                             </th>
                             <th className="py-2.5 pl-3 font-bold text-right">
-                              Điều khiển
+                              {tx('Thao tác', 'Action')}
                             </th>
                           </tr>
                         </thead>
@@ -1286,7 +1428,14 @@ export default function SuperAdminPortalPage() {
                                 </span>
                               </td>
                               <td className="py-3 px-3 text-right font-semibold text-slate-300">
-                                {shop.itemsCount} món • {shop.ordersCount} đơn
+                                {tx(
+                                  '{items} món • {orders} đơn',
+                                  '{items} items • {orders} orders',
+                                  {
+                                    items: shop.itemsCount,
+                                    orders: shop.ordersCount,
+                                  }
+                                )}
                               </td>
                               <td className="py-3 px-3 text-right font-black text-emerald-400">
                                 {formatCurrency(shop.shopGmv, shop.currency || 'VND')}
@@ -1297,7 +1446,7 @@ export default function SuperAdminPortalPage() {
                                   onClick={() => handleImpersonateShop(shop)}
                                   className="inline-flex items-center gap-1 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
                                 >
-                                  <span>Mở CMS Quán</span>
+                                  <span>{tx('Quản lý Quán', 'Manage Shop')}</span>
                                   <ArrowRight className="h-3 w-3" />
                                 </button>
                               </td>
@@ -1314,10 +1463,13 @@ export default function SuperAdminPortalPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-black text-white">
-                        Luồng Sự Kiện Trực Tiếp
+                        {tx('Hoạt Động Gần Đây', 'Recent Activity')}
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Khách quét QR &amp; tương tác gần nhất
+                        {tx(
+                          'Khách quét QR & tương tác mới nhất',
+                          'Latest QR scans & guest interactions'
+                        )}
                       </p>
                     </div>
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
@@ -1328,7 +1480,10 @@ export default function SuperAdminPortalPage() {
                   {(data?.recentEvents || []).length === 0 ? (
                     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-5 text-center space-y-2.5">
                       <p className="text-xs font-bold text-slate-300">
-                        Chưa ghi nhận sự kiện quét QR nào.
+                        {tx(
+                          'Chưa ghi nhận sự kiện quét QR nào.',
+                          'No QR scan events recorded yet.'
+                        )}
                       </p>
                       <button
                         type="button"
@@ -1337,7 +1492,7 @@ export default function SuperAdminPortalPage() {
                         className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-400"
                       >
                         <RefreshCw className="h-3 w-3" />
-                        <span>Đồng bộ sự kiện</span>
+                        <span>{t('common.refresh')}</span>
                       </button>
                     </div>
                   ) : (
@@ -1352,21 +1507,24 @@ export default function SuperAdminPortalPage() {
                               {ev.shopName}
                             </span>
                             <p className="text-[11px] text-slate-400 mt-0.5">
-                              Sự kiện:{' '}
+                              {tx('Sự kiện:', 'Event:')}{' '}
                               <strong className="text-emerald-300">
                                 {ev.event_type}
                               </strong>{' '}
-                              • Ngôn ngữ:{' '}
+                              • {tx('Ngôn ngữ:', 'Lang:')}{' '}
                               <strong className="uppercase text-amber-300">
                                 {ev.visitor_lang}
                               </strong>
                             </p>
                           </div>
                           <span className="text-[10px] text-slate-500 whitespace-nowrap">
-                            {new Date(ev.created_at).toLocaleTimeString('vi-VN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                            {new Date(ev.created_at).toLocaleTimeString(
+                              locale === 'en' ? 'en-US' : 'vi-VN',
+                              {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              }
+                            )}
                           </span>
                         </div>
                       ))}
@@ -1388,7 +1546,10 @@ export default function SuperAdminPortalPage() {
                       type="text"
                       value={ownerSearch}
                       onChange={(e) => setOwnerSearch(e.target.value)}
-                      placeholder="Tìm kiếm Chủ quán theo email, tên, SĐT..."
+                      placeholder={tx(
+                        'Tìm Chủ quán theo email, tên, SĐT...',
+                        'Search owners by email, name, phone...'
+                      )}
                       className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
                     />
                   </div>
@@ -1400,11 +1561,17 @@ export default function SuperAdminPortalPage() {
                     className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
                   >
                     <option value="all">
-                      Tất cả gói ({data.owners.length || 0})
+                      {tx('Tất cả gói ({count})', 'All plans ({count})', {
+                        count: data.owners.length || 0,
+                      })}
                     </option>
-                    <option value="free">Gói Free</option>
-                    <option value="basic">Gói Basic (39k)</option>
-                    <option value="premium">Gói Premium (69k)</option>
+                    <option value="free">{tx('Gói Free', 'Free Plan')}</option>
+                    <option value="basic">
+                      {tx('Gói Basic (39k)', 'Basic Plan (39k)')}
+                    </option>
+                    <option value="premium">
+                      {tx('Gói Premium (69k)', 'Premium Plan (69k)')}
+                    </option>
                   </select>
                 </div>
 
@@ -1414,7 +1581,7 @@ export default function SuperAdminPortalPage() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 hover:bg-emerald-400"
                 >
                   <Plus className="h-4 w-4" />
-                  <span>Tạo Tài Khoản Chủ Quán Mới</span>
+                  <span>{tx('Tạo Chủ Quán Mới', 'New Owner Account')}</span>
                 </button>
               </div>
 
@@ -1426,14 +1593,14 @@ export default function SuperAdminPortalPage() {
                 >
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-black text-emerald-300">
-                      ➕ Cấp Tài Khoản Chủ Quán Mới
+                      ➕ {tx('Cấp Tài Khoản Chủ Quán Mới', 'Create Owner Account')}
                     </h3>
                     <button
                       type="button"
                       onClick={() => setShowCreateOwner(false)}
                       className="text-xs text-slate-400 hover:text-white"
                     >
-                      Đóng
+                      {t('common.close')}
                     </button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1442,7 +1609,7 @@ export default function SuperAdminPortalPage() {
                       required
                       value={newOwnerEmail}
                       onChange={(e) => setNewOwnerEmail(e.target.value)}
-                      placeholder="Email chủ quán *"
+                      placeholder={tx('Email chủ quán *', 'Owner email *')}
                       className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
                     />
                     <input
@@ -1450,21 +1617,24 @@ export default function SuperAdminPortalPage() {
                       required
                       value={newOwnerName}
                       onChange={(e) => setNewOwnerName(e.target.value)}
-                      placeholder="Họ và tên *"
+                      placeholder={tx('Họ và tên *', 'Full name *')}
                       className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
                     />
                     <input
                       type="text"
                       value={newOwnerPhone}
                       onChange={(e) => setNewOwnerPhone(e.target.value)}
-                      placeholder="Số điện thoại / Zalo"
+                      placeholder={tx('Số điện thoại / Zalo', 'Phone / Zalo')}
                       className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
                     />
                     <input
                       type="text"
                       value={newOwnerPassword}
                       onChange={(e) => setNewOwnerPassword(e.target.value)}
-                      placeholder="Mật khẩu (mặc định: qlaok123456)"
+                      placeholder={tx(
+                        'Mật khẩu (mặc định: qlaok123456)',
+                        'Password (default: qlaok123456)'
+                      )}
                       className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
                     />
                     <div className="flex gap-2">
@@ -1484,7 +1654,7 @@ export default function SuperAdminPortalPage() {
                         disabled={actionBusy}
                         className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 hover:bg-emerald-400"
                       >
-                        Tạo
+                        {t('common.create')}
                       </button>
                     </div>
                   </div>
@@ -1497,16 +1667,20 @@ export default function SuperAdminPortalPage() {
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">Chủ quán / Email</th>
-                        <th className="py-3.5 px-4 font-bold">Gói hiện tại</th>
                         <th className="py-3.5 px-4 font-bold">
-                          Cửa hàng sở hữu
+                          {tx('Chủ quán / Email', 'Owner / Email')}
                         </th>
                         <th className="py-3.5 px-4 font-bold">
-                          Đổi Gói Nhanh (1-Click)
+                          {tx('Gói hiện tại', 'Current Plan')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Cửa hàng sở hữu', 'Owned Shops')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Đổi Gói Nhanh', 'Quick Plan Switch')}
                         </th>
                         <th className="py-3.5 px-4 font-bold text-right">
-                          Bảo mật / Xóa
+                          {tx('Bảo mật / Xóa', 'Security / Delete')}
                         </th>
                       </tr>
                     </thead>
@@ -1517,8 +1691,14 @@ export default function SuperAdminPortalPage() {
                             <div className="max-w-md mx-auto space-y-2.5">
                               <p className="text-xs font-bold text-slate-300">
                                 {ownerSearch || ownerPlanFilter !== 'all'
-                                  ? 'Không tìm thấy tài khoản Chủ quán nào khớp với bộ lọc.'
-                                  : 'Chưa có tài khoản Chủ quán nào trên hệ thống.'}
+                                  ? tx(
+                                      'Không tìm thấy tài khoản Chủ quán nào khớp với bộ lọc.',
+                                      'No shop owner accounts match the filters.'
+                                    )
+                                  : tx(
+                                      'Chưa có tài khoản Chủ quán nào.',
+                                      'No shop owner accounts yet.'
+                                    )}
                               </p>
                               <div className="flex flex-wrap items-center justify-center gap-2">
                                 {(ownerSearch || ownerPlanFilter !== 'all') && (
@@ -1530,7 +1710,7 @@ export default function SuperAdminPortalPage() {
                                     }}
                                     className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
                                   >
-                                    Xóa bộ lọc
+                                    {t('common.clearFilters')}
                                   </button>
                                 )}
                                 <button
@@ -1540,7 +1720,7 @@ export default function SuperAdminPortalPage() {
                                   className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
                                 >
                                   <RefreshCw className="h-3.5 w-3.5" />
-                                  <span>Tải lại dữ liệu</span>
+                                  <span>{t('admin.refreshData')}</span>
                                 </button>
                               </div>
                             </div>
@@ -1555,7 +1735,8 @@ export default function SuperAdminPortalPage() {
                               <td className="py-3.5 px-4">
                                 <div className="flex items-center gap-2">
                                   <span className="font-black text-white">
-                                    {owner.full_name || 'Chủ quán'}
+                                    {owner.full_name ||
+                                      tx('Chủ quán', 'Shop Owner')}
                                   </span>
                                   {isRootAdmin && (
                                     <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-black text-slate-950">
@@ -1586,10 +1767,12 @@ export default function SuperAdminPortalPage() {
                                 </span>
                                 {owner.plan_expires_at && (
                                   <p className="text-[10px] text-slate-400 mt-1">
-                                    Hết hạn:{' '}
+                                    {tx('Hết hạn:', 'Expires:')}{' '}
                                     {new Date(
                                       owner.plan_expires_at
-                                    ).toLocaleDateString('vi-VN')}
+                                    ).toLocaleDateString(
+                                      locale === 'en' ? 'en-US' : 'vi-VN'
+                                    )}
                                   </p>
                                 )}
                               </td>
@@ -1597,7 +1780,7 @@ export default function SuperAdminPortalPage() {
                               <td className="py-3.5 px-4">
                                 {owner.shops.length === 0 ? (
                                   <span className="text-slate-500 italic">
-                                    Chưa tạo quán (0)
+                                    {tx('Chưa tạo quán (0)', 'No shops (0)')}
                                   </span>
                                 ) : (
                                   <div className="space-y-1">
@@ -1637,7 +1820,14 @@ export default function SuperAdminPortalPage() {
                                               plan: tier,
                                               durationDays: 30,
                                             },
-                                            `Đã chuyển gói của ${owner.email} sang ${tier.toUpperCase()} (+30 ngày)!`
+                                            tx(
+                                              'Đã chuyển gói của {email} sang {plan} (+30 ngày)!',
+                                              'Switched {email} to {plan} (+30 days)!',
+                                              {
+                                                email: owner.email,
+                                                plan: tier.toUpperCase(),
+                                              }
+                                            )
                                           )
                                         }
                                         className={`rounded-lg px-2.5 py-1 text-[10px] font-black uppercase border transition-all ${
@@ -1661,12 +1851,16 @@ export default function SuperAdminPortalPage() {
                                           plan: 'premium',
                                           durationDays: 365,
                                         },
-                                        `Đã gia hạn PREMIUM 1 năm cho ${owner.email}!`
+                                        tx(
+                                          'Đã gia hạn PREMIUM 1 năm cho {email}!',
+                                          'Extended PREMIUM by 1 year for {email}!',
+                                          { email: owner.email }
+                                        )
                                       )
                                     }
                                     className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-300 hover:bg-amber-500/20"
                                   >
-                                    +1 Năm VIP
+                                    {tx('+1 Năm VIP', '+1 Year VIP')}
                                   </button>
                                 </div>
                               </td>
@@ -1679,7 +1873,7 @@ export default function SuperAdminPortalPage() {
                                     className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-400"
                                   >
                                     <KeyRound className="h-3 w-3 text-amber-400" />
-                                    <span>Đổi MK</span>
+                                    <span>{tx('Đổi MK', 'Reset PW')}</span>
                                   </button>
                                   {!isRootAdmin && (
                                     <button
@@ -1688,7 +1882,14 @@ export default function SuperAdminPortalPage() {
                                       onClick={() => {
                                         if (
                                           window.confirm(
-                                            `Bạn có chắc muốn xóa tài khoản ${owner.email} và toàn bộ ${owner.shopsCount} cửa hàng của họ?`
+                                            tx(
+                                              'Bạn có chắc muốn xóa tài khoản {email} và toàn bộ {count} cửa hàng của họ?',
+                                              'Are you sure you want to delete account {email} and all {count} of their shops?',
+                                              {
+                                                email: owner.email,
+                                                count: owner.shopsCount,
+                                              }
+                                            )
                                           )
                                         ) {
                                           runAdminAction(
@@ -1697,12 +1898,23 @@ export default function SuperAdminPortalPage() {
                                               ownerId: owner.id,
                                               email: owner.email,
                                             },
-                                            `Đã xóa tài khoản ${owner.email}`
+                                            tx(
+                                              'Đã xóa tài khoản {email}',
+                                              'Deleted account {email}',
+                                              { email: owner.email }
+                                            )
                                           );
                                         }
                                       }}
                                       className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
-                                      title="Xóa tài khoản"
+                                      title={tx(
+                                        'Xóa tài khoản',
+                                        'Delete account'
+                                      )}
+                                      aria-label={tx(
+                                        'Xóa tài khoản',
+                                        'Delete account'
+                                      )}
                                     >
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </button>
@@ -1731,7 +1943,10 @@ export default function SuperAdminPortalPage() {
                       type="text"
                       value={shopSearch}
                       onChange={(e) => setShopSearch(e.target.value)}
-                      placeholder="Tìm theo tên quán, slug, email chủ quán, tỉnh thành..."
+                      placeholder={tx(
+                        'Tìm theo tên quán, slug, email chủ quán, tỉnh thành...',
+                        'Search by shop name, slug, owner email, city...'
+                      )}
                       className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
                     />
                   </div>
@@ -1745,11 +1960,19 @@ export default function SuperAdminPortalPage() {
                     className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-bold text-white"
                   >
                     <option value="all">
-                      Tất cả ngành ({data.shops.length || 0})
+                      {tx('Tất cả ngành ({count})', 'All categories ({count})', {
+                        count: data.shops.length || 0,
+                      })}
                     </option>
-                    <option value="fnb">🍜 F&amp;B / Nhà hàng / Cafe</option>
-                    <option value="service">💆‍♀️ Spa / Nail / Dịch vụ</option>
-                    <option value="retail">🛍️ Đặc sản / Bán lẻ</option>
+                    <option value="fnb">
+                      {tx('🍜 Ẩm thực / Cafe', '🍜 Food & Cafe')}
+                    </option>
+                    <option value="service">
+                      {tx('💆‍♀️ Spa / Dịch vụ', '💆‍♀️ Spa & Services')}
+                    </option>
+                    <option value="retail">
+                      {tx('🛍️ Bán lẻ / Đặc sản', '🛍️ Retail & Souvenirs')}
+                    </option>
                   </select>
                 </div>
 
@@ -1758,7 +1981,7 @@ export default function SuperAdminPortalPage() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 hover:bg-emerald-400"
                 >
                   <Plus className="h-4 w-4" />
-                  <span>Tạo Cửa Hàng Mới</span>
+                  <span>{tx('Tạo Cửa Hàng Mới', 'New Shop')}</span>
                 </Link>
               </div>
 
@@ -1766,8 +1989,14 @@ export default function SuperAdminPortalPage() {
                 <div className="rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center space-y-3">
                   <p className="text-xs font-bold text-slate-300">
                     {shopSearch || shopVerticalFilter !== 'all'
-                      ? 'Không tìm thấy cửa hàng nào khớp với bộ lọc.'
-                      : 'Chưa có cửa hàng nào được khởi tạo trên hệ thống.'}
+                      ? tx(
+                          'Không tìm thấy cửa hàng nào khớp với bộ lọc.',
+                          'No shops match the filters.'
+                        )
+                      : tx(
+                          'Chưa có cửa hàng nào được khởi tạo.',
+                          'No shops created yet.'
+                        )}
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-2">
                     {(shopSearch || shopVerticalFilter !== 'all') && (
@@ -1779,7 +2008,7 @@ export default function SuperAdminPortalPage() {
                         }}
                         className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
                       >
-                        Xóa bộ lọc
+                        {t('common.clearFilters')}
                       </button>
                     )}
                     <button
@@ -1789,7 +2018,7 @@ export default function SuperAdminPortalPage() {
                       className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
                     >
                       <RefreshCw className="h-3.5 w-3.5" />
-                      <span>Tải lại dữ liệu</span>
+                      <span>{t('admin.refreshData')}</span>
                     </button>
                   </div>
                 </div>
@@ -1812,11 +2041,11 @@ export default function SuperAdminPortalPage() {
                               </span>
                               {shop.is_published === false ? (
                                 <span className="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold text-rose-300">
-                                  Đang ẩn
+                                  {tx('Đang ẩn', 'Hidden')}
                                 </span>
                               ) : (
                                 <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                                  Đang hiển thị
+                                  {tx('Đang hiển thị', 'Published')}
                                 </span>
                               )}
                             </div>
@@ -1828,7 +2057,7 @@ export default function SuperAdminPortalPage() {
                               <code className="text-amber-300">
                                 /s/{shop.slug}
                               </code>{' '}
-                              • Chủ quán:{' '}
+                              • {tx('Chủ quán:', 'Owner:')}{' '}
                               <strong className="text-slate-200">
                                 {shop.ownerEmail}
                               </strong>
@@ -1839,7 +2068,7 @@ export default function SuperAdminPortalPage() {
                         <div className="grid grid-cols-4 gap-2 rounded-2xl bg-slate-950 p-3 border border-slate-800 text-center">
                           <div>
                             <span className="block text-[10px] text-slate-500">
-                              Danh mục
+                              {tx('Danh mục', 'Categories')}
                             </span>
                             <span className="text-xs font-black text-white">
                               {shop.categoriesCount}
@@ -1847,7 +2076,7 @@ export default function SuperAdminPortalPage() {
                           </div>
                           <div>
                             <span className="block text-[10px] text-slate-500">
-                              Món/DV
+                              {tx('Món/DV', 'Items')}
                             </span>
                             <span className="text-xs font-black text-white">
                               {shop.itemsCount}
@@ -1855,7 +2084,7 @@ export default function SuperAdminPortalPage() {
                           </div>
                           <div>
                             <span className="block text-[10px] text-slate-500">
-                              Đơn mPOS
+                              {tx('Đơn hàng', 'Orders')}
                             </span>
                             <span className="text-xs font-black text-amber-300">
                               {shop.ordersCount}
@@ -1863,7 +2092,7 @@ export default function SuperAdminPortalPage() {
                           </div>
                           <div>
                             <span className="block text-[10px] text-slate-500">
-                              GMV Quán
+                              {tx('Doanh thu', 'GMV')}
                             </span>
                             <span className="text-xs font-black text-emerald-400">
                               {formatCurrency(
@@ -1883,7 +2112,9 @@ export default function SuperAdminPortalPage() {
                             className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-amber-300 shadow-sm"
                           >
                             <Sparkles className="h-3.5 w-3.5" />
-                            <span>Quản trị thay (Mở CMS)</span>
+                            <span>
+                              {tx('Quản trị thay Chủ quán', 'Manage Shop')}
+                            </span>
                           </button>
 
                           <a
@@ -1893,7 +2124,7 @@ export default function SuperAdminPortalPage() {
                             className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-bold text-slate-200 hover:border-emerald-400"
                           >
                             <ExternalLink className="h-3.5 w-3.5 text-emerald-400" />
-                            <span>QR Bàn</span>
+                            <span>{tx('QR Bàn', 'Table QR')}</span>
                           </a>
                         </div>
 
@@ -1910,14 +2141,23 @@ export default function SuperAdminPortalPage() {
                                     is_published: shop.is_published === false,
                                   },
                                 },
-                                `Đã cập nhật trạng thái hiển thị của quán ${shop.name}`
+                                tx(
+                                  'Đã cập nhật hiển thị quán {name}',
+                                  'Updated visibility for {name}',
+                                  { name: shop.name }
+                                )
                               )
                             }
                             className="rounded-xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white"
                             title={
                               shop.is_published === false
-                                ? 'Bật hiển thị công khai'
-                                : 'Tạm ẩn cửa hàng'
+                                ? tx('Bật hiển thị công khai', 'Publish shop')
+                                : tx('Tạm ẩn cửa hàng', 'Hide shop')
+                            }
+                            aria-label={
+                              shop.is_published === false
+                                ? tx('Bật hiển thị công khai', 'Publish shop')
+                                : tx('Tạm ẩn cửa hàng', 'Hide shop')
                             }
                           >
                             {shop.is_published === false ? (
@@ -1933,7 +2173,11 @@ export default function SuperAdminPortalPage() {
                             onClick={() => {
                               if (
                                 window.confirm(
-                                  `Xóa vĩnh viễn cửa hàng "${shop.name}" và toàn bộ menu của quán này?`
+                                  tx(
+                                    'Xóa vĩnh viễn cửa hàng "{name}" và toàn bộ menu của quán này?',
+                                    'Permanently delete shop "{name}" and all its menu items?',
+                                    { name: shop.name }
+                                  )
                                 )
                               ) {
                                 runAdminAction(
@@ -1941,12 +2185,17 @@ export default function SuperAdminPortalPage() {
                                     action: 'delete_shop',
                                     shopId: shop.id,
                                   },
-                                  `Đã xóa cửa hàng ${shop.name}`
+                                  tx(
+                                    'Đã xóa cửa hàng {name}',
+                                    'Deleted shop {name}',
+                                    { name: shop.name }
+                                  )
                                 );
                               }
                             }}
                             className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-2 text-rose-400 hover:bg-rose-500/20"
-                            title="Xóa cửa hàng"
+                            title={tx('Xóa cửa hàng', 'Delete shop')}
+                            aria-label={tx('Xóa cửa hàng', 'Delete shop')}
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1959,7 +2208,7 @@ export default function SuperAdminPortalPage() {
             </div>
           )}
 
-          {/* ==================== TAB 4: GLOBAL MPOS ORDERS & INVENTORY ==================== */}
+          {/* ==================== TAB 4: GLOBAL ORDERS & INVENTORY ==================== */}
           {activeTab === 'orders' && data && (
             <div className="space-y-6">
               {/* Filter Bar */}
@@ -1985,14 +2234,14 @@ export default function SuperAdminPortalPage() {
                       }`}
                     >
                       {st === 'all'
-                        ? 'Tất cả đơn'
+                        ? tx('Tất cả đơn', 'All orders')
                         : st === 'new'
-                          ? '🔔 Đơn mới'
+                          ? tx('🔔 Đơn mới', '🔔 New')
                           : st === 'preparing'
-                            ? '🍳 Đang chế biến'
+                            ? tx('🍳 Đang chế biến', '🍳 Preparing')
                             : st === 'completed'
-                              ? '✅ Hoàn tất'
-                              : '❌ Đã hủy'}
+                              ? tx('✅ Hoàn tất', '✅ Completed')
+                              : tx('❌ Đã hủy', '❌ Cancelled')}
                     </button>
                   ))}
                 </div>
@@ -2002,7 +2251,9 @@ export default function SuperAdminPortalPage() {
                   onChange={(e) => setOrderShopFilter(e.target.value)}
                   className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-bold text-white"
                 >
-                  <option value="all">Tất cả cửa hàng</option>
+                  <option value="all">
+                    {tx('Tất cả cửa hàng', 'All shops')}
+                  </option>
                   {(data.shops || []).map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}
@@ -2017,8 +2268,11 @@ export default function SuperAdminPortalPage() {
                   <div className="flex items-center gap-2 text-xs font-black text-amber-300">
                     <PackageCheck className="h-4 w-4" />
                     <span>
-                      Cảnh báo tồn kho toàn sàn ({data.lowStockItems.length} món
-                      sắp hết / hết hàng)
+                      {tx(
+                        'Cảnh báo tồn kho toàn sàn ({count} món sắp hết / hết hàng)',
+                        'Low stock alert across shops ({count} items low or sold out)',
+                        { count: data.lowStockItems.length }
+                      )}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -2028,7 +2282,7 @@ export default function SuperAdminPortalPage() {
                         className="rounded-xl border border-amber-500/30 bg-slate-950 px-3 py-1 text-[11px] font-semibold text-slate-200"
                       >
                         <strong>{item.shopName}:</strong> {item.name_i18n.vi}{' '}
-                        (Còn{' '}
+                        ({tx('Còn', 'Left')}{' '}
                         <strong className="text-amber-400">
                           {item.stock_quantity}
                         </strong>
@@ -2045,13 +2299,23 @@ export default function SuperAdminPortalPage() {
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">Mã đơn / Bàn</th>
-                        <th className="py-3.5 px-4 font-bold">Cửa hàng</th>
-                        <th className="py-3.5 px-4 font-bold">Chi tiết món</th>
-                        <th className="py-3.5 px-4 font-bold">Tổng tiền</th>
-                        <th className="py-3.5 px-4 font-bold">Trạng thái</th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Mã đơn / Bàn', 'Order / Table')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Cửa hàng', 'Shop')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Chi tiết món', 'Items')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Tổng tiền', 'Total')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Trạng thái', 'Status')}
+                        </th>
                         <th className="py-3.5 px-4 font-bold text-right">
-                          Xử lý nhanh
+                          {tx('Xử lý nhanh', 'Quick Action')}
                         </th>
                       </tr>
                     </thead>
@@ -2063,8 +2327,14 @@ export default function SuperAdminPortalPage() {
                               <p className="text-xs font-bold text-slate-300">
                                 {orderStatusFilter !== 'all' ||
                                 orderShopFilter !== 'all'
-                                  ? 'Không có đơn hàng mPOS nào khớp với bộ lọc.'
-                                  : 'Chưa có đơn hàng mPOS nào trên hệ thống.'}
+                                  ? tx(
+                                      'Không có đơn hàng nào khớp với bộ lọc.',
+                                      'No orders match the filters.'
+                                    )
+                                  : tx(
+                                      'Chưa có đơn hàng nào trên hệ thống.',
+                                      'No orders recorded yet.'
+                                    )}
                               </p>
                               <div className="flex flex-wrap items-center justify-center gap-2">
                                 {(orderStatusFilter !== 'all' ||
@@ -2077,7 +2347,7 @@ export default function SuperAdminPortalPage() {
                                     }}
                                     className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
                                   >
-                                    Xóa bộ lọc
+                                    {t('common.clearFilters')}
                                   </button>
                                 )}
                                 <button
@@ -2087,7 +2357,7 @@ export default function SuperAdminPortalPage() {
                                   className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
                                 >
                                   <RefreshCw className="h-3.5 w-3.5" />
-                                  <span>Tải lại dữ liệu</span>
+                                  <span>{t('admin.refreshData')}</span>
                                 </button>
                               </div>
                             </div>
@@ -2105,7 +2375,7 @@ export default function SuperAdminPortalPage() {
                               </p>
                               <p className="text-[10px] text-slate-500">
                                 {new Date(order.created_at).toLocaleString(
-                                  'vi-VN'
+                                  locale === 'en' ? 'en-US' : 'vi-VN'
                                 )}
                               </p>
                             </td>
@@ -2115,7 +2385,7 @@ export default function SuperAdminPortalPage() {
                                 {order.shopName}
                               </span>
                               <p className="text-[10px] uppercase text-slate-400">
-                                Khách: {order.visitor_lang} •{' '}
+                                {tx('Khách:', 'Guest:')} {order.visitor_lang} •{' '}
                                 {order.payment_method}
                               </p>
                             </td>
@@ -2130,7 +2400,8 @@ export default function SuperAdminPortalPage() {
                                 ))}
                                 {order.customer_note && (
                                   <p className="text-[11px] text-amber-300 italic">
-                                    Ghi chú: &ldquo;{order.customer_note}&rdquo;
+                                    {tx('Ghi chú:', 'Note:')} &ldquo;
+                                    {order.customer_note}&rdquo;
                                   </p>
                                 )}
                               </div>
@@ -2140,8 +2411,8 @@ export default function SuperAdminPortalPage() {
                               {formatCurrency(order.total_amount, 'VND')}
                               <span className="block text-[10px] font-bold text-slate-400 uppercase">
                                 {order.payment_status === 'paid'
-                                  ? 'Đã thanh toán'
-                                  : 'Chưa thu tiền'}
+                                  ? tx('Đã thanh toán', 'Paid')
+                                  : tx('Chưa thu tiền', 'Unpaid')}
                               </span>
                             </td>
 
@@ -2157,7 +2428,13 @@ export default function SuperAdminPortalPage() {
                                         : 'bg-rose-500/20 text-rose-300'
                                 }`}
                               >
-                                {order.status}
+                                {order.status === 'new'
+                                  ? tx('Mới', 'New')
+                                  : order.status === 'preparing'
+                                    ? tx('Đang làm', 'Preparing')
+                                    : order.status === 'completed'
+                                      ? tx('Hoàn tất', 'Completed')
+                                      : tx('Đã hủy', 'Cancelled')}
                               </span>
                             </td>
 
@@ -2175,12 +2452,16 @@ export default function SuperAdminPortalPage() {
                                           status: 'completed',
                                           payment_status: 'paid',
                                         },
-                                        `Đã hoàn tất đơn #${order.order_code}`
+                                        tx(
+                                          'Đã hoàn tất đơn #{code}',
+                                          'Completed order #{code}',
+                                          { code: order.order_code }
+                                        )
                                       )
                                     }
                                     className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[10px] font-black text-slate-950 hover:bg-emerald-400"
                                   >
-                                    Hoàn tất
+                                    {tx('Hoàn tất', 'Complete')}
                                   </button>
                                 )}
                                 {order.status !== 'cancelled' && (
@@ -2194,12 +2475,16 @@ export default function SuperAdminPortalPage() {
                                           orderId: order.id,
                                           status: 'cancelled',
                                         },
-                                        `Đã hủy đơn #${order.order_code} và hoàn tồn kho`
+                                        tx(
+                                          'Đã hủy đơn #{code} và hoàn tồn kho',
+                                          'Cancelled order #{code} and restored stock',
+                                          { code: order.order_code }
+                                        )
                                       )
                                     }
                                     className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20"
                                   >
-                                    Hủy
+                                    {t('common.cancel')}
                                   </button>
                                 )}
                               </div>
@@ -2214,23 +2499,28 @@ export default function SuperAdminPortalPage() {
             </div>
           )}
 
-          {/* ==================== TAB 5: SAAS BILLING & VIETQR TRANSACTIONS ==================== */}
+          {/* ==================== TAB 5: PLAN BILLING & VIETQR TRANSACTIONS ==================== */}
           {activeTab === 'billing' && data && (
             <div className="space-y-5">
               <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h3 className="text-base font-black text-white">
-                    Quản Lý Giao Dịch Nâng Cấp Gói (VietQR Billing)
+                    {tx(
+                      'Giao Dịch Nâng Cấp Gói (VietQR)',
+                      'Plan Upgrade Transactions (VietQR)'
+                    )}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Duyệt nhanh các giao dịch chuyển khoản nâng cấp gói Basic
-                    (39.000đ) và Premium (69.000đ) của Chủ quán
+                    {tx(
+                      'Duyệt nhanh giao dịch chuyển khoản nâng cấp gói Basic (39.000đ) và Premium (69.000đ)',
+                      'Approve bank transfer transactions for Basic (39,000đ) and Premium (69,000đ) plans'
+                    )}
                   </p>
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="text-right">
                     <span className="block text-[10px] font-bold uppercase text-slate-400">
-                      Tổng đã thu SaaS
+                      {tx('Tổng thu gói cước', 'Total plan revenue')}
                     </span>
                     <span className="text-lg font-black text-amber-400">
                       {formatCurrency(kpis?.totalSaasRevenue || 0, 'VND')}
@@ -2244,13 +2534,23 @@ export default function SuperAdminPortalPage() {
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">Mã giao dịch</th>
-                        <th className="py-3.5 px-4 font-bold">Chủ quán</th>
-                        <th className="py-3.5 px-4 font-bold">Gói nâng cấp</th>
-                        <th className="py-3.5 px-4 font-bold">Số tiền</th>
-                        <th className="py-3.5 px-4 font-bold">Trạng thái</th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Mã giao dịch', 'Transaction Code')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Chủ quán', 'Owner')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Gói nâng cấp', 'Target Plan')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Số tiền', 'Amount')}
+                        </th>
+                        <th className="py-3.5 px-4 font-bold">
+                          {tx('Trạng thái', 'Status')}
+                        </th>
                         <th className="py-3.5 px-4 font-bold text-right">
-                          Thao tác Admin
+                          {tx('Thao tác', 'Action')}
                         </th>
                       </tr>
                     </thead>
@@ -2260,8 +2560,10 @@ export default function SuperAdminPortalPage() {
                           <td colSpan={6} className="py-8 px-4 text-center">
                             <div className="max-w-md mx-auto space-y-2.5">
                               <p className="text-xs font-bold text-slate-300">
-                                Chưa có giao dịch nâng cấp gói cước nào được ghi
-                                nhận.
+                                {tx(
+                                  'Chưa có giao dịch nâng cấp gói cước nào.',
+                                  'No plan upgrade transactions recorded yet.'
+                                )}
                               </p>
                               <button
                                 type="button"
@@ -2270,60 +2572,64 @@ export default function SuperAdminPortalPage() {
                                 className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
                               >
                                 <RefreshCw className="h-3.5 w-3.5" />
-                                <span>Tải lại dữ liệu</span>
+                                <span>{t('admin.refreshData')}</span>
                               </button>
                             </div>
                           </td>
                         </tr>
                       ) : (
-                        (data.transactions || []).map((tx) => (
-                          <tr key={tx.id} className="hover:bg-slate-800/40">
+                        (data.transactions || []).map((trx) => (
+                          <tr key={trx.id} className="hover:bg-slate-800/40">
                             <td className="py-3.5 px-4">
                               <span className="font-mono font-black text-amber-300">
-                                {tx.order_code}
+                                {trx.order_code}
                               </span>
                               <p className="text-[10px] text-slate-500">
-                                {new Date(tx.created_at).toLocaleString(
-                                  'vi-VN'
+                                {new Date(trx.created_at).toLocaleString(
+                                  locale === 'en' ? 'en-US' : 'vi-VN'
                                 )}
                               </p>
                             </td>
                             <td className="py-3.5 px-4">
                               <p className="font-bold text-white">
-                                {tx.ownerName}
+                                {trx.ownerName}
                               </p>
                               <p className="text-[11px] text-slate-400">
-                                {tx.ownerEmail}
+                                {trx.ownerEmail}
                               </p>
                             </td>
                             <td className="py-3.5 px-4">
                               <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
-                                {tx.target_plan}
+                                {trx.target_plan}
                               </span>
                             </td>
                             <td className="py-3.5 px-4 font-black text-emerald-400">
-                              {formatCurrency(tx.amount, 'VND')}
+                              {formatCurrency(trx.amount, 'VND')}
                             </td>
                             <td className="py-3.5 px-4">
                               <span
                                 className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                                  tx.status === 'completed'
+                                  trx.status === 'completed'
                                     ? 'bg-emerald-500 text-slate-950'
-                                    : tx.status === 'pending'
+                                    : trx.status === 'pending'
                                       ? 'bg-amber-400 text-slate-950 animate-pulse'
                                       : 'bg-rose-500/20 text-rose-300'
                                 }`}
                               >
-                                {tx.status}
+                                {trx.status === 'completed'
+                                  ? tx('Hoàn tất', 'Completed')
+                                  : trx.status === 'pending'
+                                    ? tx('Chờ duyệt', 'Pending')
+                                    : trx.status}
                               </span>
-                              {tx.bank_ref_id && (
+                              {trx.bank_ref_id && (
                                 <p className="text-[10px] text-slate-500 mt-0.5">
-                                  Ref: {tx.bank_ref_id}
+                                  Ref: {trx.bank_ref_id}
                                 </p>
                               )}
                             </td>
                             <td className="py-3.5 px-4 text-right">
-                              {tx.status === 'pending' ? (
+                              {trx.status === 'pending' ? (
                                 <button
                                   type="button"
                                   disabled={actionBusy}
@@ -2331,20 +2637,33 @@ export default function SuperAdminPortalPage() {
                                     runAdminAction(
                                       {
                                         action: 'approve_transaction',
-                                        orderCode: tx.order_code,
-                                        ownerId: tx.user_id,
+                                        orderCode: trx.order_code,
+                                        ownerId: trx.user_id,
                                       },
-                                      `Đã duyệt giao dịch ${tx.order_code} & nâng cấp gói ${tx.target_plan.toUpperCase()} cho ${tx.ownerEmail}!`
+                                      tx(
+                                        'Đã duyệt giao dịch {code} & nâng cấp gói {plan} cho {email}!',
+                                        'Approved transaction {code} & upgraded {email} to {plan}!',
+                                        {
+                                          code: trx.order_code,
+                                          plan: trx.target_plan.toUpperCase(),
+                                          email: trx.ownerEmail,
+                                        }
+                                      )
                                     )
                                   }
                                   className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-emerald-400"
                                 >
                                   <CheckCircle2 className="h-3.5 w-3.5" />
-                                  <span>Duyệt &amp; Kích Hoạt Gói</span>
+                                  <span>
+                                    {tx(
+                                      'Duyệt & Kích hoạt',
+                                      'Approve & Activate'
+                                    )}
+                                  </span>
                                 </button>
                               ) : (
                                 <span className="text-[11px] text-slate-500 font-semibold">
-                                  Đã hoàn tất
+                                  {tx('Đã hoàn tất', 'Completed')}
                                 </span>
                               )}
                             </td>
@@ -2371,10 +2690,13 @@ export default function SuperAdminPortalPage() {
                       </span>
                       <div>
                         <h3 className="text-sm font-black text-white">
-                          Cơ Sở Dữ Liệu Đám Mây
+                          {tx('Cơ Sở Dữ Liệu Đám Mây', 'Cloud Database')}
                         </h3>
                         <p className="text-[11px] text-slate-400">
-                          Đồng bộ thời gian thực cho toàn bộ cửa hàng
+                          {tx(
+                            'Đồng bộ dữ liệu cho toàn bộ cửa hàng',
+                            'Data synchronization across all stores'
+                          )}
                         </p>
                       </div>
                     </div>
@@ -2392,14 +2714,19 @@ export default function SuperAdminPortalPage() {
                   {Object.keys(data.systemHealth.tableCounts || {}).length ===
                   0 ? (
                     <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs text-slate-400 flex items-center justify-between gap-3">
-                      <span>Chưa có thống kê số bản ghi các bảng.</span>
+                      <span>
+                        {tx(
+                          'Chưa có thống kê số bản ghi các bảng.',
+                          'No table record counts available yet.'
+                        )}
+                      </span>
                       <button
                         type="button"
                         onClick={fetchAdminData}
                         disabled={loading || actionBusy}
                         className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:border-amber-400"
                       >
-                        Đồng bộ lại
+                        {t('common.refresh')}
                       </button>
                     </div>
                   ) : (
@@ -2424,7 +2751,10 @@ export default function SuperAdminPortalPage() {
 
                   <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-3">
                     <span className="text-xs text-slate-400">
-                      Khôi phục 3 cửa hàng Demo gốc (không xóa quán của khách)
+                      {tx(
+                        'Khôi phục 3 cửa hàng Demo gốc (không xóa quán của khách)',
+                        'Restore 3 default demo shops (keeps customer shops)'
+                      )}
                     </span>
                     <button
                       type="button"
@@ -2432,12 +2762,15 @@ export default function SuperAdminPortalPage() {
                       onClick={() =>
                         runAdminAction(
                           { action: 'reseed_demo_data' },
-                          'Đã đồng bộ lại dữ liệu 3 cửa hàng Demo mẫu!'
+                          tx(
+                            'Đã đồng bộ lại dữ liệu 3 cửa hàng Demo mẫu!',
+                            'Restored 3 default demo shops!'
+                          )
                         )
                       }
                       className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"
                     >
-                      Khôi phục dữ liệu mẫu
+                      {tx('Khôi phục dữ liệu mẫu', 'Restore Demo Data')}
                     </button>
                   </div>
                 </div>
@@ -2451,11 +2784,16 @@ export default function SuperAdminPortalPage() {
                       </span>
                       <div>
                         <h3 className="text-sm font-black text-white">
-                          Hệ Thống Dịch Thuật &amp; Quét Thực Đơn Tự Động
+                          {tx(
+                            'Dịch Thuật & Quét Thực Đơn Tự Động',
+                            'Auto Translation & Menu OCR'
+                          )}
                         </h3>
                         <p className="text-[11px] text-slate-400">
-                          Nhận diện thực đơn đa cột &amp; dịch tự động 5 ngôn ngữ
-                          (Việt, Anh, Hàn, Nhật, Trung)
+                          {tx(
+                            'Nhận diện thực đơn & dịch tự động đa ngôn ngữ',
+                            'Menu OCR & multilingual auto-translation'
+                          )}
                         </p>
                       </div>
                     </div>
@@ -2466,7 +2804,10 @@ export default function SuperAdminPortalPage() {
 
                   <div className="space-y-2">
                     <label className="block text-xs font-bold text-slate-300">
-                      Test Dịch AI 5 Ngôn Ngữ Trực Tiếp:
+                      {tx(
+                        'Thử nghiệm dịch tự động:',
+                        'Test auto-translation:'
+                      )}
                     </label>
                     <div className="flex gap-2">
                       <input
@@ -2481,7 +2822,9 @@ export default function SuperAdminPortalPage() {
                         onClick={handleTestAiTranslate}
                         className="rounded-xl bg-amber-400 px-4 py-2 text-xs font-black text-slate-950 hover:bg-amber-300 disabled:opacity-50"
                       >
-                        {aiTestLoading ? 'Đang dịch...' : 'Test AI'}
+                        {aiTestLoading
+                          ? tx('Đang dịch...', 'Translating...')
+                          : tx('Thử dịch', 'Test')}
                       </button>
                     </div>
                   </div>

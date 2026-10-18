@@ -11,6 +11,7 @@ import {
   BANNER_GRADIENT_SWATCHES,
   styles,
 } from '../styles/mobileStyles';
+import { useMobileI18n } from './MobileI18nProvider';
 
 interface PhoneViewerProps {
   shopName: string;
@@ -103,6 +104,7 @@ export const PhoneViewer = memo(function PhoneViewer({
   flashSale,
   items,
 }: PhoneViewerProps) {
+  const { t } = useMobileI18n();
   const previewSurfaceBg =
     backgroundStyle === 'dark'
       ? '#0f172a'
@@ -144,11 +146,11 @@ export const PhoneViewer = memo(function PhoneViewer({
             style={{ fontSize: 12, fontWeight: '900', color: '#0f172a' }}
             numberOfLines={1}
           >
-            {shopName || 'Tên Quán'}
+            {shopName || t('preview.defaultShopName')}
           </Text>
         </View>
         <Text style={{ fontSize: 10, fontWeight: '800', color: '#10b981' }}>
-          📱 Xem trước trực tiếp
+          {t('preview.liveBadge')}
         </Text>
       </View>
 

@@ -7,6 +7,7 @@ import {
   MobileShopOrder,
   MobileTicketPrintType,
 } from '../lib/supabase';
+import { useMobileI18n } from './MobileI18nProvider';
 
 interface ReceiptModalProps {
   order: MobileShopOrder | null;
@@ -19,6 +20,7 @@ export const ReceiptModal = memo(function ReceiptModal({
   shop,
   onClose,
 }: ReceiptModalProps) {
+  const { t } = useMobileI18n();
   const [receiptPaperSize, setReceiptPaperSize] = useState<'80mm' | '58mm'>(
     '80mm'
   );
@@ -70,17 +72,22 @@ export const ReceiptModal = memo(function ReceiptModal({
 
   const ticketHeaderLabel =
     ticketType === 'kitchen'
-      ? 'PHIẾU BÁO BẾP / BAR'
+      ? t('receipt.headerKitchen')
       : ticketType === 'provisional'
-        ? 'PHIẾU TẠM TÍNH KIỂM MÓN'
+        ? t('receipt.headerProvisional')
         : isPaid
-          ? 'HÓA ĐƠN THANH TOÁN'
-          : 'HÓA ĐƠN (CHƯA THU TIỀN)';
+          ? t('receipt.headerPaidReceipt')
+          : t('receipt.headerUnpaidReceipt');
 
   const handlePreviewPrintAction = () => {
     Alert.alert(
-      '📄 Bản xem trước phiếu in nhiệt',
-      `Phiếu "${ticketHeaderLabel}" #${order.order_code} (${order.table_label}), khổ ${receiptPaperSize}. Chưa gửi lệnh in và chưa ghi nhận lượt in phần cứng.`,
+      t('receipt.previewAlertTitle'),
+      t('receipt.previewAlertBody', {
+        ticket: ticketHeaderLabel,
+        code: order.order_code,
+        table: order.table_label,
+        size: receiptPaperSize,
+      })
     );
     onClose();
   };
@@ -126,7 +133,7 @@ export const ReceiptModal = memo(function ReceiptModal({
             <Text
               style={{ color: '#ffffff', fontSize: 13, fontWeight: '900' }}
             >
-              Xem Trước Phiếu In Nhiệt ({receiptPaperSize})
+              {t('receipt.modalTitle', { size: receiptPaperSize })}
             </Text>
           </View>
           <TouchableOpacity onPress={onClose}>
@@ -144,16 +151,16 @@ export const ReceiptModal = memo(function ReceiptModal({
         >
           {(
             [
-              { id: 'kitchen', label: '🍳 Báo bếp' },
-              { id: 'provisional', label: '📋 Tạm tính' },
-              { id: 'receipt', label: '🧾 Hóa đơn' },
+              { id: 'kitchen', label: t('receipt.tabKitchen') },
+              { id: 'provisional', label: t('receipt.tabProvisional') },
+              { id: 'receipt', label: t('receipt.tabReceipt') },
             ] as const
-          ).map((t) => {
-            const active = ticketType === t.id;
+          ).map((tItem) => {
+            const active = ticketType === tItem.id;
             return (
               <TouchableOpacity
-                key={t.id}
-                onPress={() => setTicketType(t.id)}
+                key={tItem.id}
+                onPress={() => setTicketType(tItem.id)}
                 style={{
                   flex: 1,
                   paddingVertical: 6,
@@ -169,7 +176,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                     color: active ? '#020617' : '#cbd5e1',
                   }}
                 >
-                  {t.label}
+                  {tItem.label}
                 </Text>
               </TouchableOpacity>
             );
@@ -205,7 +212,9 @@ export const ReceiptModal = memo(function ReceiptModal({
                     color: active ? '#ffffff' : '#94a3b8',
                   }}
                 >
-                  Khổ {sz === '80mm' ? 'K80 (80mm)' : 'K58 (58mm)'}
+                  {sz === '80mm'
+                    ? t('receipt.paperSize80')
+                    : t('receipt.paperSize58')}
                 </Text>
               </TouchableOpacity>
             );
@@ -256,7 +265,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                 </Text>
                 {shop.phone_contact ? (
                   <Text style={{ fontSize: 11, color: '#334155' }}>
-                    ĐT: {shop.phone_contact}
+                    {t('receipt.phonePrefix', { phone: shop.phone_contact })}
                   </Text>
                 ) : null}
               </>
@@ -280,12 +289,17 @@ export const ReceiptModal = memo(function ReceiptModal({
                   marginTop: 2,
                 }}
               >
-                [BẢN IN LẠI LẦN {currentTypePrintCount + 1}]
+                {t('receipt.reprintBadge', {
+                  count: currentTypePrintCount + 1,
+                })}
               </Text>
             ) : null}
             <Text style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-              Mã: #{order.order_code} • {order.table_label} • Ver #
-              {order.bill_version || 1}
+              {t('receipt.orderMeta', {
+                code: order.order_code,
+                table: order.table_label,
+                version: order.bill_version || 1,
+              })}
             </Text>
           </View>
 
@@ -354,7 +368,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                     }}
                   >
                     <Text style={{ fontSize: 11, color: '#334155' }}>
-                      Tạm tính:
+                      {t('receipt.subtotal')}
                     </Text>
                     <Text
                       style={{
@@ -374,7 +388,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                     }}
                   >
                     <Text style={{ fontSize: 11, color: '#334155' }}>
-                      Giảm giá / KM:
+                      {t('receipt.discount')}
                     </Text>
                     <Text
                       style={{
@@ -403,8 +417,8 @@ export const ReceiptModal = memo(function ReceiptModal({
                   }}
                 >
                   {isPaid && ticketType === 'receipt'
-                    ? 'ĐÃ THANH TOÁN:'
-                    : 'TỔNG THANH TOÁN:'}
+                    ? t('receipt.totalPaid')
+                    : t('receipt.totalDue')}
                 </Text>
                 <Text
                   style={{
@@ -424,13 +438,18 @@ export const ReceiptModal = memo(function ReceiptModal({
                   marginTop: 4,
                 }}
               >
-                Trạng thái:{' '}
-                {order.payment_status === 'paid'
-                  ? '✓ ĐÃ THANH TOÁN'
-                  : order.payment_status === 'refunded'
-                    ? '↩ ĐÃ HOÀN TIỀN'
-                    : 'CHƯA THANH TOÁN'}{' '}
-                ({order.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
+                {t('receipt.statusLine', {
+                  status:
+                    order.payment_status === 'paid'
+                      ? t('receipt.statusPaid')
+                      : order.payment_status === 'refunded'
+                        ? t('receipt.statusRefunded')
+                        : t('receipt.statusUnpaid'),
+                  method:
+                    order.payment_method === 'vietqr'
+                      ? t('receipt.methodQr')
+                      : t('receipt.methodCash'),
+                })}
               </Text>
               {ticketType === 'provisional' && !isPaid && !isQrConfigured ? (
                 <Text
@@ -442,7 +461,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                     textAlign: 'center',
                   }}
                 >
-                  ⚠️ Quán chưa cấu hình tài khoản ngân hàng nhận QR.
+                  {t('receipt.qrNotConfiguredWarning')}
                 </Text>
               ) : null}
               {shop.wifi_info?.ssid ? (
@@ -454,8 +473,11 @@ export const ReceiptModal = memo(function ReceiptModal({
                     textAlign: 'center',
                   }}
                 >
-                  Wi-Fi: {shop.wifi_info.ssid} (Pass:{' '}
-                  {shop.wifi_info.password || 'Miễn phí'})
+                  {t('receipt.wifiLine', {
+                    ssid: shop.wifi_info.ssid,
+                    password:
+                      shop.wifi_info.password || t('receipt.wifiFree'),
+                  })}
                 </Text>
               ) : null}
               <Text
@@ -467,7 +489,7 @@ export const ReceiptModal = memo(function ReceiptModal({
                   marginTop: 6,
                 }}
               >
-                Cảm ơn Quý khách &amp; Hẹn gặp lại!
+                {t('receipt.thankYou')}
               </Text>
             </View>
           ) : null}
@@ -494,7 +516,7 @@ export const ReceiptModal = memo(function ReceiptModal({
             <Text
               style={{ color: '#cbd5e1', fontSize: 12, fontWeight: '800' }}
             >
-              Đóng
+              {t('common.close')}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -514,7 +536,7 @@ export const ReceiptModal = memo(function ReceiptModal({
             <Text
               style={{ color: '#020617', fontSize: 12, fontWeight: '900' }}
             >
-              Xem thông tin in ({receiptPaperSize})
+              {t('receipt.printInfoBtn', { size: receiptPaperSize })}
             </Text>
           </TouchableOpacity>
         </View>

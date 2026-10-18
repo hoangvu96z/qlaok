@@ -8,6 +8,7 @@ import {
   MobileShopOrder,
 } from '../../lib/supabase';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
+import { useMobileI18n } from '../MobileI18nProvider';
 
 interface OverviewTabProps {
   orders: MobileShopOrder[];
@@ -32,6 +33,7 @@ export const OverviewTab = memo(function OverviewTab({
   primaryColor,
   theme,
 }: OverviewTabProps) {
+  const { t } = useMobileI18n();
   const metrics = useMemo(() => {
     const newOrdersCount = orders.filter((o) => o.status === 'new').length;
     const preparingOrdersCount = orders.filter(
@@ -100,17 +102,17 @@ export const OverviewTab = memo(function OverviewTab({
   return (
     <View style={styles.sectionStack}>
       <View style={styles.revenueHeroCard}>
-        <Text style={styles.revenueLabel}>
-          DOANH THU ĐÃ THU HÔM NAY (QUẦY mPOS &amp; ĐƠN QR BÀN)
-        </Text>
+        <Text style={styles.revenueLabel}>{t('overview.heroLabel')}</Text>
         <Text style={styles.revenueValue}>
           {formatVnd(metrics.todayRevenue)}
         </Text>
         <Text style={styles.revenueSub}>
-          Tổng lũy kế đã thu: {formatVnd(metrics.totalRevenue)} (
-          {metrics.validOrdersCount} đơn đã thu) •{' '}
-          {items.filter((i) => i.is_available).length}/{items.length} món đang
-          mở bán
+          {t('overview.heroSub', {
+            totalRevenue: formatVnd(metrics.totalRevenue),
+            paidCount: metrics.validOrdersCount,
+            availableCount: items.filter((i) => i.is_available).length,
+            totalItems: items.length,
+          })}
         </Text>
       </View>
 
@@ -122,7 +124,7 @@ export const OverviewTab = memo(function OverviewTab({
         ]}
       >
         <Text style={[styles.cardHeading, { color: theme.text }]}>
-          📊 Biểu Đồ Doanh Thu 7 Ngày Gần Nhất
+          {t('overview.chartHeading')}
         </Text>
         <View style={styles.chartBarsContainer}>
           {metrics.sevenDayBars.map((bar) => {
@@ -181,11 +183,13 @@ export const OverviewTab = memo(function OverviewTab({
             {metrics.newOrdersCount + metrics.preparingOrdersCount}
           </Text>
           <Text style={[styles.kpiTitle, { color: theme.text }]}>
-            Đơn đang phục vụ
+            {t('overview.kpiActiveTitle')}
           </Text>
           <Text style={styles.kpiHint}>
-            Mới: {metrics.newOrdersCount} • Đang làm:{' '}
-            {metrics.preparingOrdersCount}
+            {t('overview.kpiActiveHint', {
+              newCount: metrics.newOrdersCount,
+              preparingCount: metrics.preparingOrdersCount,
+            })}
           </Text>
         </View>
 
@@ -199,10 +203,12 @@ export const OverviewTab = memo(function OverviewTab({
             {metrics.lowStockCount}
           </Text>
           <Text style={[styles.kpiTitle, { color: theme.text }]}>
-            Món sắp hết (&lt;=5)
+            {t('overview.kpiLowStockTitle')}
           </Text>
           <Text style={styles.kpiHint}>
-            Đã hết hàng: {metrics.outOfStockCount} món
+            {t('overview.kpiLowStockHint', {
+              outCount: metrics.outOfStockCount,
+            })}
           </Text>
         </View>
 
@@ -216,10 +222,13 @@ export const OverviewTab = memo(function OverviewTab({
             {metrics.scanDoorCount + metrics.scanTableCount}
           </Text>
           <Text style={[styles.kpiTitle, { color: theme.text }]}>
-            Tổng lượt quét QR
+            {t('overview.kpiQrScansTitle')}
           </Text>
           <Text style={styles.kpiHint}>
-            Cửa: {metrics.scanDoorCount} • Bàn: {metrics.scanTableCount}
+            {t('overview.kpiQrScansHint', {
+              doorCount: metrics.scanDoorCount,
+              tableCount: metrics.scanTableCount,
+            })}
           </Text>
         </View>
 
@@ -231,7 +240,7 @@ export const OverviewTab = memo(function OverviewTab({
         >
           <Text style={[styles.kpiNumber, { color: theme.text }]}>8</Text>
           <Text style={[styles.kpiTitle, { color: theme.text }]}>
-            Ngôn ngữ Quốc tế
+            {t('overview.kpiLangsTitle')}
           </Text>
           <Text style={styles.kpiHint}>
             VN • EN • KO • JA • ZH • ES • IT • RU
@@ -264,7 +273,7 @@ export const OverviewTab = memo(function OverviewTab({
               { marginBottom: 0, color: theme.text },
             ]}
           >
-            Top món bán chạy &amp; Số lượng tồn kho
+            {t('overview.topItemsHeading')}
           </Text>
         </View>
         {metrics.topItems.map((item, idx) => (
@@ -278,15 +287,20 @@ export const OverviewTab = memo(function OverviewTab({
                 {item.name_i18n?.vi}
               </Text>
               <Text style={[styles.itemSub, { color: theme.subText }]}>
-                {formatVnd(item.price)} • Đã bán: {item.sold_count || 0}
+                {t('overview.itemPriceSold', {
+                  price: formatVnd(item.price),
+                  sold: item.sold_count || 0,
+                })}
               </Text>
             </View>
             <Text style={styles.viewCountText}>
-              Tồn:{' '}
-              {item.stock_quantity === null ||
-              item.stock_quantity === undefined
-                ? '∞'
-                : item.stock_quantity}
+              {t('overview.itemStock', {
+                stock:
+                  item.stock_quantity === null ||
+                  item.stock_quantity === undefined
+                    ? '∞'
+                    : item.stock_quantity,
+              })}
             </Text>
           </View>
         ))}

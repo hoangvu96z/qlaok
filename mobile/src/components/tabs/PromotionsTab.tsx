@@ -19,6 +19,7 @@ import {
   MobileThemePalette,
   styles,
 } from '../../styles/mobileStyles';
+import { useMobileI18n } from '../MobileI18nProvider';
 import { PhoneViewer } from '../PhoneViewer';
 
 interface PromotionsTabProps {
@@ -56,6 +57,7 @@ export const PromotionsTab = memo(function PromotionsTab({
   onSaveShopAndTheme,
   theme,
 }: PromotionsTabProps) {
+  const { t } = useMobileI18n();
   const [promoSubTab, setPromoSubTab] = useState<'discount' | 'flash_sale'>(
     'discount'
   );
@@ -144,7 +146,7 @@ export const PromotionsTab = memo(function PromotionsTab({
               color: promoSubTab === 'discount' ? '#ffffff' : '#475569',
             }}
           >
-            🔥 Giảm Giá &amp; Banner
+            {t('promo.subTabDiscount')}
           </Text>
         </TouchableOpacity>
 
@@ -164,7 +166,7 @@ export const PromotionsTab = memo(function PromotionsTab({
               color: promoSubTab === 'flash_sale' ? '#ffffff' : '#475569',
             }}
           >
-            ⚡ Flash Sale Giờ Vàng
+            {t('promo.subTabFlashSale')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -185,7 +187,7 @@ export const PromotionsTab = memo(function PromotionsTab({
             }}
           >
             <Text style={[styles.cardHeading, { color: theme.text }]}>
-              🔥 Giảm Giá Hóa Đơn / Theo Món
+              {t('promo.discountHeading')}
             </Text>
             <Switch
               value={promoBanner.enabled}
@@ -198,7 +200,7 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Discount Type: % vs VND */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Hình thức giảm giá
+            {t('promo.discountTypeLabel')}
           </Text>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <TouchableOpacity
@@ -222,7 +224,7 @@ export const PromotionsTab = memo(function PromotionsTab({
                     styles.choiceBtnTextActive,
                 ]}
               >
-                Giảm theo %
+                {t('promo.discountTypePercent')}
               </Text>
             </TouchableOpacity>
 
@@ -247,14 +249,14 @@ export const PromotionsTab = memo(function PromotionsTab({
                     styles.choiceBtnTextActive,
                 ]}
               >
-                Giảm số tiền (đ)
+                {t('promo.discountTypeFixed')}
               </Text>
             </TouchableOpacity>
           </View>
 
           {/* Quick Discount Value Chips */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Mức giảm nhanh
+            {t('promo.quickDiscountLabel')}
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
             {(promoBanner.discountType === 'fixed_amount'
@@ -294,14 +296,14 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Min Order Chips */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Đơn tối thiểu
+            {t('promo.minOrderLabel')}
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
             {[
-              { label: '0đ (Mọi đơn)', val: 0 },
-              { label: 'Từ 50k', val: 50000 },
-              { label: 'Từ 100k', val: 100000 },
-              { label: 'Từ 200k', val: 200000 },
+              { label: t('promo.minOrder0'), val: 0 },
+              { label: t('promo.minOrder50k'), val: 50000 },
+              { label: t('promo.minOrder100k'), val: 100000 },
+              { label: t('promo.minOrder200k'), val: 200000 },
             ].map((chip) => {
               const active = (promoBanner.minOrderAmount || 0) === chip.val;
               return (
@@ -334,7 +336,7 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Apply Scope: All vs Selected Items */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Phạm vi áp dụng
+            {t('promo.scopeLabel')}
           </Text>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <TouchableOpacity
@@ -354,7 +356,7 @@ export const PromotionsTab = memo(function PromotionsTab({
                     styles.choiceBtnTextActive,
                 ]}
               >
-                Toàn bộ Menu
+                {t('promo.scopeAll')}
               </Text>
             </TouchableOpacity>
 
@@ -378,7 +380,9 @@ export const PromotionsTab = memo(function PromotionsTab({
                     styles.choiceBtnTextActive,
                 ]}
               >
-                Chọn món ({(promoBanner.selectedItemIds || []).length})
+                {t('promo.scopeSelected', {
+                  count: (promoBanner.selectedItemIds || []).length,
+                })}
               </Text>
             </TouchableOpacity>
           </View>
@@ -433,7 +437,7 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Pure Round Banner Color Swatches */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Màu Banner
+            {t('promo.bannerColorLabel')}
           </Text>
           <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
             {BANNER_GRADIENT_SWATCHES.map((sw) => {
@@ -481,7 +485,7 @@ export const PromotionsTab = memo(function PromotionsTab({
                 flex: 1,
               }}
             >
-              🎁 Bật thêm Popup Chào Mừng khi khách quét QR
+              {t('promo.welcomePopupLabel')}
             </Text>
             <Switch
               value={welcomePopup.enabled}
@@ -497,7 +501,7 @@ export const PromotionsTab = memo(function PromotionsTab({
             onPress={onSaveShopAndTheme}
           >
             <Text style={styles.saveSettingsBtnText}>
-              Lưu &amp; Áp Dụng Khuyến Mãi
+              {t('promo.savePromosBtn')}
             </Text>
           </TouchableOpacity>
         </View>
@@ -517,7 +521,7 @@ export const PromotionsTab = memo(function PromotionsTab({
             }}
           >
             <Text style={[styles.cardHeading, { color: theme.text }]}>
-              ⚡ Flash Sale Giờ Vàng
+              {t('promo.flashHeading')}
             </Text>
             <Switch
               value={flashSale.enabled}
@@ -529,7 +533,7 @@ export const PromotionsTab = memo(function PromotionsTab({
           </View>
 
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Mức giảm Flash Sale (%)
+            {t('promo.flashDiscountLabel')}
           </Text>
           <View style={{ flexDirection: 'row', gap: 6 }}>
             {[15, 20, 25, 30, 50].map((pct) => {
@@ -567,7 +571,7 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Multi-Day Date Range Presets */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            📅 Thời hạn chiến dịch Flash Sale (Nhiều ngày)
+            {t('promo.flashDurationLabel')}
           </Text>
           <View
             style={{
@@ -578,11 +582,11 @@ export const PromotionsTab = memo(function PromotionsTab({
             }}
           >
             {[
-              { label: 'Chỉ hôm nay', days: 0 },
-              { label: '3 Ngày tới', days: 2 },
-              { label: '7 Ngày', days: 6 },
-              { label: '14 Ngày', days: 13 },
-              { label: '30 Ngày', days: 29 },
+              { label: t('promo.presetToday'), days: 0 },
+              { label: t('promo.preset3Days'), days: 2 },
+              { label: t('promo.preset7Days'), days: 6 },
+              { label: t('promo.preset14Days'), days: 13 },
+              { label: t('promo.preset30Days'), days: 29 },
             ].map((preset) => {
               const dStart = new Date();
               const startIso = dStart.toISOString().slice(0, 10);
@@ -594,7 +598,7 @@ export const PromotionsTab = memo(function PromotionsTab({
                 flashSale.endDate === endIso;
               return (
                 <TouchableOpacity
-                  key={preset.label}
+                  key={preset.days}
                   onPress={() =>
                     setFlashSale((prev) => ({
                       ...prev,
@@ -624,7 +628,7 @@ export const PromotionsTab = memo(function PromotionsTab({
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-                Từ ngày (YYYY-MM-DD)
+                {t('promo.startDateLabel')}
               </Text>
               <TextInput
                 style={[
@@ -643,7 +647,7 @@ export const PromotionsTab = memo(function PromotionsTab({
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-                Đến hết ngày (YYYY-MM-DD)
+                {t('promo.endDateLabel')}
               </Text>
               <TextInput
                 style={[
@@ -664,7 +668,7 @@ export const PromotionsTab = memo(function PromotionsTab({
 
           {/* Quick Time Slot Presets */}
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            ⏰ Khung giờ vàng mỗi ngày
+            {t('promo.timeSlotLabel')}
           </Text>
           <View
             style={{
@@ -675,16 +679,16 @@ export const PromotionsTab = memo(function PromotionsTab({
             }}
           >
             {[
-              { label: '🍱 Trưa 11:00–14:00', s: '11:00', e: '14:00' },
-              { label: '🧋 Chiều 14:00–17:00', s: '14:00', e: '17:00' },
-              { label: '🍻 Tối 18:00–22:00', s: '18:00', e: '22:00' },
-              { label: '🔥 Cả ngày 00:00–23:45', s: '00:00', e: '23:45' },
+              { label: t('promo.slotLunch'), s: '11:00', e: '14:00' },
+              { label: t('promo.slotAfternoon'), s: '14:00', e: '17:00' },
+              { label: t('promo.slotEvening'), s: '18:00', e: '22:00' },
+              { label: t('promo.slotAllDay'), s: '00:00', e: '23:45' },
             ].map((slot) => {
               const isActive =
                 flashSale.startTime === slot.s && flashSale.endTime === slot.e;
               return (
                 <TouchableOpacity
-                  key={slot.label}
+                  key={slot.s}
                   onPress={() =>
                     setFlashSale((prev) => ({
                       ...prev,
@@ -714,7 +718,7 @@ export const PromotionsTab = memo(function PromotionsTab({
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-                Giờ bắt đầu
+                {t('promo.startTimeLabel')}
               </Text>
               <TextInput
                 style={[
@@ -726,14 +730,14 @@ export const PromotionsTab = memo(function PromotionsTab({
                   },
                 ]}
                 value={flashSale.startTime}
-                onChangeText={(t: string) =>
-                  setFlashSale((prev) => ({ ...prev, startTime: t }))
+                onChangeText={(tVal: string) =>
+                  setFlashSale((prev) => ({ ...prev, startTime: tVal }))
                 }
               />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-                Giờ kết thúc
+                {t('promo.endTimeLabel')}
               </Text>
               <TextInput
                 style={[
@@ -745,15 +749,17 @@ export const PromotionsTab = memo(function PromotionsTab({
                   },
                 ]}
                 value={flashSale.endTime}
-                onChangeText={(t: string) =>
-                  setFlashSale((prev) => ({ ...prev, endTime: t }))
+                onChangeText={(tVal: string) =>
+                  setFlashSale((prev) => ({ ...prev, endTime: tVal }))
                 }
               />
             </View>
           </View>
 
           <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-            Tích chọn sản phẩm chạy Flash Sale ({flashSale.itemIds.length} món):
+            {t('promo.selectFlashItemsLabel', {
+              count: flashSale.itemIds.length,
+            })}
           </Text>
           <View style={{ gap: 6, marginTop: 6 }}>
             {items.map((it) => {
@@ -808,7 +814,7 @@ export const PromotionsTab = memo(function PromotionsTab({
             onPress={onSaveShopAndTheme}
           >
             <Text style={styles.saveSettingsBtnText}>
-              Lưu &amp; Kích Hoạt Flash Sale
+              {t('promo.saveFlashBtn')}
             </Text>
           </TouchableOpacity>
         </View>

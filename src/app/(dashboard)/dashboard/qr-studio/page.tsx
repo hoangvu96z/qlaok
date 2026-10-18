@@ -4,18 +4,20 @@ import React, { useState, useEffect } from 'react';
 import { QrCode, Palette, Wifi } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import { PrintableStandee } from '@/components/dashboard/PrintableStandee';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 const PRESET_COLORS = [
-  { label: 'Xanh Ngọc (Emerald)', hex: '#10b981' },
-  { label: 'Tím Spa (Violet)', hex: '#8b5cf6' },
-  { label: 'Cam Ẩm Thực (Amber)', hex: '#f59e0b' },
-  { label: 'Đỏ Truyền Thống (Rose)', hex: '#e11d48' },
-  { label: 'Xanh Biển (Blue)', hex: '#2563eb' },
-  { label: 'Đen Sang Trọng (Slate)', hex: '#0f172a' },
+  { labelVi: 'Xanh ngọc', labelEn: 'Emerald', hex: '#10b981' },
+  { labelVi: 'Tím', labelEn: 'Violet', hex: '#8b5cf6' },
+  { labelVi: 'Vàng cam', labelEn: 'Amber', hex: '#f59e0b' },
+  { labelVi: 'Đỏ hồng', labelEn: 'Rose', hex: '#e11d48' },
+  { labelVi: 'Xanh biển', labelEn: 'Blue', hex: '#2563eb' },
+  { labelVi: 'Đen xám', labelEn: 'Slate', hex: '#0f172a' },
 ];
 
 export default function DashboardQrStudioPage() {
   const { activeShop } = useDashboard();
+  const { tx } = useAppI18n();
   const [baseUrl, setBaseUrl] = useState('http://localhost:3000');
   const [showWifi, setShowWifi] = useState(true);
   const [accentColor, setAccentColor] = useState('#10b981');
@@ -39,13 +41,16 @@ export default function DashboardQrStudioPage() {
       <div>
         <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-extrabold text-emerald-800 mb-2">
           <QrCode className="h-3.5 w-3.5" />
-          <span>QR Code & Print Studio • Chuẩn Standee A6</span>
+          <span>{tx('Tạo & in mã QR • Khổ A6', 'QR Studio • A6 Standee')}</span>
         </div>
         <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-          Hệ Thống 2 Mã QR Chuyên Biệt ({activeShop.name})
+          {tx('Mã QR', 'QR codes')}
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 mt-1">
-          Tải file ảnh PNG độ phân giải cao (300 DPI) để in Standee mica để bàn hoặc decal dán trước cửa quán.
+          {tx(
+            'Tải ảnh PNG sắc nét (300 DPI) để in bảng để bàn hoặc dán cửa.',
+            'Download sharp PNG (300 DPI) for table standees or door decals.'
+          )}
         </p>
       </div>
 
@@ -54,7 +59,7 @@ export default function DashboardQrStudioPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-700 mr-1">
             <Palette className="h-4 w-4 text-emerald-600" />
-            Màu khung Standee:
+            {tx('Màu khung:', 'Frame color:')}
           </span>
           {PRESET_COLORS.map((c) => (
             <button
@@ -67,7 +72,8 @@ export default function DashboardQrStudioPage() {
                   : 'border-white/80 shadow-xs'
               }`}
               style={{ backgroundColor: c.hex }}
-              title={c.label}
+              title={tx(c.labelVi, c.labelEn)}
+              aria-label={tx(c.labelVi, c.labelEn)}
             />
           ))}
         </div>
@@ -80,7 +86,7 @@ export default function DashboardQrStudioPage() {
             className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
           />
           <Wifi className="h-3.5 w-3.5 text-emerald-600" />
-          <span>In kèm mật khẩu Wi-Fi trên bảng QR</span>
+          <span>{tx('In kèm Wi-Fi trên bảng QR', 'Include Wi-Fi on QR card')}</span>
         </label>
       </div>
 
@@ -90,10 +96,13 @@ export default function DashboardQrStudioPage() {
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-2xs space-y-4">
           <div className="text-center space-y-1">
             <span className="rounded-full bg-emerald-100 px-3 py-0.5 text-[11px] font-extrabold text-emerald-800">
-              1. MÃ QR DÁN CỬA / QUẦY LỄ TÂN (?src=door)
+              {tx('1. QR DÁN CỬA / LỄ TÂN (?src=door)', '1. DOOR / RECEPTION QR (?src=door)')}
             </span>
             <p className="text-xs text-slate-500">
-              Khách quét mở <strong>Trang Thông Tin Cửa Hàng</strong> (Giờ mở cửa, Copy Wi-Fi 1 chạm, Chỉ đường Maps, Khuyến mãi & Nút mở Menu)
+              {tx(
+                'Mở trang giới thiệu quán: giờ mở cửa, Wi-Fi, bản đồ, ưu đãi và nút vào thực đơn.',
+                'Opens store info page: hours, Wi-Fi, map directions, promos, and menu button.'
+              )}
             </p>
           </div>
 
@@ -110,10 +119,13 @@ export default function DashboardQrStudioPage() {
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-2xs space-y-4">
           <div className="text-center space-y-1">
             <span className="rounded-full bg-amber-100 px-3 py-0.5 text-[11px] font-extrabold text-amber-900">
-              2. MÃ QR ĐẶT TẠI BÀN / GHẾ DỊCH VỤ (?src=table)
+              {tx('2. QR ĐẶT TẠI BÀN (?src=table)', '2. TABLE / SEAT QR (?src=table)')}
             </span>
             <p className="text-xs text-slate-500">
-              Khách ngồi vào bàn quét mở <strong>thẳng vào trang Menu / Bảng Giá 8 Ngôn Ngữ</strong> và gửi đơn trực tiếp xuống quầy/bếp
+              {tx(
+                'Mở thẳng thực đơn 8 ngôn ngữ để khách chọn món và gửi đơn xuống quầy.',
+                'Opens the 8-language menu directly so guests can order from their table.'
+              )}
             </p>
           </div>
 

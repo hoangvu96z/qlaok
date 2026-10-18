@@ -52,6 +52,7 @@ export default function StorefrontMenuPage() {
   const [allowedLangs, setAllowedLangs] =
     useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
   );

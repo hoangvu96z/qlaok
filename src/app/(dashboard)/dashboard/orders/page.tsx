@@ -1,5 +1,7 @@
 'use client';
 
+import { appLanguageName } from '@/lib/app-i18n';
+
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
@@ -35,6 +37,8 @@ import {
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { formatChimeSummaryLabel } from '@/lib/app-i18n';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
@@ -54,6 +58,35 @@ import {
   sendBrowserOrderNotification,
 } from '@/lib/order-chime';
 
+const EN_CHIME_SOUND_TEXT: Record<
+  ChimeSoundId,
+  { label: string; desc: string; badge?: string }
+> = {
+  kitchen_gong: {
+    label: '🛎️ 3-Strike Kitchen Gong (Recommended)',
+    desc: 'Clear 3-strike metallic bell that cuts through kitchen noise',
+    badge: 'Clear & Loud',
+  },
+  siren_urgent: {
+    label: '🚨 High-Alert Order Siren (Max Loudness)',
+    desc: 'High-penetration dual-tone alert for busy counters and kitchens',
+    badge: 'Loudest',
+  },
+  voice_vi: {
+    label: '🗣️ Bell + Vietnamese Voice Prompt',
+    desc: 'Plays attention bell followed by a spoken Vietnamese order alert',
+    badge: 'Voice',
+  },
+  melody_upbeat: {
+    label: '🎵 Upbeat Counter Chime',
+    desc: 'Friendly 4-note melody ideal for cafes, bakeries, and tea shops',
+  },
+  bell_classic: {
+    label: '🔔 Soft Ding-Dong Bell',
+    desc: 'Gentle two-tone chime suited for spas, salons, or quiet venues',
+  },
+};
+
 function getVnDateKey(dateInput: Date | string | number = new Date()): string {
   const ts = new Date(dateInput).getTime();
   if (Number.isNaN(ts)) {
@@ -64,6 +97,9 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
+  const { locale, t, tx } = useAppI18n();
+  const translateRef = useRef(tx);
+  translateRef.current = tx;
   const [liveStatus, setLiveStatus] = useState<OrderLiveStatus>('connecting');
   const scopeRef = useRef({ shopId: activeShop?.id });
   if (scopeRef.current.shopId !== activeShop?.id) scopeRef.current = { shopId: activeShop?.id };
@@ -108,9 +144,13 @@ export default function CounterOrdersPage() {
     syncFromStorage();
 
     if (typeof window !== 'undefined') {
-      const savedMode = sessionStorage.getItem('qlaok_pos_workspace_mode');
-      if (savedMode === 'pos_terminal' || savedMode === 'kitchen_orders') {
-        setWorkspaceMode(savedMode);
+      try {
+        const savedMode = sessionStorage.getItem('qlaok_pos_workspace_mode');
+        if (savedMode === 'pos_terminal' || savedMode === 'kitchen_orders') {
+          setWorkspaceMode(savedMode);
+        }
+      } catch {
+        // ignore storage errors
       }
 
       const unlockHandler = () => {
@@ -133,7 +173,11 @@ export default function CounterOrdersPage() {
   const switchWorkspaceMode = (mode: 'kitchen_orders' | 'pos_terminal') => {
     setWorkspaceMode(mode);
     if (typeof window !== 'undefined') {
-      sessionStorage.setItem('qlaok_pos_workspace_mode', mode);
+      try {
+        sessionStorage.setItem('qlaok_pos_workspace_mode', mode);
+      } catch {
+        // ignore storage errors
+      }
     }
   };
 
@@ -159,7 +203,6 @@ export default function CounterOrdersPage() {
         inFlight.current.catalog ||= !silent;
         return;
       }
-      const shopId = activeShop.id;
       const scope = scopeRef.current;
       const request = { scope, again: false, catalog: false };
       inFlight.current = request;
@@ -184,7 +227,6 @@ export default function CounterOrdersPage() {
             setMembership(data.membership as ShopMembership);
           }
 
-          // Detect newly arrived orders to ring chime & push Windows notification
           if (!isFirstLoadRef.current) {
             const brandNewOrder = fetchedOrders.find(
               (o) =>
@@ -205,13 +247,13 @@ export default function CounterOrdersPage() {
                     .slice(0, 3)
                     .map(
                       (it) =>
-                        `${it.quantity}x ${it.name_vi || 'Món'}`
+                        `${it.quantity}x ${it.name_vi || translateRef.current('Món', 'Item')}`
                     )
                     .join(', ')
                 : undefined;
               sendBrowserOrderNotification({
-                orderCode: brandNewOrder.order_code || 'MỚI',
-                tableLabel: brandNewOrder.table_label || 'Tại quầy',
+                orderCode: brandNewOrder.order_code || translateRef.current('MỚI', 'NEW'),
+                tableLabel: brandNewOrder.table_label || translateRef.current('Tại quầy', 'Counter'),
                 totalFormatted: formatCurrency(
                   Number(brandNewOrder.total_amount) || 0,
                   activeShop.currency
@@ -234,7 +276,7 @@ export default function CounterOrdersPage() {
           setCatalogItems(catData.items || []);
         }
       } catch (err) {
-        console.error('Failed to fetch mPOS orders:', err);
+        console.error('Failed to fetch orders:', err);
       } finally {
         if (inFlight.current === request) inFlight.current = null;
         if (!disposedRef.current && scopeRef.current === scope && request.again) queueMicrotask(() => { void refresh(!request.catalog); });
@@ -264,14 +306,14 @@ export default function CounterOrdersPage() {
           if (latestChime.enabled) {
             playOrderAlertChime(
               latestChime,
-              ev.data?.tableLabel || 'Khách mới',
+              ev.data?.tableLabel || translateRef.current('Khách mới', 'New guest'),
               ev.data?.orderCode
             );
           }
           if (ev.data?.orderCode) {
             sendBrowserOrderNotification({
               orderCode: ev.data.orderCode,
-              tableLabel: ev.data.tableLabel || 'Tại quầy',
+              tableLabel: ev.data.tableLabel || translateRef.current('Tại quầy', 'Counter'),
               totalFormatted: formatCurrency(
                 Number(ev.data.totalAmount || ev.data.totalVnd) || 0,
                 activeShop?.currency || 'VND'
@@ -295,7 +337,7 @@ export default function CounterOrdersPage() {
       if (bc) bc.close();
       stopSync();
     };
-  }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name]);
+  }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name, activeShop?.currency]);
 
   // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders and remindUntilAccepted is enabled
   useEffect(() => {
@@ -367,10 +409,16 @@ export default function CounterOrdersPage() {
         return updatedOrder;
       }
       const error = await res.json().catch(() => null);
-      window.alert(error?.error || 'Không thể cập nhật đơn hàng');
+      window.alert(
+        error?.error || tx('Không thể cập nhật đơn hàng', 'Could not update order')
+      );
       return null;
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Không thể cập nhật đơn hàng');
+      window.alert(
+        error instanceof Error && error.message
+          ? error.message
+          : tx('Không thể cập nhật đơn hàng', 'Could not update order')
+      );
       return null;
     } finally {
       setUpdatingId(null);
@@ -453,30 +501,38 @@ export default function CounterOrdersPage() {
       );
     });
 
+  const chimeSummaryText = formatChimeSummaryLabel(chimeSettings, locale);
+  const syncLabel = liveStatus === 'connected'
+    ? t('orders.syncLive')
+    : liveStatus === 'unauthorized'
+      ? tx('Cần đăng nhập lại', 'Sign in again')
+      : t('orders.syncPolling');
+
   return (
     <div className="space-y-4">
       {/* Header Banner + Mode Switcher (POS Terminal vs Kitchen/Table Orders) */}
       <div className="rounded-3xl bg-slate-900 text-white p-4 sm:p-5 shadow-md space-y-3.5">
-        {/* Top Row: Title & Revenue Summary + Primary Mode Switcher */}
+        {/* Top Row: Short Heading + Separate Truncated Shop Name + Primary Mode Switcher */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-base sm:text-lg font-black tracking-tight text-white">
-              {workspaceMode === 'pos_terminal'
-                ? `Máy POS Thu Ngân Tại Quầy • ${activeShop.name}`
-                : `Đơn Hàng Tại Bàn & Quầy • ${activeShop.name}`}
-            </h1>
-            <p className="text-xs text-slate-300 mt-0.5">
-              {canViewReports ? (
-                <>
-                  Doanh thu đã thu hôm nay:{' '}
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-base sm:text-lg font-black tracking-tight text-white shrink-0">
+                {t('orders.pageTitle')}
+              </h1>
+              <span
+                title={activeShop.name}
+                data-testid="orders-shop-name-badge"
+                className="inline-block max-w-[200px] sm:max-w-[280px] truncate rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-0.5 text-xs font-extrabold text-emerald-400"
+              >
+                {activeShop.name}
+              </span>
+            </div>
+            {canViewReports && <p className="text-xs text-slate-300 mt-1">
+                  {tx('Đã thu hôm nay:', 'Paid today:')}{' '}
                   <strong className="text-emerald-400 font-black">
                     {formatCurrency(todayRevenue, activeShop.currency)}
-                  </strong>{' '}
-                  •{' '}
-                </>
-              ) : null}
-              Hoàn tất &amp; đã thu: <strong className="text-white">{completedOrders.length} đơn</strong>
-            </p>
+                  </strong>
+            </p>}
           </div>
 
           {/* Primary Workspace Mode Tabs */}
@@ -484,20 +540,20 @@ export default function CounterOrdersPage() {
             <button
               type="button"
               onClick={() => switchWorkspaceMode('pos_terminal')}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+              className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-black transition-all ${
                 workspaceMode === 'pos_terminal'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
                   : 'text-slate-300 hover:text-white'
               }`}
             >
               <Monitor className="h-4 w-4 shrink-0" />
-              <span>Màn Hình POS Bán Hàng Tại Quầy</span>
+              <span>{t('orders.tabPos')}</span>
             </button>
 
             <button
               type="button"
               onClick={() => switchWorkspaceMode('kitchen_orders')}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+              className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-black transition-all ${
                 workspaceMode === 'kitchen_orders'
                   ? 'bg-emerald-500 text-slate-950 shadow-sm'
                   : 'text-slate-300 hover:text-white'
@@ -509,11 +565,13 @@ export default function CounterOrdersPage() {
                 }`}
               />
               <span>
-                Đơn Bàn &amp; Quầy ({todayValidOrders.length} đơn hôm nay)
+                {t('orders.tabQueue', { count: todayValidOrders.length })}
               </span>
               {newOrders.length > 0 && (
                 <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-black text-white">
-                  {newOrders.length} mới
+                  {tx('{count} mới', '{count} new', {
+                    count: newOrders.length,
+                  })}
                 </span>
               )}
             </button>
@@ -526,25 +584,31 @@ export default function CounterOrdersPage() {
             <button
               type="button"
               onClick={() => setAutoPrintOnPay((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-bold border transition-colors ${
+              className={`inline-flex items-center gap-1.5 rounded-2xl px-3 py-1.5 text-xs font-bold border transition-colors ${
                 autoPrintOnPay
                   ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
                   : 'border-slate-700 bg-slate-800 text-slate-400'
               }`}
-              title="Tự động bật cửa sổ in hóa đơn ngay sau khi xác nhận thanh toán"
+              title={t('orders.autoPrintTooltip')}
             >
               <Printer className="h-4 w-4" />
-              <span>In bill khi thu tiền: {autoPrintOnPay ? 'BẬT' : 'TẮT'}</span>
+              <span>
+                {autoPrintOnPay
+                  ? t('orders.autoPrintOn')
+                  : t('orders.autoPrintOff')}
+              </span>
             </button>
 
             <div className="inline-flex items-center rounded-2xl border border-emerald-500/40 bg-slate-800/90 p-0.5">
               <button
                 type="button"
+                data-testid="orders-chime-summary"
                 onClick={() => {
                   const nextEnabled = !chimeSettings.enabled;
                   const next = { ...chimeSettings, enabled: nextEnabled };
                   updateChimeSettings({ enabled: nextEnabled });
-                  if (nextEnabled) playOrderAlertChime(next, 'Bàn 01');
+                  if (nextEnabled)
+                    playOrderAlertChime(next, tx('Bàn 01', 'Table 01'));
                 }}
                 className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
                   chimeSettings.enabled
@@ -553,60 +617,45 @@ export default function CounterOrdersPage() {
                 }`}
               >
                 {chimeSettings.enabled ? (
-                  <>
-                    <Volume2 className="h-4 w-4 text-emerald-400" />
-                    <span>
-                      Chuông:{' '}
-                      {CHIME_SOUND_OPTIONS.find(
-                        (o) => o.id === chimeSettings.soundId
-                      )?.label.replace(/^[^\s]+\s/, '') || 'Đã bật'}{' '}
-                      •{' '}
-                      {chimeSettings.volumePreset === 'max_boost'
-                        ? 'SIÊU TO'
-                        : chimeSettings.volumePreset === 'loud'
-                          ? 'TO'
-                          : 'VỪA'}
-                    </span>
-                  </>
+                  <Volume2 className="h-4 w-4 text-emerald-400" />
                 ) : (
-                  <>
-                    <VolumeX className="h-4 w-4" />
-                    <span>Chuông: TẮT</span>
-                  </>
+                  <VolumeX className="h-4 w-4" />
                 )}
+                <span>{chimeSummaryText}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setIsChimeModalOpen(true)}
                 className="inline-flex items-center gap-1 rounded-xl bg-slate-700/80 px-2.5 py-1.5 text-[11px] font-black text-amber-300 hover:bg-slate-700"
-                title="Đổi kiểu chuông báo, kích âm lượng lớn & bật thông báo đẩy Windows"
+                title={t('orders.chimeSettingsTooltip')}
+                aria-label={t('orders.chimeSettings')}
               >
                 <Settings className="h-3.5 w-3.5" />
-                <span>Kiểu chuông &amp; TB Windows</span>
               </button>
             </div>
 
             <Link
               href="/dashboard/reports"
-              className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
             >
-              <span>📊 Sổ đơn &amp; Xuất Excel/CSV</span>
+              <span>{tx('Báo cáo', 'Reports')}</span>
             </Link>
           </div>
 
           <div className="flex items-center gap-2">
-            <span role="status" className="text-xs font-semibold text-slate-500">
-              {liveStatus === 'connected' ? '● Trực tiếp' : liveStatus === 'unauthorized' ? 'Phiên đăng nhập cần kiểm tra lại' : 'Đồng bộ dự phòng'}
+            <span role="status" aria-label={syncLabel} title={syncLabel}
+              className={`text-xs ${liveStatus === 'connected' ? 'text-emerald-400' : liveStatus === 'unauthorized' ? 'text-rose-400' : 'text-amber-400'}`}>
+              <span aria-hidden="true">●</span>
             </span>
             {workspaceMode === 'kitchen_orders' && (
               <button
                 type="button"
                 onClick={() => switchWorkspaceMode('pos_terminal')}
-                className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
+                className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-500 px-3.5 py-1.5 text-xs font-black text-slate-950 shadow-sm hover:bg-emerald-400"
               >
                 <Plus className="h-4 w-4" />
-                <span>Tạo đơn nhanh tại quầy (POS)</span>
+                <span>{t('orders.openPosCta')}</span>
               </button>
             )}
 
@@ -614,7 +663,8 @@ export default function CounterOrdersPage() {
               type="button"
               onClick={() => fetchOrdersAndCatalog(false)}
               className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:text-white"
-              title="Làm mới"
+              title={t('common.refresh')}
+              aria-label={t('common.refresh')}
             >
               <RefreshCw className="h-4 w-4" />
             </button>
@@ -628,8 +678,11 @@ export default function CounterOrdersPage() {
           <div className="flex items-center gap-2.5 text-xs font-black text-amber-950">
             <BellRing className="h-4 w-4 text-amber-600 animate-bounce" />
             <span>
-              Có {newOrders.length} đơn khách gọi tại bàn qua QR đang chờ xác
-              nhận báo bếp!
+              {tx(
+                'Có {count} đơn khách gọi tại bàn qua QR đang chờ nhận!',
+                '{count} new table QR order(s) waiting for confirmation!',
+                { count: newOrders.length }
+              )}
             </span>
           </div>
           <button
@@ -640,7 +693,7 @@ export default function CounterOrdersPage() {
             }}
             className="rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-black text-white hover:bg-amber-500"
           >
-            Xem &amp; Nhận đơn ngay →
+            {t('header.openOrdersNow')} →
           </button>
         </div>
       )}
@@ -672,481 +725,529 @@ export default function CounterOrdersPage() {
         />
       ) : (
         <>
+          {/* 4 Live Counter KPI Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="rounded-3xl bg-white border-2 border-amber-300 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-700">
+                  {t('orders.kpiNew')}
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+                  <Clock className="h-4 w-4" />
+                </span>
+              </div>
+              <p className="mt-2 text-2xl font-black text-slate-900">
+                {newOrders.length}
+              </p>
+            </div>
 
-      {/* 4 Live Counter KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="rounded-3xl bg-white border-2 border-amber-300 p-4 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-amber-700">
-              Chờ xác nhận (Mới)
-            </span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
-              <Clock className="h-4 w-4" />
-            </span>
+            <div className="rounded-3xl bg-white border border-blue-200 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-blue-700">
+                  {t('orders.kpiPreparing')}
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+                  <ChefHat className="h-4 w-4" />
+                </span>
+              </div>
+              <p className="mt-2 text-2xl font-black text-slate-900">
+                {preparingOrders.length}
+              </p>
+            </div>
+
+            <div className="rounded-3xl bg-white border border-emerald-200 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-700">
+                  {tx('Đơn hôm nay', 'Today’s orders')}
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                  <CheckCircle2 className="h-4 w-4" />
+                </span>
+              </div>
+              <p className="mt-2 text-2xl font-black text-slate-900">
+                {todayValidOrders.length}
+              </p>
+              <p className="text-[11px] font-medium text-slate-500">
+                {t('orders.filterCompleted', { count: completedOrders.length })}
+              </p>
+            </div>
+
+            <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-600">
+                  {t('orders.kpiPaidToday', { count: todayPaidOrders.length })}
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                  <Banknote className="h-4 w-4" />
+                </span>
+              </div>
+              <p className="mt-2 text-xl sm:text-2xl font-black text-emerald-600">
+                {canViewReports
+                  ? formatCurrency(todayRevenue, activeShop.currency)
+                  : tx('🔒 Chỉ Chủ quán / Thu ngân', '🔒 Owner / Cashier only')}
+              </p>
+              <p className="text-[11px] font-medium text-slate-500">
+                {tx(
+                  'Chỉ tính đơn đã xác nhận thu tiền',
+                  'Includes confirmed paid orders only'
+                )}
+              </p>
+            </div>
           </div>
-          <p className="mt-2 text-2xl font-black text-slate-900">
-            {newOrders.length} đơn
-          </p>
-          <p className="text-[11px] font-medium text-slate-500">
-            Cần xác nhận báo bếp ngay
-          </p>
-        </div>
 
-        <div className="rounded-3xl bg-white border border-blue-200 p-4 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-blue-700">
-              Đang chế biến / làm
-            </span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
-              <ChefHat className="h-4 w-4" />
-            </span>
-          </div>
-          <p className="mt-2 text-2xl font-black text-slate-900">
-            {preparingOrders.length} đơn
-          </p>
-          <p className="text-[11px] font-medium text-slate-500">
-            Đang phục vụ tại bàn
-          </p>
-        </div>
-
-        <div className="rounded-3xl bg-white border border-emerald-200 p-4 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-700">
-              Đơn trong ngày / Hoàn tất
-            </span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
-              <CheckCircle2 className="h-4 w-4" />
-            </span>
-          </div>
-          <p className="mt-2 text-2xl font-black text-slate-900">
-            {todayValidOrders.length} đơn hôm nay
-          </p>
-          <p className="text-[11px] font-medium text-slate-500">
-            Đã hoàn tất / thu tiền: {completedOrders.length} đơn
-          </p>
-        </div>
-
-        <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-600">
-              Doanh thu đã thu hôm nay
-            </span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-              <Banknote className="h-4 w-4" />
-            </span>
-          </div>
-          <p className="mt-2 text-xl sm:text-2xl font-black text-emerald-600">
-            {canViewReports
-              ? formatCurrency(todayRevenue, activeShop.currency)
-              : '🔒 Chỉ Chủ quán / Thu ngân'}
-          </p>
-          <p className="text-[11px] font-medium text-slate-500">
-            Chỉ tính đơn đã xác nhận thu tiền
-          </p>
-        </div>
-      </div>
-
-      {/* Status Filter Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-        {[
-          {
-            id: 'today',
-            label: `Đơn hôm nay (${todayValidOrders.length})`,
-          },
-          {
-            id: 'active',
-            label: `Đang xử lý (${activeOrders.length})`,
-          },
-          { id: 'new', label: `Mới chờ nhận (${newOrders.length})` },
-          { id: 'preparing', label: `Đang chế biến (${preparingOrders.length})` },
-          {
-            id: 'completed',
-            label: `Đã hoàn tất (${orders.filter((o) => o.status === 'completed').length})`,
-          },
-          { id: 'cancelled', label: `Đã hủy (${cancelledOrders.length})` },
-          { id: 'all', label: `Tất cả lịch sử (${orders.length})` },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() =>
-              setFilterTab(
-                tab.id as
-                  | 'today'
-                  | 'active'
-                  | 'new'
-                  | 'preparing'
-                  | 'completed'
-                  | 'cancelled'
-                  | 'all'
-              )
-            }
-            className={`shrink-0 rounded-2xl px-4 py-2.5 text-xs font-extrabold transition-all ${
-              filterTab === tab.id
-                ? 'bg-slate-900 text-white shadow-xs'
-                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Orders Grid */}
-      {loading ? (
-        <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center text-xs font-semibold text-slate-500">
-          Đang tải danh sách đơn hàng mPOS...
-        </div>
-      ) : filteredOrders.length === 0 ? (
-        <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
-            <ShoppingBag className="h-6 w-6" />
-          </div>
-          <p className="text-sm font-bold text-slate-800">
-            Không có đơn hàng nào trong mục này
-          </p>
-          <p className="text-xs text-slate-500">
-            Khi khách quét mã QR tại bàn và bấm gửi đơn, phiếu gọi món sẽ hiện
-            ngay tại đây.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredOrders.map((order) => {
-            const visitorMeta =
-              LOCALE_META[order.visitor_lang] || LOCALE_META.vi;
-            const isNew = order.status === 'new';
-            const isPreparing = order.status === 'preparing';
-            const isCompleted = order.status === 'completed';
-            const isCancelled = order.status === 'cancelled';
-
-            return (
-              <div
-                key={order.id}
-                className={`rounded-3xl bg-white border-2 p-5 shadow-xs flex flex-col justify-between gap-4 transition-all ${
-                  isNew
-                    ? 'border-amber-400 ring-4 ring-amber-400/15'
-                    : isPreparing
-                      ? 'border-blue-400'
-                      : isCancelled
-                        ? 'border-slate-200 opacity-75'
-                        : 'border-slate-200'
+          {/* Status Filter Tabs */}
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+            {[
+              {
+                id: 'today',
+                label: tx('Hôm nay ({count})', 'Today ({count})', {
+                  count: todayValidOrders.length,
+                }),
+              },
+              {
+                id: 'active',
+                label: t('orders.filterActive', { count: activeOrders.length }),
+              },
+              {
+                id: 'new',
+                label: t('orders.filterNew', { count: newOrders.length }),
+              },
+              {
+                id: 'preparing',
+                label: t('orders.filterPreparing', {
+                  count: preparingOrders.length,
+                }),
+              },
+              {
+                id: 'completed',
+                label: t('orders.filterCompleted', {
+                  count: orders.filter((o) => o.status === 'completed').length,
+                }),
+              },
+              {
+                id: 'cancelled',
+                label: tx('Đã hủy ({count})', 'Cancelled ({count})', {
+                  count: cancelledOrders.length,
+                }),
+              },
+              {
+                id: 'all',
+                label: t('orders.filterAll', { count: orders.length }),
+              },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() =>
+                  setFilterTab(
+                    tab.id as
+                      | 'today'
+                      | 'active'
+                      | 'new'
+                      | 'preparing'
+                      | 'completed'
+                      | 'cancelled'
+                      | 'all'
+                  )
+                }
+                className={`shrink-0 rounded-2xl px-4 py-2.5 text-xs font-extrabold transition-all ${
+                  filterTab === tab.id
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
                 }`}
               >
-                <div className="space-y-3.5">
-                  {/* Ticket Top Bar */}
-                  <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="rounded-xl bg-slate-900 px-3 py-1 text-xs font-black text-amber-400">
-                          {order.table_label}
-                        </span>
-                        <span className="text-sm font-black text-slate-900">
-                          #{order.order_code}
-                        </span>
-                        <span
-                          className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                            isNew
-                              ? 'bg-amber-100 text-amber-800'
-                              : isPreparing
-                                ? 'bg-blue-100 text-blue-800'
-                                : isCompleted
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-rose-100 text-rose-700'
-                          }`}
-                        >
-                          {isNew
-                            ? 'Mới chờ nhận'
-                            : isPreparing
-                              ? 'Đang chế biến'
-                              : isCompleted
-                                ? 'Đã phục vụ'
-                                : 'Đã hủy'}
-                        </span>
-                      </div>
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-                      <div className="mt-1.5 flex items-center gap-2 text-[11px] font-semibold text-slate-500 flex-wrap">
-                        <span className="inline-flex items-center gap-1">
-                          <FlagIcon
-                            locale={order.visitor_lang}
-                            className="h-3.5 w-5"
-                          />
-                          <span>Khách {visitorMeta.label}</span>
-                        </span>
-                        <span>•</span>
-                        <span>
-                          {new Date(order.created_at).toLocaleTimeString(
-                            'vi-VN',
-                            {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            }
-                          )}
-                        </span>
-                        <span>•</span>
-                        <span>
-                          {order.source === 'counter_pos'
-                            ? '🖥️ Tạo tại quầy'
-                            : '📱 Khách quét QR'}
-                        </span>
-                      </div>
-                    </div>
+          {/* Orders Grid */}
+          {loading ? (
+            <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center text-xs font-semibold text-slate-500">
+              {t('common.loading')}
+            </div>
+          ) : filteredOrders.length === 0 ? (
+            <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                <ShoppingBag className="h-6 w-6" />
+              </div>
+              <p className="text-sm font-bold text-slate-800">
+                {t('orders.emptyQueueTitle')}
+              </p>
+              <p className="text-xs text-slate-500">
+                {t('orders.emptyQueueDesc')}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {filteredOrders.map((order) => {
+                const visitorMeta =
+                  LOCALE_META[order.visitor_lang] || LOCALE_META.vi;
+                const isNew = order.status === 'new';
+                const isPreparing = order.status === 'preparing';
+                const isCompleted = order.status === 'completed';
+                const isCancelled = order.status === 'cancelled';
 
-                    <div className="text-right">
-                      <p className="text-base font-black text-emerald-600">
-                        {formatCurrency(order.total_amount, activeShop.currency)}
-                      </p>
-                      <span
-                        className={`inline-block rounded-lg px-2 py-0.5 text-[10px] font-bold ${
-                          order.payment_status === 'paid'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : order.payment_status === 'refunded'
-                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
-                        }`}
-                      >
-                        {order.payment_status === 'paid'
-                          ? '✓ Đã thu tiền'
-                          : order.payment_status === 'refunded'
-                            ? '↩ Đã hoàn tiền'
-                            : 'Chưa thu tiền'}{' '}
-                        ({order.payment_method === 'vietqr' ? 'VietQR' : 'Tiền mặt'})
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Line Items */}
-                  <div className="space-y-2.5">
-                    {order.items.map((line, idx) => (
-                      <div
-                        key={idx}
-                        className="rounded-2xl bg-slate-50 border border-slate-200/70 p-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-start gap-2.5">
-                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-xs font-black text-white">
-                              x{line.quantity}
+                return (
+                  <div
+                    key={order.id}
+                    className={`rounded-3xl bg-white border-2 p-5 shadow-xs flex flex-col justify-between gap-4 transition-all ${
+                      isNew
+                        ? 'border-amber-400 ring-4 ring-amber-400/15'
+                        : isPreparing
+                          ? 'border-blue-400'
+                          : isCancelled
+                            ? 'border-slate-200 opacity-75'
+                            : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="space-y-3.5">
+                      {/* Ticket Top Bar */}
+                      <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="rounded-xl bg-slate-900 px-3 py-1 text-xs font-black text-amber-400">
+                              {order.table_label}
                             </span>
-                            <div>
-                              <p className="text-xs sm:text-sm font-extrabold text-slate-900">
-                                {line.name_vi}
-                              </p>
-                              {line.selected_choices &&
-                                line.selected_choices.length > 0 && (
-                                  <div className="flex flex-wrap gap-1 mt-1">
-                                    {line.selected_choices.map((c, cIdx) => {
-                                      const label =
-                                        typeof c === 'string'
-                                          ? c
-                                          : c.label_vi || c.label_i18n?.vi || '';
-                                      if (!label) return null;
-                                      return (
-                                        <span
-                                          key={cIdx}
-                                          className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900"
-                                        >
-                                          • {label}
-                                        </span>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              {line.quick_tags && line.quick_tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {line.quick_tags.map((tag, tIdx) => (
-                                    <span
-                                      key={tIdx}
-                                      className="rounded-md bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-800"
-                                    >
-                                      ⚠️ {tag}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {line.custom_note && (
-                                <p className="mt-1 text-[11px] font-bold text-amber-800">
-                                  📝 &ldquo;{line.custom_note}&rdquo;
-                                </p>
-                              )}
-                            </div>
+                            <span className="text-sm font-black text-slate-900">
+                              #{order.order_code}
+                            </span>
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
+                                isNew
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : isPreparing
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : isCompleted
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-rose-100 text-rose-700'
+                              }`}
+                            >
+                              {isNew
+                                ? t('orders.statusNew')
+                                : isPreparing
+                                  ? t('orders.statusPreparing')
+                                  : isCompleted
+                                    ? t('orders.statusCompleted')
+                                    : t('orders.statusCancelled')}
+                            </span>
                           </div>
-                          <span className="text-xs font-bold text-slate-700 shrink-0">
+
+                          <div className="mt-1.5 flex items-center gap-2 text-[11px] font-semibold text-slate-500 flex-wrap">
+                            <span className="inline-flex items-center gap-1">
+                              <FlagIcon
+                                locale={order.visitor_lang}
+                                className="h-3.5 w-5"
+                              />
+                              <span>
+                                {locale === 'en'
+                                  ? appLanguageName(order.visitor_lang, locale)
+                                  : `Khách ${visitorMeta.label}`}
+                              </span>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              {new Date(order.created_at).toLocaleTimeString(
+                                locale === 'en' ? 'en-US' : 'vi-VN',
+                                {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                }
+                              )}
+                            </span>
+                            <span>•</span>
+                            <span>
+                              {order.source === 'counter_pos'
+                                ? tx('🖥️ Tại quầy', '🖥️ Counter POS')
+                                : tx('📱 Quét QR bàn', '📱 Table QR')}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <p className="text-base font-black text-emerald-600">
                             {formatCurrency(
-                              (line.unit_price + line.extra_price) *
-                                line.quantity,
+                              order.total_amount,
                               activeShop.currency
                             )}
+                          </p>
+                          <span
+                            className={`inline-block rounded-lg px-2 py-0.5 text-[10px] font-bold ${
+                              order.payment_status === 'paid'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : order.payment_status === 'refunded'
+                                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                  : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}
+                          >
+                            {order.payment_status === 'paid'
+                              ? `✓ ${t('orders.paymentPaid')}`
+                              : order.payment_status === 'refunded'
+                                ? `↩ ${t('orders.paymentRefunded')}`
+                                : t('orders.paymentUnpaid')}{' '}
+                            (
+                            {order.payment_method === 'vietqr'
+                              ? t('orders.paymentMethodQr')
+                              : t('orders.paymentMethodCash')}
+                            )
                           </span>
                         </div>
                       </div>
-                    ))}
-                  </div>
 
-                  {order.customer_note && (
-                    <div className="rounded-2xl bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs font-bold text-amber-900">
-                      💬 Ghi chú bàn: &ldquo;{order.customer_note}&rdquo;
+                      {/* Line Items */}
+                      <div className="space-y-2.5">
+                        {order.items.map((line, idx) => (
+                          <div
+                            key={idx}
+                            className="rounded-2xl bg-slate-50 border border-slate-200/70 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-start gap-2.5">
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-xs font-black text-white">
+                                  x{line.quantity}
+                                </span>
+                                <div>
+                                  <p className="text-xs sm:text-sm font-extrabold text-slate-900">
+                                    {locale === 'en'
+                                      ? line.name_i18n?.en || line.name_vi
+                                      : line.name_vi}
+                                  </p>
+                                  {line.selected_choices &&
+                                    line.selected_choices.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {line.selected_choices.map(
+                                          (c, cIdx) => {
+                                            const label =
+                                              typeof c === 'string'
+                                                ? c
+                                                : (locale === 'en'
+                                                    ? c.label_i18n?.en
+                                                    : undefined) ||
+                                                  c.label_vi ||
+                                                  c.label_i18n?.vi ||
+                                                  '';
+                                            if (!label) return null;
+                                            return (
+                                              <span
+                                                key={cIdx}
+                                                className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900"
+                                              >
+                                                • {label}
+                                              </span>
+                                            );
+                                          }
+                                        )}
+                                      </div>
+                                    )}
+                                  {line.quick_tags &&
+                                    line.quick_tags.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {line.quick_tags.map((tag, tIdx) => (
+                                          <span
+                                            key={tIdx}
+                                            className="rounded-md bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-800"
+                                          >
+                                            ⚠️ {tag}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  {line.custom_note && (
+                                    <p className="mt-1 text-[11px] font-bold text-amber-800">
+                                      📝 &ldquo;{line.custom_note}&rdquo;
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                              <span className="text-xs font-bold text-slate-700 shrink-0">
+                                {formatCurrency(
+                                  (line.unit_price + line.extra_price) *
+                                    line.quantity,
+                                  activeShop.currency
+                                )}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {order.customer_note && (
+                        <div className="rounded-2xl bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs font-bold text-amber-900">
+                          💬 {tx('Ghi chú bàn:', 'Table note:')} &ldquo;
+                          {order.customer_note}&rdquo;
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                {/* Action Buttons Footer */}
-                {!isCancelled && (
-                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
-                    {order.payment_status === 'unpaid' && (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditOrderInPos(order)}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-2xl border-2 border-amber-400 bg-amber-100 px-3.5 py-2.5 text-xs font-black text-amber-950 shadow-2xs hover:bg-amber-200 transition"
-                        title="Mở giao diện mPOS để thêm/bớt món, đổi Option của đơn này trước khi thanh toán"
-                      >
-                        <Edit3 className="h-4 w-4 text-amber-700" />
-                        <span>Sửa đơn / Sửa món (Mở mPOS)</span>
-                      </button>
-                    )}
+                    {/* Action Buttons Footer */}
+                    {!isCancelled && (
+                      <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                        {order.payment_status === 'unpaid' && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditOrderInPos(order)}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-2xl border-2 border-amber-400 bg-amber-100 px-3.5 py-2.5 text-xs font-black text-amber-950 shadow-2xs hover:bg-amber-200 transition"
+                            title={tx(
+                              'Mở giao diện bán hàng tại quầy để thêm/bớt món hoặc đổi tùy chọn trước khi thanh toán',
+                              'Open Counter POS to add/remove items or edit options before checkout'
+                            )}
+                          >
+                            <Edit3 className="h-4 w-4 text-amber-700" />
+                            <span>{t('orders.actionEdit')}</span>
+                          </button>
+                        )}
 
-                    {isNew && (
-                      <>
-                        <button
-                          type="button"
-                          disabled={updatingId === order.id}
-                          onClick={() =>
-                            handleUpdateOrder(order.id, { status: 'preparing' })
-                          }
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                        >
-                          <ChefHat className="h-4 w-4" />
-                          <span>Nhận đơn &amp; Báo bếp</span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={updatingId === order.id}
-                          onClick={() =>
-                            handleUpdateOrder(order.id, { status: 'cancelled' })
-                          }
-                          className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
-                        >
-                          <XCircle className="h-4 w-4" />
-                          <span>Hủy</span>
-                        </button>
-                      </>
-                    )}
+                        {isNew && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={updatingId === order.id}
+                              onClick={() =>
+                                handleUpdateOrder(order.id, {
+                                  status: 'preparing',
+                                })
+                              }
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
+                            >
+                              <ChefHat className="h-4 w-4" />
+                              <span>{t('orders.actionAccept')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={updatingId === order.id}
+                              onClick={() =>
+                                handleUpdateOrder(order.id, {
+                                  status: 'cancelled',
+                                })
+                              }
+                              className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                            >
+                              <XCircle className="h-4 w-4" />
+                              <span>{t('orders.actionCancel')}</span>
+                            </button>
+                          </>
+                        )}
 
-                    {isPreparing && (
-                      <>
-                        <button
-                          type="button"
-                          disabled={updatingId === order.id}
-                          onClick={() =>
-                            handleUpdateOrder(order.id, {
-                              status: 'completed',
-                            })
-                          }
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          <span>Đã phục vụ</span>
-                        </button>
-                        {order.payment_status === 'unpaid' && canCollectPayment && (
+                        {isPreparing && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={updatingId === order.id}
+                              onClick={() =>
+                                handleUpdateOrder(order.id, {
+                                  status: 'completed',
+                                })
+                              }
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              <span>{t('orders.actionServed')}</span>
+                            </button>
+                            {order.payment_status === 'unpaid' &&
+                              canCollectPayment && (
+                                <button
+                                  type="button"
+                                  disabled={updatingId === order.id}
+                                  onClick={() =>
+                                    handleUpdateOrder(order.id, {
+                                      payment_status: 'paid',
+                                    })
+                                  }
+                                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                                >
+                                  <Banknote className="h-4 w-4" />
+                                  <span>{t('orders.actionMarkPaid')}</span>
+                                </button>
+                              )}
+                            <button
+                              type="button"
+                              disabled={updatingId === order.id}
+                              onClick={() =>
+                                handleUpdateOrder(order.id, {
+                                  status: 'cancelled',
+                                  restock_items: false,
+                                })
+                              }
+                              className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                            >
+                              <XCircle className="h-4 w-4" />
+                              <span>{t('orders.actionCancel')}</span>
+                            </button>
+                          </>
+                        )}
+
+                        {isCompleted &&
+                          order.payment_status === 'unpaid' &&
+                          canCollectPayment && (
+                            <button
+                              type="button"
+                              disabled={updatingId === order.id}
+                              onClick={() =>
+                                handleUpdateOrder(order.id, {
+                                  payment_status: 'paid',
+                                })
+                              }
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                            >
+                              <Banknote className="h-4 w-4" />
+                              <span>{t('orders.actionMarkPaid')}</span>
+                            </button>
+                          )}
+
+                        {order.payment_status === 'paid' && canRefundOrder && (
                           <button
                             type="button"
                             disabled={updatingId === order.id}
                             onClick={() =>
                               handleUpdateOrder(order.id, {
-                                payment_status: 'paid',
+                                payment_status: 'refunded',
+                                refund_reason: tx(
+                                  'Hoàn tiền tại quầy',
+                                  'Refunded at counter'
+                                ),
                               })
                             }
-                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
+                            className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
                           >
-                            <Banknote className="h-4 w-4" />
-                            <span>Xác nhận đã thu tiền</span>
+                            <XCircle className="h-4 w-4" />
+                            <span>{t('orders.actionRefund')}</span>
                           </button>
                         )}
+
+                        {order.payment_status === 'unpaid' && (
+                          <button
+                            type="button"
+                            onClick={() => setQrOrderModal(order)}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-200"
+                          >
+                            <QrCode className="h-4 w-4 text-emerald-600" />
+                            <span>{tx('Mã QR', 'QR Pay')}</span>
+                          </button>
+                        )}
+
                         <button
                           type="button"
-                          disabled={updatingId === order.id}
-                          onClick={() =>
-                            handleUpdateOrder(order.id, {
-                              status: 'cancelled',
-                              restock_items: false,
-                            })
-                          }
-                          className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                          onClick={() => setPrintingOrder(order)}
+                          className={`inline-flex items-center justify-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-black transition-colors ${
+                            isCompleted
+                              ? 'flex-1 border-slate-900 bg-slate-900 text-white hover:bg-slate-800'
+                              : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+                          }`}
                         >
-                          <XCircle className="h-4 w-4" />
-                          <span>Hủy</span>
+                          <Printer className="h-4 w-4 text-emerald-600" />
+                          <span>
+                            {order.payment_status === 'paid'
+                              ? t('orders.actionPrintReceipt')
+                              : t('orders.actionProvisionalBill')}
+                          </span>
                         </button>
-                      </>
+                      </div>
                     )}
-
-                    {isCompleted &&
-                      order.payment_status === 'unpaid' &&
-                      canCollectPayment && (
-                        <button
-                          type="button"
-                          disabled={updatingId === order.id}
-                          onClick={() =>
-                            handleUpdateOrder(order.id, {
-                              payment_status: 'paid',
-                            })
-                          }
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
-                        >
-                          <Banknote className="h-4 w-4" />
-                          <span>Xác nhận đã thu tiền</span>
-                        </button>
-                      )}
-
-                    {order.payment_status === 'paid' && canRefundOrder && (
-                      <button
-                        type="button"
-                        disabled={updatingId === order.id}
-                        onClick={() =>
-                          handleUpdateOrder(order.id, {
-                            payment_status: 'refunded',
-                            refund_reason: 'Hoàn tiền tại quầy',
-                          })
-                        }
-                        className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
-                      >
-                        <XCircle className="h-4 w-4" />
-                        <span>Hoàn tiền</span>
-                      </button>
-                    )}
-
-                    {order.payment_status === 'unpaid' && (
-                      <button
-                        type="button"
-                        onClick={() => setQrOrderModal(order)}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-200"
-                      >
-                        <QrCode className="h-4 w-4 text-emerald-600" />
-                        <span>Mã VietQR</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => setPrintingOrder(order)}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-black transition-colors ${
-                        isCompleted
-                          ? 'flex-1 border-slate-900 bg-slate-900 text-white hover:bg-slate-800'
-                          : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
-                      }`}
-                    >
-                      <Printer className="h-4 w-4 text-emerald-600" />
-                      <span>
-                        {order.payment_status === 'paid'
-                          ? 'In hóa đơn'
-                          : 'In bill tạm tính'}
-                      </span>
-                    </button>
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                );
+              })}
+            </div>
+          )}
         </>
       )}
 
@@ -1168,6 +1269,8 @@ export default function CounterOrdersPage() {
                   <button
                     type="button"
                     onClick={() => setQrOrderModal(null)}
+                    aria-label={t('common.close')}
+                    title={t('common.close')}
                     className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
                   >
                     <X className="h-5 w-5" />
@@ -1176,27 +1279,40 @@ export default function CounterOrdersPage() {
 
                 <div>
                   <h3 className="text-base font-black text-slate-900">
-                    Quét Mã QR Thanh Toán Đơn Hàng
+                    {tx(
+                      'Quét Mã QR Thanh Toán Đơn Hàng',
+                      'Scan QR Code to Pay Order'
+                    )}
                   </h3>
                   <p className="text-xs text-slate-500">
                     {qrInfo.mode === 'custom_qr'
-                      ? 'Mã QR thanh toán do quán cài đặt'
-                      : 'Số tiền và nội dung chuyển khoản đã điền sẵn tự động'}
+                      ? tx(
+                          'Mã QR thanh toán do quán cài đặt',
+                          'Store custom payment QR code'
+                        )
+                      : tx(
+                          'Số tiền và nội dung chuyển khoản đã điền sẵn tự động',
+                          'Amount and transfer memo are pre-filled automatically'
+                        )}
                   </p>
                 </div>
 
                 {!qrInfo.isConfigured || !qrInfo.qrImageUrl ? (
                   <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-xs font-bold text-amber-900 space-y-2">
                     <p>
-                      ⚠️ Quán chưa cài đặt Số Tài Khoản / Mã QR nhận tiền thật.
-                      Hệ thống đã chặn hiển thị QR mặc định để tránh chuyển nhầm
-                      tài khoản.
+                      {tx(
+                        '⚠️ Quán chưa cài đặt Số Tài Khoản / Mã QR nhận tiền. Vui lòng cấu hình trong Cài đặt quán.',
+                        '⚠️ Bank account / payment QR is not configured yet. Please set it up in Store Settings.'
+                      )}
                     </p>
                     <Link
                       href="/dashboard/settings#payment-qr-settings"
                       className="inline-block underline font-black text-emerald-700"
                     >
-                      Cài đặt tài khoản ngân hàng ngay →
+                      {tx(
+                        'Cài đặt tài khoản ngân hàng ngay →',
+                        'Configure bank account now →'
+                      )}
                     </Link>
                   </div>
                 ) : (
@@ -1214,27 +1330,35 @@ export default function CounterOrdersPage() {
 
                 <div className="rounded-2xl bg-slate-50 p-3 text-xs space-y-1 text-left">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Ngân hàng / Ví:</span>
+                    <span className="text-slate-500">
+                      {tx('Ngân hàng / Ví:', 'Bank / Wallet:')}
+                    </span>
                     <span className="font-bold text-slate-900">
                       {qrInfo.bankShortName}
                     </span>
                   </div>
                   {qrInfo.accountNumber && (
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Số tài khoản:</span>
+                      <span className="text-slate-500">
+                        {tx('Số tài khoản:', 'Account number:')}
+                      </span>
                       <span className="font-mono font-black text-slate-900">
                         {qrInfo.accountNumber}
                       </span>
                     </div>
                   )}
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Chủ tài khoản:</span>
+                    <span className="text-slate-500">
+                      {tx('Chủ tài khoản:', 'Account holder:')}
+                    </span>
                     <span className="font-bold text-slate-900 uppercase">
                       {qrInfo.accountName}
                     </span>
                   </div>
                   <div className="flex justify-between pt-1 border-t border-slate-200/80">
-                    <span className="text-slate-500">Tổng thanh toán:</span>
+                    <span className="text-slate-500">
+                      {tx('Tổng thanh toán:', 'Total amount:')}
+                    </span>
                     <span className="font-black text-emerald-600 text-sm">
                       {formatCurrency(
                         qrOrderModal.total_amount,
@@ -1243,7 +1367,9 @@ export default function CounterOrdersPage() {
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Nội dung CK:</span>
+                    <span className="text-slate-500">
+                      {tx('Nội dung CK:', 'Transfer memo:')}
+                    </span>
                     <span className="font-mono font-bold text-slate-900">
                       {qrInfo.transferContent}
                     </span>
@@ -1269,7 +1395,12 @@ export default function CounterOrdersPage() {
                       className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      <span>Xác nhận đã nhận tiền &amp; In hóa đơn</span>
+                      <span>
+                        {tx(
+                          'Xác nhận đã nhận tiền & In hóa đơn',
+                          'Confirm payment received & Print receipt'
+                        )}
+                      </span>
                     </button>
                   )}
 
@@ -1283,7 +1414,12 @@ export default function CounterOrdersPage() {
                     className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
                   >
                     <Printer className="h-4 w-4 text-slate-700" />
-                    <span>In phiếu tạm tính kèm mã QR cho khách</span>
+                    <span>
+                      {tx(
+                        'In phiếu tạm tính kèm mã QR cho khách',
+                        'Print provisional bill with QR code'
+                      )}
+                    </span>
                   </button>
 
                   <Link
@@ -1291,7 +1427,12 @@ export default function CounterOrdersPage() {
                     className="inline-flex items-center justify-center gap-1 pt-1 text-[11px] font-bold text-slate-500 hover:text-emerald-600"
                   >
                     <Settings className="h-3 w-3" />
-                    <span>Đổi Số Tài Khoản / Mã QR trong Cài đặt quán</span>
+                    <span>
+                      {tx(
+                        'Đổi Số Tài Khoản / Mã QR trong Cài đặt quán',
+                        'Change bank account / QR in Store Settings'
+                      )}
+                    </span>
                   </Link>
                 </div>
               </div>
@@ -1299,7 +1440,7 @@ export default function CounterOrdersPage() {
           );
         })()}
 
-      {/* Chime Sound & Volume Booster Settings Modal */}
+      {/* Chime Sound & Volume Booster Settings Modal (Detailed chime copy lives strictly inside this modal) */}
       {isChimeModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-3xl bg-white p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
@@ -1310,17 +1451,18 @@ export default function CounterOrdersPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-black text-slate-900">
-                    Cài Đặt Chuông Báo Đơn Mới &amp; Khuếch Đại Âm Lượng
+                    {t('chime.modalTitle')}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Tùy chỉnh kiểu chuông, giọng đọc Tiếng Việt và kích âm lượng
-                    cực đại cho quán đông
+                    {t('chime.modalSubtitle')}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsChimeModalOpen(false)}
+                aria-label={t('common.close')}
+                title={t('common.close')}
                 className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100"
               >
                 <X className="h-5 w-5" />
@@ -1330,25 +1472,25 @@ export default function CounterOrdersPage() {
             {/* 1. Master Volume / Loudness Boost */}
             <div className="space-y-2">
               <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
-                1. Độ lớn âm lượng (Khuếch đại âm thanh):
+                1. {t('chime.volumeLabel')}:
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {(
                   [
                     {
                       id: 'normal',
-                      title: '🔈 Vừa (100%)',
-                      sub: 'Quán yên tĩnh',
+                      title: `🔈 ${t('chime.volumeNormal')}`,
+                      sub: tx('Quán yên tĩnh', 'Quiet venue'),
                     },
                     {
                       id: 'loud',
-                      title: '🔉 To (150%)',
-                      sub: 'Quầy thu ngân',
+                      title: `🔉 ${t('chime.volumeLoud')}`,
+                      sub: tx('Quầy thu ngân', 'Cashier counter'),
                     },
                     {
                       id: 'max_boost',
-                      title: '🔊 CỰC ĐẠI (300%)',
-                      sub: 'Quán đông / Bếp ồn',
+                      title: `🔊 ${t('chime.volumeBoost')}`,
+                      sub: tx('Quán đông / Bếp ồn', 'Busy shop / Kitchen'),
                     },
                   ] as Array<{
                     id: ChimeVolumePreset;
@@ -1371,7 +1513,7 @@ export default function CounterOrdersPage() {
                           enabled: true,
                           volumePreset: vol.id,
                         });
-                        playOrderAlertChime(next, 'Bàn 01');
+                        playOrderAlertChime(next, tx('Bàn 01', 'Table 01'));
                       }}
                       className={`rounded-2xl border p-2.5 text-left transition ${
                         active
@@ -1394,11 +1536,18 @@ export default function CounterOrdersPage() {
             {/* 2. Select Chime Sound Style */}
             <div className="space-y-2">
               <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
-                2. Chọn kiểu chuông báo / Giọng đọc:
+                2. {t('chime.selectSoundLabel')}:
               </label>
               <div className="space-y-2">
                 {CHIME_SOUND_OPTIONS.map((opt) => {
                   const active = chimeSettings.soundId === opt.id;
+                  const enMeta = EN_CHIME_SOUND_TEXT[opt.id];
+                  const displayLabel =
+                    locale === 'en' && enMeta ? enMeta.label : opt.label;
+                  const displayDesc =
+                    locale === 'en' && enMeta ? enMeta.desc : opt.desc;
+                  const displayBadge =
+                    locale === 'en' && enMeta ? enMeta.badge : opt.badge;
                   return (
                     <div
                       key={opt.id}
@@ -1412,7 +1561,7 @@ export default function CounterOrdersPage() {
                           enabled: true,
                           soundId: opt.id as ChimeSoundId,
                         });
-                        playOrderAlertChime(next, 'Bàn 02');
+                        playOrderAlertChime(next, tx('Bàn 02', 'Table 02'));
                       }}
                       className={`flex items-center justify-between gap-3 rounded-2xl border p-3 cursor-pointer transition ${
                         active
@@ -1423,16 +1572,16 @@ export default function CounterOrdersPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-xs sm:text-sm font-black text-slate-900">
-                            {opt.label}
+                            {displayLabel}
                           </span>
-                          {opt.badge && (
+                          {displayBadge && (
                             <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-900">
-                              {opt.badge}
+                              {displayBadge}
                             </span>
                           )}
                         </div>
                         <p className="text-[11px] text-slate-500 mt-0.5">
-                          {opt.desc}
+                          {displayDesc}
                         </p>
                       </div>
 
@@ -1446,13 +1595,13 @@ export default function CounterOrdersPage() {
                               enabled: true,
                               soundId: opt.id as ChimeSoundId,
                             },
-                            'Bàn 05'
+                            tx('Bàn 05', 'Table 05')
                           );
                         }}
                         className="shrink-0 inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-600"
                       >
                         <Volume2 className="h-3.5 w-3.5" />
-                        <span>Nghe thử</span>
+                        <span>{t('chime.testButton')}</span>
                       </button>
                     </div>
                   );
@@ -1464,7 +1613,10 @@ export default function CounterOrdersPage() {
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-slate-700">
-                  Số hồi chuông đổ mỗi lần có đơn:
+                  {tx(
+                    'Số hồi chuông đổ mỗi lần có đơn:',
+                    'Chime repeats per new order:'
+                  )}
                 </span>
                 <div className="inline-flex rounded-xl bg-white border border-slate-200 p-0.5">
                   {([1, 2, 3] as Array<1 | 2 | 3>).map((cnt) => (
@@ -1478,7 +1630,7 @@ export default function CounterOrdersPage() {
                           : 'text-slate-600 hover:bg-slate-100'
                       }`}
                     >
-                      {cnt} hồi
+                      {tx('{cnt} hồi', '{cnt}x', { cnt })}
                     </button>
                   ))}
                 </div>
@@ -1497,17 +1649,21 @@ export default function CounterOrdersPage() {
                 />
                 <div className="text-xs">
                   <span className="font-black text-slate-900 block">
-                    🔁 Tự động đổ chuông nhắc lại mỗi 10 giây khi còn đơn Mới chưa
-                    nhận
+                    {tx(
+                      '🔁 Tự động nhắc chuông mỗi 10 giây khi còn đơn Mới chưa nhận',
+                      '🔁 Repeat chime every 10 seconds while new orders await confirmation'
+                    )}
                   </span>
                   <span className="text-slate-500 text-[11px]">
-                    Đảm bảo nhân viên không bao giờ bỏ sót đơn khách đặt qua QR
-                    khi đang bận pha chế
+                    {tx(
+                      'Đảm bảo nhân viên không bỏ sót đơn khách đặt qua QR khi đang bận pha chế',
+                      'Ensures staff never miss incoming table QR orders during busy hours'
+                    )}
                   </span>
                 </div>
               </label>
 
-              {/* 4. Native Browser / Windows OS Desktop Notification */}
+              {/* 4. Desktop Notification */}
               <div className="pt-2.5 border-t border-slate-200/80 space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <label className="flex items-start gap-2.5 cursor-pointer flex-1">
@@ -1529,13 +1685,10 @@ export default function CounterOrdersPage() {
                     />
                     <div className="text-xs">
                       <span className="font-black text-slate-900 block">
-                        🖥️ Đẩy thông báo ra màn hình Windows / Mac (Kết hợp với
-                        hộp thoại trên web)
+                        🖥️ {t('chime.desktopNotifTitle')}
                       </span>
                       <span className="text-slate-500 text-[11px]">
-                        Hiển thị popup thông báo gốc của Windows ở góc dưới màn
-                        hình ngay cả khi thu nhỏ trình duyệt hoặc đang mở phần
-                        mềm khác
+                        {t('chime.desktopNotifDesc')}
                       </span>
                     </div>
                   </label>
@@ -1553,12 +1706,18 @@ export default function CounterOrdersPage() {
                           });
                           sendBrowserOrderNotification({
                             orderCode: 'TEST-88',
-                            tableLabel: 'Bàn 02 (Thử thông báo)',
+                            tableLabel: tx(
+                              'Bàn 02 (Thử thông báo)',
+                              'Table 02 (Test alert)'
+                            ),
                             totalFormatted: formatCurrency(
                               125000,
                               activeShop?.currency || 'VND'
                             ),
-                            itemsSummary: '2x Phở Bò Tái Lăn, 1x Trà Đào',
+                            itemsSummary: tx(
+                              '2x Phở Bò Tái Lăn, 1x Trà Đào',
+                              '2x Rare Beef Pho, 1x Peach Tea'
+                            ),
                             shopName: activeShop?.name,
                             forceTest: true,
                           });
@@ -1573,10 +1732,10 @@ export default function CounterOrdersPage() {
                       }`}
                     >
                       {browserNotifPerm === 'granted'
-                        ? '✓ Đã cấp quyền (Bấm test)'
+                        ? t('header.alertsOn')
                         : browserNotifPerm === 'denied'
-                          ? 'Bị chặn trên trình duyệt'
-                          : 'Bật quyền TB Windows'}
+                          ? tx('Đã chặn trên trình duyệt', 'Blocked in browser')
+                          : t('header.alertsOff')}
                     </button>
                   )}
                 </div>
@@ -1588,19 +1747,22 @@ export default function CounterOrdersPage() {
                 type="button"
                 onClick={async () => {
                   const testConfig = { ...chimeSettings, enabled: true };
-                  playOrderAlertChime(testConfig, 'Bàn 01');
+                  playOrderAlertChime(testConfig, tx('Bàn 01', 'Table 01'));
                   if (browserNotifPerm === 'default') {
                     const perm = await requestBrowserNotificationPermission();
                     setBrowserNotifPerm(perm);
                   }
                   sendBrowserOrderNotification({
                     orderCode: 'TEST-01',
-                    tableLabel: 'Bàn 01',
+                    tableLabel: tx('Bàn 01', 'Table 01'),
                     totalFormatted: formatCurrency(
                       85000,
                       activeShop?.currency || 'VND'
                     ),
-                    itemsSummary: '2x Cà phê sữa đá, 1x Bánh sừng bò',
+                    itemsSummary: tx(
+                      '2x Cà phê sữa đá, 1x Bánh sừng bò',
+                      '2x Iced Milk Coffee, 1x Croissant'
+                    ),
                     shopName: activeShop?.name,
                     forceTest: true,
                   });
@@ -1608,14 +1770,14 @@ export default function CounterOrdersPage() {
                 className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-200"
               >
                 <Volume2 className="h-4 w-4 text-emerald-600" />
-                <span>Test Chuông + Đẩy TB Windows</span>
+                <span>{t('chime.testButton')}</span>
               </button>
               <button
                 type="button"
                 onClick={() => setIsChimeModalOpen(false)}
                 className="rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-md hover:bg-emerald-500"
               >
-                Lưu &amp; Đóng
+                {t('chime.saveAndTest')}
               </button>
             </div>
           </div>

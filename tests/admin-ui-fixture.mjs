@@ -5,9 +5,11 @@ const user = { id: 'fixture-admin', email: 'hoangvu96z@gmail.com', full_name: 'A
 const kpis = Object.fromEntries(['totalOwners','estimatedMrr','totalSaasRevenue','pendingTransactionsCount','totalShops','publishedShopsCount','hiddenShopsCount','totalCategories','totalItems','totalPosts','totalOrders','newOrdersCount','preparingOrdersCount','completedOrdersCount','cancelledOrdersCount','globalMposGmv','todayMposGmv','totalQrScans','scanDoorCount','scanTableCount','showToStaffCount','wifiCopyCount','itemViewCount'].map(key => [key, 0]));
 Object.assign(kpis, { planBreakdown: { free: 0, basic: 0, premium: 0 }, verticalBreakdown: { fnb: 0, service: 0, retail: 0 }, langBreakdown: [] });
 let failNext = true;
+let adminReads = 0;
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1:3100');
   const send = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+  if (url.pathname === '/fixture/stats') return send({ adminReads });
   if (url.pathname === '/api/auth') {
     let body = ''; for await (const chunk of req) body += chunk;
     if (JSON.parse(body).password !== 'fixture-password') return send({ error: 'Fixture password: fixture-password' }, 401);
@@ -15,6 +17,7 @@ http.createServer(async (req, res) => {
     return send({ user, accessToken: 'fixture-admin-token' });
   }
   if (url.pathname === '/api/admin') {
+    adminReads++;
     if (req.headers.authorization !== 'Bearer fixture-admin-token') return send({ error: 'Fixture session required' }, 401);
     if (failNext) { failNext = false; return send({ error: 'FIXTURE: Không đọc được dữ liệu quản trị. Vui lòng thử lại.' }, 500); }
     if (req.method !== 'GET') return send({ error: 'Fixture is read-only' }, 403);

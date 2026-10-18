@@ -11,6 +11,7 @@ import {
   MobileThemePalette,
   styles,
 } from '../../styles/mobileStyles';
+import { MobileLanguageSwitcher, useMobileI18n } from '../MobileI18nProvider';
 import { PhoneViewer } from '../PhoneViewer';
 
 interface SettingsTabProps {
@@ -66,6 +67,8 @@ export const SettingsTab = memo(function SettingsTab({
   onSaveShopAndTheme,
   theme,
 }: SettingsTabProps) {
+  const { t } = useMobileI18n();
+
   return (
     <View style={styles.sectionStack}>
       {/* Live Phone Viewer */}
@@ -81,6 +84,19 @@ export const SettingsTab = memo(function SettingsTab({
         items={items}
       />
 
+      {/* App Language Switcher */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: theme.card, borderColor: theme.border },
+        ]}
+      >
+        <Text style={[styles.cardHeading, { color: theme.text }]}>
+          {t('settings.languageHeading')}
+        </Text>
+        <MobileLanguageSwitcher variant="full" />
+      </View>
+
       {/* Theme & Color Customizer */}
       <View
         style={[
@@ -89,11 +105,11 @@ export const SettingsTab = memo(function SettingsTab({
         ]}
       >
         <Text style={[styles.cardHeading, { color: theme.text }]}>
-          🎨 Giao Diện &amp; Màu Sắc Màn Hình Quán
+          {t('settings.themeHeading')}
         </Text>
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Màu chủ đạo
+          {t('settings.primaryColorLabel')}
         </Text>
         <View
           style={{
@@ -124,13 +140,13 @@ export const SettingsTab = memo(function SettingsTab({
         </View>
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Nền màn hình khách
+          {t('settings.bgStyleLabel')}
         </Text>
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
           {[
-            { id: 'clean', label: '☀️ Sáng' },
-            { id: 'warm', label: '🏮 Kem Ấm' },
-            { id: 'dark', label: '🌙 Tối' },
+            { id: 'clean', label: t('settings.bgClean') },
+            { id: 'warm', label: t('settings.bgWarm') },
+            { id: 'dark', label: t('settings.bgDark') },
           ].map((bg) => {
             const active = backgroundStyle === bg.id;
             return (
@@ -155,7 +171,7 @@ export const SettingsTab = memo(function SettingsTab({
         </View>
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Bố cục hiển thị món
+          {t('settings.layoutLabel')}
         </Text>
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
           <TouchableOpacity
@@ -171,7 +187,7 @@ export const SettingsTab = memo(function SettingsTab({
                 layoutMode === 'list' && styles.choiceBtnTextActive,
               ]}
             >
-              Danh sách ngang
+              {t('settings.layoutList')}
             </Text>
           </TouchableOpacity>
 
@@ -188,7 +204,7 @@ export const SettingsTab = memo(function SettingsTab({
                 layoutMode === 'grid' && styles.choiceBtnTextActive,
               ]}
             >
-              Lưới ảnh 2 cột
+              {t('settings.layoutGrid')}
             </Text>
           </TouchableOpacity>
         </View>
@@ -220,12 +236,12 @@ export const SettingsTab = memo(function SettingsTab({
               { marginBottom: 0, color: theme.text },
             ]}
           >
-            Thông Tin Quán &amp; Wi-Fi 1 Chạm
+            {t('settings.storeInfoHeading')}
           </Text>
         </View>
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Tên cửa hàng
+          {t('settings.shopNameLabel')}
         </Text>
         <TextInput
           style={[
@@ -241,7 +257,7 @@ export const SettingsTab = memo(function SettingsTab({
         />
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Tỉnh / Thành phố
+          {t('settings.cityLabel')}
         </Text>
         <TextInput
           style={[
@@ -257,7 +273,7 @@ export const SettingsTab = memo(function SettingsTab({
         />
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Số điện thoại / Zalo
+          {t('settings.phoneLabel')}
         </Text>
         <TextInput
           style={[
@@ -273,7 +289,7 @@ export const SettingsTab = memo(function SettingsTab({
         />
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Tên Wi-Fi (SSID)
+          {t('settings.wifiSsidLabel')}
         </Text>
         <TextInput
           style={[
@@ -289,7 +305,7 @@ export const SettingsTab = memo(function SettingsTab({
         />
 
         <Text style={[styles.fieldLabel, { color: theme.subText }]}>
-          Mật khẩu Wi-Fi
+          {t('settings.wifiPassLabel')}
         </Text>
         <TextInput
           style={[
@@ -308,7 +324,9 @@ export const SettingsTab = memo(function SettingsTab({
           style={styles.saveSettingsBtn}
           onPress={onSaveShopAndTheme}
         >
-          <Text style={styles.saveSettingsBtnText}>Lưu Tất Cả Cài Đặt</Text>
+          <Text style={styles.saveSettingsBtnText}>
+            {t('settings.saveAllBtn')}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -14,6 +14,7 @@ import {
 import { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { uploadCompressedImage } from '@/lib/upload-helper';
 
 interface QuickItemRowProps {
@@ -37,6 +38,7 @@ export function QuickItemRow({
   onEditTranslations,
   onDelete,
 }: QuickItemRowProps) {
+  const { locale, t, tx } = useAppI18n();
   const [priceInput, setPriceInput] = useState(String(item.price));
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
@@ -140,7 +142,10 @@ export function QuickItemRow({
         <div className="flex items-start gap-3 min-w-0 flex-1">
           {/* Clickable Dish Image Thumbnail with 1-Tap Upload */}
           <label
-            title="Bấm để tải lên hoặc đổi ảnh món ăn"
+            title={tx(
+              'Bấm để tải lên hoặc đổi ảnh món',
+              'Click to upload or change item photo'
+            )}
             className="group relative h-16 w-16 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
           >
             {hasValidImage ? (
@@ -154,7 +159,7 @@ export function QuickItemRow({
               <div className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-slate-400">
                 <Camera className="h-4 w-4 text-emerald-600" />
                 <span className="text-[9px] font-extrabold text-emerald-700">
-                  + Tải ảnh
+                  {tx('+ Tải ảnh', '+ Photo')}
                 </span>
               </div>
             )}
@@ -165,7 +170,11 @@ export function QuickItemRow({
               ) : (
                 <>
                   <Camera className="h-2.5 w-2.5 text-emerald-400" />
-                  <span>{hasValidImage ? 'Đổi ảnh' : 'Tải ảnh'}</span>
+                  <span>
+                    {hasValidImage
+                      ? tx('Đổi ảnh', 'Change')
+                      : tx('Tải ảnh', 'Upload')}
+                  </span>
                 </>
               )}
             </span>
@@ -185,17 +194,21 @@ export function QuickItemRow({
               </h4>
               {!item.is_available && (
                 <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
-                  Tạm hết
+                  {tx('Tạm hết', 'Sold out')}
                 </span>
               )}
               {isLowStock && (
                 <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                  ⚠️ Sắp hết ({item.stock_quantity})
+                  {tx(
+                    '⚠️ Sắp hết ({count})',
+                    '⚠️ Low stock ({count})',
+                    { count: item.stock_quantity }
+                  )}
                 </span>
               )}
               {item.is_featured && (
                 <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
-                  ★ Bán chạy
+                  {tx('★ Bán chạy', '★ Popular')}
                 </span>
               )}
             </div>
@@ -207,9 +220,14 @@ export function QuickItemRow({
               </p>
             )}
 
-            {item.desc_i18n?.vi && (
+            {(locale === 'en'
+              ? item.desc_i18n?.en || item.desc_i18n?.vi
+              : item.desc_i18n?.vi) && (
               <p className="line-clamp-2 text-xs text-slate-600 bg-slate-50 rounded-lg px-2 py-1 border border-slate-100">
-                📝 {item.desc_i18n.vi}
+                📝{' '}
+                {locale === 'en'
+                  ? item.desc_i18n?.en || item.desc_i18n?.vi
+                  : item.desc_i18n?.vi}
               </p>
             )}
 
@@ -220,20 +238,27 @@ export function QuickItemRow({
                   const hasPaidChoice = group.choices?.some(
                     (c) => (c.extra_price || 0) > 0
                   );
+                  const groupName =
+                    locale === 'en'
+                      ? group.name_i18n?.en || group.name_i18n?.vi
+                      : group.name_i18n?.vi;
                   return (
                     <button
                       key={group.id}
                       type="button"
                       onClick={() => onEditTranslations(item)}
                       title={group.choices
-                        ?.map(
-                          (c) =>
-                            `${c.label_i18n.vi}${
-                              c.extra_price > 0
-                                ? ` (+${c.extra_price.toLocaleString('vi-VN')}đ)`
-                                : ''
-                            }`
-                        )
+                        ?.map((c) => {
+                          const choiceLabel =
+                            locale === 'en'
+                              ? c.label_i18n?.en || c.label_i18n?.vi
+                              : c.label_i18n?.vi;
+                          return `${choiceLabel}${
+                            c.extra_price > 0
+                              ? ` (+${c.extra_price.toLocaleString('vi-VN')}đ)`
+                              : ''
+                          }`;
+                        })
                         .join(', ')}
                       className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px] font-bold transition hover:opacity-80 ${
                         hasPaidChoice
@@ -243,7 +268,7 @@ export function QuickItemRow({
                     >
                       <span>{hasPaidChoice ? '🧋' : '⚙️'}</span>
                       <span>
-                        {group.name_i18n.vi} ({group.choices?.length || 0})
+                        {groupName} ({group.choices?.length || 0})
                       </span>
                     </button>
                   );
@@ -259,8 +284,10 @@ export function QuickItemRow({
                   return (
                     <span
                       key={loc}
-                      title={`${LOCALE_META[loc].label}: ${
-                        hasTrans ? item.name_i18n[loc] : 'Chưa dịch'
+                      title={`${LOCALE_META[loc].nativeName}: ${
+                        hasTrans
+                          ? item.name_i18n[loc]
+                          : tx('Chưa dịch', 'Not translated')
                       }`}
                       className={`inline-flex items-center transition-opacity ${
                         hasTrans ? 'opacity-100' : 'opacity-25 grayscale'
@@ -275,16 +302,20 @@ export function QuickItemRow({
               {item.duration_mins && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
                   <Clock className="h-3 w-3" />
-                  {item.duration_mins}p
+                  {tx('{mins}p', '{mins}m', { mins: item.duration_mins })}
                 </span>
               )}
 
               <span className="text-[11px] font-semibold text-emerald-700">
-                🔥 Đã bán: {item.sold_count || 0}
+                {tx('🔥 Đã bán: {count}', '🔥 Sold: {count}', {
+                  count: item.sold_count || 0,
+                })}
               </span>
 
               <span className="text-[11px] text-slate-400">
-                👁 {item.view_count || 0} lượt xem
+                {tx('👁 {count} lượt xem', '👁 {count} views', {
+                  count: item.view_count || 0,
+                })}
               </span>
             </div>
           </div>
@@ -296,6 +327,11 @@ export function QuickItemRow({
             type="button"
             role="switch"
             aria-checked={item.is_available}
+            aria-label={
+              item.is_available
+                ? tx('Đang còn hàng', 'Available')
+                : tx('Đang tạm hết', 'Sold out')
+            }
             onClick={() => onToggleAvailable(item, !item.is_available)}
             className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
               item.is_available ? 'bg-emerald-500' : 'bg-slate-300'
@@ -312,7 +348,9 @@ export function QuickItemRow({
               item.is_available ? 'text-emerald-700' : 'text-rose-600'
             }`}
           >
-            {item.is_available ? 'Còn hàng' : 'Tạm hết'}
+            {item.is_available
+              ? tx('Còn hàng', 'Available')
+              : tx('Tạm hết', 'Sold out')}
           </span>
         </div>
       </div>
@@ -322,7 +360,9 @@ export function QuickItemRow({
         <div className="flex items-center gap-3 flex-wrap">
           {/* Direct inline price input */}
           <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold text-slate-500">Giá:</span>
+            <span className="text-xs font-semibold text-slate-500">
+              {tx('Giá:', 'Price:')}
+            </span>
             <div className="relative flex items-center">
               <input
                 type="text"
@@ -343,7 +383,7 @@ export function QuickItemRow({
             </div>
             {savingPrice && (
               <span className="text-[11px] font-medium text-slate-400">
-                Lưu...
+                {t('common.saving')}
               </span>
             )}
             {priceSaved && (
@@ -358,7 +398,7 @@ export function QuickItemRow({
             <div className="flex items-center gap-1.5">
               <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
                 <Package className="h-3.5 w-3.5 text-slate-400" />
-                <span>Tồn kho:</span>
+                <span>{tx('Tồn kho:', 'Stock:')}</span>
               </span>
               <input
                 type="text"
@@ -372,7 +412,10 @@ export function QuickItemRow({
                     e.currentTarget.blur();
                   }
                 }}
-                title="Nhập số lượng tồn kho (để trống = không giới hạn ∞)"
+                title={tx(
+                  'Nhập số lượng tồn kho (để trống = không giới hạn ∞)',
+                  'Enter stock quantity (leave blank for unlimited ∞)'
+                )}
                 className={`w-16 rounded-xl border px-2.5 py-1.5 text-center text-xs font-extrabold focus:bg-white focus:outline-none ${
                   item.stock_quantity === 0
                     ? 'border-rose-300 bg-rose-50 text-rose-700'
@@ -383,7 +426,7 @@ export function QuickItemRow({
               />
               {stockSaved && (
                 <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-emerald-600">
-                  <Check className="h-3.5 w-3.5" /> Đã lưu tồn
+                  <Check className="h-3.5 w-3.5" /> {t('common.saved')}
                 </span>
               )}
             </div>
@@ -400,10 +443,10 @@ export function QuickItemRow({
             )}
             <span>
               {uploadingPhoto
-                ? 'Đang tải...'
+                ? t('common.loading')
                 : item.image_url
-                  ? 'Đổi ảnh'
-                  : 'Tải ảnh'}
+                  ? tx('Đổi ảnh', 'Change photo')
+                  : tx('Tải ảnh', 'Upload photo')}
             </span>
             <input
               type="file"
@@ -421,10 +464,15 @@ export function QuickItemRow({
                 ? 'border-amber-300 bg-amber-50 text-amber-800'
                 : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
             }`}
-            title="Đánh dấu món Best Seller / Nổi bật"
+            title={tx(
+              'Đánh dấu món Bán chạy / Nổi bật',
+              'Mark item as Popular / Featured'
+            )}
           >
             <Sparkles className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Nổi bật</span>
+            <span className="hidden sm:inline">
+              {tx('Nổi bật', 'Featured')}
+            </span>
           </button>
 
           <button
@@ -433,14 +481,15 @@ export function QuickItemRow({
             className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
           >
             <Languages className="h-3.5 w-3.5" />
-            <span>⚙️ Option / Topping &amp; Dịch</span>
+            <span>{tx('⚙️ Tùy chọn & Dịch', '⚙️ Options & Translate')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => onDelete(item.id)}
             className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
-            title="Xóa món"
+            title={t('common.delete')}
+            aria-label={t('common.delete')}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

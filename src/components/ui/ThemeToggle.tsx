@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Sun, Moon } from 'lucide-react';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -9,8 +10,12 @@ const STORAGE_KEY = 'qlaok_theme';
 
 export function getInitialTheme(): ThemeMode {
   if (typeof window === 'undefined') return 'light';
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved === 'dark' || saved === 'light') return saved;
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch {
+    // ignore storage errors
+  }
   return 'light';
 }
 
@@ -29,6 +34,7 @@ export function applyThemeToDom(theme: ThemeMode) {
 }
 
 export function ThemeToggle({ className = '' }: { className?: string }) {
+  const { t } = useAppI18n();
   const [theme, setTheme] = useState<ThemeMode>('light');
   const [mounted, setMounted] = useState(false);
 
@@ -63,7 +69,11 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
     const next: ThemeMode = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
     if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, next);
+      try {
+        localStorage.setItem(STORAGE_KEY, next);
+      } catch {
+        // ignore storage errors
+      }
       applyThemeToDom(next);
       window.dispatchEvent(new CustomEvent('qlaok_theme_change', { detail: next }));
     }
@@ -73,11 +83,12 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
     return (
       <button
         type="button"
-        aria-label="Đổi giao diện Sáng / Tối"
-        className={`inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-2xs ${className}`}
+        aria-label={t('theme.toggleAria')}
+        title={t('theme.toggleAria')}
+        className={`inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 shadow-2xs ${className}`}
       >
         <Sun className="h-3.5 w-3.5 text-amber-500" />
-        <span>Sáng</span>
+        <span className="hidden sm:inline">{t('theme.light')}</span>
       </button>
     );
   }
@@ -86,8 +97,13 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
     <button
       type="button"
       onClick={toggleTheme}
-      title={theme === 'dark' ? 'Chuyển sang giao diện Sáng (Light Mode)' : 'Chuyển sang giao diện Tối (Dark Mode)'}
-      className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${
+      aria-label={t('theme.toggleAria')}
+      title={
+        theme === 'dark'
+          ? t('theme.switchToLightTooltip')
+          : t('theme.switchToDarkTooltip')
+      }
+      className={`inline-flex shrink-0 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all active:scale-95 ${
         theme === 'dark'
           ? 'border-slate-700 bg-slate-800 text-amber-300 hover:border-amber-400 hover:bg-slate-700'
           : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-400 hover:bg-slate-50 shadow-2xs'
@@ -96,12 +112,12 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
       {theme === 'dark' ? (
         <>
           <Sun className="h-3.5 w-3.5 text-amber-400" />
-          <span>Giao diện: Tối</span>
+          <span className="hidden sm:inline">{t('theme.dark')}</span>
         </>
       ) : (
         <>
           <Moon className="h-3.5 w-3.5 text-slate-600" />
-          <span>Giao diện: Sáng</span>
+          <span className="hidden sm:inline">{t('theme.light')}</span>
         </>
       )}
     </button>

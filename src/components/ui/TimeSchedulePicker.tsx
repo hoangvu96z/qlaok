@@ -3,6 +3,7 @@
 import React from 'react';
 import { Calendar, Clock, Copy, Sparkles } from 'lucide-react';
 import type { OpeningHours, ShopFlashSaleConfig } from '@/types/qlaok';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export const TIME_OPTIONS_24H: string[] = [
   '00:00',
@@ -60,6 +61,11 @@ export const DAYS_OF_WEEK_LIST: {
   { key: 'sun', label: 'Chủ Nhật' },
 ];
 
+const EN_WEEKDAYS: Record<keyof OpeningHours, string> = {
+  mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday',
+  fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
+};
+
 /**
  * Compact 24-hour time dropdown that never overflows card containers
  */
@@ -89,6 +95,7 @@ export function TimeSelect24h({
       <div className="relative flex items-center">
         <Clock className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-emerald-600" />
         <select
+          aria-label={label}
           value={normalized}
           onChange={(e) => onChange(e.target.value)}
           className="w-full appearance-none rounded-xl border border-slate-200 bg-white pl-7 pr-6 py-1.5 text-xs font-extrabold text-slate-900 shadow-2xs focus:border-emerald-500 focus:outline-none cursor-pointer"
@@ -117,6 +124,7 @@ export function WeeklyOpeningHoursPicker({
   openingHours: OpeningHours;
   onChange: (next: OpeningHours) => void;
 }) {
+  const { tx } = useAppI18n();
   const applyPresetToAllDays = (open: string, close: string) => {
     const updated = { ...openingHours };
     for (const d of DAYS_OF_WEEK_LIST) {
@@ -144,16 +152,17 @@ export function WeeklyOpeningHoursPicker({
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200/80 bg-slate-50 p-3">
         <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
           <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
-          <span>Cài nhanh cả tuần:</span>
+          <span>{tx('Cả tuần', 'Whole week')}</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={copyMondayToAll}
+            title={tx('Áp dụng giờ thứ 2 cho cả tuần', 'Apply Monday’s hours to the whole week')}
             className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 transition"
           >
             <Copy className="h-3 w-3" />
-            <span>Giống Thứ 2 cho cả tuần</span>
+            <span>{tx('Chép thứ 2', 'Copy Monday')}</span>
           </button>
           <button
             type="button"
@@ -174,7 +183,7 @@ export function WeeklyOpeningHoursPicker({
             onClick={() => applyPresetToAllDays('00:00', '23:59')}
             className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100 transition"
           >
-            🔥 Mở 24/7
+            {tx('Mở 24/7', 'Open 24/7')}
           </button>
         </div>
       </div>
@@ -200,13 +209,14 @@ export function WeeklyOpeningHoursPicker({
             >
               <div className="flex items-center justify-between gap-2 mb-2.5">
                 <span className="text-xs font-extrabold text-slate-900">
-                  {label}
+                  {tx(label, EN_WEEKDAYS[key])}
                 </span>
 
                 <button
                   type="button"
                   role="switch"
                   aria-checked={isOpen}
+                  aria-label={tx('Giờ mở cửa: {day}', 'Opening hours: {day}', { day: tx(label, EN_WEEKDAYS[key]) })}
                   onClick={() =>
                     onChange({
                       ...openingHours,
@@ -224,13 +234,14 @@ export function WeeklyOpeningHoursPicker({
                       isOpen ? 'bg-emerald-600' : 'bg-slate-400'
                     }`}
                   />
-                  <span>{isOpen ? 'Mở cửa' : 'Nghỉ'}</span>
+                  <span>{isOpen ? tx('Mở', 'Open') : tx('Nghỉ', 'Closed')}</span>
                 </button>
               </div>
 
               {isOpen ? (
                 <div className="flex items-center gap-2">
                   <TimeSelect24h
+                    label={tx('Giờ mở', 'Opens')}
                     value={sched.open}
                     onChange={(nextOpen) =>
                       onChange({
@@ -243,6 +254,7 @@ export function WeeklyOpeningHoursPicker({
                     →
                   </span>
                   <TimeSelect24h
+                    label={tx('Giờ đóng', 'Closes')}
                     value={sched.close}
                     onChange={(nextClose) =>
                       onChange({
@@ -254,7 +266,7 @@ export function WeeklyOpeningHoursPicker({
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 py-1.5 text-center text-[11px] font-semibold text-slate-500">
-                  Đóng cửa nghỉ trong ngày này
+                  {tx('Nghỉ cả ngày', 'Closed all day')}
                 </div>
               )}
             </div>
@@ -275,6 +287,7 @@ export function FlashSaleSchedulePicker({
   flashSale: ShopFlashSaleConfig;
   onChange: (next: ShopFlashSaleConfig) => void;
 }) {
+  const { tx } = useAppI18n();
   const todayIso = new Date().toISOString().slice(0, 10);
   const startDate = flashSale.startDate || todayIso;
   const endDate = flashSale.endDate || todayIso;
@@ -316,25 +329,25 @@ export function FlashSaleSchedulePicker({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
           <Calendar className="h-4 w-4 text-rose-600" />
-          <span>Thời gian diễn ra Flash Sale (Chọn nhiều ngày &amp; khung giờ)</span>
+          <span>{tx('Lịch ưu đãi', 'Promotion schedule')}</span>
         </div>
         <span className="rounded-full bg-rose-600 px-2.5 py-0.5 text-[10px] font-black text-white">
-          Đang chọn: {diffDays} ngày ({startTime} – {endTime})
+          {tx('{count} ngày', diffDays === 1 ? '{count} day' : '{count} days', { count: diffDays })} ({startTime} – {endTime})
         </span>
       </div>
 
       {/* Quick Multi-Day Presets */}
       <div>
         <span className="block text-[11px] font-bold text-slate-600 mb-1.5">
-          Chọn nhanh số ngày chạy chương trình:
+          {tx('Thời hạn', 'Duration')}
         </span>
         <div className="flex flex-wrap gap-1.5">
           {[
-            { label: '⚡ Chỉ hôm nay', days: 1 },
-            { label: '🔥 3 Ngày tới', days: 3 },
-            { label: '📅 7 Ngày (1 tuần)', days: 7 },
-            { label: '🎉 14 Ngày (2 tuần)', days: 14 },
-            { label: '🌟 30 Ngày (1 tháng)', days: 30 },
+            { label: tx('Hôm nay', 'Today'), days: 1 },
+            { label: tx('3 ngày', '3 days'), days: 3 },
+            { label: tx('7 ngày', '7 days'), days: 7 },
+            { label: tx('14 ngày', '14 days'), days: 14 },
+            { label: tx('30 ngày', '30 days'), days: 30 },
           ].map((preset) => {
             const active = diffDays === preset.days;
             return (
@@ -359,7 +372,7 @@ export function FlashSaleSchedulePicker({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="block text-[11px] font-bold text-slate-600 mb-1">
-            Từ ngày bắt đầu
+            {tx('Từ ngày', 'Start date')}
           </label>
           <input
             type="date"
@@ -378,7 +391,7 @@ export function FlashSaleSchedulePicker({
 
         <div>
           <label className="block text-[11px] font-bold text-slate-600 mb-1">
-            Đến hết ngày
+            {tx('Đến ngày', 'End date')}
           </label>
           <input
             type="date"
@@ -400,14 +413,14 @@ export function FlashSaleSchedulePicker({
       <div className="pt-1 border-t border-rose-200/60 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-1.5">
           <span className="text-[11px] font-bold text-slate-600">
-            Khung giờ áp dụng mỗi ngày:
+            {tx('Giờ áp dụng', 'Daily hours')}
           </span>
           <div className="flex flex-wrap gap-1">
             {[
-              { label: '☀️ Trưa (11:00–14:00)', s: '11:00', e: '14:00' },
-              { label: '🌆 Tối (17:00–21:00)', s: '17:00', e: '21:00' },
-              { label: '⏰ Cả ngày (08:00–22:00)', s: '08:00', e: '22:00' },
-              { label: '🔥 Full 24h (00:00–23:59)', s: '00:00', e: '23:59' },
+              { label: tx('Trưa', 'Lunch') + ' (11:00–14:00)', s: '11:00', e: '14:00' },
+              { label: tx('Tối', 'Evening') + ' (17:00–21:00)', s: '17:00', e: '21:00' },
+              { label: tx('Cả ngày', 'Daytime') + ' (08:00–22:00)', s: '08:00', e: '22:00' },
+              { label: '24h (00:00–23:59)', s: '00:00', e: '23:59' },
             ].map((slot) => {
               const active = startTime === slot.s && endTime === slot.e;
               return (
@@ -430,7 +443,7 @@ export function FlashSaleSchedulePicker({
 
         <div className="flex items-center gap-2.5">
           <TimeSelect24h
-            label="Giờ mở Flash Sale"
+            label={tx('Bắt đầu', 'Starts')}
             value={startTime}
             onChange={(nextStart) =>
               onChange({ ...flashSale, startTime: nextStart })
@@ -438,7 +451,7 @@ export function FlashSaleSchedulePicker({
           />
           <span className="pt-4 text-xs font-black text-slate-400">→</span>
           <TimeSelect24h
-            label="Giờ kết thúc"
+            label={tx('Kết thúc', 'Ends')}
             value={endTime}
             onChange={(nextEnd) =>
               onChange({ ...flashSale, endTime: nextEnd })

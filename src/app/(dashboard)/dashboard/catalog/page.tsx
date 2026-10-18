@@ -15,9 +15,11 @@ import { CatalogItem, Category } from '@/types/qlaok';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
 import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
 import { TranslationEditorModal } from '@/components/dashboard/TranslationEditorModal';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export default function DashboardCatalogPage() {
   const { activeShop, profile } = useDashboard();
+  const { t, tx } = useAppI18n();
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
@@ -82,8 +84,12 @@ export default function DashboardCatalogPage() {
     notifyRealtime();
     showToast(
       nextAvailable
-        ? `Đã bật "Còn hàng": ${item.name_i18n.vi}`
-        : `Đã chuyển sang "Tạm hết": ${item.name_i18n.vi}`
+        ? tx('Đã bật còn món: {name}', 'Marked available: {name}', {
+            name: item.name_i18n.vi,
+          })
+        : tx('Đã chuyển tạm hết: {name}', 'Marked sold out: {name}', {
+            name: item.name_i18n.vi,
+          })
     );
   };
 
@@ -133,8 +139,16 @@ export default function DashboardCatalogPage() {
     notifyRealtime();
     showToast(
       nextStock === null
-        ? `Đã đặt tồn kho Không giới hạn (∞) cho: ${item.name_i18n.vi}`
-        : `Đã cập nhật tồn kho (${nextStock}) cho: ${item.name_i18n.vi}`
+        ? tx(
+            'Đã đặt tồn kho không giới hạn (∞): {name}',
+            'Set unlimited stock (∞): {name}',
+            { name: item.name_i18n.vi }
+          )
+        : tx(
+            'Đã cập nhật tồn kho ({stock}): {name}',
+            'Updated stock ({stock}): {name}',
+            { stock: nextStock, name: item.name_i18n.vi }
+          )
     );
   };
 
@@ -179,7 +193,11 @@ export default function DashboardCatalogPage() {
       }),
     });
     notifyRealtime();
-    showToast(`Đã cập nhật hình ảnh cho món: ${item.name_i18n.vi}`);
+    showToast(
+      tx('Đã cập nhật ảnh món: {name}', 'Updated item photo: {name}', {
+        name: item.name_i18n.vi,
+      })
+    );
   };
 
   const handleDeleteItem = async (itemId: string) => {
@@ -188,7 +206,7 @@ export default function DashboardCatalogPage() {
       method: 'DELETE',
     });
     notifyRealtime();
-    showToast('Đã xóa món khỏi danh mục');
+    showToast(tx('Đã xóa món khỏi thực đơn', 'Deleted item from menu'));
   };
 
   const handleCreateCategory = async (e: React.FormEvent) => {
@@ -225,7 +243,12 @@ export default function DashboardCatalogPage() {
       setNewCategoryName('');
       await loadCatalog();
       notifyRealtime();
-      showToast('Đã tạo danh mục mới (tự động dịch 5 ngôn ngữ)');
+      showToast(
+        tx(
+          'Đã tạo danh mục mới và dịch tự động',
+          'Created category with auto-translation'
+        )
+      );
     } finally {
       setAddingCategory(false);
     }
@@ -238,13 +261,19 @@ export default function DashboardCatalogPage() {
     if (selectedCategoryId === catId) setSelectedCategoryId('all');
     await loadCatalog();
     notifyRealtime();
-    showToast('Đã xóa danh mục');
+    showToast(tx('Đã xóa danh mục', 'Deleted category'));
   };
 
   if (!activeShop) return null;
 
   const planTier = profile?.plan || 'free';
   const planCfg = PLAN_CONFIGS[planTier];
+  const planLabel =
+    planTier === 'premium'
+      ? tx('Gói Cao Cấp (Premium)', 'Premium Plan')
+      : planTier === 'basic'
+        ? tx('Gói Cơ Bản (Basic)', 'Basic Plan')
+        : tx('Gói Khởi Đầu (Free)', 'Starter Plan (Free)');
   const filteredItems = items.filter((item) => {
     const matchCat =
       selectedCategoryId === 'all' || item.category_id === selectedCategoryId;
@@ -269,10 +298,13 @@ export default function DashboardCatalogPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-black text-slate-900">
-            Quản lý Danh mục & Món / Dịch vụ
+            {tx('Thực đơn', 'Menu')}
           </h1>
           <p className="text-xs text-slate-500">
-            Gạt nút <strong>Còn hàng / Tạm hết</strong> hoặc sửa giá tiền trực tiếp bên dưới — cập nhật tức thì lên màn hình khách
+            {tx(
+              'Bật/tắt còn món hoặc sửa giá bán trực tiếp bên dưới — cập nhật ngay trên thực đơn QR.',
+              'Toggle availability or edit prices inline — updates immediately on the QR menu.'
+            )}
           </p>
         </div>
 
@@ -282,7 +314,7 @@ export default function DashboardCatalogPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
           >
             <Sparkles className="h-4 w-4" />
-            <span>Tạo từ Ảnh Menu (AI OCR)</span>
+            <span>{tx('Quét ảnh thực đơn', 'Scan Menu Photo')}</span>
           </Link>
 
           <button
@@ -294,7 +326,7 @@ export default function DashboardCatalogPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 active:scale-95"
           >
             <Plus className="h-4 w-4" />
-            <span>Thêm Món Mới</span>
+            <span>{tx('Thêm món mới', 'Add Item')}</span>
           </button>
         </div>
       </div>
@@ -304,9 +336,11 @@ export default function DashboardCatalogPage() {
         <div className="flex items-center gap-2.5 text-xs">
           <Crown className="h-4 w-4 text-amber-500" />
           <span className="font-bold text-slate-700">
-            {planCfg.name}: Đang dùng{' '}
+            {planLabel}: {tx('Đang dùng', 'Using')}{' '}
             <strong className="text-slate-950">{items.length}</strong> /{' '}
-            {planCfg.maxItems > 9000 ? 'Không giới hạn' : `${planCfg.maxItems} món`}
+            {planCfg.maxItems > 9000
+              ? tx('Không giới hạn', 'Unlimited')
+              : tx('{max} món', '{max} items', { max: planCfg.maxItems })}
           </span>
         </div>
         {planTier !== 'premium' && (
@@ -314,7 +348,7 @@ export default function DashboardCatalogPage() {
             href="/dashboard/billing"
             className="text-xs font-bold text-emerald-600 hover:underline"
           >
-            Nâng cấp mở khóa không giới hạn →
+            {tx('Nâng cấp mở khóa không giới hạn →', 'Upgrade for unlimited items →')}
           </Link>
         )}
       </div>
@@ -329,7 +363,10 @@ export default function DashboardCatalogPage() {
             type="text"
             value={newCategoryName}
             onChange={(e) => setNewCategoryName(e.target.value)}
-            placeholder="Nhập tên danh mục mới (VD: Món Nước, Làm Móng Gel, Đặc Sản Khô)..."
+            placeholder={tx(
+              'Nhập tên danh mục mới (VD: Món Nước, Làm Móng, Đặc Sản)...',
+              'New category name (e.g. Drinks, Nail Care, Specialties)...'
+            )}
             className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
           />
           <button
@@ -338,7 +375,11 @@ export default function DashboardCatalogPage() {
             className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
           >
             <FolderPlus className="h-3.5 w-3.5" />
-            <span>{addingCategory ? 'Đang dịch...' : 'Thêm Danh Mục'}</span>
+            <span>
+              {addingCategory
+                ? tx('Đang tạo...', 'Creating...')
+                : tx('Thêm danh mục', 'Add Category')}
+            </span>
           </button>
         </form>
 
@@ -352,7 +393,7 @@ export default function DashboardCatalogPage() {
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            Tất cả ({items.length})
+            {t('common.all')} ({items.length})
           </button>
 
           {categories.map((cat) => {
@@ -378,7 +419,8 @@ export default function DashboardCatalogPage() {
                     type="button"
                     onClick={() => handleDeleteCategory(cat.id)}
                     className="ml-1 opacity-60 hover:opacity-100"
-                    title="Xóa danh mục"
+                    title={tx('Xóa danh mục', 'Delete category')}
+                    aria-label={tx('Xóa danh mục', 'Delete category')}
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
@@ -396,7 +438,10 @@ export default function DashboardCatalogPage() {
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Tìm nhanh món ăn, dịch vụ để gạt Tạm hết hoặc đổi giá..."
+          placeholder={tx(
+            'Tìm nhanh món hoặc dịch vụ để đổi trạng thái, sửa giá...',
+            'Search items or services to toggle stock or edit price...'
+          )}
           className="w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 focus:border-emerald-500 focus:outline-none"
         />
       </div>
@@ -434,7 +479,12 @@ export default function DashboardCatalogPage() {
         }
         onSaved={() => {
           loadCatalog();
-          showToast('Đã lưu và cập nhật bản dịch 8 ngôn ngữ!');
+          showToast(
+            tx(
+              'Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!',
+              'Saved item and updated 8-language translations!'
+            )
+          );
         }}
       />
     </div>

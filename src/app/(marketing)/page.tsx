@@ -7,15 +7,7 @@ import {
   Sparkles,
   Languages,
   ScanLine,
-  Smartphone,
-  Wifi,
   ArrowRight,
-  Check,
-  UtensilsCrossed,
-  Scissors,
-  ShoppingBag,
-  Store,
-  Globe,
   MessageSquare,
   ExternalLink,
 } from 'lucide-react';
@@ -32,14 +24,19 @@ import {
   SEED_ITEMS,
   SEED_SHOPS,
 } from '@/lib/seed-data';
-import { PLAN_CONFIGS } from '@/lib/plan-limits';
-import { formatCurrency, LOCALE_META, tField, UI_LABELS } from '@/lib/i18n-helper';
+import { formatCurrency, tField, UI_LABELS } from '@/lib/i18n-helper';
+import {
+  AppLanguageSwitcher,
+  useAppI18n,
+} from '@/components/ui/AppI18nProvider';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
 import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
 
 export default function MarketingLandingPage() {
-  // Interactive Live Demo state
+  const { tx } = useAppI18n();
+
+  // Interactive Live Demo state (independent 8-language storefront preview)
   const [demoVertical, setDemoVertical] = useState<BusinessVertical>('fnb');
   const [demoLocale, setDemoLocale] = useState<SupportedLocale>('ko');
   const [demoCart, setDemoCart] = useState<CartSelection[]>([]);
@@ -118,38 +115,39 @@ export default function MarketingLandingPage() {
                 Qlaok
               </span>
               <span className="hidden sm:inline-block ml-2 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-800">
-                Quét là OK ✨
+                {tx('Quét là OK ✨', 'Scan & Order ✨')}
               </span>
             </div>
           </Link>
 
           <nav className="hidden md:flex items-center gap-6 text-xs font-bold text-slate-600">
             <a href="#live-demo" className="hover:text-emerald-600">
-              Trải nghiệm Demo 5 Ngôn ngữ
+              {tx('Xem bản thử', 'Live Demo')}
             </a>
             <Link href="/explore" className="hover:text-emerald-600">
-              Danh bạ Cửa hàng (Directory)
+              {tx('Khám phá quán', 'Explore Stores')}
             </Link>
             <Link href="/pricing" className="hover:text-emerald-600">
-              Bảng giá
+              {tx('Bảng giá', 'Pricing')}
             </Link>
             <Link href="/login" className="hover:text-emerald-600">
-              Quản trị Chủ quán (CMS)
+              {tx('Quản lý quán', 'Store Login')}
             </Link>
           </nav>
 
           <div className="flex items-center gap-2">
+            <AppLanguageSwitcher />
             <Link
               href="/login"
               className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100"
             >
-              Đăng nhập Chủ Quán
+              {tx('Đăng nhập', 'Sign in')}
             </Link>
             <Link
               href="/login?mode=register"
               className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-emerald-500"
             >
-              <span>Đăng ký Tạo Quán</span>
+              <span>{tx('Tạo quán mới', 'Create Store')}</span>
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -164,20 +162,29 @@ export default function MarketingLandingPage() {
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1.5 text-xs font-bold text-emerald-300">
               <Sparkles className="h-3.5 w-3.5" />
               <span>
-                Menu, Bảng giá & Web Đa Ngôn Ngữ Cho Mọi Cửa Hàng
+                {tx(
+                  'Menu, Bảng giá & Web Đa Ngôn Ngữ Cho Mọi Cửa Hàng',
+                  'Multilingual QR Menu, Price List & Storefront for Every Shop'
+                )}
               </span>
             </div>
 
             <h1 className="text-3xl sm:text-5xl font-black tracking-tight leading-[1.12]">
-              Qlaok – Quét là OK:{' '}
+              {tx('Qlaok – Quét là OK:', 'Qlaok – Scan & Order:')}{' '}
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-amber-300">
-                Menu 5 Ngôn Ngữ & Trang Web Riêng
+                {tx(
+                  'Menu Đa Ngôn Ngữ & Trang Web Riêng',
+                  'Multilingual Menu & Storefront'
+                )}
               </span>{' '}
-              chỉ trong 2 phút.
+              {tx('chỉ trong 2 phút.', 'in just 2 minutes.')}
             </h1>
 
             <p className="text-sm sm:text-base text-slate-300 leading-relaxed">
-              Chủ quán chỉ cần nhập <strong>Tiếng Việt</strong> hoặc <strong>chụp ảnh tờ menu giấy</strong>. AI tự động dịch chuẩn văn phong ẩm thực & dịch vụ sang <strong>Anh, Hàn, Nhật, Trung</strong>. Khách nước ngoài quét mã xem đúng ngôn ngữ điện thoại và bật thẻ <strong>&ldquo;Đưa Nhân Viên Xem&rdquo;</strong> bằng Tiếng Việt cực to rõ!
+              {tx(
+                'Chủ quán chỉ cần nhập Tiếng Việt hoặc chụp ảnh tờ menu giấy. AI tự động dịch chuẩn văn phong ẩm thực & dịch vụ sang 8 ngôn ngữ (Việt, Anh, Hàn, Nhật, Trung, Tây Ban Nha, Ý, Nga). Khách nước ngoài quét mã xem đúng ngôn ngữ điện thoại, gửi đơn tại bàn hoặc bật thẻ "Đưa Nhân Viên Xem" bằng Tiếng Việt cực to rõ!',
+                'Owners simply type in Vietnamese or snap a photo of their paper menu. AI automatically translates dishes and services into 8 languages (Vietnamese, English, Korean, Japanese, Chinese, Spanish, Italian, Russian). International guests scan the QR code in their phone language, send table orders, or display a large Vietnamese "Show to Staff" card!'
+              )}
             </p>
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -186,14 +193,16 @@ export default function MarketingLandingPage() {
                 className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-6 py-4 text-sm font-black text-slate-950 shadow-xl hover:bg-emerald-400 active:scale-98"
               >
                 <QrCode className="h-5 w-5" />
-                <span>Đăng Ký & Tạo Menu QR Ngay (Miễn Phí)</span>
+                <span>
+                  {tx('Tạo Menu QR Miễn Phí', 'Create Free QR Menu')}
+                </span>
               </Link>
 
               <Link
                 href="/login"
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-800/80 px-5 py-4 text-sm font-bold text-white hover:bg-slate-800"
               >
-                <span>Đăng Nhập CMS Chủ Quán</span>
+                <span>{tx('Vào trang quản lý', 'Manage Store')}</span>
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
@@ -201,7 +210,10 @@ export default function MarketingLandingPage() {
             {/* Quick Live Links to the 3 Seed Stores */}
             <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                🔥 Bấm xem trực tiếp 3 Cửa Hàng Mẫu (QR Cửa & QR Bàn):
+                {tx(
+                  '🔥 Bấm xem trực tiếp 3 cửa hàng mẫu (QR Cửa & QR Bàn):',
+                  '🔥 Preview 3 live sample stores (Door QR & Table QR):'
+                )}
               </p>
               <div className="flex flex-wrap gap-2">
                 {SEED_SHOPS.map((s) => (
@@ -227,14 +239,17 @@ export default function MarketingLandingPage() {
 
           {/* Right Interactive Live Phone Demo */}
           <div id="live-demo" className="lg:col-span-6 space-y-4">
-            {/* Demo Switcher Controls: 3 Verticals & 5 Languages */}
+            {/* Demo Switcher Controls: 3 Verticals & 8 Storefront Languages */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-3.5 space-y-3">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-xs font-extrabold text-emerald-400">
-                  👇 Bấm chuyển thử 3 ngành nghề & 5 ngôn ngữ:
+                  {tx(
+                    '👇 Bấm chuyển thử 3 ngành nghề & ngôn ngữ khách:',
+                    '👇 Try 3 business types & guest languages:'
+                  )}
                 </span>
                 <span className="text-[11px] text-slate-400">
-                  Interactive Live Preview
+                  {tx('Bản thử tương tác', 'Interactive Preview')}
                 </span>
               </div>
 
@@ -242,15 +257,15 @@ export default function MarketingLandingPage() {
                 {[
                   {
                     id: 'fnb' as BusinessVertical,
-                    label: '🍜 Quán Ăn / Cafe',
+                    label: tx('🍜 Quán Ăn / Cafe', '🍜 Food & Cafe'),
                   },
                   {
                     id: 'service' as BusinessVertical,
-                    label: '💆‍♀️ Tiệm Nail & Spa',
+                    label: tx('💆‍♀️ Tiệm Nail & Spa', '💆‍♀️ Nail & Spa'),
                   },
                   {
                     id: 'retail' as BusinessVertical,
-                    label: '🛍️ Shop Đặc Sản',
+                    label: tx('🛍️ Shop Đặc Sản', '🛍️ Specialty Shop'),
                   },
                 ].map((tab) => (
                   <button
@@ -270,7 +285,7 @@ export default function MarketingLandingPage() {
 
               <div className="flex items-center justify-between gap-2 pt-1">
                 <span className="text-[11px] font-bold text-slate-400">
-                  Đổi ngôn ngữ khách:
+                  {tx('Đổi ngôn ngữ khách:', 'Guest language:')}
                 </span>
                 <LanguageSwitcher
                   currentLocale={demoLocale}
@@ -300,7 +315,7 @@ export default function MarketingLandingPage() {
                   href={`/s/${demoShop.slug}/menu?lang=${demoLocale}`}
                   className="shrink-0 rounded-xl bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50"
                 >
-                  Mở toàn màn hình ↗
+                  {tx('Mở toàn màn hình ↗', 'Full screen ↗')}
                 </Link>
               </div>
 
@@ -355,7 +370,10 @@ export default function MarketingLandingPage() {
                             : demoLabels.bottomCtaFnb}
                       </span>
                       <span className="block text-[10px] text-white/90">
-                        👆 Bấm thử để xem Thẻ Chữ Tiếng Việt Cỡ Lớn!
+                        {tx(
+                          '👆 Bấm thử để xem Thẻ Chữ Tiếng Việt Cỡ Lớn!',
+                          '👆 Tap to preview the Vietnamese Show-to-Staff card!'
+                        )}
                       </span>
                     </div>
                   </div>
@@ -369,14 +387,17 @@ export default function MarketingLandingPage() {
         </div>
       </section>
 
-      {/* 5 Core Features Section */}
+      {/* Core Features Section */}
       <section className="py-16 mx-auto max-w-6xl px-4 space-y-10">
         <div className="text-center max-w-2xl mx-auto space-y-2">
           <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-600">
-            5 Trụ cột tính năng cốt lõi
+            {tx('Tính năng cốt lõi', 'Core Features')}
           </span>
           <h2 className="text-2xl sm:text-3xl font-black text-slate-900">
-            Thiết kế riêng cho chủ quán Việt Nam đón khách nội địa & quốc tế
+            {tx(
+              'Thiết kế riêng cho chủ quán Việt Nam đón khách nội địa & quốc tế',
+              'Built for local businesses welcoming domestic & international guests'
+            )}
           </h2>
         </div>
 
@@ -386,10 +407,16 @@ export default function MarketingLandingPage() {
               <Languages className="h-6 w-6" />
             </div>
             <h3 className="text-base font-black text-slate-900">
-              1. Tự động dịch 5 ngôn ngữ chuẩn ngữ cảnh
+              {tx(
+                '1. Tự động dịch đa ngôn ngữ chuẩn ngữ cảnh',
+                '1. Context-aware multilingual translation'
+              )}
             </h3>
             <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-              Chủ quán chỉ nhập Tiếng Việt. AI tự động dịch sang Anh, Hàn, Nhật, Trung kèm giải thích nguyên liệu cho các món đặc sản như Bạc xỉu, Phở tái, Gội đầu dưỡng sinh.
+              {tx(
+                'Chủ quán chỉ nhập Tiếng Việt. AI tự động dịch sang Anh, Hàn, Nhật, Trung, Tây Ban Nha, Ý, Nga kèm giải thích nguyên liệu cho các món đặc sản như Bạc xỉu, Phở tái, Gội đầu dưỡng sinh.',
+                'Type your menu once in Vietnamese. AI automatically translates into English, Korean, Japanese, Chinese, Spanish, Italian, and Russian with helpful culinary and service descriptions.'
+              )}
             </p>
           </div>
 
@@ -398,10 +425,16 @@ export default function MarketingLandingPage() {
               <ScanLine className="h-6 w-6" />
             </div>
             <h3 className="text-base font-black text-slate-900">
-              2. AI Vision Quét Ảnh Menu Giấy 10 Giây
+              {tx(
+                '2. Chụp ảnh menu giấy tạo món trong 10 giây',
+                '2. Scan paper menus into digital items in 10s'
+              )}
             </h3>
             <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-              Chụp ảnh tờ thực đơn giấy hoặc màn hình GrabFood. AI tự động bóc tách Danh mục, Tên món, quy đổi giá tiền và dịch 5 thứ tiếng ngay lập tức.
+              {tx(
+                'Chụp ảnh tờ thực đơn giấy hoặc bảng giá dịch vụ. Hệ thống tự động bóc tách Danh mục, Tên món, quy đổi giá tiền và dịch đa ngôn ngữ ngay lập tức.',
+                'Snap a photo of a printed menu or price sheet. Automatically extract categories, item names, and prices with instant multilingual translations.'
+              )}
             </p>
           </div>
 
@@ -410,10 +443,16 @@ export default function MarketingLandingPage() {
               <MessageSquare className="h-6 w-6" />
             </div>
             <h3 className="text-base font-black text-slate-900">
-              3. Thẻ &ldquo;Đưa Nhân Viên Xem&rdquo; Chữ To Rõ
+              {tx(
+                '3. Thẻ "Đưa Nhân Viên Xem" chữ to rõ',
+                '3. Large-type "Show to Staff" confirmation card'
+              )}
             </h3>
             <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-              Khách Tây, Hàn, Nhật, Trung chọn món & ghi chú bằng tiếng mẹ đẻ, bấm nút sẽ bật thẻ chữ Tiếng Việt cực to để đưa nhân viên xem, xóa bỏ hoàn toàn rào cản ngôn ngữ.
+              {tx(
+                'Khách quốc tế chọn món & ghi chú bằng tiếng mẹ đẻ, bấm nút sẽ gửi đơn xuống quầy hoặc bật thẻ chữ Tiếng Việt cực to để đưa nhân viên xem, xóa bỏ hoàn toàn rào cản ngôn ngữ.',
+                'International guests select items and notes in their native language, send orders straight to the counter, or display a large Vietnamese summary card to staff with zero language barrier.'
+              )}
             </p>
           </div>
         </div>
@@ -429,17 +468,22 @@ export default function MarketingLandingPage() {
             <span className="font-bold text-slate-900">
               Qlaok (Quét là OK)
             </span>
-            <span>— Menu, Bảng giá & Web Đa Ngôn Ngữ</span>
+            <span>
+              {tx(
+                '— Menu, Bảng giá & Web Đa Ngôn Ngữ',
+                '— Multilingual Menu, Price List & Storefront'
+              )}
+            </span>
           </div>
           <div className="flex items-center gap-4 font-semibold">
             <Link href="/explore" className="hover:text-slate-900">
-              Khám phá cửa hàng
+              {tx('Khám phá quán', 'Explore Stores')}
             </Link>
             <Link href="/pricing" className="hover:text-slate-900">
-              Bảng giá
+              {tx('Bảng giá', 'Pricing')}
             </Link>
             <Link href="/dashboard" className="hover:text-slate-900">
-              Dashboard CMS
+              {tx('Quản lý quán', 'Manage Store')}
             </Link>
           </div>
         </div>

@@ -7,6 +7,7 @@ import {
   MobileShopOrder,
 } from '../../lib/supabase';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
+import { useMobileI18n } from '../MobileI18nProvider';
 
 export type OrderFilterType = 'active' | 'new' | 'preparing' | 'completed';
 
@@ -37,6 +38,7 @@ export const OrdersTab = memo(function OrdersTab({
   canCancelOrder = false,
   theme,
 }: OrdersTabProps) {
+  const { t } = useMobileI18n();
   const newOrdersCount = orders.filter((o) => o.status === 'new').length;
   const preparingOrdersCount = orders.filter(
     (o) => o.status === 'preparing'
@@ -65,14 +67,19 @@ export const OrdersTab = memo(function OrdersTab({
         {[
           {
             id: 'active',
-            label: `Đang xử lý (${activeOrdersCount})`,
+            label: t('orders.filterActive', { count: activeOrdersCount }),
           },
-          { id: 'new', label: `Mới chờ nhận (${newOrdersCount})` },
+          {
+            id: 'new',
+            label: t('orders.filterNew', { count: newOrdersCount }),
+          },
           {
             id: 'preparing',
-            label: `Đang làm (${preparingOrdersCount})`,
+            label: t('orders.filterPreparing', {
+              count: preparingOrdersCount,
+            }),
           },
-          { id: 'completed', label: 'Đã hoàn tất' },
+          { id: 'completed', label: t('orders.filterCompleted') },
         ].map((f) => {
           const active = orderFilter === f.id;
           return (
@@ -110,12 +117,10 @@ export const OrdersTab = memo(function OrdersTab({
           ]}
         >
           <Text style={[styles.cardHeading, { color: theme.text }]}>
-            Chưa có đơn hàng nào trong mục này
+            {t('orders.emptyTitle')}
           </Text>
           <Text style={[styles.itemSub, { color: theme.subText }]}>
-            Khi khách quét mã QR tại bàn và bấm gửi đơn, điện thoại sẽ nhận tín
-            hiệu qua WebSocket Realtime, rung và hiện phiếu gọi món ngay tại
-            đây.
+            {t('orders.emptyDesc')}
           </Text>
         </View>
       ) : (
@@ -152,16 +157,19 @@ export const OrdersTab = memo(function OrdersTab({
                       { color: isNew ? '#475569' : theme.subText },
                     ]}
                   >
-                    Ngôn ngữ khách: {order.visitor_lang.toUpperCase()} •{' '}
+                    {t('orders.guestLang', {
+                      lang: order.visitor_lang.toUpperCase(),
+                    })}{' '}
+                    •{' '}
                     {order.payment_method === 'vietqr'
-                      ? 'Chuyển khoản QR'
-                      : 'Tiền mặt'}{' '}
+                      ? t('orders.methodQr')
+                      : t('orders.methodCash')}{' '}
                     •{' '}
                     {order.payment_status === 'paid'
-                      ? '✓ Đã thu tiền'
+                      ? t('orders.statusPaid')
                       : order.payment_status === 'refunded'
-                        ? '↩ Đã hoàn tiền'
-                        : 'Chưa thu tiền'}
+                        ? t('orders.statusRefunded')
+                        : t('orders.statusUnpaid')}
                   </Text>
                 </View>
                 <Text style={styles.orderTotalText}>
@@ -229,7 +237,7 @@ export const OrdersTab = memo(function OrdersTab({
                     style={{ marginRight: 4 }}
                   />
                   <Text style={styles.orderNoteText}>
-                    Ghi chú bàn: {order.customer_note}
+                    {t('orders.tableNote', { note: order.customer_note })}
                   </Text>
                 </View>
               ) : null}
@@ -256,7 +264,7 @@ export const OrdersTab = memo(function OrdersTab({
                           style={{ marginRight: 4 }}
                         />
                         <Text style={styles.btnPrepareText}>
-                          Nhận đơn &amp; Báo bếp
+                          {t('orders.actionAccept')}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -264,7 +272,9 @@ export const OrdersTab = memo(function OrdersTab({
                       style={styles.btnCancel}
                       onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
                     >
-                      <Text style={styles.btnCancelText}>Hủy</Text>
+                      <Text style={styles.btnCancelText}>
+                        {t('orders.actionCancel')}
+                      </Text>
                     </TouchableOpacity>}
                   </>
                 )}
@@ -291,7 +301,7 @@ export const OrdersTab = memo(function OrdersTab({
                           style={{ marginRight: 4 }}
                         />
                         <Text style={styles.btnCompleteText}>
-                          Đã phục vụ
+                          {t('orders.actionServed')}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -299,7 +309,9 @@ export const OrdersTab = memo(function OrdersTab({
                       style={styles.btnCancel}
                       onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
                     >
-                      <Text style={styles.btnCancelText}>Hủy</Text>
+                      <Text style={styles.btnCancelText}>
+                        {t('orders.actionCancel')}
+                      </Text>
                     </TouchableOpacity>}
                   </>
                 )}
@@ -314,7 +326,7 @@ export const OrdersTab = memo(function OrdersTab({
                       }
                     >
                       <Text style={styles.btnCompleteText}>
-                        Xác nhận đã thu tiền
+                        {t('orders.actionConfirmPaid')}
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -326,7 +338,9 @@ export const OrdersTab = memo(function OrdersTab({
                       onUpdateOrderStatus(order.id, order.status, 'refunded')
                     }
                   >
-                    <Text style={styles.btnCancelText}>Hoàn tiền</Text>
+                    <Text style={styles.btnCancelText}>
+                      {t('orders.actionRefund')}
+                    </Text>
                   </TouchableOpacity>
                 )}
 
@@ -372,8 +386,8 @@ export const OrdersTab = memo(function OrdersTab({
                       ]}
                     >
                       {order.payment_status === 'paid'
-                        ? 'Xem hóa đơn'
-                        : 'Xem phiếu in'}
+                        ? t('orders.actionViewReceipt')
+                        : t('orders.actionViewTicket')}
                     </Text>
                   </View>
                 </TouchableOpacity>

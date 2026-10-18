@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Be_Vietnam_Pro, JetBrains_Mono } from 'next/font/google';
+import { AppI18nProvider } from '@/components/ui/AppI18nProvider';
 import './globals.css';
 
 const beVietnamPro = Be_Vietnam_Pro({
@@ -19,7 +20,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: 'Qlaok (Quét là OK) – Menu, Bảng giá & Web Đa Ngôn Ngữ Cho Mọi Cửa Hàng',
   description:
-    'Nền tảng tạo Menu, Bảng giá dịch vụ 5 ngôn ngữ tự động bằng AI (Việt, Anh, Hàn, Nhật, Trung) và Micro-Website QR cho Quán ăn, Tiệm Nail, Spa, Cửa hàng bán lẻ.',
+    'Nền tảng tạo Menu, Bảng giá dịch vụ đa ngôn ngữ tự động bằng AI và trang đặt món QR cho Quán ăn, Tiệm Nail, Spa, Cửa hàng bán lẻ.',
   manifest: '/manifest.webmanifest',
   icons: {
     icon: '/icon.svg',
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Qlaok CMS',
+    title: 'Qlaok',
   },
 };
 
@@ -53,7 +54,7 @@ export default function RootLayout({
       <body
         className={`${beVietnamPro.className} min-h-screen bg-slate-50 font-sans text-slate-900 antialiased`}
       >
-        {children}
+        <AppI18nProvider>{children}</AppI18nProvider>
       </body>
     </html>
   );

@@ -18,6 +18,7 @@ import { useDashboard } from '@/lib/dashboard-context';
 import { I18nText } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 interface ExtractedItem {
   price: number;
@@ -34,6 +35,7 @@ interface ExtractedCategory {
 export default function DashboardAiScannerPage() {
   const router = useRouter();
   const { activeShop } = useDashboard();
+  const { tx } = useAppI18n();
 
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [compressedInfo, setCompressedInfo] = useState<string>('');
@@ -54,7 +56,10 @@ export default function DashboardAiScannerPage() {
     imgBase64?: string | null
   ) => {
     setScanStepText(
-      'Bước 2/2: Đang phân loại danh mục, chuẩn hóa giá tiền & dịch tự động sang 5 ngôn ngữ...'
+      tx(
+        'Bước 2/2: Đang phân loại danh mục, chuẩn hóa giá và dịch tự động...',
+        'Step 2/2: Grouping categories, normalizing prices & translating...'
+      )
     );
     const res = await fetch('/api/ai/ocr-menu', {
       method: 'POST',
@@ -68,7 +73,10 @@ export default function DashboardAiScannerPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error || 'Không thể bóc tách menu tự động');
+      throw new Error(
+        data.error ||
+          tx('Không thể bóc tách thực đơn tự động', 'Could not extract menu automatically')
+      );
     }
     setExtractedCategories(data.categories || []);
   };
@@ -82,7 +90,9 @@ export default function DashboardAiScannerPage() {
     setExtractedCategories([]);
 
     try {
-      setScanStepText('Đang tối ưu độ nét ảnh thực đơn...');
+      setScanStepText(
+        tx('Đang tối ưu độ nét ảnh thực đơn...', 'Optimizing menu photo...')
+      );
       const compressed = await imageCompression(file, {
         maxSizeMB: 0.6,
         maxWidthOrHeight: 1600,
@@ -92,7 +102,11 @@ export default function DashboardAiScannerPage() {
 
       const kb = Math.round(compressed.size / 1024);
       setCompressedInfo(
-        `Đã chuẩn hóa ảnh: ${kb} KB (Gốc: ${Math.round(file.size / 1024)} KB)`
+        tx(
+          'Đã chuẩn hóa ảnh: {kb} KB (Gốc: {orig} KB)',
+          'Optimized photo: {kb} KB (Original: {orig} KB)',
+          { kb, orig: Math.round(file.size / 1024) }
+        )
       );
 
       const reader = new FileReader();
@@ -104,13 +118,22 @@ export default function DashboardAiScannerPage() {
 
       setPreviewImage(base64);
 
-      setScanStepText('Bước 1/2: Đang nhận diện chữ Tiếng Việt trên ảnh...');
+      setScanStepText(
+        tx(
+          'Bước 1/2: Đang nhận diện chữ trên ảnh...',
+          'Step 1/2: Reading text from photo...'
+        )
+      );
       const ocrResult = await Tesseract.recognize(compressed, 'vie+eng', {
         logger: (m) => {
           if (m.status === 'recognizing text') {
             const pct = Math.round((m.progress || 0) * 100);
             setScanStepText(
-              `Bước 1/2: Đang đọc nội dung thực đơn trên ảnh (${pct}%)...`
+              tx(
+                'Bước 1/2: Đang đọc nội dung thực đơn ({pct}%)...',
+                'Step 1/2: Reading menu text ({pct}%)...',
+                { pct }
+              )
             );
           }
         },
@@ -121,14 +144,19 @@ export default function DashboardAiScannerPage() {
 
       if (!recognizedText) {
         throw new Error(
-          'Không nhận diện được chữ nào trên ảnh. Vui lòng chọn ảnh rõ nét hơn hoặc gõ/dán thực đơn vào ô văn bản bên dưới.'
+          tx(
+            'Không nhận diện được chữ trên ảnh. Vui lòng chọn ảnh rõ hơn hoặc dán thực đơn vào ô bên dưới.',
+            'No text detected in photo. Please upload a clearer photo or paste the menu text below.'
+          )
         );
       }
 
       await analyzeTextWithAi(recognizedText, base64);
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Lỗi khi quét ảnh menu'
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi quét ảnh thực đơn', 'Error scanning menu photo')
       );
     } finally {
       setScanning(false);
@@ -145,7 +173,9 @@ export default function DashboardAiScannerPage() {
       await analyzeTextWithAi(rawOcrText.trim());
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Lỗi khi phân tích văn bản'
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi phân tích văn bản', 'Error analyzing text')
       );
     } finally {
       setScanning(false);
@@ -166,13 +196,18 @@ export default function DashboardAiScannerPage() {
 
     setRawOcrText(sampleTextByVertical);
     setCompressedInfo(
-      'Đang phân tích thực đơn mẫu & dịch tự động 5 ngôn ngữ...'
+      tx(
+        'Đang phân tích thực đơn mẫu & dịch tự động...',
+        'Analyzing sample menu & auto-translating...'
+      )
     );
     try {
       await analyzeTextWithAi(sampleTextByVertical);
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Không thể phân tích dữ liệu mẫu.'
+        err instanceof Error
+          ? err.message
+          : tx('Không thể phân tích dữ liệu mẫu.', 'Could not analyze sample data.')
       );
     } finally {
       setScanning(false);
@@ -224,7 +259,9 @@ export default function DashboardAiScannerPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Lỗi khi lưu vào cửa hàng');
+        throw new Error(
+          data.error || tx('Lỗi khi lưu vào cửa hàng', 'Error saving to store')
+        );
       }
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -234,13 +271,21 @@ export default function DashboardAiScannerPage() {
       }
 
       setSuccessMsg(
-        `Đã thêm thành công ${data.createdItems?.length || 0} món mới (đủ 5 ngôn ngữ) vào cửa hàng!`
+        tx(
+          'Đã thêm {count} món mới vào cửa hàng!',
+          'Added {count} new items to your store!',
+          { count: data.createdItems?.length || 0 }
+        )
       );
       setTimeout(() => {
         router.push('/dashboard/catalog');
       }, 1200);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Không thể lưu menu');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx('Không thể lưu thực đơn', 'Could not save menu')
+      );
     } finally {
       setSaving(false);
     }
@@ -251,13 +296,19 @@ export default function DashboardAiScannerPage() {
       <div>
         <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-extrabold text-emerald-800 mb-2">
           <Sparkles className="h-3.5 w-3.5" />
-          <span>Trí Tuệ Nhân Tạo • Quét Thực Đơn Tự Động</span>
+          <span>{tx('Quét thực đơn tự động', 'Smart Menu Scanner')}</span>
         </div>
         <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-          Chụp Ảnh Menu Giấy → Tạo Menu 5 Ngôn Ngữ Tự Động
+          {tx(
+            'Quét menu',
+            'Scan menu'
+          )}
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 mt-1">
-          Tải lên ảnh chụp thực đơn ép plastic, bảng giá tiệm Nail/Spa hoặc ảnh chụp màn hình GrabFood. Hệ thống tự động đọc tên món Tiếng Việt trên ảnh, phân loại Danh mục, quy đổi giá tiền (<code className="font-mono">35k → 35.000đ</code>) và dịch sang Việt, Anh, Hàn, Nhật, Trung.
+          {tx(
+            'Tải ảnh chụp thực đơn hoặc bảng giá dịch vụ. Hệ thống tự động đọc tên món, chia danh mục, chuẩn hóa giá (35k → 35.000đ) và dịch đa ngôn ngữ.',
+            'Upload a photo of your paper menu or price list. We automatically extract items, group categories, normalize prices (35k → 35,000đ), and translate.'
+          )}
         </p>
       </div>
 
@@ -269,17 +320,24 @@ export default function DashboardAiScannerPage() {
 
         <div className="space-y-1">
           <h3 className="text-base font-extrabold text-slate-900">
-            Tải lên ảnh chụp Menu / Bảng giá của quán ({activeShop.name})
+            {tx(
+              'Tải ảnh thực đơn / bảng giá ({name})',
+              'Upload menu or price list photo ({name})',
+              { name: activeShop.name }
+            )}
           </h3>
           <p className="text-xs text-slate-500">
-            Tự động bóc tách danh sách món ăn, nhận diện giá tiền &amp; dịch chuẩn ngữ cảnh 5 thứ tiếng
+            {tx(
+              'Tự động bóc tách danh sách món, giá bán và dịch tự động',
+              'Automatically extracts items, prices, and translations'
+            )}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
           <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500 active:scale-95">
             <Upload className="h-4 w-4" />
-            <span>Chọn Ảnh Menu Từ Máy / Điện Thoại</span>
+            <span>{tx('Chọn ảnh thực đơn', 'Upload Menu Photo')}</span>
             <input
               type="file"
               accept="image/*"
@@ -295,7 +353,7 @@ export default function DashboardAiScannerPage() {
             className="inline-flex items-center gap-2 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-xs font-bold text-slate-800 shadow-2xs hover:bg-slate-50 active:scale-95"
           >
             <Sparkles className="h-4 w-4 text-amber-500" />
-            <span>Thử Nhanh Với Thực Đơn Mẫu</span>
+            <span>{tx('Thử với thực đơn mẫu', 'Try Sample Menu')}</span>
           </button>
         </div>
 
@@ -314,7 +372,10 @@ export default function DashboardAiScannerPage() {
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-emerald-600" />
               <h3 className="text-xs sm:text-sm font-black text-slate-900">
-                Nội dung chữ đọc được từ ảnh (Có thể sửa trực tiếp rồi bấm Phân tích lại)
+                {tx(
+                  'Văn bản đọc từ ảnh (có thể sửa rồi bấm Phân tích lại)',
+                  'Extracted text (edit if needed, then click Re-analyze)'
+                )}
               </h3>
             </div>
             <button
@@ -324,7 +385,7 @@ export default function DashboardAiScannerPage() {
               className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
             >
               <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Phân Tích Lại</span>
+              <span>{tx('Phân tích lại', 'Re-analyze')}</span>
             </button>
           </div>
 
@@ -334,7 +395,7 @@ export default function DashboardAiScannerPage() {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={previewImage}
-                  alt="Ảnh menu đã chọn"
+                  alt={tx('Ảnh thực đơn đã chọn', 'Selected menu photo')}
                   className="max-h-48 w-auto rounded-xl object-contain"
                 />
               </div>
@@ -344,7 +405,10 @@ export default function DashboardAiScannerPage() {
                 rows={5}
                 value={rawOcrText}
                 onChange={(e) => setRawOcrText(e.target.value)}
-                placeholder="Văn bản quét từ ảnh sẽ hiện tại đây, hoặc bạn có thể dán trực tiếp danh sách món + giá vào đây..."
+                placeholder={tx(
+                  'Văn bản quét từ ảnh sẽ hiện tại đây, hoặc dán trực tiếp danh sách món + giá...',
+                  'Scanned text appears here, or paste your item + price list directly...'
+                )}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
               />
             </div>
@@ -357,10 +421,16 @@ export default function DashboardAiScannerPage() {
           <Loader2 className="mx-auto h-9 w-9 animate-spin text-emerald-600" />
           <p className="text-sm font-bold text-slate-900">
             {scanStepText ||
-              'Đang phân tích thực đơn và dịch tự động sang 5 ngôn ngữ...'}
+              tx(
+                'Đang phân tích thực đơn và dịch tự động...',
+                'Analyzing menu and translating automatically...'
+              )}
           </p>
           <p className="text-xs text-slate-500">
-            Hệ thống đang bóc tách tên món, giá tiền và dịch sang 5 thứ tiếng (khoảng 5–15 giây).
+            {tx(
+              'Quá trình bóc tách tên món, giá tiền và dịch mất khoảng 5–15 giây.',
+              'Extracting item names, prices, and translations takes about 5–15 seconds.'
+            )}
           </p>
         </div>
       )}
@@ -384,11 +454,24 @@ export default function DashboardAiScannerPage() {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm sm:text-base font-black">
-                  📋 Kết quả bóc tách thực đơn ({extractedCategories.reduce((s, c) => s + c.items.length, 0)} món/dịch vụ)
+                  📋{' '}
+                  {tx(
+                    'Kết quả bóc tách ({count} món)',
+                    'Extracted Menu ({count} items)',
+                    {
+                      count: extractedCategories.reduce(
+                        (s, c) => s + c.items.length,
+                        0
+                      ),
+                    }
+                  )}
                 </h2>
               </div>
               <p className="text-xs text-slate-300">
-                Kiểm tra lại tên và giá bên dưới trước khi lưu toàn bộ vào cửa hàng
+                {tx(
+                  'Kiểm tra lại tên và giá bên dưới trước khi lưu vào cửa hàng',
+                  'Review names and prices below before saving to your store'
+                )}
               </p>
             </div>
 
@@ -401,12 +484,12 @@ export default function DashboardAiScannerPage() {
               {saving ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Đang lưu vào quán...</span>
+                  <span>{tx('Đang lưu...', 'Saving...')}</span>
                 </>
               ) : (
                 <>
                   <Check className="h-4 w-4" />
-                  <span>Lưu Toàn Bộ Vào Cửa Hàng</span>
+                  <span>{tx('Lưu toàn bộ vào cửa hàng', 'Save All to Store')}</span>
                 </>
               )}
             </button>
@@ -419,7 +502,9 @@ export default function DashboardAiScannerPage() {
             >
               <div className="border-b border-slate-100 pb-3">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
-                  Danh mục bóc tách #{catIdx + 1}
+                  {tx('Danh mục #{index}', 'Category #{index}', {
+                    index: catIdx + 1,
+                  })}
                 </span>
                 <h3 className="text-base font-black text-slate-900">
                   {cat.name_i18n.vi}
@@ -443,7 +528,7 @@ export default function DashboardAiScannerPage() {
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                       <div className="flex-1">
                         <label className="block text-[10px] font-bold uppercase text-slate-400 mb-0.5">
-                          Tên món / dịch vụ (Tiếng Việt)
+                          {tx('Tên món (Tiếng Việt)', 'Item name (Vietnamese)')}
                         </label>
                         <input
                           type="text"
@@ -462,7 +547,7 @@ export default function DashboardAiScannerPage() {
 
                       <div className="w-full sm:w-36">
                         <label className="block text-[10px] font-bold uppercase text-slate-400 mb-0.5">
-                          Giá (VNĐ)
+                          {tx('Giá (VNĐ)', 'Price (VND)')}
                         </label>
                         <input
                           type="number"
@@ -482,7 +567,7 @@ export default function DashboardAiScannerPage() {
                       {activeShop.vertical === 'service' && (
                         <div className="w-full sm:w-28">
                           <label className="block text-[10px] font-bold uppercase text-slate-400 mb-0.5">
-                            Phút
+                            {tx('Phút', 'Mins')}
                           </label>
                           <input
                             type="number"
@@ -505,7 +590,8 @@ export default function DashboardAiScannerPage() {
                         type="button"
                         onClick={() => handleRemoveExtractedItem(catIdx, itemIdx)}
                         className="self-end sm:self-center flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-400 hover:text-rose-600"
-                        title="Bỏ món này"
+                        title={tx('Bỏ món này', 'Remove item')}
+                        aria-label={tx('Bỏ món này', 'Remove item')}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>

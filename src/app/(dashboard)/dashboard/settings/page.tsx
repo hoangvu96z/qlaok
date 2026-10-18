@@ -1,5 +1,7 @@
 'use client';
 
+import { appLanguageName } from '@/lib/app-i18n';
+
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
@@ -45,6 +47,7 @@ import {
   getShopPaymentQrInfo,
   stripVietnameseAccents,
 } from '@/lib/payment-qr';
+import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 // Pure color swatches — no text labels needed
 const BRAND_COLOR_SWATCHES = [
@@ -61,33 +64,40 @@ const BRAND_COLOR_SWATCHES = [
 
 const BACKGROUND_IMAGE_PRESETS = [
   {
-    label: 'Phố Cổ',
+    labelVi: 'Phố Cổ',
+    labelEn: 'Old Town',
     url: 'https://images.unsplash.com/photo-1559592413-7cec4d0cae2b?w=1000&auto=format&fit=crop&q=80',
   },
   {
-    label: 'Gỗ Ấm',
+    labelVi: 'Gỗ Ấm',
+    labelEn: 'Warm Wood',
     url: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=1000&auto=format&fit=crop&q=80',
   },
   {
-    label: 'Cafe Chill',
+    labelVi: 'Quán Cà Phê',
+    labelEn: 'Cozy Cafe',
     url: 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=1000&auto=format&fit=crop&q=80',
   },
   {
-    label: 'Spa Thảo Mộc',
+    labelVi: 'Spa Thảo Mộc',
+    labelEn: 'Herbal Spa',
     url: 'https://images.unsplash.com/photo-1540555700478-4be289fbecef?w=1000&auto=format&fit=crop&q=80',
   },
   {
-    label: 'Ẩm Thực Việt',
+    labelVi: 'Ẩm Thực Việt',
+    labelEn: 'Vietnamese',
     url: 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=1000&auto=format&fit=crop&q=80',
   },
   {
-    label: 'Đặc Sản',
+    labelVi: 'Đặc Sản',
+    labelEn: 'Specialties',
     url: 'https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=1000&auto=format&fit=crop&q=80',
   },
 ];
 
 export default function DashboardSettingsPage() {
   const { activeShop, refreshDashboard } = useDashboard();
+  const { locale, t, tx } = useAppI18n();
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -246,7 +256,12 @@ export default function DashboardSettingsPage() {
         onDone(publicUrl);
       }
     } catch {
-      setErrorMsg('Không thể tải ảnh lên. Bạn có thể dán trực tiếp link ảnh.');
+      setErrorMsg(
+        tx(
+          'Không thể tải ảnh lên. Bạn có thể dán trực tiếp link ảnh.',
+          'Could not upload image. You can paste an image URL directly.'
+        )
+      );
     } finally {
       setUploadingField(null);
     }
@@ -328,7 +343,9 @@ export default function DashboardSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Không thể lưu cài đặt');
+        throw new Error(
+          data.error || tx('Không thể lưu cài đặt', 'Could not save settings')
+        );
       }
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -341,7 +358,11 @@ export default function DashboardSettingsPage() {
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Lỗi khi lưu cài đặt');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx('Lỗi khi lưu cài đặt', 'Failed to save settings')
+      );
     } finally {
       setSaving(false);
     }
@@ -390,10 +411,16 @@ export default function DashboardSettingsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-black text-slate-900">
-            Cài Đặt Quán, Thanh Toán QR &amp; Thiết Kế Màn Hình
+            {tx(
+              'Cài đặt quán',
+              'Store settings'
+            )}
           </h1>
           <p className="text-xs text-slate-500">
-            Cấu hình tài khoản ngân hàng / mã QR thanh toán, màu sắc thương hiệu và xem trực tiếp trên Slide-bar bên phải
+            {tx(
+              'Cấu hình tài khoản nhận tiền, màu sắc thương hiệu, thông tin liên hệ và xem trước ở khung bên phải.',
+              'Configure bank payment QR, brand colors, store info, and preview live in the right panel.'
+            )}
           </p>
         </div>
 
@@ -410,8 +437,8 @@ export default function DashboardSettingsPage() {
             <Smartphone className="h-3.5 w-3.5 text-emerald-600" />
             <span>
               {isPreviewSidebarOpen
-                ? 'Ẩn Slide-bar Xem Trước'
-                : 'Mở Slide-bar Xem Trước'}
+                ? tx('Ẩn khung xem trước', 'Hide preview')
+                : tx('Mở khung xem trước', 'Show preview')}
             </span>
           </button>
 
@@ -422,7 +449,7 @@ export default function DashboardSettingsPage() {
             className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
           >
             <ExternalLink className="h-3.5 w-3.5 text-emerald-600" />
-            <span>Mở Menu Thực Tế</span>
+            <span>{tx('Mở thực đơn khách', 'Open Live Menu')}</span>
           </a>
 
           <button
@@ -433,12 +460,16 @@ export default function DashboardSettingsPage() {
             {savedSuccess ? (
               <>
                 <Check className="h-4 w-4" />
-                <span>Đã Lưu!</span>
+                <span>{t('common.saved')}</span>
               </>
             ) : (
               <>
                 <Save className="h-4 w-4" />
-                <span>{saving ? 'Đang lưu...' : 'Lưu Cài Đặt'}</span>
+                <span>
+                  {saving
+                    ? t('common.saving')
+                    : tx('Lưu cài đặt', 'Save Settings')}
+                </span>
               </>
             )}
           </button>
@@ -451,22 +482,30 @@ export default function DashboardSettingsPage() {
         </div>
       )}
 
-      {/* 1. Studio Thiết Kế Giao Diện (Full width with Right Slide-Bar Preview) */}
+      {/* 1. Storefront Theme & Appearance */}
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <Palette className="h-4 w-4 text-emerald-600" />
-            <span>1. Giao Diện &amp; Màu Sắc Màn Hình Khách</span>
+            <span>
+              {tx(
+                'Giao diện',
+                'Appearance'
+              )}
+            </span>
           </h2>
           <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-            Cập nhật trực tiếp trên Slide-bar bên phải 👉
+            {tx(
+              'Cập nhật trực tiếp ở khung bên phải 👉',
+              'Updates live in the right panel 👉'
+            )}
           </span>
         </div>
 
-        {/* Pure Color Swatches (No Cluttered Titles) */}
+        {/* Pure Color Swatches */}
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-2.5">
-            Màu chủ đạo của quán
+            {tx('Màu chủ đạo của quán', 'Primary brand color')}
           </label>
           <div className="flex flex-wrap items-center gap-3">
             {BRAND_COLOR_SWATCHES.map((hex) => {
@@ -477,7 +516,9 @@ export default function DashboardSettingsPage() {
                   key={hex}
                   type="button"
                   onClick={() => setPrimaryColor(hex)}
-                  aria-label={`Chọn màu ${hex}`}
+                  aria-label={tx('Chọn màu {hex}', 'Select color {hex}', {
+                    hex,
+                  })}
                   className={`relative h-9 w-9 rounded-full transition-transform ${
                     selected
                       ? 'scale-110 ring-2 ring-offset-2 ring-slate-900 shadow-md'
@@ -494,7 +535,7 @@ export default function DashboardSettingsPage() {
 
             {/* Custom Color Picker Circle */}
             <label
-              title="Tự chọn mã màu bất kỳ"
+              title={tx('Tự chọn mã màu bất kỳ', 'Pick any custom color')}
               className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 hover:border-slate-500"
             >
               <input
@@ -514,28 +555,28 @@ export default function DashboardSettingsPage() {
         {/* Background Style Selector */}
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-2">
-            Nền màn hình điện thoại
+            {tx('Nền màn hình điện thoại', 'Phone background style')}
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             {[
               {
                 id: 'clean',
-                label: '☀️ Sáng',
+                label: tx('☀️ Sáng', '☀️ Clean Light'),
                 previewBg: 'bg-slate-50 border-slate-200 text-slate-900',
               },
               {
                 id: 'warm',
-                label: '🏮 Kem Ấm',
+                label: tx('🏮 Kem ấm', '🏮 Warm Cream'),
                 previewBg: 'bg-[#fdf8ee] border-amber-200 text-amber-950',
               },
               {
                 id: 'dark',
-                label: '🌙 Tối',
+                label: tx('🌙 Tối', '🌙 Dark'),
                 previewBg: 'bg-slate-900 border-slate-700 text-white',
               },
               {
                 id: 'custom_image',
-                label: '🖼️ Ảnh Nền',
+                label: tx('🖼️ Ảnh nền', '🖼️ Wallpaper'),
                 previewBg:
                   'bg-gradient-to-r from-emerald-900 to-slate-900 text-white',
               },
@@ -567,27 +608,30 @@ export default function DashboardSettingsPage() {
         {backgroundStyle === 'custom_image' && (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
             <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-              {BACKGROUND_IMAGE_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => setBackgroundImageUrl(preset.url)}
-                  className={`group relative overflow-hidden rounded-xl border-2 aspect-video ${
-                    backgroundImageUrl === preset.url
-                      ? 'border-emerald-500 ring-2 ring-emerald-500/30'
-                      : 'border-transparent'
-                  }`}
-                >
-                  <img
-                    src={preset.url}
-                    alt={preset.label}
-                    className="h-full w-full object-cover"
-                  />
-                  <span className="absolute inset-x-0 bottom-0 bg-black/65 px-1 py-0.5 text-[9px] font-bold text-white truncate">
-                    {preset.label}
-                  </span>
-                </button>
-              ))}
+              {BACKGROUND_IMAGE_PRESETS.map((preset) => {
+                const label = tx(preset.labelVi, preset.labelEn);
+                return (
+                  <button
+                    key={preset.url}
+                    type="button"
+                    onClick={() => setBackgroundImageUrl(preset.url)}
+                    className={`group relative overflow-hidden rounded-xl border-2 aspect-video ${
+                      backgroundImageUrl === preset.url
+                        ? 'border-emerald-500 ring-2 ring-emerald-500/30'
+                        : 'border-transparent'
+                    }`}
+                  >
+                    <img
+                      src={preset.url}
+                      alt={label}
+                      className="h-full w-full object-cover"
+                    />
+                    <span className="absolute inset-x-0 bottom-0 bg-black/65 px-1 py-0.5 text-[9px] font-bold text-white truncate">
+                      {label}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="flex items-center gap-2">
@@ -596,12 +640,17 @@ export default function DashboardSettingsPage() {
                 type="text"
                 value={backgroundImageUrl}
                 onChange={(e) => setBackgroundImageUrl(e.target.value)}
-                placeholder="Dán link ảnh nền hoặc tải ảnh lên..."
+                placeholder={tx(
+                  'Dán link ảnh nền hoặc tải ảnh lên...',
+                  'Paste wallpaper URL or upload photo...'
+                )}
                 className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
               />
               <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500">
                 <Upload className="h-3.5 w-3.5" />
-                <span>{uploadingField === 'bg' ? '...' : 'Tải ảnh'}</span>
+                <span>
+                  {uploadingField === 'bg' ? '...' : tx('Tải ảnh', 'Upload')}
+                </span>
                 <input
                   type="file"
                   accept="image/*"
@@ -619,7 +668,11 @@ export default function DashboardSettingsPage() {
 
             <div className="flex items-center gap-3">
               <span className="text-[11px] font-bold text-slate-600 shrink-0">
-                Độ tối lớp phủ ({Math.round(backgroundOverlayOpacity * 100)}%)
+                {tx(
+                  'Độ tối lớp phủ ({pct}%)',
+                  'Overlay darkness ({pct}%)',
+                  { pct: Math.round(backgroundOverlayOpacity * 100) }
+                )}
               </span>
               <input
                 type="range"
@@ -639,7 +692,7 @@ export default function DashboardSettingsPage() {
         {/* Menu Item Layout Selector */}
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-2">
-            Bố cục hiển thị món trên Menu
+            {tx('Bố cục hiển thị món', 'Menu item layout')}
           </label>
           <div className="grid grid-cols-2 gap-3">
             <button
@@ -654,10 +707,10 @@ export default function DashboardSettingsPage() {
               <List className="h-4 w-4 shrink-0 text-emerald-600" />
               <div>
                 <span className="block text-xs font-extrabold">
-                  Danh sách ngang
+                  {tx('Danh sách ngang', 'Horizontal list')}
                 </span>
                 <span className="block text-[10px] text-slate-500">
-                  Gọn gàng, dễ chọn nhanh
+                  {tx('Gọn gàng, dễ chọn nhanh', 'Compact and easy to browse')}
                 </span>
               </div>
             </button>
@@ -674,10 +727,10 @@ export default function DashboardSettingsPage() {
               <LayoutGrid className="h-4 w-4 shrink-0 text-emerald-600" />
               <div>
                 <span className="block text-xs font-extrabold">
-                  Lưới ảnh 2 cột
+                  {tx('Lưới ảnh 2 cột', '2-column photo grid')}
                 </span>
                 <span className="block text-[10px] text-slate-500">
-                  Hình món to, bắt mắt
+                  {tx('Hình món to, bắt mắt', 'Large, visual item cards')}
                 </span>
               </div>
             </button>
@@ -690,11 +743,17 @@ export default function DashboardSettingsPage() {
             <div className="flex items-center gap-1.5 text-xs font-black text-amber-950">
               <Zap className="h-4 w-4 text-rose-600" />
               <span>
-                Muốn cài Giảm Giá Theo Món / Hóa Đơn, Flash Sale &amp; Banner?
+                {tx(
+                  'Muốn cài giảm giá, Flash Sale & Banner khuyến mãi?',
+                  'Want to set up discounts, Flash Sales & Promo Banners?'
+                )}
               </span>
             </div>
             <p className="text-[11px] text-amber-800">
-              Đã được chuyển sang mục <strong>Khuyến Mãi &amp; Flash Sale</strong> chuyên biệt để dễ quản lý hơn.
+              {tx(
+                'Quản lý tập trung tại mục Khuyến mãi & Giờ vàng.',
+                'Manage all offers in the Promotions & Flash Sale section.'
+              )}
             </p>
           </div>
           <Link
@@ -702,13 +761,15 @@ export default function DashboardSettingsPage() {
             className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-black text-white hover:bg-slate-800"
           >
             <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-            <span>Mở Khuyến Mãi &amp; Flash Sale</span>
+            <span>
+              {tx('Mở Khuyến mãi & Giờ vàng', 'Open Promotions & Flash Sale')}
+            </span>
             <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </div>
 
-      {/* NEW: Tài Khoản Ngân Hàng & Mã QR Thanh Toán (VietQR Tự Động / Ảnh QR Tùy Chỉnh) */}
+      {/* Bank Account & Payment QR */}
       <div
         id="payment-qr-settings"
         className="rounded-3xl border-2 border-emerald-500/30 bg-white p-5 shadow-2xs space-y-5"
@@ -720,10 +781,17 @@ export default function DashboardSettingsPage() {
             </div>
             <div>
               <h2 className="text-sm font-black text-slate-900">
-                💳 Tài Khoản Ngân Hàng &amp; Mã QR Thanh Toán Khi Thu Ngân / In Bill
+                💳{' '}
+                {tx(
+                  'Tài khoản ngân hàng & Mã QR thanh toán',
+                  'Bank Account & Payment QR Code'
+                )}
               </h2>
               <p className="text-[11px] text-slate-500">
-                Tự động tạo mã VietQR chuẩn xác theo số tiền từng đơn hàng hoặc tải ảnh mã QR sẵn có của quán
+                {tx(
+                  'Tự động tạo mã VietQR theo số tiền từng đơn hoặc tải ảnh QR sẵn có của quán',
+                  'Auto-generate VietQR with exact order amounts or upload your own QR image'
+                )}
               </p>
             </div>
           </div>
@@ -736,8 +804,11 @@ export default function DashboardSettingsPage() {
             }`}
           >
             {liveQrPreview.isConfigured
-              ? '✓ Đã cấu hình QR thanh toán'
-              : '⚠️ Đang dùng QR mẫu (Chưa nhập STK)'}
+              ? tx('✓ Đã cấu hình QR thanh toán', '✓ Payment QR configured')
+              : tx(
+                  'Chưa cài tài khoản ngân hàng',
+                  'No bank account set'
+                )}
           </span>
         </div>
 
@@ -747,7 +818,10 @@ export default function DashboardSettingsPage() {
             {/* Mode Switcher */}
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-2">
-                Phương thức tạo Mã QR Thanh Toán cho quán:
+                {tx(
+                  'Phương thức tạo mã QR thanh toán:',
+                  'Payment QR generation method:'
+                )}
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button
@@ -767,10 +841,16 @@ export default function DashboardSettingsPage() {
                   <Landmark className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                   <div>
                     <span className="block text-xs font-black">
-                      Tự động tạo VietQR theo Ngân hàng (Khuyên dùng)
+                      {tx(
+                        'VietQR tự động',
+                        'Automatic VietQR'
+                      )}
                     </span>
                     <span className="block text-[10px] text-slate-500 mt-0.5">
-                      Khách quét là tự điền đúng Số tiền đơn hàng &amp; Mã đơn
+                      {tx(
+                        'Khách quét tự điền đúng số tiền và mã đơn',
+                        'Pre-fills exact order amount and reference code'
+                      )}
                     </span>
                   </div>
                 </button>
@@ -792,10 +872,16 @@ export default function DashboardSettingsPage() {
                   <Upload className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                   <div>
                     <span className="block text-xs font-black">
-                      Tải ảnh Mã QR có sẵn của quán
+                      {tx(
+                        'Dùng ảnh QR',
+                        'Use a QR image'
+                      )}
                     </span>
                     <span className="block text-[10px] text-slate-500 mt-0.5">
-                      Dùng ảnh chụp QR ngân hàng, MoMo, ZaloPay tại quầy
+                      {tx(
+                        'Dùng ảnh chụp QR ngân hàng, MoMo, ZaloPay tại quầy',
+                        'Use your existing bank, MoMo, or ZaloPay QR image'
+                      )}
                     </span>
                   </div>
                 </button>
@@ -807,7 +893,7 @@ export default function DashboardSettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Ngân hàng nhận tiền *
+                      {tx('Ngân hàng nhận tiền *', 'Receiving bank *')}
                     </label>
                     <select
                       value={paymentConfig.bankId || 'MB'}
@@ -832,7 +918,7 @@ export default function DashboardSettingsPage() {
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Số tài khoản ngân hàng *
+                      {tx('Số tài khoản ngân hàng *', 'Bank account number *')}
                     </label>
                     <input
                       type="text"
@@ -843,7 +929,10 @@ export default function DashboardSettingsPage() {
                           accountNumber: e.target.value,
                         }))
                       }
-                      placeholder="VD: 0905123456 hoặc 19036888999"
+                      placeholder={tx(
+                        'VD: 0905123456 hoặc 19036888999',
+                        'e.g. 0905123456 or 19036888999'
+                      )}
                       className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-black text-emerald-700"
                     />
                   </div>
@@ -852,7 +941,10 @@ export default function DashboardSettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tên chủ tài khoản (Không dấu) *
+                      {tx(
+                        'Tên chủ tài khoản (không dấu) *',
+                        'Account holder name (no accents) *'
+                      )}
                     </label>
                     <input
                       type="text"
@@ -863,14 +955,17 @@ export default function DashboardSettingsPage() {
                           accountName: e.target.value.toUpperCase(),
                         }))
                       }
-                      placeholder="VD: NGUYEN VAN A"
+                      placeholder={tx('VD: NGUYEN VAN A', 'e.g. NGUYEN VAN A')}
                       className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold uppercase text-slate-900"
                     />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tiền tố nội dung chuyển khoản
+                      {tx(
+                        'Tiền tố nội dung chuyển khoản',
+                        'Transfer memo prefix'
+                      )}
                     </label>
                     <input
                       type="text"
@@ -881,27 +976,34 @@ export default function DashboardSettingsPage() {
                           transferPrefix: e.target.value.toUpperCase(),
                         }))
                       }
-                      placeholder="VD: QLAOK hoặc PHOHOIAN"
+                      placeholder={tx(
+                        'VD: QLAOK hoặc PHOHOIAN',
+                        'e.g. QLAOK or PHOHOIAN'
+                      )}
                       className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-mono font-bold text-slate-900"
                     />
                   </div>
                 </div>
 
                 <p className="text-[11px] text-slate-500">
-                  💡 Khi khách thanh toán đơn <strong>#DEMO88</strong> giá{' '}
-                  <strong>150.000đ</strong>, ứng dụng Ngân hàng của khách sẽ tự
-                  động điền đúng <strong>150.000đ</strong> và nội dung{' '}
+                  💡{' '}
+                  {tx(
+                    'Khi khách thanh toán đơn #DEMO88 giá 150.000đ, ứng dụng ngân hàng tự điền 150.000đ và nội dung:',
+                    'When paying order #DEMO88 (150,000đ), banking apps pre-fill 150,000đ and memo:'
+                  )}{' '}
                   <code className="rounded bg-white px-1.5 py-0.5 font-mono font-bold text-emerald-700">
                     {liveQrPreview.transferContent}
                   </code>
-                  .
                 </p>
               </div>
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3.5">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Tải lên hoặc dán link ảnh Mã QR của quán (Ngân hàng / MoMo / ZaloPay) *
+                    {tx(
+                      'Tải lên hoặc dán link ảnh mã QR của quán (Ngân hàng / MoMo / ZaloPay) *',
+                      'Upload or paste your QR image URL (Bank / MoMo / ZaloPay) *'
+                    )}
                   </label>
                   <div className="flex items-center gap-2">
                     <input
@@ -913,15 +1015,18 @@ export default function DashboardSettingsPage() {
                           customQrUrl: e.target.value,
                         }))
                       }
-                      placeholder="Dán link ảnh QR hoặc bấm nút Tải ảnh QR bên cạnh..."
+                      placeholder={tx(
+                        'Dán link ảnh QR hoặc bấm nút Tải ảnh QR...',
+                        'Paste QR image URL or click Upload QR...'
+                      )}
                       className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
                     />
                     <label className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500">
                       <Upload className="h-3.5 w-3.5" />
                       <span>
                         {uploadingField === 'custom_qr'
-                          ? 'Đang tải...'
-                          : 'Tải ảnh QR'}
+                          ? tx('Đang tải...', 'Uploading...')
+                          : tx('Tải ảnh QR', 'Upload QR')}
                       </span>
                       <input
                         type="file"
@@ -946,7 +1051,7 @@ export default function DashboardSettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tên Ngân hàng / Ví (Tùy chọn)
+                      {tx('Tên Ngân hàng / Ví', 'Bank / Wallet name')}
                     </label>
                     <input
                       type="text"
@@ -957,13 +1062,13 @@ export default function DashboardSettingsPage() {
                           bankName: e.target.value,
                         }))
                       }
-                      placeholder="VD: Vietcombank / MoMo"
+                      placeholder="Vietcombank / MoMo"
                       className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900"
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Số tài khoản / SĐT Ví
+                      {tx('Số tài khoản / SĐT Ví', 'Account / Wallet number')}
                     </label>
                     <input
                       type="text"
@@ -974,13 +1079,13 @@ export default function DashboardSettingsPage() {
                           accountNumber: e.target.value,
                         }))
                       }
-                      placeholder="VD: 0905123456"
+                      placeholder="0905123456"
                       className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-bold text-slate-900"
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Tên chủ tài khoản
+                      {tx('Tên chủ tài khoản', 'Account holder')}
                     </label>
                     <input
                       type="text"
@@ -991,7 +1096,7 @@ export default function DashboardSettingsPage() {
                           accountName: e.target.value.toUpperCase(),
                         }))
                       }
-                      placeholder="VD: NGUYEN VAN A"
+                      placeholder="NGUYEN VAN A"
                       className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold uppercase text-slate-900"
                     />
                   </div>
@@ -1004,13 +1109,16 @@ export default function DashboardSettingsPage() {
           <div className="lg:col-span-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center text-center space-y-2.5">
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase text-emerald-700">
               <CreditCard className="h-3 w-3" />
-              Xem trước Mã QR Thu Tiền &amp; In Hóa Đơn
+              {tx(
+                'Xem trước QR thu tiền & in hóa đơn',
+                'Payment & Receipt QR Preview'
+              )}
             </span>
 
             <div className="rounded-2xl border-2 border-emerald-500/40 bg-white p-3 shadow-sm">
               <img
                 src={liveQrPreview.qrImageUrl}
-                alt="Mã QR Thanh Toán"
+                alt={tx('Mã QR thanh toán', 'Payment QR')}
                 className="h-48 w-48 object-contain mx-auto"
               />
             </div>
@@ -1019,14 +1127,18 @@ export default function DashboardSettingsPage() {
               <p className="font-black text-slate-900">
                 {liveQrPreview.bankShortName} •{' '}
                 <span className="font-mono text-emerald-700">
-                  {liveQrPreview.accountNumber || 'Chưa nhập STK'}
+                  {liveQrPreview.accountNumber ||
+                    tx('Chưa nhập STK', 'No account set')}
                 </span>
               </p>
               <p className="text-[11px] font-bold text-slate-600 uppercase">
-                Chủ TK: {liveQrPreview.accountName}
+                {tx('Chủ TK:', 'Holder:')} {liveQrPreview.accountName}
               </p>
               <p className="text-[10px] text-slate-400">
-                (Bạn có thể mở App Ngân hàng quét thử mã bên trên ngay bây giờ)
+                {tx(
+                  '(Mở ứng dụng ngân hàng để quét thử ngay)',
+                  '(Scan with your banking app to test)'
+                )}
               </p>
             </div>
           </div>
@@ -1037,13 +1149,15 @@ export default function DashboardSettingsPage() {
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
         <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
           <Store className="h-4 w-4 text-emerald-600" />
-          <span>2. Thông Tin Quán, Logo &amp; Ảnh Bìa</span>
+          <span>
+            {tx('Hồ sơ quán', 'Store profile')}
+          </span>
         </h2>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Tên cửa hàng *
+              {tx('Tên cửa hàng *', 'Store name *')}
             </label>
             <input
               type="text"
@@ -1055,7 +1169,7 @@ export default function DashboardSettingsPage() {
 
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Đường dẫn QR (Slug) *
+              {tx('Đường dẫn QR (Slug) *', 'QR URL slug *')}
             </label>
             <input
               type="text"
@@ -1067,19 +1181,30 @@ export default function DashboardSettingsPage() {
 
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Loại hình kinh doanh
+              {tx('Loại hình kinh doanh', 'Business category')}
             </label>
             <select
               value={vertical}
               onChange={(e) => setVertical(e.target.value as BusinessVertical)}
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-900"
             >
-              <option value="fnb">🍜 Ẩm thực F&amp;B (Quán ăn, Cafe, Trà sữa)</option>
+              <option value="fnb">
+                {tx(
+                  '🍜 Ẩm thực F&B (Quán ăn, Cafe, Trà sữa)',
+                  '🍜 Food & Beverage (Restaurant, Cafe, Tea)'
+                )}
+              </option>
               <option value="service">
-                💆‍♀️ Dịch vụ (Tiệm Nail, Spa, Massage, Salon)
+                {tx(
+                  '💆‍♀️ Dịch vụ (Nail, Spa, Massage, Salon)',
+                  '💆‍♀️ Services (Nail, Spa, Massage, Salon)'
+                )}
               </option>
               <option value="retail">
-                🛍️ Bán lẻ (Đặc sản, Tạp hóa, Quà lưu niệm)
+                {tx(
+                  '🛍️ Bán lẻ (Đặc sản, Tạp hóa, Quà tặng)',
+                  '🛍️ Retail (Specialties, Grocery, Gifts)'
+                )}
               </option>
             </select>
           </div>
@@ -1088,7 +1213,7 @@ export default function DashboardSettingsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Câu giới thiệu ngắn (Tagline)
+              {tx('Câu giới thiệu ngắn', 'Short tagline')}
             </label>
             <input
               type="text"
@@ -1099,7 +1224,7 @@ export default function DashboardSettingsPage() {
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Mô tả chi tiết
+              {tx('Mô tả chi tiết', 'Store description')}
             </label>
             <input
               type="text"
@@ -1113,7 +1238,7 @@ export default function DashboardSettingsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Logo quán
+              {tx('Logo quán', 'Store logo')}
             </label>
             <div className="flex items-center gap-2.5">
               {logoUrl && (
@@ -1127,12 +1252,17 @@ export default function DashboardSettingsPage() {
                 type="text"
                 value={logoUrl}
                 onChange={(e) => setLogoUrl(e.target.value)}
-                placeholder="Dán link ảnh hoặc tải lên..."
+                placeholder={tx(
+                  'Dán link ảnh hoặc tải lên...',
+                  'Paste image URL or upload...'
+                )}
                 className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
               <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">
                 <Upload className="h-3.5 w-3.5" />
-                <span>{uploadingField === 'logo' ? '...' : 'Tải ảnh'}</span>
+                <span>
+                  {uploadingField === 'logo' ? '...' : tx('Tải ảnh', 'Upload')}
+                </span>
                 <input
                   type="file"
                   accept="image/*"
@@ -1151,7 +1281,7 @@ export default function DashboardSettingsPage() {
 
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Ảnh bìa đầu trang (Cover)
+              {tx('Ảnh bìa đầu trang', 'Cover photo')}
             </label>
             <div className="flex items-center gap-2.5">
               {coverUrl && (
@@ -1165,12 +1295,17 @@ export default function DashboardSettingsPage() {
                 type="text"
                 value={coverUrl}
                 onChange={(e) => setCoverUrl(e.target.value)}
-                placeholder="Dán link ảnh bìa hoặc tải lên..."
+                placeholder={tx(
+                  'Dán link ảnh bìa hoặc tải lên...',
+                  'Paste cover URL or upload...'
+                )}
                 className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
               <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">
                 <Upload className="h-3.5 w-3.5" />
-                <span>{uploadingField === 'cover' ? '...' : 'Tải ảnh'}</span>
+                <span>
+                  {uploadingField === 'cover' ? '...' : tx('Tải ảnh', 'Upload')}
+                </span>
                 <input
                   type="file"
                   accept="image/*"
@@ -1194,31 +1329,33 @@ export default function DashboardSettingsPage() {
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
           <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <Wifi className="h-4 w-4 text-emerald-600" />
-            <span>3. Wi-Fi &amp; 8 Ngôn Ngữ Phục Vụ Khách</span>
+            <span>
+              {tx('Wi-Fi & Ngôn ngữ', 'Wi-Fi & languages')}
+            </span>
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Tên Wi-Fi (SSID)
+                {tx('Tên Wi-Fi', 'Wi-Fi name')}
               </label>
               <input
                 type="text"
                 value={wifiSsid}
                 onChange={(e) => setWifiSsid(e.target.value)}
-                placeholder="VD: PhoHoiAn_Free5G"
+                placeholder="PhoHoiAn_Free5G"
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-900"
               />
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Mật khẩu Wi-Fi
+                {tx('Mật khẩu Wi-Fi', 'Wi-Fi password')}
               </label>
               <input
                 type="text"
                 value={wifiPassword}
                 onChange={(e) => setWifiPassword(e.target.value)}
-                placeholder="VD: 12345678"
+                placeholder="12345678"
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-mono font-bold text-slate-900"
               />
             </div>
@@ -1227,7 +1364,7 @@ export default function DashboardSettingsPage() {
           <div className="pt-2 border-t border-slate-100 space-y-2">
             <label className="block text-xs font-bold text-slate-700">
               <Languages className="inline h-3.5 w-3.5 mr-1 text-emerald-600" />
-              Ngôn ngữ hiển thị trên Menu QR:
+              {tx('Ngôn ngữ hiển thị trên thực đơn QR:', 'Languages enabled on QR menu:')}
             </label>
             <div className="flex flex-wrap gap-1.5">
               {ALL_LOCALES.map((loc) => {
@@ -1243,8 +1380,8 @@ export default function DashboardSettingsPage() {
                         : 'border-slate-200 bg-white text-slate-400'
                     }`}
                   >
-                    <FlagIcon locale={loc} className="h-3.5 w-5" />
-                    <span>{LOCALE_META[loc].label}</span>
+                    <FlagIcon locale={loc} title={appLanguageName(loc, locale)} className="h-3.5 w-5" />
+                    <span>{appLanguageName(loc, locale)}</span>
                   </button>
                 );
               })}
@@ -1255,13 +1392,15 @@ export default function DashboardSettingsPage() {
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
           <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <MapPin className="h-4 w-4 text-rose-500" />
-            <span>4. Địa Chỉ, Zalo &amp; Google Maps</span>
+            <span>
+              {tx('Liên hệ', 'Contact')}
+            </span>
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Địa chỉ cửa hàng
+                {tx('Địa chỉ cửa hàng', 'Street address')}
               </label>
               <input
                 type="text"
@@ -1272,7 +1411,7 @@ export default function DashboardSettingsPage() {
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Tỉnh / Thành phố
+                {tx('Tỉnh / Thành phố', 'Province / City')}
               </label>
               <select
                 value={city}
@@ -1291,7 +1430,7 @@ export default function DashboardSettingsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Điện thoại liên hệ
+                {tx('Điện thoại liên hệ', 'Contact phone')}
               </label>
               <input
                 type="text"
@@ -1302,7 +1441,7 @@ export default function DashboardSettingsPage() {
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Số Zalo nhận đơn
+                {tx('Số Zalo nhận đơn', 'Zalo phone for orders')}
               </label>
               <input
                 type="text"
@@ -1316,7 +1455,7 @@ export default function DashboardSettingsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Link Google Maps chỉ đường
+                {tx('Link Google Maps chỉ đường', 'Google Maps directions URL')}
               </label>
               <input
                 type="text"
@@ -1327,7 +1466,7 @@ export default function DashboardSettingsPage() {
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                Link Đánh giá 5⭐ Google Maps
+                {tx('Link đánh giá 5⭐ Google Maps', 'Google Maps 5⭐ review URL')}
               </label>
               <input
                 type="text"
@@ -1344,7 +1483,9 @@ export default function DashboardSettingsPage() {
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
         <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
           <Clock className="h-4 w-4 text-emerald-600" />
-          <span>5. Giờ Mở Cửa 7 Ngày Trong Tuần</span>
+          <span>
+            {tx('Giờ mở cửa', 'Opening hours')}
+          </span>
         </h2>
 
         <WeeklyOpeningHoursPicker
@@ -1353,14 +1494,17 @@ export default function DashboardSettingsPage() {
         />
       </div>
 
-      {/* Right Slide-Bar Live Smartphone Viewer */}
+      {/* Right Preview Sidebar Live Smartphone Viewer */}
       <RightPreviewSidebar
         shop={previewShop}
         items={shopItems}
         isOpen={isPreviewSidebarOpen}
         onToggle={togglePreviewSidebar}
         onOpenPopupPreview={() => setPreviewPopupOpen(true)}
-        subtitle="Xem trực tiếp màu sắc, nền, bố cục & thông tin quán"
+        subtitle={tx(
+          'Xem trực tiếp màu sắc, nền, bố cục & thông tin quán',
+          'Live preview of colors, background, layout & store info'
+        )}
       />
 
       {/* Interactive Popup Preview Modal */}

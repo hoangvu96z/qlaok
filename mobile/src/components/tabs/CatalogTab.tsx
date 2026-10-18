@@ -17,6 +17,7 @@ import {
   MobileShop,
 } from '../../lib/supabase';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
+import { useMobileI18n } from '../MobileI18nProvider';
 
 interface CatalogTabProps {
   activeShop: MobileShop | null;
@@ -39,6 +40,7 @@ export const CatalogTab = memo(function CatalogTab({
   canAdjustInventory = true,
   theme,
 }: CatalogTabProps) {
+  const { t } = useMobileI18n();
   // Local state isolated inside CatalogTab so typing never triggers re-renders on other tabs!
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
@@ -71,8 +73,8 @@ export const CatalogTab = memo(function CatalogTab({
       });
     } catch (error) {
       Alert.alert(
-        'Lỗi cập nhật',
-        error instanceof Error ? error.message : 'Vui lòng thử lại'
+        t('catalog.errUpdateTitle'),
+        error instanceof Error ? error.message : t('common.tryAgain')
       );
       onReloadShopData(activeShop?.id);
     }
@@ -102,8 +104,8 @@ export const CatalogTab = memo(function CatalogTab({
       });
     } catch (error) {
       Alert.alert(
-        'Không thể cập nhật giá',
-        error instanceof Error ? error.message : 'Vui lòng thử lại'
+        t('catalog.errPriceTitle'),
+        error instanceof Error ? error.message : t('common.tryAgain')
       );
       onReloadShopData(activeShop?.id);
     }
@@ -143,7 +145,10 @@ export const CatalogTab = memo(function CatalogTab({
         }),
       });
     } catch (error) {
-      Alert.alert('Không thể cập nhật tồn', error instanceof Error ? error.message : 'Vui lòng thử lại');
+      Alert.alert(
+        t('catalog.errStockTitle'),
+        error instanceof Error ? error.message : t('common.tryAgain')
+      );
       onReloadShopData(activeShop?.id);
     }
   };
@@ -155,7 +160,7 @@ export const CatalogTab = memo(function CatalogTab({
       selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id;
 
     if (!targetCatId) {
-      Alert.alert('Chưa có danh mục', 'Vui lòng tạo danh mục trước.');
+      Alert.alert(t('catalog.errNoCatTitle'), t('catalog.errNoCatDesc'));
       return;
     }
 
@@ -202,7 +207,10 @@ export const CatalogTab = memo(function CatalogTab({
         return;
       }
     } catch (error) {
-      Alert.alert('Không thể thêm món', error instanceof Error ? error.message : 'Vui lòng thử lại');
+      Alert.alert(
+        t('catalog.errAddItemTitle'),
+        error instanceof Error ? error.message : t('common.tryAgain')
+      );
     }
   };
 
@@ -216,7 +224,7 @@ export const CatalogTab = memo(function CatalogTab({
         ]}
       >
         <Text style={[styles.cardHeading, { color: theme.text }]}>
-          + Thêm nhanh món &amp; Số lượng tồn
+          {t('catalog.quickAddHeading')}
         </Text>
         <View style={styles.quickAddRow}>
           <TextInput
@@ -229,7 +237,7 @@ export const CatalogTab = memo(function CatalogTab({
                 color: theme.text,
               },
             ]}
-            placeholder="Tên món (VD: Phở tái)"
+            placeholder={t('catalog.namePlaceholder')}
             placeholderTextColor={theme.subText}
             value={newItemName}
             onChangeText={setNewItemName}
@@ -244,7 +252,7 @@ export const CatalogTab = memo(function CatalogTab({
                 color: theme.text,
               },
             ]}
-            placeholder="Giá (35000)"
+            placeholder={t('catalog.pricePlaceholder')}
             placeholderTextColor={theme.subText}
             keyboardType="numeric"
             value={newItemPrice}
@@ -260,14 +268,14 @@ export const CatalogTab = memo(function CatalogTab({
                 color: theme.text,
               },
             ]}
-            placeholder="Tồn (∞)"
+            placeholder={t('catalog.stockPlaceholder')}
             placeholderTextColor={theme.subText}
             keyboardType="numeric"
             value={newItemStock}
             onChangeText={setNewItemStock}
           />
           <TouchableOpacity style={styles.addBtn} onPress={handleQuickAddItem}>
-            <Text style={styles.addBtnText}>Thêm</Text>
+            <Text style={styles.addBtnText}>{t('catalog.addBtn')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -293,7 +301,7 @@ export const CatalogTab = memo(function CatalogTab({
               selectedCategoryId === 'all' && styles.catChipTextActive,
             ]}
           >
-            Tất cả ({items.length})
+            {t('catalog.filterAll', { count: items.length })}
           </Text>
         </TouchableOpacity>
         {categories.map((cat) => {
@@ -346,7 +354,10 @@ export const CatalogTab = memo(function CatalogTab({
                 {item.name_i18n?.vi}
               </Text>
               <Text style={[styles.itemSub, { color: theme.subText }]}>
-                EN: {item.name_i18n?.en || '—'} • Đã bán: {item.sold_count || 0}
+                {t('catalog.itemEnSold', {
+                  enName: item.name_i18n?.en || '—',
+                  sold: item.sold_count || 0,
+                })}
               </Text>
 
               {/* Price Row */}
@@ -391,7 +402,9 @@ export const CatalogTab = memo(function CatalogTab({
                     style={{ marginRight: 4 }}
                   />
                   <Text style={styles.stockBadgeText}>
-                    Tồn kho: {stock === null ? '∞' : stock}
+                    {t('catalog.stockLabel', {
+                      stock: stock === null ? '∞' : stock,
+                    })}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -444,7 +457,9 @@ export const CatalogTab = memo(function CatalogTab({
                   { color: item.is_available ? '#059669' : '#e11d48' },
                 ]}
               >
-                {item.is_available ? 'Còn món' : 'Hết hàng'}
+                {item.is_available
+                  ? t('catalog.statusInStock')
+                  : t('catalog.statusSoldOut')}
               </Text>
             </View>
           </View>

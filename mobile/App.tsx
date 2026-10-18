@@ -34,6 +34,11 @@ import { MobileThemePalette, styles } from './src/styles/mobileStyles';
 import { useShopRealtimeOrders } from './src/hooks/useShopRealtimeOrders';
 import { useTabNavigation } from './src/hooks/useTabNavigation';
 import { AuthScreen } from './src/components/AuthScreen';
+import {
+  MobileI18nProvider,
+  MobileLanguageSwitcher,
+  useMobileI18n,
+} from './src/components/MobileI18nProvider';
 import { ReceiptModal } from './src/components/ReceiptModal';
 import { OrderFilterType, OrdersTab } from './src/components/tabs/OrdersTab';
 import { OverviewTab } from './src/components/tabs/OverviewTab';
@@ -63,11 +68,22 @@ export default function App() {
     return () => { alive = false; subscription.unsubscribe(); appState.remove(); supabase.auth.stopAutoRefresh(); };
   }, []);
   if (!ready) return <SafeAreaView><ActivityIndicator /></SafeAreaView>;
-  if (!session) return <AuthScreen />;
-  return <Workspace key={session.user.id} userId={session.user.id} />;
+  return (
+    <MobileI18nProvider>
+      {!session ? (
+        <AuthScreen />
+      ) : (
+        <Workspace key={session.user.id} userId={session.user.id} />
+      )}
+    </MobileI18nProvider>
+  );
 }
 
 function Workspace({ userId }: { userId: string }) {
+  const { t } = useMobileI18n();
+  // Localized request errors must not make changing language reload shop data/drafts.
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const isLoggedIn = true;
   const loadGeneration = useRef(0);
   const scopeRef = useRef('');
@@ -436,8 +452,8 @@ function Workspace({ userId }: { userId: string }) {
       } catch (err) {
         if (generation !== loadGeneration.current) return;
         Alert.alert(
-          'Lỗi kết nối mạng',
-          err instanceof Error ? err.message : 'Không thể tải dữ liệu cửa hàng'
+          translateRef.current('alert.networkErrorTitle'),
+          err instanceof Error ? err.message : translateRef.current('alert.loadShopErrorDesc')
         );
       } finally {
         if (generation !== loadGeneration.current) return;
@@ -484,26 +500,26 @@ function Workspace({ userId }: { userId: string }) {
         });
         const { order } = await response.json();
         if (!order || order.id !== orderId || order.shop_id !== shopId) {
-          throw new Error('Máy chủ trả về đơn hàng không hợp lệ');
+          throw new Error(t('alert.invalidOrderResponse'));
         }
         if (scopeRef.current !== shopId || generation !== loadGeneration.current) return;
         setOrders((prev) => prev.map((o) => o.id === orderId ? order : o));
         if (payment_status === 'paid' && order.payment_status === 'paid') setPrintingOrder(order);
       } catch (error) {
-        if (scopeRef.current === shopId && generation === loadGeneration.current) setOrderError(error instanceof Error ? error.message : 'Không thể cập nhật đơn. Vui lòng thử lại');
+        if (scopeRef.current === shopId && generation === loadGeneration.current) setOrderError(error instanceof Error ? error.message : t('alert.updateOrderFailed'));
       } finally {
         pendingOrders.current.delete(orderId);
       }
     },
-    [activeShop, orders, setOrders]
+    [activeShop, orders, setOrders, t]
   );
 
   const handleSaveShopAndTheme = useCallback(async () => {
     if (!activeShop) return;
     if (!canManageSettings && !canManagePromotions) {
       Alert.alert(
-        'Không đủ quyền',
-        'Tài khoản hiện tại không có quyền thay đổi cài đặt hoặc khuyến mãi của quán.'
+        t('alert.permissionDeniedTitle'),
+        t('alert.permissionDeniedDesc')
       );
       return;
     }
@@ -538,14 +554,14 @@ function Workspace({ userId }: { userId: string }) {
         }),
       });
     } catch (error) {
-      Alert.alert('Lỗi lưu cài đặt', error instanceof Error ? error.message : 'Không thể lưu cài đặt');
+      Alert.alert(t('alert.saveErrorTitle'), error instanceof Error ? error.message : t('alert.saveErrorDesc'));
       return;
     }
 
     if (saveGeneration !== loadGeneration.current) return;
     Alert.alert(
-      'Đã lưu thành công',
-      'Giao diện, khuyến mãi, Flash Sale và cài đặt quán đã được áp dụng ngay!'
+      t('alert.saveSuccessTitle'),
+      t('alert.saveSuccessDesc')
     );
     loadShopsAndData(activeShop.id);
   }, [
@@ -564,6 +580,7 @@ function Workspace({ userId }: { userId: string }) {
     editWifiSsid,
     editWifiPass,
     loadShopsAndData,
+    t,
   ]);
 
   const theme: MobileThemePalette = useMemo(
@@ -593,7 +610,7 @@ function Workspace({ userId }: { userId: string }) {
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
       {orderError ? <Text accessibilityRole="alert" style={{ color: '#b91c1c', backgroundColor: '#fee2e2', padding: 12 }}>{orderError}</Text> : null}
 
-      {/* Top Header & Store Switcher + Realtime WS Indicator + Light/Dark Toggle */}
+      {/* Top Header & Store Switcher + Live Status Indicator + VI/EN Switcher + Light/Dark Toggle */}
       <View
         style={[
           styles.header,
@@ -612,7 +629,7 @@ function Workspace({ userId }: { userId: string }) {
                 style={[styles.headerTitle, { color: theme.text }]}
                 numberOfLines={1}
               >
-                {activeShop?.name || 'Qlaok mPOS'}
+                {activeShop?.name || t('shell.defaultShopName')}
               </Text>
               <View
                 style={{
@@ -631,15 +648,19 @@ function Workspace({ userId }: { userId: string }) {
                   style={[styles.headerSub, { color: theme.subText }]}
                   numberOfLines={1}
                 >
-                  {activeShop?.city || 'Đà Nẵng'} • 8 Ngôn Ngữ • mPOS
+                  {t('shell.headerSubtitle', {
+                    city: activeShop?.city || t('shell.defaultCity'),
+                  })}
                 </Text>
               </View>
             </View>
           </View>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {/* Supabase Realtime WebSocket Status Indicator */}
+            {/* Live Order Status Indicator */}
             <View
+              accessible
+              accessibilityLabel={realtimeStatus === 'connected' ? t('shell.statusLive') : t('shell.statusAuto')}
               style={[
                 styles.realtimeBadge,
                 {
@@ -661,21 +682,17 @@ function Workspace({ userId }: { userId: string }) {
                   },
                 ]}
               />
-              <Text
-                style={[
-                  styles.realtimeBadgeText,
-                  {
-                    color:
-                      realtimeStatus === 'connected' ? '#059669' : '#d97706',
-                  },
-                ]}
-              >
-                {realtimeStatus === 'connected' ? 'Realtime' : 'Sync'}
-              </Text>
             </View>
+
+            {/* Accessible VI / EN Switcher */}
+            <MobileLanguageSwitcher variant={isDarkMode ? 'dark' : 'compact'} />
 
             {/* Light / Dark Mode Button */}
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={
+                isDarkMode ? t('shell.themeLight') : t('shell.themeDark')
+              }
               style={[
                 styles.themeToggleBtn,
                 { backgroundColor: theme.subCard, borderColor: theme.border },
@@ -690,15 +707,15 @@ function Workspace({ userId }: { userId: string }) {
             </TouchableOpacity>
 
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('shell.logout')}
               style={[styles.logoutBtn, { backgroundColor: theme.subCard }]}
               onPress={async () => {
                 const { error } = await supabase.auth.signOut({ scope: 'local' });
-                if (error) Alert.alert('Không thể đăng xuất', error.message);
+                if (error) Alert.alert(t('shell.logoutErrorTitle'), error.message);
               }}
             >
-              <Text style={[styles.logoutBtnText, { color: theme.subText }]}>
-                Thoát
-              </Text>
+              <Ionicons name="log-out-outline" size={18} color={theme.subText} />
             </TouchableOpacity>
           </View>
         </View>
@@ -750,7 +767,7 @@ function Workspace({ userId }: { userId: string }) {
         </ScrollView>
       </View>
 
-      {/* REALTIME NEW ORDER PUSH NOTIFICATION BANNER ON MOBILE */}
+      {/* NEW ORDER NOTIFICATION BANNER ON MOBILE */}
       {liveOrderAlert && (
         <TouchableOpacity
           style={styles.liveAlertBanner}
@@ -769,7 +786,7 @@ function Workspace({ userId }: { userId: string }) {
                 style={{ marginRight: 4 }}
               />
               <Text style={styles.liveAlertBadge}>
-                KHÁCH VỪA GỬI ĐƠN MỚI TẠI BÀN!
+                {t('shell.liveOrderBadge')}
               </Text>
             </View>
             <Text style={styles.liveAlertTitle}>
@@ -778,7 +795,9 @@ function Workspace({ userId }: { userId: string }) {
             </Text>
           </View>
           <View style={styles.liveAlertCta}>
-            <Text style={styles.liveAlertCtaText}>Xem đơn</Text>
+            <Text style={styles.liveAlertCtaText}>
+              {t('shell.liveOrderViewCta')}
+            </Text>
           </View>
         </TouchableOpacity>
       )}
@@ -787,7 +806,7 @@ function Workspace({ userId }: { userId: string }) {
         <View style={styles.centerBox}>
           <ActivityIndicator size="large" color="#10b981" />
           <Text style={[styles.loadingText, { color: theme.subText }]}>
-            Đang tải dữ liệu cửa hàng &amp; kết nối Realtime mPOS...
+            {t('shell.loadingStore')}
           </Text>
         </View>
       ) : (
@@ -969,7 +988,7 @@ function Workspace({ userId }: { userId: string }) {
               activeTab === 'orders' && styles.navTabTextActive,
             ]}
           >
-            Đơn ({newOrdersCount})
+            {t('nav.orders', { count: newOrdersCount })}
           </Text>
         </TouchableOpacity>
 
@@ -992,7 +1011,7 @@ function Workspace({ userId }: { userId: string }) {
                 activeTab === 'overview' && styles.navTabTextActive,
               ]}
             >
-              Doanh thu
+              {t('nav.overview')}
             </Text>
           </TouchableOpacity>
         )}
@@ -1016,7 +1035,7 @@ function Workspace({ userId }: { userId: string }) {
                 activeTab === 'catalog' && styles.navTabTextActive,
               ]}
             >
-              Kho ({items.length})
+              {t('nav.catalog', { count: items.length })}
             </Text>
           </TouchableOpacity>
         )}
@@ -1041,7 +1060,7 @@ function Workspace({ userId }: { userId: string }) {
                 },
               ]}
             >
-              Khuyến mãi
+              {t('nav.promotions')}
             </Text>
           </TouchableOpacity>
         )}
@@ -1067,7 +1086,7 @@ function Workspace({ userId }: { userId: string }) {
                 activeTab === 'settings' && styles.navTabTextActive,
               ]}
             >
-              Giao diện
+              {t('nav.settings')}
             </Text>
           </TouchableOpacity>
         )}

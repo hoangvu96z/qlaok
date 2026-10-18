@@ -9,8 +9,10 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '../lib/supabase';
 import { styles } from '../styles/mobileStyles';
+import { MobileLanguageSwitcher, useMobileI18n } from './MobileI18nProvider';
 
 export const AuthScreen = memo(function AuthScreen() {
+  const { t } = useMobileI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
@@ -29,9 +31,7 @@ export const AuthScreen = memo(function AuthScreen() {
       }
     } catch (err) {
       setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Vui lòng kiểm tra lại email/mật khẩu'
+        err instanceof Error ? err.message : t('auth.errorFallback')
       );
     } finally {
       setAuthLoading(false);
@@ -42,19 +42,25 @@ export const AuthScreen = memo(function AuthScreen() {
     <SafeAreaView style={styles.authContainer}>
       <StatusBar style="light" />
       <View style={styles.authCard}>
+        <View
+          style={{
+            flexDirection: 'row',
+            justifyContent: 'flex-end',
+            marginBottom: 8,
+          }}
+        >
+          <MobileLanguageSwitcher variant="dark" />
+        </View>
         <View style={styles.logoBadge}>
           <Text style={styles.logoText}>Q</Text>
         </View>
-        <Text style={styles.authTitle}>Qlaok mPOS Mobile</Text>
-        <Text style={styles.authSubtitle}>
-          Ứng dụng Chủ quán &amp; Thu ngân nhận đơn QR tại bàn, quản lý khuyến
-          mãi, Flash Sale &amp; doanh thu trực tiếp
-        </Text>
+        <Text style={styles.authTitle}>{t('auth.title')}</Text>
+        <Text style={styles.authSubtitle}>{t('auth.subtitle')}</Text>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Email Chủ quán</Text>
+          <Text style={styles.label}>{t('auth.emailLabel')}</Text>
           <TextInput
-            accessibilityLabel="Email Chủ quán"
+            accessibilityLabel={t('auth.emailLabel')}
             autoComplete="email"
             style={styles.authInput}
             value={email}
@@ -65,9 +71,9 @@ export const AuthScreen = memo(function AuthScreen() {
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Mật khẩu</Text>
+          <Text style={styles.label}>{t('auth.passwordLabel')}</Text>
           <TextInput
-            accessibilityLabel="Mật khẩu"
+            accessibilityLabel={t('auth.passwordLabel')}
             autoComplete="current-password"
             style={styles.authInput}
             value={password}
@@ -84,7 +90,7 @@ export const AuthScreen = memo(function AuthScreen() {
           disabled={authLoading}
         >
           <Text style={styles.primaryAuthBtnText}>
-            {authLoading ? 'Đang đăng nhập...' : 'Đăng nhập Quản lý Quán'}
+            {authLoading ? t('auth.submitting') : t('auth.submit')}
           </Text>
         </TouchableOpacity>
       </View>

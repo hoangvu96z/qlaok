@@ -17,7 +17,7 @@ export function FlagIcon({
   return (
     <img
       src={meta.flagSrc}
-      alt={meta.label}
+      alt={title || meta.label}
       title={title || meta.label}
       className={`inline-block shrink-0 rounded-[3px] object-cover shadow-2xs ring-1 ring-black/10 ${className}`}
     />
