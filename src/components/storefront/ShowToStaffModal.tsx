@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { startOrderLiveSync } from '@/lib/order-live-sync';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   X,
@@ -235,52 +236,46 @@ export function ShowToStaffModal({
     }
   }, [isOpen, cart.length, activeOrderProp, editingOrder, initialTableLabel]);
 
-  // Poll live order status when an order has been submitted
-  useEffect(() => {
-    if (!activeOrder) return;
-    const poll = async () => {
-      try {
-        const tokenParam = activeOrder.tracking_token
-          ? `&trackingToken=${encodeURIComponent(activeOrder.tracking_token)}`
-          : '';
-        const res = await fetch(
-          `/api/orders?orderId=${encodeURIComponent(activeOrder.id)}${tokenParam}`,
-          { cache: 'no-store' }
-        );
-        if (res.ok) {
-          const data = await res.json();
-          if (data.order) {
-            setActiveOrder((prev) => ({
-              ...data.order,
-              tracking_token: data.order.tracking_token || prev?.tracking_token,
-            }));
-            onOrderCreated?.({
-              ...data.order,
-              tracking_token:
-                data.order.tracking_token || activeOrder.tracking_token,
-            });
-          }
-        }
-      } catch {
-        // ignore network hiccup
-      }
-    };
-    const timer = setInterval(poll, 3500);
-    return () => clearInterval(timer);
-  }, [activeOrder, onOrderCreated]);
+  const onOrderCreatedRef = useRef(onOrderCreated);
+  onOrderCreatedRef.current = onOrderCreated;
+  const trackingFinished = activeOrder?.status === 'cancelled' ||
+    activeOrder?.payment_status === 'refunded' ||
+    (activeOrder?.status === 'completed' && activeOrder?.payment_status === 'paid');
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !('BroadcastChannel' in window) || !activeOrder) {
-      return;
-    }
-    const bc = new BroadcastChannel('qlaok_realtime_sync');
-    bc.onmessage = (ev) => {
-      if (ev.data?.type === 'order_updated' && ev.data?.order?.id === activeOrder.id) {
-        setActiveOrder(ev.data.order);
-      }
+    const orderId = activeOrder?.id;
+    const token = activeOrder?.tracking_token;
+    if (!isOpen || !orderId || !token || trackingFinished) return;
+    let disposed = false;
+    let busy = false;
+    let queued = false;
+    const request = new AbortController();
+    const refresh = async (): Promise<void> => {
+      if (disposed) return;
+      if (busy) { queued = true; return; }
+      busy = true;
+      try {
+        const res = await fetch(`/api/orders?orderId=${encodeURIComponent(orderId)}`, {
+          cache: 'no-store', headers: { 'x-tracking-token': token }, signal: request.signal,
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (disposed || !data.order || data.order.id !== orderId) return;
+        const updated = { ...data.order, tracking_token: data.order.tracking_token || token };
+        setActiveOrder(updated);
+        onOrderCreatedRef.current?.(updated);
+      } catch { /* preserve the last known status on transient failures */ }
+      finally { busy = false; if (queued && !disposed) { queued = false; void refresh(); } }
     };
-    return () => bc.close();
-  }, [activeOrder]);
+    void refresh();
+    const stop = startOrderLiveSync({
+      query: new URLSearchParams({ orderId }).toString(),
+      headers: () => ({ 'x-tracking-token': token }),
+      onChange: () => { void refresh(); },
+    });
+    return () => { disposed = true; request.abort(); stop(); };
+  }, [isOpen, activeOrder?.id, activeOrder?.tracking_token, trackingFinished]);
+
 
   const subtotal = cart.reduce((sum, entry) => {
     const extraTotal = entry.selectedChoices.reduce(

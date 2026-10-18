@@ -72,6 +72,12 @@ export function useShopRealtimeOrders({
     scopeRef.current = { shopId, isLoggedIn, generation: scopeRef.current.generation + 1 };
   }
   const requestId = useRef(0);
+  const needsSyncRef = useRef(false);
+  const [appActive, setAppActive] = useState(AppState.currentState !== 'background' && AppState.currentState !== 'inactive');
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', state => setAppActive(state === 'active'));
+    return () => listener.remove();
+  }, []);
   useEffect(() => () => { scopeRef.current = { ...scopeRef.current, generation: scopeRef.current.generation + 1 }; }, []);
 
   const fetchOrdersFromApi = useCallback(
@@ -84,12 +90,14 @@ export function useShopRealtimeOrders({
         const data = await res.json();
         if (scope !== scopeRef.current || request !== requestId.current) return;
         if (!Array.isArray(data.orders)) throw new Error('Danh sách đơn không hợp lệ');
+        needsSyncRef.current = false;
         notifyIfBrandNewOrder(data.orders);
         setOrders(data.orders);
         if (Array.isArray(data.items)) onItemsSyncedRef.current?.(data.items);
         if (data.membership) onMembershipSyncedRef.current?.(data.membership as MobileShopMembership);
       } catch {
         if (scope !== scopeRef.current || request !== requestId.current) return;
+        needsSyncRef.current = true;
         setRealtimeStatus('fallback');
         // Never read public theme_config.recent_orders after a failed authenticated request,
         // and preserve previously loaded orders in memory rather than wiping the screen on transient network hiccup.
@@ -108,11 +116,13 @@ export function useShopRealtimeOrders({
 
   // Subscribe to Supabase Realtime Postgres Changes via WebSocket
   useEffect(() => {
-    if (!isLoggedIn || !shopId) return;
+    if (!isLoggedIn || !shopId || !appActive) return;
 
     setRealtimeStatus('connecting');
 
     let disposed = false;
+    let connected = false;
+    let changeTimer: ReturnType<typeof setTimeout> | undefined;
     const channel = supabase
       .channel(`qlaok-orders-ws-${shopId}`)
       .on(
@@ -123,17 +133,23 @@ export function useShopRealtimeOrders({
           table: 'orders',
           filter: `shop_id=eq.${shopId}`,
         },
-        () => { void fetchOrdersFromApi(shopId, true); }
+        () => {
+          if (disposed || changeTimer) return;
+          changeTimer = setTimeout(() => { changeTimer = undefined; if (!disposed) void fetchOrdersFromApi(shopId, true); }, 200);
+        }
       )
       .subscribe((status) => {
         if (disposed) return;
         if (status === 'SUBSCRIBED') {
+          connected = true;
           setRealtimeStatus('connected');
+          void fetchOrdersFromApi(shopId, true);
         } else if (
           status === 'CHANNEL_ERROR' ||
           status === 'TIMED_OUT' ||
           status === 'CLOSED'
         ) {
+          connected = false;
           setRealtimeStatus('fallback');
         }
       });
@@ -151,7 +167,7 @@ export function useShopRealtimeOrders({
 
     // Lightweight safety fallback sync only every 30s (instead of 3.5s HTTP polling)
     const safetyInterval = setInterval(() => {
-      fetchOrdersFromApi(shopId, true);
+      if ((!connected || needsSyncRef.current) && !disposed) void fetchOrdersFromApi(shopId, true);
     }, 30000);
 
     return () => {
@@ -159,8 +175,9 @@ export function useShopRealtimeOrders({
       supabase.removeChannel(channel);
       appStateSub.remove();
       clearInterval(safetyInterval);
+      clearTimeout(changeTimer);
     };
-  }, [isLoggedIn, shopId, fetchOrdersFromApi, notifyIfBrandNewOrder]);
+  }, [isLoggedIn, shopId, appActive, fetchOrdersFromApi, notifyIfBrandNewOrder]);
 
   return {
     orders,

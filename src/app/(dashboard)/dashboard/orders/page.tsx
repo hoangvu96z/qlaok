@@ -21,6 +21,8 @@ import {
   Monitor,
   Edit3,
 } from 'lucide-react';
+import { startOrderLiveSync, type OrderLiveStatus } from '@/lib/order-live-sync';
+import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
   CatalogItem,
@@ -62,6 +64,12 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 
 export default function CounterOrdersPage() {
   const { activeShop } = useDashboard();
+  const [liveStatus, setLiveStatus] = useState<OrderLiveStatus>('connecting');
+  const scopeRef = useRef({ shopId: activeShop?.id });
+  if (scopeRef.current.shopId !== activeShop?.id) scopeRef.current = { shopId: activeShop?.id };
+  const inFlight = useRef<{ scope: object; again: boolean; catalog: boolean } | null>(null);
+  const disposedRef = useRef(false);
+  useEffect(() => { disposedRef.current = false; return () => { disposedRef.current = true; }; }, []);
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [membership, setMembership] = useState<ShopMembership | null>(null);
   const [catalogCategories, setCatalogCategories] = useState<Category[]>([]);
@@ -144,22 +152,34 @@ export default function CounterOrdersPage() {
   };
 
   const fetchOrdersAndCatalog = useCallback(
-    async (silent = false) => {
-      if (!activeShop) return;
+    async function refresh(silent = false): Promise<void> {
+      if (!activeShop || disposedRef.current) return;
+      if (inFlight.current?.scope === scopeRef.current) {
+        inFlight.current.again = true;
+        inFlight.current.catalog ||= !silent;
+        return;
+      }
+      const shopId = activeShop.id;
+      const scope = scopeRef.current;
+      const request = { scope, again: false, catalog: false };
+      inFlight.current = request;
       if (!silent) setLoading(true);
       try {
         const [ordersRes, catRes] = await Promise.all([
           fetch(`/api/orders?shopId=${encodeURIComponent(activeShop.id)}`, {
-            cache: 'no-store',
+            cache: 'no-store', headers: getAuthHeaders(),
           }),
-          fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {
-            cache: 'no-store',
+          silent ? Promise.resolve(null) : fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {
+            cache: 'no-store', headers: getAuthHeaders(),
           }),
         ]);
 
+        if (disposedRef.current || scopeRef.current !== scope) return;
         if (ordersRes.ok) {
           const data = await ordersRes.json();
+          if (disposedRef.current || scopeRef.current !== scope) return;
           const fetchedOrders: ShopOrder[] = data.orders || [];
+          if (Array.isArray(data.items)) setCatalogItems(data.items);
           if (data.membership) {
             setMembership(data.membership as ShopMembership);
           }
@@ -207,15 +227,18 @@ export default function CounterOrdersPage() {
           setOrders(fetchedOrders);
         }
 
-        if (catRes.ok) {
+        if (catRes?.ok) {
           const catData = await catRes.json();
+          if (disposedRef.current || scopeRef.current !== scope) return;
           setCatalogCategories(catData.categories || []);
           setCatalogItems(catData.items || []);
         }
       } catch (err) {
         console.error('Failed to fetch mPOS orders:', err);
       } finally {
-        if (!silent) setLoading(false);
+        if (inFlight.current === request) inFlight.current = null;
+        if (!disposedRef.current && scopeRef.current === scope && request.again) queueMicrotask(() => { void refresh(!request.catalog); });
+        if (!silent && !disposedRef.current && scopeRef.current === scope) setLoading(false);
       }
     },
     [activeShop]
@@ -223,7 +246,10 @@ export default function CounterOrdersPage() {
 
   useEffect(() => {
     isFirstLoadRef.current = true;
-    fetchOrdersAndCatalog(false);
+    knownOrderIdsRef.current = new Set();
+    setOrders([]); setCatalogItems([]); setCatalogCategories([]); setMembership(null);
+    if (!activeShop?.id) return;
+    void fetchOrdersAndCatalog(false);
 
     let bc: BroadcastChannel | null = null;
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -254,17 +280,20 @@ export default function CounterOrdersPage() {
             });
           }
         }
-        fetchOrdersAndCatalog(true);
+        if (ev.data?.shopId === activeShop.id && document.visibilityState !== 'hidden') void fetchOrdersAndCatalog(true);
       };
     }
 
-    const interval = setInterval(() => {
-      fetchOrdersAndCatalog(true);
-    }, 3000);
+    const stopSync = startOrderLiveSync({
+      query: new URLSearchParams({ shopId: activeShop.id }).toString(),
+      headers: getAuthHeaders,
+      onChange: () => { void fetchOrdersAndCatalog(true); },
+      onStatus: setLiveStatus,
+    });
 
     return () => {
       if (bc) bc.close();
-      clearInterval(interval);
+      stopSync();
     };
   }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name]);
 
@@ -567,6 +596,9 @@ export default function CounterOrdersPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <span role="status" className="text-xs font-semibold text-slate-500">
+              {liveStatus === 'connected' ? '● Trực tiếp' : liveStatus === 'unauthorized' ? 'Phiên đăng nhập cần kiểm tra lại' : 'Đồng bộ dự phòng'}
+            </span>
             {workspaceMode === 'kitchen_orders' && (
               <button
                 type="button"

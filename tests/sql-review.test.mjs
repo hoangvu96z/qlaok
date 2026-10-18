@@ -12,6 +12,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       CREATE SCHEMA auth;
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
       $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;`);
+    await db.exec('CREATE PUBLICATION supabase_realtime');
     const migrations = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();
     for (const file of migrations) {
       if (file === '002z_reconcile_legacy_bank_refs.sql') {
@@ -24,6 +25,8 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
     const repaired = (await db.query("SELECT id,amount,status,bank_ref_id FROM payment_transactions ORDER BY id")).rows;
+    await db.exec(fs.readFileSync('supabase/migrations/006_orders_realtime_publication.sql', 'utf8'));
+    assert.equal((await db.query("SELECT * FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='orders'")).rows.length, 1, 'orders publication membership is idempotent');
     assert.deepEqual(repaired.map(r => [r.id, Number(r.amount), r.status, r.bank_ref_id]), [
       ['legacy-a',100000,'completed','FT2628799999'], ['legacy-b',200000,'completed',null],
     ]);

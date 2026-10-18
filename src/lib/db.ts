@@ -657,13 +657,10 @@ export async function dbGetShopCatalog(shopId?: string) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { data: shops } = await sb
-    .from('shops')
-    .select('*')
-    .order('created_at', { ascending: true });
-
-  const shop =
-    (shops || []).find((s) => s.id === shopId) || (shops?.[0] as Shop);
+  let shopQuery = sb.from('shops').select('*').order('created_at', { ascending: true });
+  if (shopId) shopQuery = shopQuery.eq('id', shopId);
+  const { data: shops } = await shopQuery.limit(1);
+  const shop = shops?.[0] as Shop | undefined;
 
   if (!shop) {
     return {
