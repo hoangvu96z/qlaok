@@ -39,6 +39,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Prepare backend secret for SSH transfer
+        env:
+          BACKEND_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const key = (process.env.BACKEND_KEY || '').trim();
+          if (!key || /\s/.test(key) || key.startsWith('sb_publishable_')) {
+            throw new Error('Add a backend key to the SUPABASE_SERVICE_ROLE_KEY repository secret.');
+          }
+          const encoded = Buffer.from(key).toString('base64');
+          console.log('::add-mask::' + encoded);
+          fs.appendFileSync(process.env.GITHUB_ENV, 'QLAOK_SUPABASE_KEY_B64=' + encoded + '\n');
+          NODE
       - name: 📥 Pull latest code & rebuild on VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -47,6 +61,7 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          envs: QLAOK_SUPABASE_KEY_B64
           script: |
             set -e
             cd /var/www/qlaok.vunph.click
@@ -56,6 +71,8 @@ jobs:
             echo "📥 Pulling latest changes from GitHub..."
             git fetch origin main
             git reset --hard ${{ github.sha }}
+            node scripts/configure-backend-env.mjs
+            export SUPABASE_SERVICE_ROLE_KEY="$(printf '%s' "$QLAOK_SUPABASE_KEY_B64" | base64 --decode)"
             if [ -d "/tmp/qlaok_local_db_backup" ]; then
               mkdir -p .local-db
               cp -r /tmp/qlaok_local_db_backup/* .local-db/ 2>/dev/null || true
