@@ -432,7 +432,16 @@ export default function CounterOrdersPage() {
   const canRefundOrder =
     !membership || membership.permissions.includes('payment.refund');
 
-  if (!activeShop) return null;
+  if (!activeShop) {
+    return (
+      <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs">
+        <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-sm font-bold text-slate-800">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
 
   const newOrders = orders.filter((o) => o.status === 'new');
   const preparingOrders = orders.filter((o) => o.status === 'preparing');
@@ -666,7 +675,9 @@ export default function CounterOrdersPage() {
               title={t('common.refresh')}
               aria-label={t('common.refresh')}
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw
+                className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`}
+              />
             </button>
           </div>
         </div>
@@ -700,29 +711,51 @@ export default function CounterOrdersPage() {
 
       {/* MODE 1: DEDICATED SPLIT-SCREEN COUNTER POS TERMINAL */}
       {workspaceMode === 'pos_terminal' ? (
-        <PosCounterWorkspace
-          shop={activeShop}
-          categories={catalogCategories}
-          items={catalogItems}
-          orders={orders}
-          editingOrder={editingOrder}
-          onCancelEditOrder={() => setEditingOrder(null)}
-          autoPrintOnPay={autoPrintOnPay}
-          onPrintOrder={(ord) => setPrintingOrder(ord)}
-          onUpdateOrder={(id, up) => handleUpdateOrder(id, up)}
-          onOrderCreated={async (createdOrder, shouldPrint) => {
-            setEditingOrder(null);
-            await fetchOrdersAndCatalog(true);
-            if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-              const bc = new BroadcastChannel('qlaok_realtime_sync');
-              bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
-              bc.close();
-            }
-            if (shouldPrint) {
-              setPrintingOrder(createdOrder);
-            }
-          }}
-        />
+        loading && catalogItems.length === 0 ? (
+          <div
+            role="status"
+            data-testid="pos-loading-state"
+            className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3 shadow-2xs"
+          >
+            <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+            <p className="text-sm font-bold text-slate-800">
+              {tx(
+                'Đang tải dữ liệu thực đơn & bàn quầy POS...',
+                'Loading POS menu & table data...'
+              )}
+            </p>
+            <p className="text-xs text-slate-500">
+              {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
+            </p>
+          </div>
+        ) : (
+          <PosCounterWorkspace
+            shop={activeShop}
+            categories={catalogCategories}
+            items={catalogItems}
+            orders={orders}
+            editingOrder={editingOrder}
+            onCancelEditOrder={() => setEditingOrder(null)}
+            autoPrintOnPay={autoPrintOnPay}
+            onPrintOrder={(ord) => setPrintingOrder(ord)}
+            onUpdateOrder={(id, up) => handleUpdateOrder(id, up)}
+            onOrderCreated={async (createdOrder, shouldPrint) => {
+              setEditingOrder(null);
+              await fetchOrdersAndCatalog(true);
+              if (
+                typeof window !== 'undefined' &&
+                'BroadcastChannel' in window
+              ) {
+                const bc = new BroadcastChannel('qlaok_realtime_sync');
+                bc.postMessage({ type: 'order_updated', shopId: activeShop.id });
+                bc.close();
+              }
+              if (shouldPrint) {
+                setPrintingOrder(createdOrder);
+              }
+            }}
+          />
+        )
       ) : (
         <>
           {/* 4 Live Counter KPI Cards */}
@@ -863,8 +896,21 @@ export default function CounterOrdersPage() {
 
           {/* Orders Grid */}
           {loading ? (
-            <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center text-xs font-semibold text-slate-500">
-              {t('common.loading')}
+            <div
+              role="status"
+              data-testid="orders-loading-state"
+              className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3 shadow-2xs"
+            >
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+              <p className="text-sm font-bold text-slate-800">
+                {tx(
+                  'Đang tải dữ liệu đơn hàng...',
+                  'Loading orders data...'
+                )}
+              </p>
+              <p className="text-xs text-slate-500">
+                {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
+              </p>
             </div>
           ) : filteredOrders.length === 0 ? (
             <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3">

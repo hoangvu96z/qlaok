@@ -22,6 +22,7 @@ export default function DashboardBillingPage() {
   const { profile, refreshDashboard } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
+  const [loadingBilling, setLoadingBilling] = useState(true);
   const [activeOrder, setActiveOrder] = useState<PaymentTransaction | null>(
     null
   );
@@ -31,15 +32,22 @@ export default function DashboardBillingPage() {
   const getPlanCopy = (tier: PlanTier) => localizedPlanCopy(tier, locale);
 
   const loadBilling = async () => {
-    const query = profile?.id
-      ? `?ownerId=${encodeURIComponent(profile.id)}`
-      : '';
-    const res = await fetch(`/api/webhooks/payment${query}`, {
-      headers: getAuthHeaders(),
-      cache: 'no-store',
-    });
-    const data = await res.json();
-    setTransactions(data.transactions || []);
+    setLoadingBilling(true);
+    try {
+      const query = profile?.id
+        ? `?ownerId=${encodeURIComponent(profile.id)}`
+        : '';
+      const res = await fetch(`/api/webhooks/payment${query}`, {
+        headers: getAuthHeaders(),
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      setTransactions(data.transactions || []);
+    } catch {
+      // ignore network error
+    } finally {
+      setLoadingBilling(false);
+    }
   };
 
   useEffect(() => {
@@ -367,35 +375,63 @@ export default function DashboardBillingPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {transactions.map((item) => (
-                <tr key={item.id}>
-                  <td className="py-2.5 font-mono font-bold text-slate-900">
-                    {item.order_code}
-                  </td>
-                  <td className="py-2.5 uppercase font-bold text-slate-700">
-                    {item.target_plan}
-                  </td>
-                  <td className="py-2.5 font-bold text-slate-900">
-                    {formatCurrency(item.amount)}
-                  </td>
-                  <td className="py-2.5">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
-                        item.status === 'completed'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {item.status === 'completed'
-                        ? tx('Thành công', 'Completed')
-                        : tx('Đang chờ', 'Pending')}
-                    </span>
-                  </td>
-                  <td className="py-2.5 font-mono text-slate-500">
-                    {item.bank_ref_id || '—'}
+              {loadingBilling ? (
+                <tr data-testid="billing-loading-state">
+                  <td colSpan={5} className="py-8 text-center">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
+                      <span className="text-xs font-bold text-slate-600">
+                        {tx(
+                          'Đang tải dữ liệu lịch sử giao dịch...',
+                          'Loading transaction history data...'
+                        )}
+                      </span>
+                    </div>
                   </td>
                 </tr>
-              ))}
+              ) : transactions.length === 0 ? (
+                <tr data-testid="billing-empty-state">
+                  <td
+                    colSpan={5}
+                    className="py-6 text-center text-xs font-semibold text-slate-400"
+                  >
+                    {tx(
+                      'Chưa có giao dịch nâng cấp gói nào.',
+                      'No plan upgrade transactions yet.'
+                    )}
+                  </td>
+                </tr>
+              ) : (
+                transactions.map((item) => (
+                  <tr key={item.id}>
+                    <td className="py-2.5 font-mono font-bold text-slate-900">
+                      {item.order_code}
+                    </td>
+                    <td className="py-2.5 uppercase font-bold text-slate-700">
+                      {item.target_plan}
+                    </td>
+                    <td className="py-2.5 font-bold text-slate-900">
+                      {formatCurrency(item.amount)}
+                    </td>
+                    <td className="py-2.5">
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
+                          item.status === 'completed'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {item.status === 'completed'
+                          ? tx('Thành công', 'Completed')
+                          : tx('Đang chờ', 'Pending')}
+                      </span>
+                    </td>
+                    <td className="py-2.5 font-mono text-slate-500">
+                      {item.bank_ref_id || '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

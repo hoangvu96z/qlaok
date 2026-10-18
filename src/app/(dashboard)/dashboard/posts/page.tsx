@@ -23,6 +23,7 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { getAuthHeaders } from '@/lib/auth-session';
 import {
   CatalogItem,
   I18nText,
@@ -72,6 +73,7 @@ export default function DashboardPostsPage() {
 
   const [studioTab, setStudioTab] = useState<StudioTab>('discount_banner');
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
+  const [loadingData, setLoadingData] = useState(true);
   const [savingPromo, setSavingPromo] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
@@ -162,6 +164,7 @@ export default function DashboardPostsPage() {
   const loadPosts = useCallback(async () => {
     if (!activeShop) return;
     const res = await fetch(`/api/posts?shopId=${activeShop.id}`, {
+      headers: getAuthHeaders(),
       cache: 'no-store',
     });
     const data = await res.json();
@@ -170,29 +173,36 @@ export default function DashboardPostsPage() {
 
   useEffect(() => {
     if (!activeShop) return;
-    loadPosts();
-
-    fetch(`/api/catalog?shopId=${activeShop.id}`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data) => {
-        const fetchedItems: CatalogItem[] = Array.isArray(data.items)
-          ? data.items
-          : [];
-        setShopItems(fetchedItems);
-
-        // Pre-populate Flash Sale items with first 3 items if empty
-        const existingFs = activeShop.theme_config?.flashSale;
-        if (
-          (!existingFs || !existingFs.itemIds?.length) &&
-          fetchedItems.length > 0
-        ) {
-          setFlashSale((prev) => ({
-            ...prev,
-            itemIds: fetchedItems.slice(0, 3).map((i) => i.id),
-          }));
-        }
+    setLoadingData(true);
+    Promise.all([
+      loadPosts().catch(() => {}),
+      fetch(`/api/catalog?shopId=${activeShop.id}`, {
+        headers: getAuthHeaders(),
+        cache: 'no-store',
       })
-      .catch(() => {});
+        .then((r) => r.json())
+        .then((data) => {
+          const fetchedItems: CatalogItem[] = Array.isArray(data.items)
+            ? data.items
+            : [];
+          setShopItems(fetchedItems);
+
+          // Pre-populate Flash Sale items with first 3 items if empty
+          const existingFs = activeShop.theme_config?.flashSale;
+          if (
+            (!existingFs || !existingFs.itemIds?.length) &&
+            fetchedItems.length > 0
+          ) {
+            setFlashSale((prev) => ({
+              ...prev,
+              itemIds: fetchedItems.slice(0, 3).map((i) => i.id),
+            }));
+          }
+        })
+        .catch(() => {}),
+    ]).finally(() => {
+      setLoadingData(false);
+    });
 
     const tc = activeShop.theme_config;
     if (tc?.promoBanner) {
@@ -251,7 +261,20 @@ export default function DashboardPostsPage() {
     }
   }, [activeShop, loadPosts]);
 
-  if (!activeShop) return null;
+  if (!activeShop) {
+    return (
+      <div
+        role="status"
+        data-testid="posts-shop-loading"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-10 text-center"
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
 
   // Auto-generate friendly banner text whenever discount rules change
   const syncBannerCopyFromRule = (next: ShopPromoBannerConfig) => {
@@ -325,7 +348,7 @@ export default function DashboardPostsPage() {
 
       const res = await fetch('/api/shops', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           id: activeShop.id,
           theme_config: nextThemeConfig,
@@ -377,7 +400,7 @@ export default function DashboardPostsPage() {
     try {
       await fetch('/api/posts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           shop_id: activeShop.id,
           title_i18n: titleI18n,
@@ -397,7 +420,7 @@ export default function DashboardPostsPage() {
   const handleTogglePin = async (post: Post) => {
     await fetch('/api/posts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         ...post,
         is_pinned: !post.is_pinned,
@@ -409,6 +432,7 @@ export default function DashboardPostsPage() {
   const handleDeletePost = async (postId: string) => {
     await fetch(`/api/posts?postId=${encodeURIComponent(postId)}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     await loadPosts();
   };
@@ -558,6 +582,22 @@ export default function DashboardPostsPage() {
 
       {/* Main Controls Area */}
       <div className="space-y-5">
+        {loadingData && (
+          <div
+            role="status"
+            data-testid="posts-loading-state"
+            className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-xs font-bold text-emerald-900"
+          >
+            <Loader2 className="h-4 w-4 animate-spin text-emerald-600 shrink-0" />
+            <span>
+              {tx(
+                'Đang tải dữ liệu khuyến mãi, thực đơn & bản tin...',
+                'Loading promotions, menu & announcements data...'
+              )}
+            </span>
+          </div>
+        )}
+
         <div className="space-y-5">
           {/* TAB 1: DISCOUNT & BANNER / POPUP */}
           {studioTab === 'discount_banner' && (
@@ -1429,53 +1469,72 @@ export default function DashboardPostsPage() {
               </form>
 
               <div className="space-y-2.5">
-                {posts.map((post) => (
-                  <div
-                    key={post.id}
-                    className={`rounded-2xl border p-4 shadow-2xs flex items-start justify-between gap-3 ${
-                      post.is_pinned
-                        ? 'border-amber-300 bg-amber-50/50'
-                        : 'border-slate-200 bg-white'
-                    }`}
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        {post.is_pinned && (
-                          <span className="rounded-full bg-amber-400/30 px-2 py-0.5 text-[10px] font-bold text-amber-900">
-                            {tx('📌 Đang ghim', '📌 Pinned')}
-                          </span>
-                        )}
-                        <h3 className="text-sm font-bold text-slate-900">
-                          {post.title_i18n.vi}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-slate-600">
-                        {post.content_i18n.vi}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => handleTogglePin(post)}
-                        title={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
-                        aria-label={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
-                        className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500"
-                      >
-                        <Pin className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeletePost(post.id)}
-                        title={t('common.delete')}
-                        aria-label={t('common.delete')}
-                        className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-rose-600"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+                {loadingData ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center space-y-2">
+                    <Loader2 className="mx-auto h-7 w-7 animate-spin text-emerald-600" />
+                    <p className="text-xs font-bold text-slate-700">
+                      {tx(
+                        'Đang tải dữ liệu bản tin thông báo...',
+                        'Loading announcements data...'
+                      )}
+                    </p>
                   </div>
-                ))}
+                ) : posts.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-xs font-semibold text-slate-500">
+                    {tx(
+                      'Chưa có bản tin thông báo nào. Hãy tạo thông báo mới ở trên.',
+                      'No announcements published yet. Create one using the form above.'
+                    )}
+                  </div>
+                ) : (
+                  posts.map((post) => (
+                    <div
+                      key={post.id}
+                      className={`rounded-2xl border p-4 shadow-2xs flex items-start justify-between gap-3 ${
+                        post.is_pinned
+                          ? 'border-amber-300 bg-amber-50/50'
+                          : 'border-slate-200 bg-white'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          {post.is_pinned && (
+                            <span className="rounded-full bg-amber-400/30 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                              {tx('📌 Đang ghim', '📌 Pinned')}
+                            </span>
+                          )}
+                          <h3 className="text-sm font-bold text-slate-900">
+                            {post.title_i18n.vi}
+                          </h3>
+                        </div>
+                        <p className="text-xs text-slate-600">
+                          {post.content_i18n.vi}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePin(post)}
+                          title={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
+                          aria-label={tx('Ghim / Bỏ ghim', 'Pin / Unpin')}
+                          className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500"
+                        >
+                          <Pin className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePost(post.id)}
+                          title={t('common.delete')}
+                          aria-label={t('common.delete')}
+                          className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-rose-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}

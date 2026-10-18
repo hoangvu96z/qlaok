@@ -1001,8 +1001,11 @@ export default function OrdersReportAndExportPage() {
 
   if (!activeShop) {
     return (
-      <div className="p-8 text-center text-sm text-slate-500">
-        {tx('Đang tải dữ liệu cửa hàng...', 'Loading shop data...')}
+      <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs">
+        <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-sm font-bold text-slate-800">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading shop data...')}
+        </p>
       </div>
     );
   }
@@ -1458,7 +1461,17 @@ export default function OrdersReportAndExportPage() {
           </span>
         </div>
 
-        {tableSummaryList.length === 0 ? (
+        {loading ? (
+          <div className="rounded-2xl border border-slate-200 p-8 text-center space-y-2.5">
+            <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+            <p className="text-xs font-bold text-slate-700">
+              {tx(
+                'Đang tải dữ liệu thống kê theo bàn...',
+                'Loading per-table report data...'
+              )}
+            </p>
+          </div>
+        ) : tableSummaryList.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs font-semibold text-slate-500">
             {tx(
               'Chưa có đơn hàng theo bàn nào khớp với bộ lọc hiện tại.',
@@ -1679,8 +1692,18 @@ export default function OrdersReportAndExportPage() {
       {activeViewTab === 'orders_list' && (
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
           {loading ? (
-            <div className="p-12 text-center text-xs font-semibold text-slate-500">
-              {tx('Đang tải dữ liệu đơn hàng...', 'Loading orders...')}
+            <div
+              role="status"
+              data-testid="reports-loading-state"
+              className="p-12 text-center space-y-3"
+            >
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+              <p className="text-sm font-bold text-slate-800">
+                {tx('Đang tải dữ liệu đơn hàng...', 'Loading orders data...')}
+              </p>
+              <p className="text-xs text-slate-500">
+                {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
+              </p>
             </div>
           ) : filteredOrders.length === 0 ? (
             <div className="p-12 text-center space-y-2">
@@ -1941,7 +1964,21 @@ export default function OrdersReportAndExportPage() {
       {/* TAB 2: DAILY BREAKDOWN TABLE */}
       {activeViewTab === 'daily_summary' && (
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
-          {dailySummaryList.length === 0 ? (
+          {loading ? (
+            <div
+              role="status"
+              data-testid="reports-daily-loading-state"
+              className="p-12 text-center space-y-3"
+            >
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+              <p className="text-sm font-bold text-slate-800">
+                {tx(
+                  'Đang tải dữ liệu doanh thu theo ngày...',
+                  'Loading daily revenue data...'
+                )}
+              </p>
+            </div>
+          ) : dailySummaryList.length === 0 ? (
             <div className="p-12 text-center text-xs font-semibold text-slate-500">
               {tx(
                 'Không có dữ liệu doanh thu ngày trong khoảng thời gian này.',
@@ -2024,7 +2061,21 @@ export default function OrdersReportAndExportPage() {
       {/* TAB 3: SOLD ITEMS BREAKDOWN TABLE */}
       {activeViewTab === 'items_summary' && (
         <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
-          {itemSummaryList.length === 0 ? (
+          {loading ? (
+            <div
+              role="status"
+              data-testid="reports-items-loading-state"
+              className="p-12 text-center space-y-3"
+            >
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+              <p className="text-sm font-bold text-slate-800">
+                {tx(
+                  'Đang tải dữ liệu thống kê theo món...',
+                  'Loading item breakdown data...'
+                )}
+              </p>
+            </div>
+          ) : itemSummaryList.length === 0 ? (
             <div className="p-12 text-center text-xs font-semibold text-slate-500">
               {tx(
                 'Không có món ăn nào được bán trong khoảng thời gian này.',

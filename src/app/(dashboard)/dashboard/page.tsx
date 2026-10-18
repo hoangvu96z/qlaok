@@ -22,7 +22,9 @@ import {
   PieChart,
   Clock,
   Activity,
+  Loader2,
 } from 'lucide-react';
+import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
@@ -99,7 +101,7 @@ export default function DashboardOverviewPage() {
       try {
         const res = await fetch(
           `/api/analytics/track?shopId=${activeShop.id}`,
-          { cache: 'no-store' }
+          { headers: getAuthHeaders(), cache: 'no-store' }
         );
         if (res.ok) {
           const data = await res.json();
@@ -115,17 +117,18 @@ export default function DashboardOverviewPage() {
   );
 
   useEffect(() => {
-    loadAnalytics(false);
+    setSummary(null);
+    void loadAnalytics(false);
 
     let bc: BroadcastChannel | null = null;
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = () => {
-        loadAnalytics(true);
+        void loadAnalytics(true);
       };
     }
 
-    const interval = setInterval(() => loadAnalytics(true), 5000);
+    const interval = setInterval(() => void loadAnalytics(true), 5000);
     return () => {
       if (bc) bc.close();
       clearInterval(interval);
@@ -134,8 +137,32 @@ export default function DashboardOverviewPage() {
 
   if (!activeShop) {
     return (
-      <div className="p-8 text-center text-sm text-slate-500">
-        {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+      <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs">
+        <Loader2 className="mx-auto h-9 w-9 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-800">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
+
+  if (loading && !summary) {
+    return (
+      <div
+        role="status"
+        data-testid="overview-loading-state"
+        className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs"
+      >
+        <Loader2 className="mx-auto h-9 w-9 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-800">
+          {tx(
+            'Đang tải dữ liệu tổng quan & thống kê...',
+            'Loading overview & analytics data...'
+          )}
+        </p>
+        <p className="text-xs text-slate-500">
+          {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
+        </p>
       </div>
     );
   }

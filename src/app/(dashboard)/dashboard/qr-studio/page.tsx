@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { QrCode, Palette, Wifi, Utensils } from 'lucide-react';
+import { QrCode, Palette, Wifi, Utensils, Loader2 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import { PrintableStandee } from '@/components/dashboard/PrintableStandee';
 import { ShopTableManager } from '@/components/dashboard/ShopTableManager';
@@ -35,7 +35,20 @@ export default function DashboardQrStudioPage() {
     }
   }, [activeShop]);
 
-  if (!activeShop) return null;
+  if (!activeShop) {
+    return (
+      <div
+        role="status"
+        data-testid="qr-studio-shop-loading"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-10 text-center"
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
 
   const canManageTables = Boolean(
     profile?.is_admin ||

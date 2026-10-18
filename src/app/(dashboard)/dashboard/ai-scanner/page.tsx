@@ -15,6 +15,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { getAuthHeaders } from '@/lib/auth-session';
 import { I18nText } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
@@ -49,7 +50,20 @@ export default function DashboardAiScannerPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  if (!activeShop) return null;
+  if (!activeShop) {
+    return (
+      <div
+        role="status"
+        data-testid="ai-scanner-shop-loading"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-10 text-center"
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
 
   const analyzeTextWithAi = async (
     textToAnalyze: string,
@@ -250,7 +264,7 @@ export default function DashboardAiScannerPage() {
     try {
       const res = await fetch('/api/catalog', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_import',
           shopId: activeShop.id,

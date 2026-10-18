@@ -21,6 +21,7 @@ const tables=[{id:'qa-table',shop_id:shop.id,table_code:'T01',name:'Bàn Cửa S
 const cart=[{item:{id:'qa-item',shop_id:shop.id,price:65000,name_i18n:{vi:'Phở QA',en:'QA Pho'},desc_i18n:{vi:''},options_json:[]},quantity:1,selectedChoices:[],quickTags:['Không hành'],customNote:''}];
 const html=renderToStaticMarkup(React.createElement(ShowToStaffModal,{isOpen:true,onClose(){},shop,locale:'vi',cart,tables,selectedTableId:'qa-table',initialTableLabel:tables[0].name,onUpdateQuantity(){},onClearCart(){}}));
 assert.ok(html.includes('Bàn Cửa Sổ'));assert.ok(html.includes('Phở QA'));assert.ok(html.includes('65.000'));
+assert.ok(html.includes('Mời quý khách kiểm tra lại món trước khi bấm nút gửi đến quầy.'));
 assert.ok(!html.includes('Bàn 05'),'no fabricated example table chips');
 assert.ok(html.includes('Không hành'), 'selected dietary notes must survive rendering');
 console.log('PASS: actual confirmation component server-rendered with managed table and canonical cart labels');

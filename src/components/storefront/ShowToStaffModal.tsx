@@ -94,11 +94,11 @@ const SEND_ORDER_LABELS: Record<
   }
 > = {
   vi: {
-    sendBtn: '🚀 Gửi Đơn Xuống Quầy / Bếp Ngay',
-    updateBtn: '💾 Lưu Cập Nhật Đơn Hàng',
-    editOrderBtn: '✏️ Sửa đơn / Đổi hoặc thêm món',
-    sending: 'Đang gửi đơn xuống quầy...',
-    tablePrompt: 'Chọn Bàn / Hình thức phục vụ:',
+    sendBtn: 'Gửi đơn đến quầy',
+    updateBtn: 'Lưu cập nhật & gửi đến quầy',
+    editOrderBtn: 'Sửa đơn / Đổi hoặc thêm món',
+    sending: 'Đang gửi đơn đến quầy...',
+    tablePrompt: 'Chọn bàn / Hình thức phục vụ:',
     noteLabel: 'Ghi chú đơn hàng',
     notePlaceholder:
       'Ghi chú chung cho quầy (VD: mang ra cùng lúc, xin thêm chén...)',
@@ -109,9 +109,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: 'Đóng / Xem thêm thực đơn',
   },
   en: {
-    sendBtn: '🚀 Send Order to Counter Now',
-    updateBtn: '💾 Save Order Changes',
-    editOrderBtn: '✏️ Edit Order / Change Items',
+    sendBtn: 'Send Order to Counter',
+    updateBtn: 'Save & Send Order Changes',
+    editOrderBtn: 'Edit Order / Change Items',
     sending: 'Sending order to counter...',
     tablePrompt: 'Select Table / Service Mode:',
     noteLabel: 'Order note',
@@ -124,9 +124,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: 'Close / Browse Menu',
   },
   ko: {
-    sendBtn: '🚀 카운터로 바로 주문 전송',
-    updateBtn: '💾 주문 변경사항 저장',
-    editOrderBtn: '✏️ 주문 수정 / 메뉴 변경·추가',
+    sendBtn: '카운터로 바로 주문 전송',
+    updateBtn: '주문 변경사항 저장',
+    editOrderBtn: '주문 수정 / 메뉴 변경·추가',
     sending: '주문을 전송하는 중...',
     tablePrompt: '테이블 / 포장 선택:',
     noteLabel: '주문 요청사항',
@@ -138,9 +138,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: '닫기 / 메뉴 더 보기',
   },
   ja: {
-    sendBtn: '🚀 レジ・厨房へ注文を送信',
-    updateBtn: '💾 注文の変更を保存',
-    editOrderBtn: '✏️ 注文内容を変更・追加する',
+    sendBtn: 'レジ・厨房へ注文を送信',
+    updateBtn: '注文の変更を保存',
+    editOrderBtn: '注文内容を変更・追加する',
     sending: '注文を送信中...',
     tablePrompt: 'テーブル / お持ち帰り選択:',
     noteLabel: '注文メモ',
@@ -153,9 +153,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: '閉じる / メニューを見る',
   },
   zh: {
-    sendBtn: '🚀 立即发送订单到吧台/厨房',
-    updateBtn: '💾 保存订单修改',
-    editOrderBtn: '✏️ 修改订单 / 增减菜品',
+    sendBtn: '立即发送订单到吧台/厨房',
+    updateBtn: '保存订单修改',
+    editOrderBtn: '修改订单 / 增减菜品',
     sending: '正在发送订单...',
     tablePrompt: '选择桌号 / 打包外带:',
     noteLabel: '订单备注',
@@ -167,9 +167,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: '关闭 / 返回菜单',
   },
   es: {
-    sendBtn: '🚀 Enviar Pedido a Cocina Ahora',
-    updateBtn: '💾 Guardar Cambios del Pedido',
-    editOrderBtn: '✏️ Editar Pedido / Cambiar Platos',
+    sendBtn: 'Enviar Pedido al Mostrador',
+    updateBtn: 'Guardar Cambios del Pedido',
+    editOrderBtn: 'Editar Pedido / Cambiar Platos',
     sending: 'Enviando pedido al mostrador...',
     tablePrompt: 'Selecciona Mesa / Para llevar:',
     noteLabel: 'Nota del pedido',
@@ -182,9 +182,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: 'Cerrar / Ver Menú',
   },
   it: {
-    sendBtn: '🚀 Invia Ordine in Cucina Ora',
-    updateBtn: '💾 Salva Modifiche Ordine',
-    editOrderBtn: '✏️ Modifica Ordine / Cambia Piatti',
+    sendBtn: 'Invia Ordine alla Cassa',
+    updateBtn: 'Salva Modifiche Ordine',
+    editOrderBtn: 'Modifica Ordine / Cambia Piatti',
     sending: 'Invio ordine in corso...',
     tablePrompt: 'Seleziona Tavolo / Asporto:',
     noteLabel: 'Nota ordine',
@@ -197,9 +197,9 @@ const SEND_ORDER_LABELS: Record<
     orderMoreBtn: 'Chiudi / Torna al Menu',
   },
   ru: {
-    sendBtn: '🚀 Отправить заказ на кухню',
-    updateBtn: '💾 Сохранить изменения заказа',
-    editOrderBtn: '✏️ Изменить заказ / Добавить блюда',
+    sendBtn: 'Отправить заказ на кассу',
+    updateBtn: 'Сохранить изменения заказа',
+    editOrderBtn: 'Изменить заказ / Добавить блюда',
     sending: 'Отправка заказа...',
     tablePrompt: 'Выберите стол / Навынос:',
     noteLabel: 'Комментарий к заказу',
@@ -483,8 +483,8 @@ export function ShowToStaffModal({
       setSubmitError(
         tableResolutionError ||
           tx(
-            'Vui lòng chọn bàn đang hoạt động hoặc chọn Mang về trước khi gửi đơn.',
-            'Please select an active table or choose Takeaway before sending your order.'
+            'Mời quý khách chọn bàn phục vụ hoặc chọn Mang về trước khi bấm nút gửi đến quầy.',
+            'Please select an active table or choose Takeaway before sending your order to the counter.'
           )
       );
       return;
@@ -870,8 +870,8 @@ export function ShowToStaffModal({
                       </p>
                       <p className="text-[11px] text-amber-800 dark:text-amber-100/90">
                         {tx(
-                          'Bạn có thể tăng/giảm món tại đây hoặc đóng cửa sổ này để chọn thêm món ngoài thực đơn.',
-                          'Adjust quantities here or close this sheet to add more dishes from the menu.'
+                          'Mời quý khách kiểm tra lại món, tăng/giảm số lượng hoặc chọn thêm món trước khi bấm nút gửi đến quầy.',
+                          'Please review your items, adjust quantities, or add more dishes before sending to the counter.'
                         )}
                       </p>
                     </div>

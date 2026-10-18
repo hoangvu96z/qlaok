@@ -25,8 +25,10 @@ import {
   QrCode,
   Landmark,
   CreditCard,
+  Loader2,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { getAuthHeaders } from '@/lib/auth-session';
 import {
   BusinessVertical,
   CatalogItem,
@@ -224,7 +226,10 @@ export default function DashboardSettingsPage() {
     setOpeningHours(activeShop.opening_hours);
 
     // Fetch catalog items for the live phone preview
-    fetch(`/api/catalog?shopId=${activeShop.id}`, { cache: 'no-store' })
+    fetch(`/api/catalog?shopId=${activeShop.id}`, {
+      headers: getAuthHeaders(),
+      cache: 'no-store',
+    })
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data.items)) {
@@ -234,7 +239,23 @@ export default function DashboardSettingsPage() {
       .catch(() => {});
   }, [activeShop]);
 
-  if (!activeShop || !openingHours) return null;
+  if (!activeShop || !openingHours) {
+    return (
+      <div
+        role="status"
+        data-testid="settings-loading-state"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-10 text-center"
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx(
+            'Đang tải dữ liệu cài đặt cửa hàng...',
+            'Loading store settings data...'
+          )}
+        </p>
+      </div>
+    );
+  }
 
   const toggleLocale = (loc: SupportedLocale) => {
     if (loc === 'vi') return;
@@ -310,7 +331,7 @@ export default function DashboardSettingsPage() {
 
       const res = await fetch('/api/shops', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           id: activeShop.id,
           name,

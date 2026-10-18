@@ -9,7 +9,10 @@ import {
   Sparkles,
   Search,
   Crown,
+  Loader2,
+  UtensilsCrossed,
 } from 'lucide-react';
+import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, Category } from '@/types/qlaok';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
@@ -22,6 +25,7 @@ export default function DashboardCatalogPage() {
   const { t, tx } = useAppI18n();
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
   );
@@ -33,18 +37,32 @@ export default function DashboardCatalogPage() {
   const [editingItem, setEditingItem] = useState<CatalogItem | null>(null);
   const [toastMsg, setToastMsg] = useState('');
 
-  const loadCatalog = useCallback(async () => {
-    if (!activeShop) return;
-    const res = await fetch(`/api/catalog?shopId=${activeShop.id}`, {
-      cache: 'no-store',
-    });
-    const data = await res.json();
-    setCategories(data.categories || []);
-    setItems(data.items || []);
-  }, [activeShop]);
+  const loadCatalog = useCallback(
+    async (silent = false) => {
+      if (!activeShop) return;
+      if (!silent) setLoading(true);
+      try {
+        const res = await fetch(`/api/catalog?shopId=${activeShop.id}`, {
+          headers: getAuthHeaders(),
+          cache: 'no-store',
+        });
+        const data = await res.json();
+        setCategories(data.categories || []);
+        setItems(data.items || []);
+      } catch {
+        // ignore network errors
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [activeShop]
+  );
 
   useEffect(() => {
-    loadCatalog();
+    setCategories([]);
+    setItems([]);
+    setSelectedCategoryId('all');
+    void loadCatalog(false);
   }, [loadCatalog]);
 
   const notifyRealtime = () => {
@@ -72,7 +90,7 @@ export default function DashboardCatalogPage() {
     );
     await fetch('/api/catalog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_item',
         item: {
@@ -99,7 +117,7 @@ export default function DashboardCatalogPage() {
     );
     await fetch('/api/catalog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_item',
         item: {
@@ -126,7 +144,7 @@ export default function DashboardCatalogPage() {
     );
     await fetch('/api/catalog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_item',
         item: {
@@ -163,7 +181,7 @@ export default function DashboardCatalogPage() {
     );
     await fetch('/api/catalog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_item',
         item: {
@@ -183,7 +201,7 @@ export default function DashboardCatalogPage() {
     );
     await fetch('/api/catalog', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_item',
         item: {
@@ -204,6 +222,7 @@ export default function DashboardCatalogPage() {
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     await fetch(`/api/catalog?itemId=${encodeURIComponent(itemId)}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     notifyRealtime();
     showToast(tx('Đã xóa món khỏi thực đơn', 'Deleted item from menu'));
@@ -228,7 +247,7 @@ export default function DashboardCatalogPage() {
 
       await fetch('/api/catalog', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'upsert_category',
           category: {
@@ -241,7 +260,7 @@ export default function DashboardCatalogPage() {
         }),
       });
       setNewCategoryName('');
-      await loadCatalog();
+      await loadCatalog(true);
       notifyRealtime();
       showToast(
         tx(
@@ -257,14 +276,24 @@ export default function DashboardCatalogPage() {
   const handleDeleteCategory = async (catId: string) => {
     await fetch(`/api/catalog?categoryId=${encodeURIComponent(catId)}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     if (selectedCategoryId === catId) setSelectedCategoryId('all');
-    await loadCatalog();
+    await loadCatalog(true);
     notifyRealtime();
     showToast(tx('Đã xóa danh mục', 'Deleted category'));
   };
 
-  if (!activeShop) return null;
+  if (!activeShop) {
+    return (
+      <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs">
+        <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx('Đang tải dữ liệu cửa hàng...', 'Loading store data...')}
+        </p>
+      </div>
+    );
+  }
 
   const planTier = profile?.plan || 'free';
   const planCfg = PLAN_CONFIGS[planTier];
@@ -446,25 +475,70 @@ export default function DashboardCatalogPage() {
         />
       </div>
 
-      {/* Quick Item List */}
-      <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
-        {filteredItems.map((item) => (
-          <QuickItemRow
-            key={item.id}
-            item={item}
-            onToggleAvailable={handleToggleAvailable}
-            onUpdatePrice={handleUpdatePrice}
-            onUpdateStock={handleUpdateStock}
-            onUpdateImage={handleUpdateImage}
-            onToggleFeatured={handleToggleFeatured}
-            onEditTranslations={(target) => {
-              setEditingItem(target);
-              setIsModalOpen(true);
-            }}
-            onDelete={handleDeleteItem}
-          />
-        ))}
-      </div>
+      {/* Quick Item List / Loading / Empty State */}
+      {loading ? (
+        <div
+          role="status"
+          data-testid="catalog-loading-state"
+          className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs"
+        >
+          <Loader2 className="mx-auto h-9 w-9 animate-spin text-emerald-600" />
+          <p className="text-sm font-bold text-slate-800">
+            {tx(
+              'Đang tải dữ liệu thực đơn & tồn kho...',
+              'Loading menu & inventory data...'
+            )}
+          </p>
+          <p className="text-xs text-slate-500">
+            {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
+          </p>
+        </div>
+      ) : filteredItems.length === 0 ? (
+        <div
+          data-testid="catalog-empty-state"
+          className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center space-y-3 shadow-2xs"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
+            <UtensilsCrossed className="h-6 w-6" />
+          </div>
+          <p className="text-sm font-bold text-slate-800">
+            {searchQuery.trim()
+              ? tx(
+                  'Không tìm thấy món hoặc sản phẩm nào khớp với từ khóa',
+                  'No menu items match your search query'
+                )
+              : tx(
+                  'Chưa có món ăn hoặc sản phẩm nào trong danh mục này',
+                  'No menu items or products in this category yet'
+                )}
+          </p>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            {tx(
+              'Bấm "Thêm món mới" hoặc dùng "Quét ảnh thực đơn" để thêm món và dịch tự động sang 8 ngôn ngữ.',
+              'Click "Add Item" or use "Scan Menu Photo" to add dishes with automatic 8-language translation.'
+            )}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
+          {filteredItems.map((item) => (
+            <QuickItemRow
+              key={item.id}
+              item={item}
+              onToggleAvailable={handleToggleAvailable}
+              onUpdatePrice={handleUpdatePrice}
+              onUpdateStock={handleUpdateStock}
+              onUpdateImage={handleUpdateImage}
+              onToggleFeatured={handleToggleFeatured}
+              onEditTranslations={(target) => {
+                setEditingItem(target);
+                setIsModalOpen(true);
+              }}
+              onDelete={handleDeleteItem}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Translation & Item Editor Modal */}
       <TranslationEditorModal
@@ -478,7 +552,7 @@ export default function DashboardCatalogPage() {
           selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id
         }
         onSaved={() => {
-          loadCatalog();
+          void loadCatalog(true);
           showToast(
             tx(
               'Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!',

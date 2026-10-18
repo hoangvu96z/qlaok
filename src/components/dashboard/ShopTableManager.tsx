@@ -772,12 +772,13 @@ export function ShopTableManager({
       {/* Main Split Grid: Left Table List | Right Selected Table A6 Standee Preview */}
       {loading ? (
         <div
+          role="status"
           data-testid="table-manager-loading"
-          className="py-12 text-center space-y-2"
+          className="py-12 text-center space-y-2.5"
         >
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-          <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
-            {tx('Đang tải sơ đồ bàn...', 'Loading shop tables...')}
+          <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+            {tx('Đang tải dữ liệu sơ đồ bàn...', 'Loading shop tables data...')}
           </p>
         </div>
       ) : visibleTables.length === 0 ? (

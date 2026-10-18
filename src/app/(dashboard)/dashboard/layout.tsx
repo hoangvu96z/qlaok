@@ -402,12 +402,16 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   if (loading || !profile) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-3">
+      <div
+        role="status"
+        data-testid="dashboard-layout-loading"
+        className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-3"
+      >
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-        <p className="text-xs font-bold text-slate-400">
+        <p className="text-xs font-bold text-slate-300">
           {tx(
-            'Đang kiểm tra phiên đăng nhập...',
-            'Checking your sign-in session...'
+            'Đang tải dữ liệu quản lý quán & kiểm tra phiên đăng nhập...',
+            'Loading store dashboard data & checking sign-in session...'
           )}
         </p>
       </div>
