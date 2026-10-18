@@ -1,16 +1,15 @@
-# Qlaok Mobile Owner App (React Native + Expo)
+# Qlaok Mobile — Expo Owner / Cashier / Staff
 
-Ứng dụng di động dành riêng cho **Chủ quán Qlaok** (iOS & Android) kết nối trực tiếp tới cùng cơ sở dữ liệu **Supabase (`https://kftmrjmmympztzztunxf.supabase.co`)** với phiên bản Web.
+Cập nhật 18/10/2026. Expo SDK 52, React 18, React Native 0.76; kết nối Supabase Auth và backend được cấu hình trong môi trường. Dùng CodeGraph từ repo root trước khi sửa code theo [AGENTS.md](../AGENTS.md) và [workflow](../docs/CODEGRAPH_WORKFLOW.md).
 
-## 🚀 Tính năng chính trên Mobile App
-1. **📊 Doanh thu & Lượt quét QR (`Overview`)**:
-   - Xem doanh thu ước tính từ lượt khách đưa màn hình gọi món (`Show to Staff`).
-   - Theo dõi tổng lượt quét **QR Cửa**, **QR Bàn**, lượt khách kết nối **Wi-Fi**, và **Top món bán chạy nhất**.
-2. **🍜 Quản lý Thực đơn 1 chạm (`Catalog`)**:
-   - **Gạt Còn món / Hết hàng (`Switch`) 1 chạm** — đồng bộ tức thì lên Supabase & Web Storefront.
-   - Tăng/giảm giá nhanh (`-5k` / `+5k`) và thêm món mới ngay trên điện thoại.
-3. **⚙️ Cài đặt Cửa hàng & Wi-Fi (`Settings`)**:
-   - Đổi tên cửa hàng, Tỉnh/Thành phố (34 tỉnh thành), Số điện thoại/Zalo và mật khẩu Wi-Fi.
+## Chức năng hiện tại
+
+- Tổng quan doanh thu đơn hàng và analytics QR; không coi Show to Staff là doanh thu thực thu.
+- Catalog: tình trạng món, giá và tồn kho theo quyền server.
+- Đơn mPOS: nhận/phục vụ, thu tiền và thao tác theo membership; realtime Postgres Changes với JWT, canonical reload qua API, fallback 30 giây khi lỗi.
+- Khuyến mãi và settings theo quyền shop; chuyển cửa hàng theo membership owner/cashier/staff.
+- VI/EN mặc định VI, locale native lưu SecureStore; catalog/khách hàng có miền 8 ngôn ngữ riêng theo gói.
+- Biên nhận trên mobile là preview/mô phỏng, chưa xác nhận in phần cứng.
 
 ## 🛠️ Cách chạy ứng dụng React Native (Expo)
 
@@ -42,7 +41,7 @@ REST gửi Bearer token hiện tại, báo lỗi HTTP và timeout 15 giây. Khô
 biên nhận từ đơn server trả về thành công; thao tác đã phục vụ giữ nguyên payment.
 In trên mobile hiện vẫn là preview/mô phỏng, chưa tích hợp máy in.
 
-Kiểm tra: `npm run typecheck` và `npm test` (Node 24 hỗ trợ strip types).
+Kiểm tra từ thư mục mobile: `npm run typecheck` và `npm test` (dùng Node 24 như verify CI).
 Chưa có kiểm thử thiết bị cho cold start, refresh token, SecureStore và máy in.
 
 ## Kiểm tra giao diện web bằng fixture local

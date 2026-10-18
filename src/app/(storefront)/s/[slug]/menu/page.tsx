@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import {
@@ -8,6 +8,10 @@ import {
   Search,
   X,
   Gift,
+  Utensils,
+  ShoppingBag,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -15,6 +19,7 @@ import {
   Category,
   Shop,
   ShopOrder,
+  ShopTable,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
@@ -25,8 +30,14 @@ import {
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
+import {
+  filterSelectableTables,
+  isTakeawayTableLabel,
+  resolveTableSelection,
+} from '@/lib/table-helpers';
 import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
 import { ItemDetailDrawer } from '@/components/storefront/ItemDetailDrawer';
 import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
@@ -40,19 +51,34 @@ import {
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
 
+interface UserTableChoice {
+  shopSlug: string;
+  tableId: string | null;
+  tableLabel: string;
+  isTakeaway: boolean;
+}
+
 export default function StorefrontMenuPage() {
   const params = useParams<{ slug: string }>();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
-  const initialTableParam = searchParams.get('table') || 'Bàn 01';
+
+  const qrTableIdParam = searchParams.get('tableId');
+  const qrTableParam = searchParams.get('table');
+  const langParam = searchParams.get('lang');
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
+  const [tables, setTables] = useState<ShopTable[]>([]);
+  const [tablesLoadError, setTablesLoadError] = useState<string | null>(null);
   const [allowedLangs, setAllowedLangs] =
     useState<SupportedLocale[]>(ALL_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
-  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
   );
@@ -63,19 +89,54 @@ export default function StorefrontMenuPage() {
   const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
+  const [userTableChoice, setUserTableChoice] =
+    useState<UserTableChoice | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const activeSlugRef = useRef(slug);
+  const requestSeqRef = useRef(0);
+  const initializedSlugRef = useRef<string | null>(null);
+
+  // Reset shop-scoped cart/order/selection state when navigating to a different shop slug
+  useEffect(() => {
+    if (activeSlugRef.current !== slug) {
+      activeSlugRef.current = slug;
+      setCart([]);
+      setLastOrder(null);
+      setEditingOrder(null);
+      setUserTableChoice(null);
+      setSelectedCategoryId('all');
+      setSearchQuery('');
+      setTables([]);
+      setTablesLoadError(null);
+      setLoading(true);
+    }
+  }, [slug]);
 
   const fetchCatalogData = useCallback(
     async (isInitial = false) => {
+      const currentSlug = slug;
+      const seq = ++requestSeqRef.current;
+
       try {
-        const res = await fetch(`/api/shops?slug=${encodeURIComponent(slug)}`, {
-          cache: 'no-store',
-        });
+        const res = await fetch(
+          `/api/shops?slug=${encodeURIComponent(currentSlug)}`,
+          {
+            cache: 'no-store',
+          }
+        );
+        if (activeSlugRef.current !== currentSlug || seq !== requestSeqRef.current) {
+          return;
+        }
         if (!res.ok) {
           if (isInitial) setLoading(false);
           return;
         }
         const data = await res.json();
+        if (activeSlugRef.current !== currentSlug || seq !== requestSeqRef.current) {
+          return;
+        }
+
         const loadedShop: Shop = data.shop;
         const rawPlanLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
@@ -84,16 +145,57 @@ export default function StorefrontMenuPage() {
         const planLangs =
           rawPlanLangs.length > 1 ? rawPlanLangs : ALL_LOCALES;
 
+        let loadedTables: ShopTable[] = [];
+        if (Array.isArray(data.tables)) {
+          loadedTables = data.tables;
+          setTablesLoadError(null);
+        } else if (loadedShop?.id) {
+          try {
+            const tblRes = await fetch(
+              `/api/tables?shopId=${encodeURIComponent(loadedShop.id)}`,
+              { cache: 'no-store' }
+            );
+            if (tblRes.ok) {
+              const tblData = await tblRes.json();
+              loadedTables = Array.isArray(tblData.tables)
+                ? tblData.tables
+                : [];
+              setTablesLoadError(null);
+            } else {
+              const errData = await tblRes.json().catch(() => null);
+              setTablesLoadError(
+                errData?.error ||
+                  'Không thể tải danh sách bàn của quán. Vui lòng thử lại.'
+              );
+            }
+          } catch {
+            setTablesLoadError(
+              'Không thể tải danh sách bàn của quán. Vui lòng thử lại.'
+            );
+          }
+        }
+
+        if (activeSlugRef.current !== currentSlug) {
+          return;
+        }
+
+        const activeOnlyTables = loadedTables.filter(
+          (t) =>
+            t &&
+            t.shop_id === loadedShop.id &&
+            Boolean(t.is_active) &&
+            !t.is_archived
+        );
+
         setShop(loadedShop);
         setCategories(data.categories || []);
         setItems(data.items || []);
+        setTables(activeOnlyTables);
         setAllowedLangs(planLangs);
 
-        if (isInitial) {
-          const detected = detectVisitorLocale(
-            planLangs,
-            searchParams.get('lang')
-          );
+        if (isInitial || initializedSlugRef.current !== currentSlug) {
+          initializedSlugRef.current = currentSlug;
+          const detected = detectVisitorLocale(planLangs, langParam);
           setLocale(detected);
           setLoading(false);
 
@@ -119,16 +221,17 @@ export default function StorefrontMenuPage() {
         }
       } catch (err) {
         console.error('Failed to fetch storefront menu:', err);
-        if (isInitial) setLoading(false);
+        if (isInitial && activeSlugRef.current === currentSlug) {
+          setLoading(false);
+        }
       }
     },
-    [slug, searchParams]
+    [slug, langParam]
   );
 
   useEffect(() => {
     fetchCatalogData(true);
 
-    // Realtime sync via BroadcastChannel & lightweight polling so toggling "Sold Out" or price in CMS reflects immediately
     let bc: BroadcastChannel | null = null;
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
@@ -147,6 +250,91 @@ export default function StorefrontMenuPage() {
     };
   }, [fetchCatalogData]);
 
+  // Active tables sorted for display
+  const activeTables = useMemo(() => {
+    if (!shop) return [];
+    return filterSelectableTables(tables, shop.id);
+  }, [tables, shop]);
+
+  // Resolve QR table parameters (?tableId=... or ?table=...) against activeTables
+  const tableState = useMemo(() => {
+    // 1. User explicitly chose a table or takeaway in this shop session
+    if (userTableChoice && userTableChoice.shopSlug === slug) {
+      if (userTableChoice.isTakeaway) {
+        return {
+          selectedTable: null as ShopTable | null,
+          selectedTableId: null as string | null,
+          isTakeawaySelected: true,
+          error: null as string | null,
+        };
+      }
+      if (userTableChoice.tableId) {
+        const check = resolveTableSelection(activeTables, {
+          tableId: userTableChoice.tableId,
+        });
+        if (check.table) {
+          return {
+            selectedTable: check.table,
+            selectedTableId: check.table.id,
+            isTakeawaySelected: false,
+            error: null,
+          };
+        }
+        return {
+          selectedTable: null,
+          selectedTableId: null,
+          isTakeawaySelected: false,
+          error: check.error,
+        };
+      }
+    }
+
+    // 2. Legacy ?table=Mang về / takeaway URL parameter (when no tableId)
+    if (!qrTableIdParam && qrTableParam && isTakeawayTableLabel(qrTableParam)) {
+      return {
+        selectedTable: null,
+        selectedTableId: null,
+        isTakeawaySelected: true,
+        error: null,
+      };
+    }
+
+    // 3. Resolve QR ?tableId= or ?table= via pure resolveTableSelection helper
+    const resolved = resolveTableSelection(activeTables, {
+      tableId: qrTableIdParam,
+      table: qrTableParam,
+    });
+
+    return {
+      selectedTable: resolved.table,
+      selectedTableId: resolved.table?.id ?? null,
+      isTakeawaySelected: false,
+      error: resolved.error,
+    };
+  }, [
+    userTableChoice,
+    slug,
+    activeTables,
+    qrTableIdParam,
+    qrTableParam,
+  ]);
+
+  const handleSelectTableChoice = useCallback(
+    (selection: {
+      tableId: string | null;
+      tableLabel: string;
+      isTakeaway: boolean;
+    }) => {
+      setUserTableChoice({
+        shopSlug: slug,
+        tableId: selection.tableId,
+        tableLabel: selection.tableLabel,
+        isTakeaway: selection.isTakeaway,
+      });
+    },
+    [slug]
+  );
+
   const handleClosePopup = () => {
     setIsPromoPopupOpen(false);
     if (shop && typeof window !== 'undefined') {
@@ -155,7 +343,7 @@ export default function StorefrontMenuPage() {
   };
 
   // Compute effective items with Flash Sale / Selected Item Discounts applied
-  const effectiveItems: CatalogItem[] = React.useMemo(() => {
+  const effectiveItems: CatalogItem[] = useMemo(() => {
     if (!shop) return items;
     return items.map((rawItem) => {
       const eff = getItemEffectivePrice(rawItem, shop);
@@ -169,6 +357,24 @@ export default function StorefrontMenuPage() {
       return rawItem;
     });
   }, [items, shop]);
+
+  // Keep cart item prices/snapshots synced with latest effective catalog without resetting cart
+  useEffect(() => {
+    if (effectiveItems.length === 0) return;
+    setCart((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map((entry) => {
+        const latest = effectiveItems.find((i) => i.id === entry.item.id);
+        if (latest && latest !== entry.item) {
+          changed = true;
+          return { ...entry, item: latest };
+        }
+        return entry;
+      });
+      return changed ? next : prev;
+    });
+  }, [effectiveItems]);
 
   const handleOpenItem = (item: CatalogItem) => {
     const effItem =
@@ -304,8 +510,10 @@ export default function StorefrontMenuPage() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8 space-y-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-        <p className="text-xs font-semibold text-slate-500">
-          Đang tải thực đơn đa ngôn ngữ...
+        <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+          {locale === 'vi'
+            ? 'Đang tải thực đơn đa ngôn ngữ...'
+            : 'Loading multilingual menu...'}
         </p>
       </div>
     );
@@ -314,20 +522,23 @@ export default function StorefrontMenuPage() {
   if (!shop) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8 text-center space-y-3">
-        <h1 className="text-base font-bold text-slate-900">
-          Không tìm thấy thực đơn cửa hàng
+        <h1 className="text-base font-bold text-slate-900 dark:text-slate-100">
+          {locale === 'vi'
+            ? 'Không tìm thấy thực đơn cửa hàng'
+            : 'Storefront menu not found'}
         </h1>
         <Link
           href="/explore"
           className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white"
         >
-          Quay lại trang khám phá
+          {locale === 'vi' ? 'Quay lại trang khám phá' : 'Back to Explore'}
         </Link>
       </div>
     );
   }
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
+  const tx = (vi: string, en: string) => (locale === 'vi' ? vi : en);
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
   const bgProps = getStorefrontBackgroundProps(shop);
   const hasActivePopup = Boolean(
@@ -372,25 +583,27 @@ export default function StorefrontMenuPage() {
         : labels.bottomCtaFnb;
 
   return (
-    <div className={`flex flex-1 flex-col min-h-screen ${bgProps.containerClass}`}>
+    <div
+      className={`flex flex-1 flex-col min-h-screen ${bgProps.containerClass}`}
+    >
       {bgProps.backgroundLayer}
 
-      {/* Top Header with Back to Store Info & 8-Language Switcher */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-2xs text-slate-900">
-        <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-1.5">
+      {/* Top Header with Back to Store Info, Theme Toggle & Compact Language Dropdown */}
+      <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 shadow-2xs text-slate-900 dark:text-slate-100">
+        <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-2">
           <div className="flex items-center gap-2 min-w-0">
             <Link
               href={`/s/${shop.slug}?lang=${locale}`}
               className="flex items-center gap-2 min-w-0"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
                 <ArrowLeft className="h-4 w-4" />
               </div>
               <div className="min-w-0">
-                <h1 className="truncate text-sm font-extrabold text-slate-900 leading-tight">
+                <h1 className="truncate text-sm font-extrabold text-slate-900 dark:text-white leading-tight">
                   {shop.name}
                 </h1>
-                <p className="truncate text-[11px] font-medium text-slate-500">
+                <p className="truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
                   {labels.backToStore}
                   {shop.wifi_info?.ssid ? ` • 📶 ${shop.wifi_info.ssid}` : ''}
                 </p>
@@ -401,47 +614,104 @@ export default function StorefrontMenuPage() {
               <button
                 type="button"
                 onClick={() => setIsPromoPopupOpen(true)}
-                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
+                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200 dark:bg-rose-500/20 dark:text-rose-300"
               >
-                <Gift className="h-3 w-3 text-rose-600" />
-                <span>Ưu đãi</span>
+                <Gift className="h-3 w-3 text-rose-600 dark:text-rose-400" />
+                <span>{tx('Ưu đãi', 'Promos')}</span>
               </button>
             )}
           </div>
 
-          <LanguageSwitcher
-            currentLocale={locale}
-            supportedLangs={allowedLangs}
-            onChange={setLocale}
-            compact
-          />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ThemeToggle compact />
+            <LanguageSwitcher
+              currentLocale={locale}
+              supportedLangs={allowedLangs}
+              onChange={setLocale}
+              compact
+            />
+          </div>
         </div>
 
-        {/* 1-Tap 8-Language Flag Quick Bar */}
-        <div className="px-3.5 pb-2">
-          <LanguageSwitcher
-            currentLocale={locale}
-            supportedLangs={allowedLangs}
-            onChange={setLocale}
-          />
+        {/* Configured Table / Takeaway Selector Bar */}
+        <div
+          data-testid="menu-table-selector-bar"
+          className="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3.5 pb-2"
+        >
+          <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+            {tx('Vị trí:', 'Table:')}
+          </span>
+          {activeTables.map((tb) => {
+            const active =
+              !tableState.isTakeawaySelected &&
+              tableState.selectedTableId === tb.id;
+            return (
+              <button
+                key={tb.id}
+                type="button"
+                aria-pressed={active}
+                data-testid={`menu-table-chip-${tb.id}`}
+                onClick={() =>
+                  handleSelectTableChoice({
+                    tableId: tb.id,
+                    tableLabel: tb.name,
+                    isTakeaway: false,
+                  })
+                }
+                className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                  active
+                    ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                    : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                }`}
+              >
+                <Utensils className="h-3 w-3" />
+                <span>{tb.name}</span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            aria-pressed={tableState.isTakeawaySelected}
+            data-testid="menu-table-chip-takeaway"
+            onClick={() =>
+              handleSelectTableChoice({
+                tableId: null,
+                tableLabel: 'Mang về',
+                isTakeaway: true,
+              })
+            }
+            className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+              tableState.isTakeawaySelected
+                ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <ShoppingBag className="h-3 w-3" />
+            <span>{formatTableLabel('Mang về', locale)}</span>
+          </button>
         </div>
 
         {/* Search Input */}
         <div className="px-3.5 pb-2.5">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <label htmlFor="storefront-menu-search" className="sr-only">
+              {labels.searchPlaceholder}
+            </label>
             <input
+              id="storefront-menu-search"
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={labels.searchPlaceholder}
-              className="w-full rounded-xl border border-slate-200 bg-slate-100/80 pl-9 pr-8 py-2 text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
+              className="w-full rounded-xl border border-slate-200 bg-slate-100/80 pl-9 pr-8 py-2 text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-100 dark:focus:bg-slate-800"
             />
             {searchQuery && (
               <button
                 type="button"
+                aria-label={tx('Xóa từ khóa tìm kiếm', 'Clear search')}
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -462,7 +732,7 @@ export default function StorefrontMenuPage() {
             className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
               selectedCategoryId === 'all'
                 ? 'shadow-xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
             }`}
           >
             {labels.allCategories}
@@ -483,7 +753,7 @@ export default function StorefrontMenuPage() {
                 className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
                   active
                     ? 'shadow-xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
                 }`}
               >
                 {tField(cat.name_i18n, locale)}
@@ -493,23 +763,99 @@ export default function StorefrontMenuPage() {
         </div>
       </header>
 
+      {/* Invalid / Inactive / Foreign QR Table Warning Banner */}
+      {tableState.error && (
+        <div
+          role="alert"
+          data-testid="menu-table-resolution-warning"
+          className="relative z-10 mx-3.5 mt-3 rounded-2xl border-2 border-amber-400 bg-amber-50 p-3.5 text-amber-950 shadow-sm dark:border-amber-500/60 dark:bg-amber-950/80 dark:text-amber-100 space-y-2"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-xs font-black text-amber-900 dark:text-amber-300">
+                {tx(
+                  'Mã QR bàn không khả dụng — vui lòng chọn lại bàn hoặc Mang về',
+                  'Table QR unavailable — please select an active table or Takeaway'
+                )}
+              </p>
+              <p className="text-xs font-medium leading-relaxed">
+                {tableState.error}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {activeTables.map((tb) => (
+              <button
+                key={tb.id}
+                type="button"
+                onClick={() =>
+                  handleSelectTableChoice({
+                    tableId: tb.id,
+                    tableLabel: tb.name,
+                    isTakeaway: false,
+                  })
+                }
+                className="inline-flex items-center gap-1 rounded-xl border border-amber-400 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-900 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-slate-900 dark:text-white dark:hover:bg-slate-800"
+              >
+                <Utensils className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                <span>{tb.name}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                handleSelectTableChoice({
+                  tableId: null,
+                  tableLabel: 'Mang về',
+                  isTakeaway: true,
+                })
+              }
+              className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-500"
+            >
+              <ShoppingBag className="h-3 w-3" />
+              <span>{formatTableLabel('Mang về', locale)}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tables Load Error Banner */}
+      {tablesLoadError && (
+        <div
+          role="alert"
+          data-testid="menu-tables-load-error"
+          className="relative z-10 mx-3.5 mt-3 flex items-center justify-between gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-800 dark:border-rose-700/60 dark:bg-rose-950/70 dark:text-rose-200"
+        >
+          <span>⚠️ {tablesLoadError}</span>
+          <button
+            type="button"
+            onClick={() => fetchCatalogData(false)}
+            className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-rose-600 px-2.5 py-1 text-[11px] font-black text-white hover:bg-rose-500"
+          >
+            <RefreshCw className="h-3 w-3" />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      )}
+
       {/* Active Order Realtime Banner if Guest Just Sent an Order */}
       {lastOrder && (
         <div className="relative z-10 mx-3.5 mt-3">
           <button
             type="button"
             onClick={() => setIsStaffModalOpen(true)}
-            className="flex w-full items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-slate-900 px-3.5 py-2.5 text-left text-white shadow-md"
+            className="flex w-full items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-white dark:bg-slate-900 px-3.5 py-2.5 text-left text-slate-900 dark:text-white shadow-md"
           >
             <div className="flex items-center gap-2.5 min-w-0">
-              <span className="flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400 animate-ping" />
+              <span className="flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500 animate-ping" />
               <div className="min-w-0">
-                <p className="truncate text-xs font-extrabold text-emerald-400">
+                <p className="truncate text-xs font-extrabold text-emerald-700 dark:text-emerald-400">
                   {labels.liveOrderSentPrefix}#{lastOrder.order_code} •{' '}
                   {formatTableLabel(lastOrder.table_label, locale)}
                   {labels.liveOrderSentSuffix}
                 </p>
-                <p className="truncate text-[11px] text-slate-300">
+                <p className="truncate text-[11px] text-slate-600 dark:text-slate-300">
                   {labels.liveOrderBannerSub}
                 </p>
               </div>
@@ -585,8 +931,13 @@ export default function StorefrontMenuPage() {
                   </span>
                   <span className="block text-[10px] font-medium text-white/85">
                     {promoCalc.discountAmount > 0
-                      ? (PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi).savedDiscount(
-                          formatCurrency(promoCalc.discountAmount, shop.currency)
+                      ? (
+                          PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
+                        ).savedDiscount(
+                          formatCurrency(
+                            promoCalc.discountAmount,
+                            shop.currency
+                          )
                         )
                       : labels.bottomBarHint}
                   </span>
@@ -636,7 +987,17 @@ export default function StorefrontMenuPage() {
         shop={shop}
         locale={locale}
         cart={cart}
-        initialTableLabel={initialTableParam}
+        tables={activeTables}
+        selectedTableId={tableState.selectedTableId}
+        isTakeawaySelected={tableState.isTakeawaySelected}
+        tableResolutionError={tableState.error}
+        tablesLoadError={tablesLoadError}
+        onSelectTable={handleSelectTableChoice}
+        onRetryLoadTables={() => fetchCatalogData(false)}
+        initialTableLabel={
+          tableState.selectedTable?.name ||
+          (tableState.isTakeawaySelected ? 'Mang về' : '')
+        }
         activeOrderProp={lastOrder}
         editingOrder={editingOrder}
         onEditOrder={handleHydrateOrderIntoCart}

@@ -20,8 +20,6 @@ import {
   X,
   ShieldCheck,
   FileSpreadsheet,
-  PanelLeftClose,
-  PanelLeftOpen,
   ChevronLeft,
   ChevronRight,
   Monitor,
@@ -501,7 +499,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           type="button"
           onClick={toggleSidebar}
           aria-label={sidebarToggleLabel}
+          aria-expanded={!isSidebarCollapsed}
           title={sidebarToggleLabel}
+          data-testid="sidebar-edge-toggle"
           className="absolute -right-3.5 top-20 z-50 flex h-8 w-7 items-center justify-center rounded-full border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 shadow-md hover:border-emerald-500 hover:bg-emerald-500 hover:text-slate-950 transition-all"
         >
           {isSidebarCollapsed ? (
@@ -511,7 +511,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           )}
         </button>
 
-        {/* Sidebar Top Brand & Collapse Button */}
+        {/* Sidebar Top Brand */}
         <div
           className={`border-b border-slate-200 dark:border-slate-800 flex items-center ${
             isSidebarCollapsed
@@ -545,20 +545,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               </div>
             )}
           </Link>
-
-          <button
-            type="button"
-            onClick={toggleSidebar}
-            aria-label={sidebarToggleLabel}
-            title={sidebarToggleLabel}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:border-emerald-500 hover:text-emerald-600 transition"
-          >
-            {isSidebarCollapsed ? (
-              <PanelLeftOpen className="h-4 w-4" />
-            ) : (
-              <PanelLeftClose className="h-4 w-4" />
-            )}
-          </button>
         </div>
 
         {/* Store Selector (Full when expanded, compact icon links when collapsed) */}
@@ -703,14 +689,29 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 stopAdminImpersonation();
                 router.push('/admin');
               }}
-              title={t('nav.superAdmin')}
-              aria-label={t('nav.superAdmin')}
+              title={
+                getAdminBackupSession()
+                  ? t('header.exitAdminView')
+                  : t('nav.superAdmin')
+              }
+              aria-label={
+                getAdminBackupSession()
+                  ? t('header.exitAdminView')
+                  : t('nav.superAdmin')
+              }
+              data-testid="sidebar-exit-impersonation"
               className={`flex items-center justify-center gap-1.5 rounded-xl bg-amber-400 text-xs font-black text-slate-950 hover:bg-amber-300 shadow-sm ${
                 isSidebarCollapsed ? 'h-10 w-10' : 'w-full px-3 py-2.5'
               }`}
             >
               <ShieldCheck className="h-4 w-4 shrink-0" />
-              {!isSidebarCollapsed && <span>{t('nav.superAdmin')}</span>}
+              {!isSidebarCollapsed && (
+                <span>
+                  {getAdminBackupSession()
+                    ? t('header.exitAdminView')
+                    : t('nav.superAdmin')}
+                </span>
+              )}
             </button>
           )}
 
@@ -769,49 +770,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           isSidebarCollapsed ? 'md:pl-[72px]' : 'md:pl-64'
         }`}
       >
-        {/* Super Admin Impersonation / Quick Return Banner */}
-        {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
-          <div className="bg-slate-950 text-amber-300 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 min-w-0">
-              <ShieldCheck className="h-4 w-4 text-amber-400 shrink-0" />
-              <span className="font-bold truncate">
-                {t('header.adminViewingShop', {
-                  shopName: activeShop?.name || tx('Toàn hệ thống', 'All stores'),
-                })}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                stopAdminImpersonation();
-                router.push('/admin');
-              }}
-              className="shrink-0 rounded-lg bg-amber-400 px-2.5 py-1 text-[11px] font-black text-slate-950 hover:bg-amber-300"
-            >
-              {t('header.exitAdminView')} →
-            </button>
-          </div>
-        )}
-
         {/* Top Header Bar — Responsive across 390px, 768px, 1280px */}
         <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-2 flex items-center justify-between gap-1.5 sm:gap-2">
           <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
-            {/* Desktop Sidebar Collapse/Expand Icon-Only Button */}
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              aria-label={sidebarToggleLabel}
-              title={sidebarToggleLabel}
-              data-testid="header-collapse-menu"
-              className="hidden md:inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-700 transition"
-            >
-              {isSidebarCollapsed ? (
-                <PanelLeftOpen className="h-4 w-4 text-emerald-600" />
-              ) : (
-                <PanelLeftClose className="h-4 w-4 text-slate-500" />
-              )}
-            </button>
-
             <Link
               href="/"
               className="md:hidden flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white font-black text-sm"
@@ -858,6 +819,25 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               >
                 <Monitor className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
                 <span className="hidden xl:inline">{notifButtonLabel}</span>
+              </button>
+            )}
+
+            {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
+              <button
+                type="button"
+                onClick={() => {
+                  stopAdminImpersonation();
+                  router.push('/admin');
+                }}
+                aria-label={t('header.exitAdminView')}
+                title={t('header.exitAdminView')}
+                data-testid="header-exit-impersonation"
+                className="inline-flex items-center gap-1 rounded-xl border border-amber-400/60 bg-amber-400 px-2 sm:px-2.5 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300 shrink-0"
+              >
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                <span className="hidden lg:inline">
+                  {t('header.exitAdminView')}
+                </span>
               </button>
             )}
 
@@ -939,6 +919,22 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             </Link>
           );
         })}
+        {(isSuperAdmin(profile) || Boolean(getAdminBackupSession())) && (
+          <button
+            type="button"
+            onClick={() => {
+              stopAdminImpersonation();
+              router.push('/admin');
+            }}
+            aria-label={t('header.exitAdminView')}
+            title={t('header.exitAdminView')}
+            data-testid="mobile-exit-impersonation"
+            className="shrink-0 flex flex-col items-center justify-center gap-0.5 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[10px] font-black text-slate-950 hover:bg-amber-300"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            <span className="whitespace-nowrap">{t('header.exitAdminView')}</span>
+          </button>
+        )}
       </nav>
     </div>
   );

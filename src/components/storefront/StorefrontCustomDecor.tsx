@@ -57,7 +57,7 @@ export function getStorefrontBackgroundProps(shop: Shop): {
   if (style === 'custom_image' && bgUrl) {
     return {
       isDarkTheme: true,
-      containerClass: 'relative min-h-screen text-slate-900',
+      containerClass: 'relative min-h-screen text-slate-900 dark:text-slate-100',
       backgroundLayer: (
         <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden flex justify-center">
           <div className="relative w-full max-w-md h-full">
@@ -84,7 +84,7 @@ export function getStorefrontBackgroundProps(shop: Shop): {
     return {
       isDarkTheme: false,
       containerClass:
-        'qr-light-surface relative min-h-screen !bg-[#fdf8ee] text-slate-900',
+        'relative min-h-screen bg-[#fdf8ee] dark:bg-slate-950 text-slate-900 dark:text-slate-100',
       backgroundLayer: null,
     };
   }
@@ -92,7 +92,7 @@ export function getStorefrontBackgroundProps(shop: Shop): {
   return {
     isDarkTheme: false,
     containerClass:
-      'qr-light-surface relative min-h-screen !bg-slate-50 text-slate-900',
+      'relative min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100',
     backgroundLayer: null,
   };
 }
@@ -671,12 +671,11 @@ export function StorefrontPromoBanner({
                 <button
                   type="button"
                   onClick={handleCopyCode}
-                  style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
-                  className="qr-light-surface inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-1 text-[11px] font-black text-slate-900 shadow-xs hover:bg-slate-100 active:scale-95 transition"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white dark:bg-slate-900 px-3 py-1 text-[11px] font-black text-slate-900 dark:text-slate-100 shadow-xs hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition"
                 >
                   <Tag className="h-3 w-3 text-rose-500" />
                   <span className="font-mono">{banner.voucherCode}</span>
-                  <span className="text-[10px] text-emerald-600 font-bold">
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
                     {copied ? pt.copiedCode : pt.copyCode}
                   </span>
                 </button>
@@ -873,11 +872,10 @@ export function StorefrontFlashSaleSection({
             <div
               key={item.id}
               onClick={() => onSelectItem && onSelectItem(item)}
-              style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
-              className="qr-light-surface shrink-0 w-40 rounded-2xl bg-white p-2.5 text-slate-900 shadow-md flex flex-col justify-between cursor-pointer hover:scale-[1.01] transition"
+              className="shrink-0 w-40 rounded-2xl bg-white dark:bg-slate-900 p-2.5 text-slate-900 dark:text-slate-100 shadow-md flex flex-col justify-between cursor-pointer hover:scale-[1.01] transition border border-slate-100 dark:border-slate-800"
             >
               <div>
-                <div className="relative h-24 w-full rounded-xl overflow-hidden bg-slate-100 mb-2">
+                <div className="relative h-24 w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 mb-2">
                   {item.image_url ? (
                     <img
                       src={item.image_url}
@@ -893,17 +891,17 @@ export function StorefrontFlashSaleSection({
                     {eff.discountBadge || badgeLabel}
                   </span>
                 </div>
-                <h4 className="line-clamp-2 text-xs font-extrabold text-slate-900 leading-snug">
+                <h4 className="line-clamp-2 text-xs font-extrabold text-slate-900 dark:text-slate-100 leading-snug">
                   {itemName}
                 </h4>
               </div>
 
-              <div className="mt-2 pt-1.5 border-t border-slate-100 flex items-end justify-between gap-1">
+              <div className="mt-2 pt-1.5 border-t border-slate-100 dark:border-slate-800 flex items-end justify-between gap-1">
                 <div>
                   <span className="block text-[10px] text-slate-400 line-through">
                     {formatCurrency(item.price, shop.currency)}
                   </span>
-                  <span className="text-xs font-black text-rose-600">
+                  <span className="text-xs font-black text-rose-600 dark:text-rose-400">
                     {formatCurrency(eff.finalPrice, shop.currency)}
                   </span>
                 </div>
@@ -989,8 +987,7 @@ export function StorefrontWelcomePopup({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 16 }}
             transition={{ type: 'spring', damping: 24, stiffness: 300 }}
-            style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
-            className="qr-light-surface relative z-10 w-full max-w-sm overflow-hidden rounded-3xl bg-white text-slate-900 shadow-2xl border border-slate-100"
+            className="relative z-10 w-full max-w-sm overflow-hidden rounded-3xl bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl border border-slate-100 dark:border-slate-800"
           >
             {/* Close Button */}
             <button
@@ -1035,11 +1032,11 @@ export function StorefrontWelcomePopup({
             {/* Popup Content */}
             <div className="p-5 space-y-4">
               <div>
-                <h3 className="text-lg font-black text-slate-900 leading-snug">
+                <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 leading-snug">
                   {displayTitle}
                 </h3>
                 {displayContent && (
-                  <p className="mt-1.5 text-xs sm:text-sm text-slate-600 leading-relaxed">
+                  <p className="mt-1.5 text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                     {displayContent}
                   </p>
                 )}
@@ -1047,12 +1044,12 @@ export function StorefrontWelcomePopup({
 
               {/* Optional Voucher Code Box */}
               {popup.voucherCode && (
-                <div className="flex items-center justify-between rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50/80 px-3.5 py-2.5">
+                <div className="flex items-center justify-between rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50/80 dark:bg-amber-950/40 px-3.5 py-2.5">
                   <div>
-                    <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-800">
+                    <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
                       {pt.voucherLabel}
                     </span>
-                    <span className="font-mono text-base font-black tracking-wider text-slate-900">
+                    <span className="font-mono text-base font-black tracking-wider text-slate-900 dark:text-amber-100">
                       {popup.voucherCode}
                     </span>
                   </div>

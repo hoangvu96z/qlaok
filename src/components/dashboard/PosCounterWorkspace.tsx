@@ -30,10 +30,13 @@ import {
   PaymentMethod,
   Shop,
   ShopOrder,
+  ShopTable,
 } from '@/types/qlaok';
 import { formatCurrency, QUICK_TAGS_BY_VERTICAL } from '@/lib/i18n-helper';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { getAuthHeaders } from '@/lib/auth-session';
+import { filterSelectableTables } from '@/lib/table-helpers';
 
 export interface PosOrderLine {
   lineId: string;
@@ -50,6 +53,7 @@ interface PosCounterWorkspaceProps {
   shop: Shop;
   categories: Category[];
   items: CatalogItem[];
+  tables?: ShopTable[];
   orders?: ShopOrder[];
   editingOrder?: ShopOrder | null;
   autoPrintOnPay: boolean;
@@ -66,22 +70,12 @@ interface PosCounterWorkspaceProps {
   onEditCatalogItem?: (item: CatalogItem) => void;
 }
 
-const TABLE_PRESETS = [
-  'Mang về / Tại quầy',
-  'Bàn 01',
-  'Bàn 02',
-  'Bàn 03',
-  'Bàn 04',
-  'Bàn 05',
-  'Bàn 06',
-  'Bàn 07',
-  'Bàn 08',
-  'Giao hàng (Ship)',
-];
+const NON_TABLE_PRESETS = ['Mang về / Tại quầy', 'Giao hàng (Ship)'] as const;
 
 function formatTablePresetLabel(label: string, locale: 'vi' | 'en'): string {
   if (locale === 'vi') return label;
   if (label === 'Mang về / Tại quầy') return 'Takeaway / Counter';
+  if (label === 'Mang về') return 'Takeaway';
   if (label === 'Tại quầy') return 'Counter';
   if (label === 'Giao hàng (Ship)') return 'Delivery';
   const match = /^Bàn\s+(\d+)$/i.exec(label.trim());
@@ -185,6 +179,7 @@ export function PosCounterWorkspace({
   shop,
   categories,
   items,
+  tables: initialTables,
   orders = [],
   editingOrder = null,
   autoPrintOnPay,
@@ -200,11 +195,74 @@ export function PosCounterWorkspace({
   const [searchQuery, setSearchQuery] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Managed Shop Tables state
+  const [managedTables, setManagedTables] = useState<ShopTable[]>(() =>
+    filterSelectableTables(initialTables || [], shop.id)
+  );
+  const [tablesLoading, setTablesLoading] = useState(false);
+  const [tablesError, setTablesError] = useState<string | null>(null);
+  const [tablesRetryTick, setTablesRetryTick] = useState(0);
+
+  useEffect(() => {
+    if (Array.isArray(initialTables)) {
+      setManagedTables(filterSelectableTables(initialTables, shop.id));
+    }
+  }, [initialTables, shop.id]);
+
+  useEffect(() => {
+    const targetShopId = shop.id;
+    if (!targetShopId) return;
+    let cancelled = false;
+    setTablesLoading(true);
+    setTablesError(null);
+
+    fetch(`/api/tables?shopId=${encodeURIComponent(targetShopId)}`, {
+      headers: getAuthHeaders(),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok || !data || !Array.isArray(data.tables)) {
+          setTablesError(
+            data?.error ||
+              tx(
+                'Không tải được danh sách bàn đã cấu hình.',
+                'Failed to load configured tables.'
+              )
+          );
+          return;
+        }
+        setManagedTables(filterSelectableTables(data.tables, targetShopId));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTablesError(
+            tx(
+              'Lỗi mạng khi tải danh sách bàn.',
+              'Network error loading tables.'
+            )
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTablesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally omit tx so switching locale never refetches or resets POS draft state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shop.id, tablesRetryTick]);
+
   // Active order currently being edited inside POS Terminal
   const [activeEditingOrder, setActiveEditingOrder] =
     useState<ShopOrder | null>(editingOrder);
 
   // Ticket State
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [tableLabel, setTableLabel] = useState('Mang về / Tại quầy');
   const [showTablePicker, setShowTablePicker] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
@@ -214,6 +272,7 @@ export function PosCounterWorkspace({
   // Load editingOrder prop into POS ticket whenever editingOrder changes
   const loadOrderIntoPos = (targetOrder: ShopOrder) => {
     setActiveEditingOrder(targetOrder);
+    setSelectedTableId(targetOrder.table_id ?? null);
     setTableLabel(targetOrder.table_label || 'Mang về / Tại quầy');
     setPaymentMethod(targetOrder.payment_method || 'cash');
     const hydrated = hydratePosLinesFromOrder(targetOrder, items, shop.id);
@@ -227,6 +286,7 @@ export function PosCounterWorkspace({
     setActiveEditingOrder(null);
     setLines([]);
     setSelectedLineId(null);
+    setSelectedTableId(null);
     setTableLabel('Mang về / Tại quầy');
     setSubmitError(null);
     onCancelEditOrder?.();
@@ -707,11 +767,12 @@ export function PosCounterWorkspace({
       const isEditing = Boolean(activeEditingOrder);
       const res = await fetch('/api/orders', {
         method: isEditing ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(
           isEditing && activeEditingOrder
             ? {
                 order_id: activeEditingOrder.id,
+                table_id: selectedTableId,
                 table_label:
                   tableLabel.trim() ||
                   activeEditingOrder.table_label ||
@@ -727,6 +788,7 @@ export function PosCounterWorkspace({
               }
             : {
                 shop_id: shop.id,
+                table_id: selectedTableId,
                 table_label: tableLabel.trim() || 'Tại quầy',
                 visitor_lang: 'vi',
                 payment_method: paymentMethod,
@@ -931,6 +993,7 @@ export function PosCounterWorkspace({
             <div className="relative flex-1 min-w-0">
               <button
                 type="button"
+                data-testid="pos-table-picker-trigger"
                 onClick={() => setShowTablePicker((prev) => !prev)}
                 className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-black text-slate-900 shadow-2xs hover:border-emerald-500"
               >
@@ -941,36 +1004,132 @@ export function PosCounterWorkspace({
               </button>
 
               {showTablePicker && (
-                <div className="absolute left-0 top-10 z-30 w-64 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl space-y-2">
-                  <div className="text-[11px] font-bold text-slate-500 px-1">
-                    {tx(
-                      'Chọn nhanh Bàn / Mang về:',
-                      'Quick select Table / Takeaway:'
-                    )}
+                <div
+                  data-testid="pos-table-picker-popover"
+                  className="absolute left-0 top-10 z-30 w-72 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl space-y-2"
+                >
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-[11px] font-bold text-slate-500">
+                      {tx(
+                        'Chọn Bàn / Mang về:',
+                        'Select Table / Takeaway:'
+                      )}
+                    </span>
+                    <Link
+                      href="/dashboard/qr-studio#table-management"
+                      className="text-[10px] font-bold text-emerald-700 hover:underline"
+                    >
+                      {tx('Quản lý bàn', 'Manage tables')}
+                    </Link>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {TABLE_PRESETS.map((preset) => (
+
+                  {tablesError && (
+                    <div
+                      data-testid="pos-tables-load-error"
+                      className="flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700"
+                    >
+                      <span className="truncate">{tablesError}</span>
                       <button
-                        key={preset}
                         type="button"
-                        onClick={() => {
-                          setTableLabel(preset);
-                          setShowTablePicker(false);
-                        }}
-                        className={`rounded-lg px-2.5 py-1.5 text-left text-xs font-bold transition ${
-                          tableLabel === preset
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                        }`}
+                        onClick={() => setTablesRetryTick((c) => c + 1)}
+                        className="shrink-0 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-black text-white hover:bg-rose-500"
                       >
-                        {formatTablePresetLabel(preset, locale)}
+                        {tx('Thử lại', 'Retry')}
                       </button>
-                    ))}
+                    </div>
+                  )}
+
+                  {/* Non-table presets (Takeaway / Counter / Delivery) */}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {NON_TABLE_PRESETS.map((preset) => {
+                      const isSelected =
+                        selectedTableId === null && tableLabel === preset;
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTableId(null);
+                            setTableLabel(preset);
+                            setShowTablePicker(false);
+                          }}
+                          className={`rounded-lg px-2.5 py-1.5 text-left text-xs font-bold transition ${
+                            isSelected
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                          }`}
+                        >
+                          {formatTablePresetLabel(preset, locale)}
+                        </button>
+                      );
+                    })}
                   </div>
+
+                  {/* Managed Active ShopTables */}
+                  {managedTables.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pt-1 border-t border-slate-100">
+                      {managedTables.map((tb) => {
+                        const isSelected =
+                          selectedTableId === tb.id ||
+                          (selectedTableId === null && tableLabel === tb.name);
+                        return (
+                          <button
+                            key={tb.id}
+                            type="button"
+                            data-testid={`pos-table-option-${tb.table_code}`}
+                            onClick={() => {
+                              setSelectedTableId(tb.id);
+                              setTableLabel(tb.name);
+                              setShowTablePicker(false);
+                            }}
+                            className={`rounded-lg px-2.5 py-1.5 text-left text-xs font-bold transition ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            <div className="truncate">{tb.name}</div>
+                            {tb.section && (
+                              <div
+                                className={`text-[10px] font-normal truncate ${
+                                  isSelected
+                                    ? 'text-emerald-100'
+                                    : 'text-slate-500'
+                                }`}
+                              >
+                                {tb.section}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    !tablesLoading && (
+                      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
+                        {tx(
+                          'Chưa có bàn cấu hình. Vào QR Studio để tạo danh sách bàn.',
+                          'No configured tables yet. Open QR Studio to create tables.'
+                        )}
+                      </div>
+                    )
+                  )}
+
                   <input
                     type="text"
                     value={tableLabel}
-                    onChange={(e) => setTableLabel(e.target.value)}
+                    onChange={(e) => {
+                      const nextLabel = e.target.value;
+                      setTableLabel(nextLabel);
+                      const matched = managedTables.find(
+                        (tb) =>
+                          tb.name.toLowerCase() ===
+                            nextLabel.trim().toLowerCase() ||
+                          tb.table_code.toLowerCase() ===
+                            nextLabel.trim().toLowerCase()
+                      );
+                      setSelectedTableId(matched ? matched.id : null);
+                    }}
                     placeholder={tx(
                       'Hoặc nhập tên bàn / tên khách...',
                       'Or enter table / customer name...'

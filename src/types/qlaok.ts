@@ -240,10 +240,65 @@ export interface OrderLineItem {
   quick_tags?: string[];
 }
 
+export interface ShopTable {
+  id: string;
+  shop_id: string;
+  table_code: string;
+  name: string;
+  section: string;
+  capacity: number;
+  sort_order: number;
+  is_active: boolean;
+  is_archived: boolean;
+  archived_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PublicShopTable {
+  id: string;
+  shop_id: string;
+  table_code: string;
+  name: string;
+  section: string;
+  capacity: number;
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface GuestTableResolution {
+  status: 'none' | 'matched' | 'takeaway' | 'inactive' | 'archived' | 'invalid';
+  requestedTableId?: string | null;
+  requestedTableCodeOrName?: string | null;
+  table: ShopTable | null;
+  error: string | null;
+  isTakeaway: boolean;
+  message_vi?: string;
+  message_en?: string;
+}
+
+export interface TableOrderStats {
+  key: string;
+  table_id: string | null;
+  table_label: string;
+  kind: 'managed' | 'takeaway' | 'legacy';
+  orderCount: number;
+  paidOrderCount: number;
+  unpaidOrderCount: number;
+  cancelledOrderCount: number;
+  refundedOrderCount: number;
+  collectedRevenue: number;
+  unpaidAmount: number;
+  refundedAmount: number;
+}
+
+export type TableOrderStatsRow = TableOrderStats;
+
 export interface ShopOrder {
   id: string;
   order_code: string;
   shop_id: string;
+  table_id?: string | null;
   table_label: string;
   session_id?: string;
   visitor_lang: SupportedLocale;
@@ -291,6 +346,7 @@ export interface ShopOrder {
 export interface TableBillSummary {
   shop_id: string;
   session_id: string;
+  table_id?: string | null;
   table_label: string;
   order_ids: string[];
   order_codes: string[];

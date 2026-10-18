@@ -24,13 +24,16 @@ import {
   type SharedOrderQuoteResult,
 } from './order-pricing';
 import { SEED_ITEMS, SEED_SHOPS } from './seed-data';
+import { dbGetShopTables, dbResolveOrderTableIdentity } from './shop-tables';
 import { isSupabaseConfigured } from './supabase/client';
+import { summarizeOrdersByTable } from './table-helpers';
 
 export {
   computeSharedOrderQuote,
   getItemFlashSalePrice,
   isFlashSaleActiveNow,
   isPromoBannerActiveNow,
+  summarizeOrdersByTable,
   type SharedOrderQuoteResult,
 };
 
@@ -728,6 +731,12 @@ function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
     id: String(raw.id || `ord-${Date.now()}`),
     order_code: String(raw.order_code || 'ORD-000'),
     shop_id: String(raw.shop_id || 'shop-fnb-001'),
+    table_id:
+      raw.table_id !== undefined &&
+      raw.table_id !== null &&
+      String(raw.table_id).trim() !== ''
+        ? String(raw.table_id).trim()
+        : null,
     table_label: String(raw.table_label || 'Tại quầy'),
     session_id: raw.session_id || undefined,
     bill_version:
@@ -1353,7 +1362,9 @@ export async function dbGetOrderById(
 
 export async function dbCreateOrder(params: {
   shop_id: string;
-  table_label: string;
+  table_id?: string | null;
+  table_code?: string | null;
+  table_label?: string;
   session_id?: string;
   visitor_lang?: SupportedLocale;
   customer_note?: string;
@@ -1393,6 +1404,18 @@ export async function dbCreateOrder(params: {
         return normalizeOrderRecord(existingIdemp);
       }
     }
+
+    // 0. Validate managed table identity BEFORE stock deduction
+    const resolvedTable = await dbResolveOrderTableIdentity({
+      shop_id: params.shop_id,
+      table_id: params.table_id,
+      table_code: params.table_code,
+      table_label: params.table_label,
+      dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+    });
+    const resolvedTableId = resolvedTable.table_id;
+    const normalizedTableLabel =
+      resolvedTable.table_label || (params.table_label || '').trim() || 'Bàn khách';
 
     const loaded = await loadShopCatalogAndTheme(params.shop_id);
     const itemMap = loaded.itemMap;
@@ -1471,8 +1494,6 @@ export async function dbCreateOrder(params: {
     const isPaid =
       canCollectPayment && (markCompleted || params.payment_status === 'paid');
 
-    const normalizedTableLabel =
-      (params.table_label || '').trim() || 'Bàn khách';
     const orderSource =
       isStaff && params.source === 'counter_pos' ? 'counter_pos' : 'qr_table';
 
@@ -1484,8 +1505,11 @@ export async function dbCreateOrder(params: {
           o.shop_id === params.shop_id &&
           o.status !== 'cancelled' &&
           o.payment_status === 'unpaid' &&
-          o.table_label.trim().toLowerCase() ===
-            normalizedTableLabel.toLowerCase() &&
+          (resolvedTableId
+            ? o.table_id === resolvedTableId
+            : !o.table_id &&
+              o.table_label.trim().toLowerCase() ===
+                normalizedTableLabel.toLowerCase()) &&
           Boolean(o.session_id)
       );
       resolvedSessionId =
@@ -1499,6 +1523,7 @@ export async function dbCreateOrder(params: {
       id: `ord-${randomUUID()}`,
       order_code: `ORD-${randomCode}`,
       shop_id: params.shop_id,
+      table_id: resolvedTableId,
       table_label: normalizedTableLabel,
       session_id: resolvedSessionId,
       bill_version: 1,
@@ -1582,6 +1607,8 @@ export async function dbUpdateOrderStatus(
     refunded_by?: string;
     cancelled_reason?: string;
     restock_items?: boolean;
+    table_id?: string | null;
+    table_code?: string | null;
     table_label?: string;
     customer_note?: string;
     items?: OrderLineItem[];
@@ -1621,18 +1648,35 @@ export async function dbUpdateOrderStatus(
       );
     }
 
-    // Lock item and discount modifications once an order is already paid
+    // Lock item, discount, and table modifications once an order is already paid
     const isChangingItems = Array.isArray(patch.items);
     const isChangingDiscount =
       patch.discount_amount !== undefined &&
       Number(patch.discount_amount) !== Number(existing.discount_amount || 0);
+    const isChangingTableId =
+      patch.table_id !== undefined &&
+      (patch.table_id?.trim() || null) !== (existing.table_id || null);
+    const isChangingTableCode =
+      patch.table_id === undefined &&
+      patch.table_code !== undefined &&
+      (patch.table_code?.trim() || '') !== '';
+    const isChangingTableLabel =
+      patch.table_id === undefined &&
+      patch.table_code === undefined &&
+      patch.table_label !== undefined &&
+      patch.table_label.trim() !== '' &&
+      patch.table_label.trim() !== existing.table_label;
 
     if (
       existing.payment_status !== 'unpaid' &&
-      (isChangingItems || isChangingDiscount)
+      (isChangingItems ||
+        isChangingDiscount ||
+        isChangingTableId ||
+        isChangingTableCode ||
+        isChangingTableLabel)
     ) {
       throw new Error(
-        'ORDER_ALREADY_PAID: Không thể sửa món hoặc giảm giá khi đơn hàng đã thanh toán.'
+        'ORDER_ALREADY_PAID: Không thể sửa món, bàn hoặc giảm giá khi đơn hàng đã thanh toán.'
       );
     }
 
@@ -1643,10 +1687,64 @@ export async function dbUpdateOrderStatus(
       nextStatus === existing.status &&
       !isChangingItems &&
       !isChangingDiscount &&
+      !isChangingTableId &&
+      !isChangingTableCode &&
       patch.table_label === undefined &&
       patch.customer_note === undefined
     ) {
       return existing;
+    }
+
+    let nextTableId: string | null = existing.table_id ?? null;
+    let nextTableLabel: string = existing.table_label;
+
+    if (patch.table_id !== undefined) {
+      const requestedTableId = (patch.table_id ?? '').trim();
+      if (!requestedTableId) {
+        const requestedLabel = (patch.table_label ?? '').trim();
+        if (requestedLabel) {
+          const resolved = await dbResolveOrderTableIdentity({
+            shop_id: existing.shop_id,
+            table_label: requestedLabel,
+            dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+          });
+          nextTableId = resolved.table_id;
+          nextTableLabel = resolved.table_label;
+        } else {
+          nextTableId = null;
+          nextTableLabel = existing.table_id ? 'Mang về' : existing.table_label || 'Mang về';
+        }
+      } else if (requestedTableId !== (existing.table_id || '')) {
+        const resolved = await dbResolveOrderTableIdentity({
+          shop_id: existing.shop_id,
+          table_id: requestedTableId,
+          dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+        });
+        nextTableId = resolved.table_id;
+        nextTableLabel = resolved.table_label;
+      }
+    } else if (isChangingTableCode) {
+      const resolved = await dbResolveOrderTableIdentity({
+        shop_id: existing.shop_id,
+        table_code: patch.table_code,
+        dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+      });
+      nextTableId = resolved.table_id;
+      nextTableLabel =
+        resolved.table_id && existing.table_id && resolved.table_id === existing.table_id
+          ? existing.table_label
+          : resolved.table_label;
+    } else if (isChangingTableLabel) {
+      const resolved = await dbResolveOrderTableIdentity({
+        shop_id: existing.shop_id,
+        table_label: patch.table_label,
+        dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+      });
+      nextTableId = resolved.table_id;
+      nextTableLabel =
+        resolved.table_id && existing.table_id && resolved.table_id === existing.table_id
+          ? existing.table_label
+          : resolved.table_label;
     }
 
     const loaded = await loadShopCatalogAndTheme(existing.shop_id);
@@ -1892,10 +1990,8 @@ export async function dbUpdateOrderStatus(
 
     const updated: ShopOrder = {
       ...existing,
-      table_label:
-        patch.table_label !== undefined
-          ? patch.table_label.trim() || existing.table_label
-          : existing.table_label,
+      table_id: nextTableId,
+      table_label: nextTableLabel,
       customer_note:
         patch.customer_note !== undefined
           ? patch.customer_note.trim()
@@ -1971,14 +2067,55 @@ export async function dbUpdateOrderStatus(
   });
 }
 
+async function resolveTargetManagedTableId(
+  shopId: string,
+  explicitTableId?: string | null,
+  tableLabelOrCode?: string | null
+): Promise<string | null> {
+  const cleanExplicitId = (explicitTableId ?? '').trim();
+  if (cleanExplicitId) return cleanExplicitId;
+
+  const cleanNeedle = (tableLabelOrCode ?? '').trim().toLowerCase();
+  if (!cleanNeedle) return null;
+
+  try {
+    const allTables = await dbGetShopTables(shopId, {
+      includeInactive: true,
+      includeArchived: true,
+      dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+    });
+    const byId = allTables.find((t) => t.id.trim().toLowerCase() === cleanNeedle);
+    if (byId) return byId.id;
+
+    const byActiveNameOrCode = allTables.find(
+      (t) =>
+        !t.is_archived &&
+        (t.name.trim().toLowerCase() === cleanNeedle ||
+          t.table_code.trim().toLowerCase() === cleanNeedle)
+    );
+    if (byActiveNameOrCode) return byActiveNameOrCode.id;
+  } catch {
+    // fallback if shop_tables unavailable
+  }
+  return null;
+}
+
 export async function dbGetTableBill(params: {
   shop_id: string;
+  table_id?: string | null;
   table_label?: string;
   session_id?: string;
 }): Promise<TableBillSummary> {
   const shopOrders = await dbGetShopOrders(params.shop_id);
   const targetSession = params.session_id?.trim();
   const targetTable = params.table_label?.trim().toLowerCase();
+  const resolvedTableId = !targetSession
+    ? await resolveTargetManagedTableId(
+        params.shop_id,
+        params.table_id,
+        params.table_label
+      )
+    : null;
 
   const matchingOrders = shopOrders
     .filter((o) => {
@@ -1986,11 +2123,12 @@ export async function dbGetTableBill(params: {
       if (targetSession) {
         return o.session_id === targetSession;
       }
+      if (o.payment_status !== 'unpaid') return false;
+      if (resolvedTableId) {
+        return o.table_id === resolvedTableId;
+      }
       if (targetTable) {
-        return (
-          o.payment_status === 'unpaid' &&
-          o.table_label.trim().toLowerCase() === targetTable
-        );
+        return !o.table_id && o.table_label.trim().toLowerCase() === targetTable;
       }
       return false;
     })
@@ -2036,6 +2174,7 @@ export async function dbGetTableBill(params: {
 
   return {
     shop_id: params.shop_id,
+    table_id: matchingOrders[0]?.table_id ?? resolvedTableId ?? null,
     table_label:
       matchingOrders[0]?.table_label || params.table_label || 'Bàn khách',
     session_id:
@@ -2060,6 +2199,7 @@ export async function dbGetTableBill(params: {
 
 export async function dbSettleTableBill(params: {
   shop_id: string;
+  table_id?: string | null;
   table_label?: string;
   session_id?: string;
   payment_method: PaymentMethod;
@@ -2068,9 +2208,12 @@ export async function dbSettleTableBill(params: {
   markCompleted?: boolean;
 }): Promise<TableBillSummary> {
   return withOrderInventoryLock(async () => {
+    const effectiveTableLookup =
+      (params.table_id ?? '').trim() || params.table_label || null;
+
     if (isOrderDbConfigured()) {
       const rows = await orderRpc('settle_table_bill_atomic', { p_shop_id: params.shop_id,
-        p_session_id: params.session_id || null, p_table_label: params.table_label || null,
+        p_session_id: params.session_id || null, p_table_label: effectiveTableLookup,
         p_payment_method: params.payment_method, p_paid_by: params.paid_by || null,
         p_payment_idempotency_key: params.payment_idempotency_key || `table-${randomUUID()}`,
         p_mark_completed: Boolean(params.markCompleted), p_now: new Date().toISOString(),
@@ -2083,6 +2226,13 @@ export async function dbSettleTableBill(params: {
     const store = readStore();
     const targetSession = params.session_id?.trim();
     const targetTable = params.table_label?.trim().toLowerCase();
+    const resolvedTableId = !targetSession
+      ? await resolveTargetManagedTableId(
+          params.shop_id,
+          params.table_id,
+          params.table_label
+        )
+      : null;
 
     const replayKey = params.payment_idempotency_key?.trim();
     if (replayKey) {
@@ -2095,10 +2245,15 @@ export async function dbSettleTableBill(params: {
       if (o.shop_id !== params.shop_id || o.status === 'cancelled' || o.payment_status !== 'unpaid') continue;
       if (targetSession && o.session_id === targetSession) {
         matchingIndices.push(i);
+      } else if (!targetSession && resolvedTableId) {
+        if (o.table_id === resolvedTableId) {
+          matchingIndices.push(i);
+        }
       } else if (
         !targetSession &&
+        !resolvedTableId &&
         targetTable &&
-        o.payment_status === 'unpaid' &&
+        !o.table_id &&
         o.table_label.trim().toLowerCase() === targetTable
       ) {
         matchingIndices.push(i);
@@ -2147,7 +2302,9 @@ export async function dbSettleTableBill(params: {
 }
 
 function summarizeSettledOrders(shopId: string, orders: ShopOrder[]): TableBillSummary {
-  return { shop_id: shopId, session_id: orders[0]?.session_id || '', table_label: orders[0]?.table_label || '',
+  return { shop_id: shopId, session_id: orders[0]?.session_id || '',
+    table_id: orders[0]?.table_id ?? null,
+    table_label: orders[0]?.table_label || '',
     order_ids: orders.map((order) => order.id), order_codes: orders.map((order) => order.order_code), orders,
     combined_items: orders.flatMap((order) => order.items),
     subtotal_amount: orders.reduce((sum, order) => sum + (order.subtotal_amount ?? order.total_amount), 0),

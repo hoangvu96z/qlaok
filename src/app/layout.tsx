@@ -48,11 +48,12 @@ export default function RootLayout({
   return (
     <html
       lang="vi"
-      className={`${beVietnamPro.variable} ${jetbrainsMono.variable}`}
+      data-theme="light"
+      className={`light ${beVietnamPro.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
       <body
-        className={`${beVietnamPro.className} min-h-screen bg-slate-50 font-sans text-slate-900 antialiased`}
+        className={`${beVietnamPro.className} min-h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 antialiased`}
       >
         <AppI18nProvider>{children}</AppI18nProvider>
       </body>

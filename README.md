@@ -1,191 +1,90 @@
-# Qlaok ("Quét Là OK") – Hệ Thống mPOS, Gọi Món Tại Bàn & Web Đa Ngôn Ngữ Cho Mọi Cửa Hàng
+# Qlaok — Quét Là OK
 
-Nền tảng Micro-SaaS B2B2C giúp các chủ cửa hàng tại **34 Tỉnh / Thành phố Việt Nam** (**Quán ăn/Cafe F&B**, **Tiệm Nail/Spa/Massage**, **Shop Đặc sản/Bán lẻ**) tạo **Menu / Bảng giá 5 ngôn ngữ tự động bằng AI (`VI`, `EN`, `KO`, `JA`, `ZH`)**, hệ thống **2 Mã QR chuyên biệt (QR Cửa & QR Bàn)** và **Màn hình Thu ngân / Bếp mPOS Realtime** (tự động nhận đơn từ bàn, báo chuông, quản lý số lượng tồn kho và thống kê doanh thu).
+Cập nhật theo workspace ngày **18/10/2026**. Nền tảng menu/trang cửa hàng qua QR và mPOS cho F&B, dịch vụ và bán lẻ; gồm web khách hàng, dashboard chủ quán/thu ngân, Super Admin và ứng dụng Expo.
 
----
+## Bắt đầu cho coding agent
 
-## 🛠️ 1. Yêu cầu hệ thống & Cài đặt nhanh
+**Bắt buộc dùng CodeGraph trước khi tìm/đọc/sửa code.** Codex đọc [AGENTS.md](AGENTS.md); AGY/Antigravity đọc [.agents/rules/codegraph.md](.agents/rules/codegraph.md) và [GEMINI.md](GEMINI.md). Rule AGY dùng `trigger: always_on` và nhúng đầy đủ chính sách mỗi lượt. Cấu hình: [AGENT_RULES.md](docs/AGENT_RULES.md). Quy trình và ngoại lệ: [CODEGRAPH_WORKFLOW.md](docs/CODEGRAPH_WORKFLOW.md).
 
-- **Node.js**: `>= 20.x`
-- **Trình quản lý gói**: `npm`
+## Chức năng hiện tại
+
+- QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn và theo dõi bằng token riêng.
+- Dashboard: tổng quan, đơn hàng/POS, catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing.
+- mPOS: tạo/sửa đơn, phục vụ, thu/hoàn tiền, giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in. Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` độc lập payment `unpaid/paid/refunded`.
+- Quản lý bàn trên web tại `/dashboard/qr-studio`: tạo/sửa tên, mã bàn, khu vực, sức chứa, bật/tắt và lưu trữ; mỗi bàn có QR riêng tự chọn bàn khi mở menu. Báo cáo có tab **Theo bàn**; đơn cũ giữ tên bàn lịch sử và được phân biệt với bàn quản lý/Mang về. Xem [hướng dẫn bàn](docs/TABLE_MANAGEMENT.md).
+- Membership theo shop: `owner`, `cashier`, `staff`, kiểm quyền ở API. Super Admin tại `/admin` dùng kiểm tra quyền server.
+- Storefront hỗ trợ **8 ngôn ngữ**: `vi/en/ko/ja/zh/es/it/ru`, giới hạn theo gói và cấu hình quán. Giao diện quản trị, marketing, auth và mobile hỗ trợ **VI/EN**, mặc định VI; đây là hai miền ngôn ngữ riêng.
+- AI dịch/OCR qua gateway OpenAI-compatible cấu hình `AI_*`, kết hợp Tesseract; upload ảnh qua R2. Nội dung AI/OCR cần được merchant kiểm tra trước khi lưu.
+- Mobile Expo có các tab tổng quan, catalog, đơn, khuyến mãi và settings; dùng Supabase Auth thật và API có Bearer token. In mobile hiện là preview/mô phỏng.
+
+| Gói | Giá cấu hình/tháng | Món tối đa | Ngôn ngữ tối đa | OCR | Theme |
+| --- | ---: | ---: | ---: | --- | --- |
+| Free | 0đ | 5 | 1 | Không | Không |
+| Basic | 39.000đ | 25 | 3 | Không | Có |
+| Premium | 69.000đ | 999999 (hiển thị không giới hạn) | 8 | Có | Có |
+
+Nguồn cấu hình: `src/lib/plan-limits.ts`; copy dùng chung ở `src/lib/plan-copy.ts`, giá thanh toán server ở `src/lib/db.ts`.
+
+## Chạy local
+
+Dùng **Node.js 24** để khớp job verify CI và các test TypeScript strip-types; npm và lockfile đã có trong từng app.
 
 ```bash
-# 1. Cài đặt dependencies
-npm install
-
-# 2. Tạo file biến môi trường từ file mẫu
+npm ci
 cp .env.example .env.local
-
-# 3. Chạy môi trường phát triển tại http://localhost:3000
+# Điền biến môi trường của môi trường phát triển riêng
 npm run dev
 ```
 
----
-
-## 🗄️ 2. Hướng dẫn Setup Supabase Database & Auth
-
-Hệ thống sử dụng **Supabase (PostgreSQL + Auth)** làm cơ sở dữ liệu chính (kèm cơ chế đồng bộ tồn kho/đơn hàng tại `.local-db/mpos-store.json` & `.local-db/db.json`).
-
-### Bước 1: Điền biến môi trường vào `.env.local`
-Lấy thông tin trong **Supabase Dashboard → Project Settings → API** và điền vào file `.env.local`:
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://kftmrjmmympztzztunxf.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_...
-```
-
-### Bước 2: Khởi tạo & Cập nhật Bảng Tự Động (`npm run db:migrate`)
-Bạn có thể chọn **1 trong 2 cách** sau để chạy toàn bộ các file SQL trong [`supabase/migrations/`](./supabase/migrations/):
-
-- **Cách A – Chạy tự động bằng 1 lệnh CLI (`npm run db:migrate`) hoặc GitHub Actions CI/CD:**
-  1. Tạo 1 **Personal Access Token (`sbp_...`)** tại `https://supabase.com/dashboard/account/tokens`.
-  2. Điền vào `.env.local`: `SUPABASE_ACCESS_TOKEN=sbp_...`
-  3. Chạy lệnh:
-     ```bash
-     npm run db:migrate
-     ```
-     Script [`scripts/migrate-supabase.mjs`](./scripts/migrate-supabase.mjs) sẽ tự động quét mọi file `.sql` theo thứ tự (`001_init_qlaok.sql`, `002_mpos_orders_inventory.sql`, ...) và thực thi trực tiếp lên Supabase qua HTTPS Management API. Ngoài ra, workflow [`.github/workflows/supabase-migrate.yml`](./.github/workflows/supabase-migrate.yml) sẽ tự động deploy các file `.sql` mới mỗi khi `git push` lên nhánh `main`.
-- **Cách B – Chạy thủ công trên giao diện Web:**
-  1. Mở [`supabase/migrations/001_init_qlaok.sql`](./supabase/migrations/001_init_qlaok.sql) và [`supabase/migrations/002_mpos_orders_inventory.sql`](./supabase/migrations/002_mpos_orders_inventory.sql).
-  2. Vào **Supabase Dashboard → SQL Editor → New Query**, dán nội dung và bấm **Run**.
-
-### Bước 3: Tự động nạp dữ liệu mẫu (Auto-Seed)
-Ngay lần đầu tiên khởi động `npm run dev` (hoặc gọi `http://localhost:3000/api/health`), tầng dữ liệu [`src/lib/db.ts`](./src/lib/db.ts) và [`src/lib/mpos-store.ts`](./src/lib/mpos-store.ts) sẽ kiểm tra dữ liệu mẫu:
-- Tự động nạp 3 cửa hàng mẫu đủ 5 ngôn ngữ (`pho-hoi-an`, `linh-spa-nail`, `dac-san-mien-trung`), 9 danh mục, 11 món/dịch vụ kèm số lượng tồn kho (`stock_quantity`), đơn hàng mPOS mẫu và thống kê doanh thu 7 ngày.
-- Kiểm tra trạng thái kết nối bất cứ lúc nào tại: `http://localhost:3000/api/health` (`"dataSource": "supabase"`, `"supabaseTablesReady": true`).
-
----
-
-## 🔔 3. Luồng Gọi Món Tại Bàn (mPOS Realtime) & Quản Lý Tồn Kho
-
-1. **Khách quét QR tại bàn (`/s/[slug]/menu`):**
-   - Chọn món / dịch vụ bằng 1 trong 5 ngôn ngữ (`VI`, `EN`, `KO`, `JA`, `ZH`), chọn tùy chọn/topping và ghi chú dị ứng.
-   - Chọn số bàn (`Bàn 01`, `Bàn 02`... hoặc `Mang về`), phương thức thanh toán (`Tiền mặt` / `Chuyển khoản QR`) và bấm **🚀 Gửi Đơn Xuống Quầy / Bếp Ngay**.
-   - Theo dõi trực tiếp trạng thái đơn hàng 3 bước ngay trên điện thoại: **Chờ quầy xác nhận (`new`) → Đang chế biến (`preparing`) → Đã phục vụ & Hoàn tất (`completed`)**.
-2. **Màn hình Quầy Thu Ngân & Bếp (`/dashboard/orders`):**
-   - Tự động phát **chuông báo âm thanh (Web Audio API)** + hiện **Toast thông báo nổi** và badge số đơn mới trên thanh điều hướng ngay khi khách gửi đơn.
-   - Nhân viên bấm **Nhận đơn & Báo bếp**, **Đã phục vụ & Hoàn tất**, bật **Mã VietQR tự động điền số tiền theo bàn** hoặc **Tạo đơn nhanh tại quầy (POS)**.
-3. **Tự động Trừ Tồn Kho & Khóa Món Hết Hàng (`/dashboard/catalog`):**
-   - Mỗi món hỗ trợ cấu hình **Số lượng tồn (`stock_quantity`)** trực tiếp trên dòng món (hoặc để trống `∞` nếu không giới hạn).
-   - Khi khách đặt món, hệ thống tự động trừ `stock_quantity` và cộng `sold_count`.
-   - Khi `stock_quantity` về `0`, món tự động chuyển sang **`is_available = false` (Tạm hết)** trên cả Supabase lẫn màn hình menu của khách. Nếu hủy đơn, tồn kho được hoàn lại tự động.
-4. **Thống kê Doanh Thu & Món Bán Chạy (`/dashboard`):**
-   - Hiển thị **Doanh thu hôm nay**, **Tổng doanh thu lũy kế**, **Giá trị trung bình/đơn (AOV)**, **Biểu đồ doanh thu 7 ngày gần nhất**, **Cảnh báo món sắp hết hàng (`<= 5`)** và **Top món bán chạy nhất**.
-5. **Ứng dụng Mobile Chủ Quán & Thu Ngân (`mobile/App.tsx` – React Native / Expo):**
-   - Tích hợp **Tab `🔔 Đơn mPOS`** theo dõi đơn gọi món tại bàn theo thời gian thực, tự động **rung điện thoại (`Vibration.vibrate`) + hiện Banner thông báo nổi** khi có đơn mới, bấm **Nhận đơn & Báo bếp** / **Hoàn tất & Thu tiền** / **Hủy đơn**, chỉnh nhanh số lượng tồn kho (`-1`, `+5`, `∞`) và xem doanh thu thực tế.
-
----
-
-## 🤖 4. Cấu hình 9Router AI & Tesseract OCR + Cloudflare R2
-
-Trong file `.env.local`, hệ thống sử dụng cổng **9Router AI** (cấu hình tự do qua `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`, `AI_VISION_MODEL`) kết hợp **Tesseract.js (`vie+eng`)** để vừa dịch món ăn vừa đọc ảnh chụp Menu giấy thực tế với bất kỳ model AI nào:
-
-```env
-# 9Router AI Server (combo1 cho dịch văn bản, combo2 cho quét ảnh/OCR)
-AI_BASE_URL=https://vunph.click/v1
-AI_API_KEY=sk-your-9router-api-key
-AI_MODEL=combo1
-AI_VISION_MODEL=combo2
-
-# Cloudflare R2 (Tuỳ chọn - Lưu trữ ảnh món ăn, logo, ảnh bìa đã nén WebP)
-R2_ACCOUNT_ID=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=qlaok-assets
-NEXT_PUBLIC_R2_PUBLIC_URL=https://pub-xxx.r2.dev
-```
-
----
-
-## 📂 5. Kiến trúc Dự án (Frontend & Backend)
-
-```text
-qlaok/
-├── supabase/
-│   └── migrations/
-│       ├── 001_init_qlaok.sql              # Schema PostgreSQL + 34 Tỉnh thành Việt Nam + RLS
-│       └── 002_mpos_orders_inventory.sql   # Bảng orders & cột tồn kho stock_quantity, sold_count
-├── src/
-│   ├── app/
-│   │   ├── (marketing)/                    # Trang chủ Landing Page (/), Bảng giá (/pricing), Khám phá (/explore)
-│   │   ├── (auth)/                         # Đăng nhập Supabase OTP (/login), Tạo quán 3 bước (/onboarding)
-│   │   ├── (dashboard)/dashboard/          # CMS & mPOS Chủ quán: Tổng quan Doanh thu, Đơn hàng mPOS (/orders), Menu/Tồn kho (/catalog), AI Scanner, QR Studio
-│   │   ├── (storefront)/s/[slug]/          # Giao diện Khách quét QR Cửa (/s/[slug]) & QR Bàn gọi món (/s/[slug]/menu)
-│   │   └── api/                            # Hệ thống Backend API (Next.js App Router)
-│   │       ├── orders/route.ts             # API Đơn hàng mPOS (Tạo đơn từ bàn/quầy, trừ tồn kho, cập nhật trạng thái)
-│   │       ├── shops/route.ts              # CRUD Cửa hàng & lấy Storefront Bundle
-│   │       ├── catalog/route.ts            # CRUD Danh mục, Món ăn/Dịch vụ, Tồn kho & Bulk Import
-│   │       ├── items/route.ts              # Lấy danh sách món kèm tồn kho cho POS & Mobile
-│   │       ├── posts/route.ts              # CRUD Bài viết khuyến mãi / thông báo
-│   │       ├── analytics/track/            # Thống kê Doanh thu 7 ngày, Top bán chạy, Tồn kho & Lượt quét QR
-│   │       ├── ai/translate/               # Dịch tự động 1 chạm sang 5 ngôn ngữ qua AI_MODEL
-│   │       ├── ai/ocr-menu/                # Tesseract OCR (vie+eng) + AI_VISION_MODEL bóc tách ảnh chụp thực đơn giấy
-│   │       ├── webhooks/payment/           # Tạo đơn VietQR & xử lý Webhook nâng cấp gói tự động
-│   │       ├── upload/route.ts             # Presigned URL upload ảnh Cloudflare R2
-│   │       └── health/route.ts             # Kiểm tra kết nối Supabase, R2, AI & số lượng bản ghi
-│   ├── components/
-│   │   ├── dashboard/                      # QuickItemRow (chỉnh giá & tồn kho 1 chạm), TranslationEditorModal, PrintableStandee
-│   │   └── storefront/                     # VerticalRenderer (hiển thị tồn kho), ShowToStaffModal (Gửi đơn mPOS & Live Tracker)
-│   └── lib/
-│       ├── db.ts                           # Tầng Database chính kết nối trực tiếp Supabase
-│       ├── mpos-store.ts                   # Engine xử lý Đơn hàng mPOS, trừ/hoàn tồn kho tự động & thống kê doanh thu
-│       ├── vietnam-provinces.ts            # Danh sách chuẩn 34 Tỉnh / Thành phố Việt Nam
-│       ├── i18n-helper.ts                  # Nhận diện ngôn ngữ máy khách, format tiền tệ, kiểm tra giờ đóng/mở cửa
-│       ├── plan-limits.ts                  # Logic phân quyền gói Free / Basic / Premium
-│       └── gemini.ts                       # Tích hợp 9Router AI (AI_MODEL & AI_VISION_MODEL)
-```
-
----
-
-## 🔗 6. Các Đường Dẫn Trải Nghiệm Chính
-
-- **Trang chủ & Live Demo 3 ngành / 5 ngôn ngữ:** `http://localhost:3000/`
-- **Danh bạ khám phá cửa hàng 34 tỉnh thành:** `http://localhost:3000/explore`
-- **Trang Quản trị Doanh thu & Biểu đồ 7 ngày:** `http://localhost:3000/dashboard`
-- **Màn hình Quầy Thu Ngân & Bếp (mPOS Orders):** `http://localhost:3000/dashboard/orders`
-- **Quản lý Menu, Giá & Số lượng Tồn kho:** `http://localhost:3000/dashboard/catalog`
-- **Quét Ảnh Menu Giấy (Tesseract OCR + AI):** `http://localhost:3000/dashboard/ai-scanner`
-- **Tạo & Tải mẫu in 2 Mã QR (Standee A6 300DPI):** `http://localhost:3000/dashboard/qr-studio`
-- **3 Cửa Hàng Mẫu (Luồng QR Cửa & QR Bàn Gọi Món Trực Tiếp):**
-  1. **F&B (`fnb`):** `http://localhost:3000/s/pho-hoi-an` | Gọi món tại bàn: `http://localhost:3000/s/pho-hoi-an/menu`
-  2. **Spa & Nail (`service`):** `http://localhost:3000/s/linh-spa-nail` | Đặt dịch vụ: `http://localhost:3000/s/linh-spa-nail/menu`
-  3. **Bán lẻ (`retail`):** `http://localhost:3000/s/dac-san-mien-trung` | Mua hàng: `http://localhost:3000/s/dac-san-mien-trung/menu`
-
----
-
-## 🧪 7. Các Lệnh Kiểm Tra (Scripts)
+Web tại `http://localhost:3000`. Đây không phải app offline hoàn chỉnh: dữ liệu chính cần Supabase đã có schema. Khi bảng shop trống, một số đường đọc (gồm `/api/health`) có thể kích hoạt seed; health không phải probe thuần read-only. HTTP 200 hoặc `status: ok` chưa đủ: xem `environment.supabaseTablesReady` và `supabaseMessage`.
 
 ```bash
-# Kiểm tra lỗi TypeScript toàn dự án
-npm run typecheck
-
-# Chạy 49 Unit Tests (7 Suites: 34 Tỉnh thành, i18n 5 ngôn ngữ, Plan Limits, AI/OCR Parser, R2, Seed Data, mPOS Engine & Tồn kho)
-npm run test:unit
-
-# Chạy 13 bài kiểm thử End-to-End (E2E API + Supabase + 19 Routes + mPOS Flow)
-npm run test:e2e
-
-# Chạy toàn bộ 62 bài kiểm thử (Unit Tests + E2E Tests)
-npm test
-
-# Build bản Production
-npm run build
+npm ci --prefix mobile
+cp mobile/.env.example mobile/.env
+npm start --prefix mobile
 ```
 
-### Bản nâng cấp membership và thanh toán
+Điện thoại thật cần API URL qua IP LAN hoặc backend phát triển truy cập được. Xem [mobile/README.md](mobile/README.md).
 
-Trước khi triển khai bản này, áp dụng các SQL migration theo thứ tự trong
-`supabase/migrations/`. Backend cần `SUPABASE_SERVICE_ROLE_KEY` (chỉ ở server)
-và secret ký session đủ mạnh (`SESSION_SECRET`, tối thiểu 16 ký tự). Bản production
-không dùng secret mặc định trong source; không đặt service-role key trong biến public/Expo.
+## Biến môi trường
 
-Workflow deploy main kiểm tra web/mobile và SQL trên PostgreSQL cô lập, sau đó mới
-chạy migration và deploy đúng commit đã kiểm tra. Để workflow migration chạy được,
-cần hai GitHub Secrets `NEXT_PUBLIC_SUPABASE_URL` và `SUPABASE_ACCESS_TOKEN`.
-Push main có tác động tới production thông qua workflow này.
+Sao chép mẫu, không commit giá trị thật.
 
-Kiểm tra local (không gọi database production):
+| Nhóm | Biến | Vai trò |
+| --- | --- | --- |
+| Supabase public | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | URL và public key |
+| Backend | `SUPABASE_SERVICE_ROLE_KEY` | DB đặc quyền/RPC/admin và realtime server; chỉ server |
+| Phiên/khởi tạo | `SESSION_SECRET`, `INITIAL_SUPER_ADMIN_PASSWORD` | Secret ký phiên; mật khẩu khởi tạo admin chỉ khi cấu hình rõ |
+| Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS |
+| Migration | `SUPABASE_ACCESS_TOKEN` | PAT dùng Management API; không cần cho client |
+| AI | `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`, `AI_VISION_MODEL` | Gateway text/vision |
+| R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `NEXT_PUBLIC_R2_PUBLIC_URL` | Upload và URL ảnh công khai |
+| Mobile | Theo `mobile/.env.example` | Chỉ URL/public key; không chứa backend secret |
+
+Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không dựa vào giá trị mặc định trong code cho deployment thật. Không chép service-role vào biến `NEXT_PUBLIC_*`/`EXPO_PUBLIC_*`.
+
+## Database và realtime
+
+Áp dụng **toàn bộ** migration theo thứ tự tên file vào môi trường đã chọn:
+
+```text
+001_init_qlaok.sql
+002_mpos_orders_inventory.sql
+002z_reconcile_legacy_bank_refs.sql
+003_security_rls_and_atomic_mpos.sql
+004_memberships_billing_payments_audit.sql
+005_order_commit.sql
+006_orders_realtime_publication.sql
+007_shop_tables.sql
+```
+
+`npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
+
+Khi có cấu hình DB, orders đọc DB làm nguồn chính; lỗi DB không được coi là ghi thành công hoặc ghép đơn local vào dữ liệu thật. `.local-db` còn phục vụ một số phần legacy/dev; không phải cơ chế offline đồng bộ đầy đủ.
+
+**Web:** Supabase Realtime → broker server → `/api/orders/events` SSE có xác thực → client tải lại dữ liệu qua API. Staff cần quyền shop; guest cần header `x-tracking-token`. Không mở public orders/RLS để client HMAC đăng ký trực tiếp. **Mobile:** Supabase Auth JWT → Postgres Changes, refresh canonical data qua API. Fallback 30 giây khi lỗi; dừng subscription/polling theo trạng thái màn hình/app. Xem [REALTIME_NOTES.md](REALTIME_NOTES.md).
+
+## Kiểm tra
 
 ```bash
 npm run typecheck
@@ -197,6 +96,37 @@ npm test --prefix mobile
 npm run build
 ```
 
-`test:sql` chạy PostgreSQL WASM trong bộ nhớ, kiểm tra migration và ranh giới RLS;
-không chứng minh phần cứng máy in, thiết bị mobile hay đối soát merchant hoạt động.
-Không chạy `test:e2e` với URL/database production vì suite đó có thao tác ghi dữ liệu.
+`test:sql` dùng PGlite cô lập, gồm migration bàn và ranh giới RLS; review tests gồm auth, quyền/RLS, giá, đơn, admin, realtime và i18n. Không đóng đinh tổng số test: lấy kết quả của lần chạy thực tế.
+
+`npm test` root còn chạy `test:e2e`, có ghi dữ liệu qua server; chỉ dùng server/DB test dùng một lần, không trỏ production. Các fixture `tests/*-ui-fixture.mjs` chỉ phục vụ kiểm tra UI local. Script `lint` hiện là `next lint` và chưa có ESLint trong devDependencies; không coi đây là gate lint đã hoạt động trên Next 15.
+
+## Cấu trúc và đường dẫn
+
+```text
+src/app/                 marketing, auth, admin, dashboard, storefront, API
+src/components/          dashboard/POS, storefront, shared UI/i18n
+src/lib/                 auth, permissions, DB, mPOS, pricing, realtime, AI/R2
+src/types/qlaok.ts        contracts và locale/order/payment/membership types
+mobile/                  Expo React 18 / React Native 0.76; tách web React 19
+supabase/migrations/     schema, RLS, RPC và publication
+scripts/                 migration, backend env và realtime deployment check
+tests/                   unit, regression, SQL và local UI fixtures
+```
+
+Demo seed: `/s/pho-hoi-an`, `/s/linh-spa-nail`, `/s/dac-san-mien-trung`; thêm `/menu` cho menu. Các route làm việc: `/dashboard`, `/dashboard/orders`, `/dashboard/catalog`, `/dashboard/reports`, `/dashboard/posts`, `/dashboard/settings`, `/dashboard/ai-scanner`, `/dashboard/qr-studio`, `/dashboard/billing`, `/admin`.
+
+## Triển khai và giới hạn
+
+Push `main` kích hoạt `.github/workflows/deploy.yml`: verify web/mobile + SQL + build → migration → SSH deploy đúng SHA → kiểm tra subscription orders. Workflow dùng PM2 và runtime env; đọc workflow trước khi sửa cổng hay deploy. Không push chỉ để cập nhật tài liệu nếu chưa có yêu cầu triển khai.
+
+Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng thái production cần kiểm chứng riêng. Web print ghi nhận yêu cầu in, không xác nhận đã ra giấy. Webhook nâng gói SaaS khác đối soát tiền khách trả cho merchant. Orders/statistics còn tải lịch sử đầy đủ khi refresh; audit/payment ledger cho chốt ca chưa hoàn chỉnh.
+
+## Tài liệu
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): bản đồ code và luồng nghiệp vụ hiện tại.
+- [docs/TABLE_MANAGEMENT.md](docs/TABLE_MANAGEMENT.md): quản lý bàn, QR từng bàn, báo cáo và migration 007.
+- [docs/CODEX_TABLES_REVIEW.md](docs/CODEX_TABLES_REVIEW.md): kết quả kiểm tra độc lập và giới hạn của bản bàn/theme/UI.
+- [docs/APP_REVIEW.md](docs/APP_REVIEW.md): kết quả rà soát, chênh lệch tài liệu và điểm cần theo dõi.
+- [I18N_NOTES.md](I18N_NOTES.md), [REALTIME_NOTES.md](REALTIME_NOTES.md): chi tiết chuyên đề.
+- [REVIEW_NOTES.md](REVIEW_NOTES.md), `AGY_*`: lịch sử review/triển khai; kết quả test trong đó thuộc thời điểm ghi.
+- [TODO.md](TODO.md), [document.md](document.md): roadmap/đặc tả gốc, không dùng để khẳng định tính năng hiện tại đã hoàn tất.

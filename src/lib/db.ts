@@ -45,6 +45,10 @@ export function setSupabaseDbClientForTests(client: unknown | null): void {
   testDbClientOverride = (client as SupabaseClient | null) ?? null;
 }
 
+export function isSupabaseDbClientOverriddenForTests(): boolean {
+  return testDbClientOverride !== null;
+}
+
 export function hasSupabaseServiceRoleKey(): boolean {
   if (testDbClientOverride) return true;
   const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
@@ -396,6 +400,11 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
 }
 
 export async function dbGetShopById(shopId: string): Promise<Shop | undefined> {
+  if (!testDbClientOverride && !isSupabaseConfigured()) {
+    const seedShop = SEED_SHOPS.find((s) => s.id === shopId);
+    return seedShop ? hydrateShopWithSeedDefaults(seedShop) : undefined;
+  }
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
@@ -407,6 +416,33 @@ export async function dbGetStorefrontBundle(
   slug: string,
   options?: { allowUnpublished?: boolean }
 ) {
+  const { dbGetPublicShopTables } = await import('@/lib/shop-tables');
+
+  if (!testDbClientOverride && !isSupabaseConfigured()) {
+    const seedShop = SEED_SHOPS.find((s) => s.slug === slug);
+    if (!seedShop) return null;
+    if (!options?.allowUnpublished && seedShop.is_published === false) {
+      return null;
+    }
+    const shop = hydrateShopWithSeedDefaults(seedShop);
+    const categories = SEED_CATEGORIES.filter(
+      (c) => c.shop_id === shop.id && c.is_active
+    );
+    const items = SEED_ITEMS.filter((i) => i.shop_id === shop.id);
+    const posts = SEED_POSTS.filter(
+      (p) => p.shop_id === shop.id && p.is_active
+    );
+    const tables = await dbGetPublicShopTables(shop.id);
+    return {
+      shop,
+      categories,
+      items: enrichItemsWithInventory(items),
+      posts,
+      tables,
+      ownerPlan: 'premium' as PlanTier,
+    };
+  }
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
@@ -426,6 +462,7 @@ export async function dbGetStorefrontBundle(
     { data: categories },
     { data: items },
     { data: posts },
+    tables,
   ] = await Promise.all([
     sb
       .from('categories')
@@ -444,6 +481,7 @@ export async function dbGetStorefrontBundle(
       .eq('shop_id', shop.id)
       .eq('is_active', true)
       .order('is_pinned', { ascending: false }),
+    dbGetPublicShopTables(shop.id),
   ]);
 
   const normalizedCategories = ((categories || []) as Category[]).map((c) => {
@@ -510,6 +548,7 @@ export async function dbGetStorefrontBundle(
     categories: normalizedCategories,
     items: enrichItemsWithInventory(normalizedItems),
     posts: normalizedPosts,
+    tables,
     ownerPlan: 'premium' as PlanTier,
   };
 }

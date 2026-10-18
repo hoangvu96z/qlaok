@@ -4,16 +4,22 @@ import React, { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toPng } from 'html-to-image';
 import { Download, Wifi, ExternalLink, Copy, Check } from 'lucide-react';
-import { Shop } from '@/types/qlaok';
+import { Shop, ShopTable } from '@/types/qlaok';
+import { buildTableMenuUrl } from '@/lib/table-helpers';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
-interface PrintableStandeeProps {
+export interface PrintableStandeeProps {
   shop: Shop;
   qrType: 'door' | 'table';
   baseUrl: string;
   showWifi?: boolean;
   accentColor?: string;
+  table?: ShopTable | null;
+  tableId?: string | null;
+  tableName?: string | null;
+  tableCode?: string | null;
+  sectionName?: string | null;
 }
 
 export function PrintableStandee({
@@ -22,23 +28,36 @@ export function PrintableStandee({
   baseUrl,
   showWifi = true,
   accentColor,
+  table = null,
+  tableId = null,
+  tableName = null,
+  tableCode = null,
+  sectionName = null,
 }: PrintableStandeeProps) {
   const { t, tx } = useAppI18n();
   const standeeRef = useRef<HTMLDivElement>(null);
   const [downloading, setDownloading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
-  const primaryColor = accentColor || shop.theme_config?.primaryColor || '#10b981';
+  const primaryColor =
+    accentColor || shop.theme_config?.primaryColor || '#10b981';
+
+  const effectiveTableId = (table?.id || tableId || '').trim();
+  const effectiveTableName = (table?.name || tableName || '').trim();
+  const effectiveTableCode = (table?.table_code || tableCode || '').trim();
+  const effectiveSection = (table?.section || sectionName || '').trim();
+
+  const normalizedBase = (baseUrl || '').trim().replace(/\/+$/, '');
 
   const targetUrl =
     qrType === 'door'
-      ? `${baseUrl}/s/${shop.slug}?src=door`
-      : `${baseUrl}/s/${shop.slug}/menu?src=table`;
+      ? `${normalizedBase}/s/${shop.slug}?src=door`
+      : buildTableMenuUrl(normalizedBase, shop.slug, effectiveTableId);
 
   const relativePath =
     qrType === 'door'
       ? `/s/${shop.slug}?src=door`
-      : `/s/${shop.slug}/menu?src=table`;
+      : buildTableMenuUrl('', shop.slug, effectiveTableId);
 
   const handleDownloadPng = async () => {
     if (!standeeRef.current) return;
@@ -48,8 +67,12 @@ export function PrintableStandee({
         cacheBust: true,
         pixelRatio: 3, // High-resolution 300DPI-grade A6 export
       });
+      const tableSuffix = effectiveTableCode || effectiveTableName;
+      const safeSuffix = tableSuffix
+        ? `-${tableSuffix.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+        : '';
       const link = document.createElement('a');
-      link.download = `Qlaok-QR-${qrType.toUpperCase()}-${shop.slug}.png`;
+      link.download = `Qlaok-QR-${qrType.toUpperCase()}-${shop.slug}${safeSuffix}.png`;
       link.href = dataUrl;
       link.click();
     } catch (err) {
@@ -74,12 +97,17 @@ export function PrintableStandee({
       {/* Printable A6 Standee Card - ALWAYS pure white (#ffffff) even in Dark Mode so cameras can scan QR reliably */}
       <div
         ref={standeeRef}
+        data-testid={
+          effectiveTableId
+            ? `printable-standee-table-${effectiveTableId}`
+            : `printable-standee-${qrType}`
+        }
         style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
         className="qr-light-surface w-full max-w-[340px] rounded-3xl bg-white p-6 shadow-xl border-2 border-slate-200 flex flex-col items-center text-center relative overflow-hidden"
       >
         {/* Top Accent Header */}
         <div
-          className="w-full rounded-2xl px-4 py-3 text-white shadow-sm mb-4"
+          className="w-full rounded-2xl px-4 py-3 text-white shadow-sm mb-3"
           style={{ backgroundColor: primaryColor, color: '#ffffff' }}
         >
           <p className="text-[10px] font-extrabold uppercase tracking-widest opacity-90">
@@ -97,6 +125,36 @@ export function PrintableStandee({
             {shop.name}
           </h3>
         </div>
+
+        {/* Specific Table Identity Badge on Standee */}
+        {qrType === 'table' && effectiveTableName && (
+          <div
+            data-testid="standee-table-name-badge"
+            style={{
+              backgroundColor: '#f8fafc',
+              borderColor: primaryColor,
+              color: '#0f172a',
+            }}
+            className="w-full rounded-2xl border-2 px-3.5 py-2 mb-3 flex flex-col items-center justify-center"
+          >
+            <span className="text-base font-black tracking-tight text-slate-900">
+              🪑 {effectiveTableName}
+            </span>
+            {(effectiveSection || effectiveTableCode) && (
+              <span
+                style={{ color: '#475569' }}
+                className="text-[11px] font-bold text-slate-600"
+              >
+                {[
+                  effectiveSection,
+                  effectiveTableCode ? `#${effectiveTableCode}` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' • ')}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 8-Language Scan Invitation */}
         <div className="space-y-1.5 mb-4">
@@ -215,8 +273,23 @@ export function PrintableStandee({
           className="w-full flex items-center justify-between border-t border-slate-100 pt-2.5 text-[10px] font-bold text-slate-400"
         >
           <span>Powered by Qlaok.vn</span>
-          <span>{tx('Quét là OK ✨', 'Scan & Order ✨')}</span>
+          <span>
+            {effectiveTableName
+              ? `${effectiveTableName} • ✨`
+              : tx('Quét là OK ✨', 'Scan & Order ✨')}
+          </span>
         </div>
+      </div>
+
+      {/* URL Path Indicator */}
+      <div className="w-full max-w-[340px] rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/80 px-3 py-1.5 text-center">
+        <code
+          data-testid="standee-target-url"
+          className="block truncate text-[11px] font-mono font-semibold text-slate-600 dark:text-slate-300"
+          title={targetUrl}
+        >
+          {relativePath}
+        </code>
       </div>
 
       {/* Action Controls Below Standee */}
@@ -243,12 +316,12 @@ export function PrintableStandee({
         <button
           type="button"
           onClick={handleCopyLink}
-          className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+          className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
           title={tx('Sao chép đường dẫn QR', 'Copy QR link')}
         >
           {copiedUrl ? (
             <>
-              <Check className="h-3.5 w-3.5 text-emerald-600" />
+              <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>{t('common.copied')}</span>
             </>
           ) : (
@@ -263,7 +336,7 @@ export function PrintableStandee({
           href={relativePath}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+          className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
           title={tx('Mở thử trang khi khách quét', 'Open guest view')}
         >
           <ExternalLink className="h-3.5 w-3.5" />

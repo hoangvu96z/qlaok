@@ -41,8 +41,8 @@ export default function StorefrontLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen bg-slate-100/80 flex justify-center">
-      <div className="w-full max-w-md min-h-screen bg-slate-50 shadow-xl ring-1 ring-slate-200/70 flex flex-col relative">
+    <div className="min-h-screen bg-slate-100/80 dark:bg-slate-950 flex justify-center transition-colors">
+      <div className="w-full max-w-md min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xl ring-1 ring-slate-200/70 dark:ring-slate-800 flex flex-col relative transition-colors">
         {children}
       </div>
     </div>

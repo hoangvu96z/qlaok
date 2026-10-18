@@ -32,3 +32,7 @@ Language changes must not be dependencies of effects that reload and initialize 
 ## Limits
 
 Backend error details remain verbatim and may be Vietnamese even when the app is English. Server metadata and merchant text are not automatically translated. Existing Vietnam accounting dates, currency and permissions remain authoritative. Expo Web and mocked native storage were checked; physical iOS/Android devices and printer hardware were not tested in this change.
+
+## Bổ sung bảng bàn và theme — 18/10/2026
+
+Quản lý bàn và báo cáo theo bàn có copy VI/EN theo app locale. Menu vẫn giữ miền ngôn ngữ khách riêng; hàng cờ trùng dropdown đã được bỏ. Modal xác nhận dùng light mặc định và dark variants đồng bộ với preference toàn app, giữ khung QR thanh toán trắng. Cart và lựa chọn bàn được giữ khi đổi ngôn ngữ hoặc refresh catalog. Xem `docs/TABLE_MANAGEMENT.md` và kết quả kiểm thử mới ở `docs/CODEX_TABLES_REVIEW.md`; tổng số test trong phần Verification phía trên thuộc lượt i18n trước.

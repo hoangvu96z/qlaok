@@ -1,3 +1,5 @@
+> **Tài liệu lịch sử / đặc tả.** Nhãn cập nhật 18/10/2026: nội dung bên dưới giữ theo thời điểm ghi, không phải xác nhận trạng thái hiện tại. Xem [README](README.md), [ARCHITECTURE](ARCHITECTURE.md), [APP_REVIEW](docs/APP_REVIEW.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md) cho task tiếp theo. Không dùng mật khẩu mẫu hoặc chỉ dẫn khởi tạo index trong tài liệu cũ.
+
 # 📋 QLAOK ("Quét Là OK") - Feature TODO & Roadmap
 
 > **Chiến lược thực thi (Local-First + Token Saving với CodeGraph):**

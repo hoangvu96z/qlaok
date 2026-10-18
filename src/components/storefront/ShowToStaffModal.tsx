@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { startOrderLiveSync } from '@/lib/order-live-sync';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -18,12 +18,16 @@ import {
   QrCode,
   ShoppingBag,
   Edit3,
+  AlertTriangle,
+  Utensils,
+  RefreshCw,
 } from 'lucide-react';
 import {
   CartSelection,
   PaymentMethod,
   Shop,
   ShopOrder,
+  ShopTable,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
@@ -34,6 +38,10 @@ import {
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
+import {
+  filterSelectableTables,
+  isTakeawayTableLabel,
+} from '@/lib/table-helpers';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
@@ -41,12 +49,23 @@ import {
   PROMO_LOCALE_TEXT,
 } from '@/components/storefront/StorefrontCustomDecor';
 
-interface ShowToStaffModalProps {
+export interface ShowToStaffModalProps {
   isOpen: boolean;
   onClose: () => void;
   shop: Shop;
   locale: SupportedLocale;
   cart: CartSelection[];
+  tables?: ShopTable[];
+  selectedTableId?: string | null;
+  isTakeawaySelected?: boolean;
+  tableResolutionError?: string | null;
+  tablesLoadError?: string | null;
+  onSelectTable?: (selection: {
+    tableId: string | null;
+    tableLabel: string;
+    isTakeaway: boolean;
+  }) => void;
+  onRetryLoadTables?: () => void;
   initialTableLabel?: string;
   activeOrderProp?: ShopOrder | null;
   editingOrder?: ShopOrder | null;
@@ -65,7 +84,7 @@ const SEND_ORDER_LABELS: Record<
     editOrderBtn: string;
     sending: string;
     tablePrompt: string;
-    tableInputPlaceholder: string;
+    noteLabel: string;
     notePlaceholder: string;
     trackerTitle: string;
     stepNew: string;
@@ -79,9 +98,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 Lưu Cập Nhật Đơn Hàng',
     editOrderBtn: '✏️ Sửa đơn / Đổi hoặc thêm món',
     sending: 'Đang gửi đơn xuống quầy...',
-    tablePrompt: 'Chọn Bàn / Vị trí ngồi:',
-    tableInputPlaceholder: 'Nhập số bàn khác (VD: Bàn 12, Phòng VIP 2...)',
-    notePlaceholder: 'Ghi chú chung cho quầy (VD: mang ra cùng lúc, xin thêm chén...)',
+    tablePrompt: 'Chọn Bàn / Hình thức phục vụ:',
+    noteLabel: 'Ghi chú đơn hàng',
+    notePlaceholder:
+      'Ghi chú chung cho quầy (VD: mang ra cùng lúc, xin thêm chén...)',
     trackerTitle: 'Trạng Thái Đơn Hàng Trực Tiếp (Realtime)',
     stepNew: 'Chờ quầy xác nhận',
     stepPreparing: 'Đang chuẩn bị / chế biến',
@@ -93,9 +113,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 Save Order Changes',
     editOrderBtn: '✏️ Edit Order / Change Items',
     sending: 'Sending order to counter...',
-    tablePrompt: 'Select Table / Seat:',
-    tableInputPlaceholder: 'Or enter table / room number (e.g. Table 12, VIP 2...)',
-    notePlaceholder: 'Note for counter (e.g. extra napkins, serve together...)',
+    tablePrompt: 'Select Table / Service Mode:',
+    noteLabel: 'Order note',
+    notePlaceholder:
+      'Note for counter (e.g. extra napkins, serve together...)',
     trackerTitle: 'Live Order Status Tracker',
     stepNew: 'Sent to Counter',
     stepPreparing: 'Preparing / Cooking',
@@ -107,8 +128,8 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 주문 변경사항 저장',
     editOrderBtn: '✏️ 주문 수정 / 메뉴 변경·추가',
     sending: '주문을 전송하는 중...',
-    tablePrompt: '테이블 / 좌석 번호 선택:',
-    tableInputPlaceholder: '다른 테이블 번호 직접 입력 (예: 테이블 12, VIP 2...)',
+    tablePrompt: '테이블 / 포장 선택:',
+    noteLabel: '주문 요청사항',
     notePlaceholder: '요청사항 입력 (예: 앞접시 추가, 같이 서빙해주세요)',
     trackerTitle: '실시간 주문 진행 상태',
     stepNew: '주문 접수 대기',
@@ -121,9 +142,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 注文の変更を保存',
     editOrderBtn: '✏️ 注文内容を変更・追加する',
     sending: '注文を送信中...',
-    tablePrompt: 'テーブル / 座席番号:',
-    tableInputPlaceholder: 'その他のテーブル番号を入力（例：テーブル 12、VIP 2）',
-    notePlaceholder: 'メモ（例：取り皿をお願いします、一緒に出してください）',
+    tablePrompt: 'テーブル / お持ち帰り選択:',
+    noteLabel: '注文メモ',
+    notePlaceholder:
+      'メモ（例：取り皿をお願いします、一緒に出してください）',
     trackerTitle: 'リアルタイム注文状況',
     stepNew: '受付待ち',
     stepPreparing: '調理・準備中',
@@ -135,8 +157,8 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 保存订单修改',
     editOrderBtn: '✏️ 修改订单 / 增减菜品',
     sending: '正在发送订单...',
-    tablePrompt: '选择桌号 / 座位:',
-    tableInputPlaceholder: '或输入其他桌号/包厢（如：12号桌、VIP 2）',
+    tablePrompt: '选择桌号 / 打包外带:',
+    noteLabel: '订单备注',
     notePlaceholder: '备注（例如：多拿一个碗、一起上菜...）',
     trackerTitle: '实时订单状态追踪',
     stepNew: '等待吧台确认',
@@ -149,9 +171,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 Guardar Cambios del Pedido',
     editOrderBtn: '✏️ Editar Pedido / Cambiar Platos',
     sending: 'Enviando pedido al mostrador...',
-    tablePrompt: 'Selecciona Mesa / Ubicación:',
-    tableInputPlaceholder: 'O escribe otro número de mesa (ej. Mesa 12, VIP 2...)',
-    notePlaceholder: 'Nota para el mostrador (ej. servilletas extra, servir todo junto...)',
+    tablePrompt: 'Selecciona Mesa / Para llevar:',
+    noteLabel: 'Nota del pedido',
+    notePlaceholder:
+      'Nota para el mostrador (ej. servilletas extra, servir todo junto...)',
     trackerTitle: 'Estado del Pedido en Tiempo Real',
     stepNew: 'Enviado al mostrador',
     stepPreparing: 'En preparación / cocina',
@@ -163,9 +186,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 Salva Modifiche Ordine',
     editOrderBtn: '✏️ Modifica Ordine / Cambia Piatti',
     sending: 'Invio ordine in corso...',
-    tablePrompt: 'Seleziona Tavolo / Posto:',
-    tableInputPlaceholder: 'Oppure inserisci numero tavolo (es. Tavolo 12, VIP 2...)',
-    notePlaceholder: 'Nota per la cassa (es. tovaglioli extra, servire insieme...)',
+    tablePrompt: 'Seleziona Tavolo / Asporto:',
+    noteLabel: 'Nota ordine',
+    notePlaceholder:
+      'Nota per la cassa (es. tovaglioli extra, servire insieme...)',
     trackerTitle: 'Stato Ordine in Tempo Reale',
     stepNew: 'Inviato alla cassa',
     stepPreparing: 'In preparazione / cottura',
@@ -177,9 +201,10 @@ const SEND_ORDER_LABELS: Record<
     updateBtn: '💾 Сохранить изменения заказа',
     editOrderBtn: '✏️ Изменить заказ / Добавить блюда',
     sending: 'Отправка заказа...',
-    tablePrompt: 'Выберите стол / место:',
-    tableInputPlaceholder: 'Или введите другой номер стола (напр. Стол 12, VIP 2...)',
-    notePlaceholder: 'Комментарий к заказу (напр. салфетки, подать всё вместе...)',
+    tablePrompt: 'Выберите стол / Навынос:',
+    noteLabel: 'Комментарий к заказу',
+    notePlaceholder:
+      'Комментарий к заказу (напр. салфетки, подать всё вместе...)',
     trackerTitle: 'Статус заказа в реальном времени',
     stepNew: 'Отправлен на кассу',
     stepPreparing: 'Готовится на кухне',
@@ -188,15 +213,20 @@ const SEND_ORDER_LABELS: Record<
   },
 };
 
-const QUICK_TABLES = ['Bàn 01', 'Bàn 02', 'Bàn 03', 'Bàn 05', 'Bàn 08', 'Mang về'];
-
 export function ShowToStaffModal({
   isOpen,
   onClose,
   shop,
   locale,
   cart,
-  initialTableLabel = 'Bàn 01',
+  tables,
+  selectedTableId = null,
+  isTakeawaySelected = false,
+  tableResolutionError = null,
+  tablesLoadError = null,
+  onSelectTable,
+  onRetryLoadTables,
+  initialTableLabel = '',
   activeOrderProp = null,
   editingOrder = null,
   onEditOrder,
@@ -205,7 +235,23 @@ export function ShowToStaffModal({
   onClearCart,
   onOrderCreated,
 }: ShowToStaffModalProps) {
-  const [tableNumber, setTableNumber] = useState(initialTableLabel || 'Bàn 01');
+  const tx = (vi: string, en: string) => (locale === 'vi' ? vi : en);
+
+  // Active unarchived tables belonging to this shop
+  const activeTables = useMemo(
+    () => filterSelectableTables(tables, shop.id),
+    [tables, shop.id]
+  );
+
+  // Local selection state (synced with parent props when provided)
+  const [localTableId, setLocalTableId] = useState<string | null>(
+    selectedTableId
+  );
+  const [localTakeaway, setLocalTakeaway] = useState<boolean>(
+    Boolean(isTakeawaySelected) || isTakeawayTableLabel(initialTableLabel)
+  );
+  const [hasEditedOrderTable, setHasEditedOrderTable] = useState(false);
+
   const [customerNote, setCustomerNote] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [submitting, setSubmitting] = useState(false);
@@ -217,30 +263,130 @@ export function ShowToStaffModal({
   const visitorMeta = LOCALE_META[locale] || LOCALE_META.vi;
   const quickTagsPool = QUICK_TAGS_BY_VERTICAL[shop.vertical] || [];
 
+  // Sync parent selection into modal state when not editing an existing order
   useEffect(() => {
-    if (initialTableLabel) {
-      setTableNumber(initialTableLabel);
-    }
-  }, [initialTableLabel]);
+    if (editingOrder) return;
+    setLocalTableId(selectedTableId ?? null);
+    setLocalTakeaway(
+      Boolean(isTakeawaySelected) ||
+        (!selectedTableId && isTakeawayTableLabel(initialTableLabel))
+    );
+  }, [
+    selectedTableId,
+    isTakeawaySelected,
+    initialTableLabel,
+    editingOrder,
+  ]);
 
-  // Sync activeOrder when modal opens with an existing activeOrderProp (and not currently editing cart)
+  // Sync activeOrder or editingOrder when modal opens
   useEffect(() => {
     if (isOpen && cart.length === 0 && activeOrderProp && !editingOrder) {
       setActiveOrder(activeOrderProp);
     }
     if (editingOrder) {
       setActiveOrder(null);
-      setTableNumber(editingOrder.table_label || initialTableLabel || 'Bàn 01');
+      setHasEditedOrderTable(false);
+      setLocalTableId(editingOrder.table_id ?? null);
+      setLocalTakeaway(
+        !editingOrder.table_id && isTakeawayTableLabel(editingOrder.table_label)
+      );
       setPaymentMethod(editingOrder.payment_method || 'cash');
       setCustomerNote(editingOrder.customer_note || '');
+      setSubmitError('');
     }
-  }, [isOpen, cart.length, activeOrderProp, editingOrder, initialTableLabel]);
+  }, [isOpen, cart.length, activeOrderProp, editingOrder]);
+
+  const selectedActiveTable = useMemo(() => {
+    if (!localTableId) return null;
+    return activeTables.find((t) => t.id === localTableId) || null;
+  }, [activeTables, localTableId]);
+
+  const handleChooseManagedTable = (table: ShopTable) => {
+    setLocalTableId(table.id);
+    setLocalTakeaway(false);
+    setHasEditedOrderTable(true);
+    setSubmitError('');
+    onSelectTable?.({
+      tableId: table.id,
+      tableLabel: table.name,
+      isTakeaway: false,
+    });
+  };
+
+  const handleChooseTakeaway = () => {
+    setLocalTableId(null);
+    setLocalTakeaway(true);
+    setHasEditedOrderTable(true);
+    setSubmitError('');
+    onSelectTable?.({
+      tableId: null,
+      tableLabel: 'Mang về',
+      isTakeaway: true,
+    });
+  };
+
+  const isEditingExisting = Boolean(
+    editingOrder &&
+      editingOrder.status === 'new' &&
+      editingOrder.payment_status === 'unpaid'
+  );
+
+  // Determine current effective table display & whether selection is valid
+  const currentSelectionDisplay = useMemo(() => {
+    if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
+      return formatTableLabel(editingOrder.table_label, locale);
+    }
+    if (selectedActiveTable) {
+      return selectedActiveTable.name;
+    }
+    if (localTakeaway) {
+      return formatTableLabel('Mang về', locale);
+    }
+    if (tables === undefined && initialTableLabel && !tableResolutionError) {
+      return formatTableLabel(initialTableLabel, locale);
+    }
+    return tx('Chưa chọn bàn', 'No table selected');
+  }, [
+    isEditingExisting,
+    editingOrder,
+    hasEditedOrderTable,
+    selectedActiveTable,
+    localTakeaway,
+    tables,
+    initialTableLabel,
+    tableResolutionError,
+    locale,
+  ]);
+
+  const isSelectionResolved = useMemo(() => {
+    if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
+      return true;
+    }
+    if (selectedActiveTable || localTakeaway) {
+      return true;
+    }
+    if (tables === undefined && !tableResolutionError && !tablesLoadError) {
+      return true;
+    }
+    return false;
+  }, [
+    isEditingExisting,
+    editingOrder,
+    hasEditedOrderTable,
+    selectedActiveTable,
+    localTakeaway,
+    tables,
+    tableResolutionError,
+    tablesLoadError,
+  ]);
 
   const onOrderCreatedRef = useRef(onOrderCreated);
   onOrderCreatedRef.current = onOrderCreated;
-  const trackingFinished = activeOrder?.status === 'cancelled' ||
+  const trackingFinished =
+    activeOrder?.status === 'cancelled' ||
     activeOrder?.payment_status === 'refunded' ||
-    (activeOrder?.status === 'completed' && activeOrder?.payment_status === 'paid');
+    (activeOrder?.status === 'completed' &&
+      activeOrder?.payment_status === 'paid');
 
   useEffect(() => {
     const orderId = activeOrder?.id;
@@ -248,34 +394,61 @@ export function ShowToStaffModal({
     if (!isOpen || !orderId || !token || trackingFinished) return;
     let disposed = false;
     let busy = false;
-    let queued = false;
-    const request = new AbortController();
-    const refresh = async (): Promise<void> => {
+    let again = false;
+    let request = new AbortController();
+    const refresh = async () => {
       if (disposed) return;
-      if (busy) { queued = true; return; }
+      if (busy) {
+        again = true;
+        return;
+      }
       busy = true;
-      try {
-        const res = await fetch(`/api/orders?orderId=${encodeURIComponent(orderId)}`, {
-          cache: 'no-store', headers: { 'x-tracking-token': token }, signal: request.signal,
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (disposed || !data.order || data.order.id !== orderId) return;
-        const updated = { ...data.order, tracking_token: data.order.tracking_token || token };
-        setActiveOrder(updated);
-        onOrderCreatedRef.current?.(updated);
-      } catch { /* preserve the last known status on transient failures */ }
-      finally { busy = false; if (queued && !disposed) { queued = false; void refresh(); } }
+      do {
+        again = false;
+        const current = new AbortController();
+        request = current;
+        try {
+          const res = await fetch(
+            `/api/orders?orderId=${encodeURIComponent(orderId)}`,
+            {
+              headers: { 'x-tracking-token': token },
+              cache: 'no-store',
+              signal: current.signal,
+            }
+          );
+          if (res.ok && !disposed) {
+            const data = await res.json();
+            if (data.order && !disposed) {
+              const merged = { ...data.order, tracking_token: token };
+              setActiveOrder(merged);
+              onOrderCreatedRef.current?.(merged);
+            }
+          }
+        } catch {
+          // ignore network errors
+        }
+      } while (again && !disposed);
+      busy = false;
     };
-    void refresh();
     const stop = startOrderLiveSync({
-      query: new URLSearchParams({ orderId }).toString(),
+      query: `orderId=${encodeURIComponent(orderId)}`,
       headers: () => ({ 'x-tracking-token': token }),
-      onChange: () => { void refresh(); },
+      onChange: () => {
+        void refresh();
+      },
     });
-    return () => { disposed = true; request.abort(); stop(); };
-  }, [isOpen, activeOrder?.id, activeOrder?.tracking_token, trackingFinished]);
-
+    return () => {
+      disposed = true;
+      request.abort();
+      stop();
+    };
+  }, [
+    isOpen,
+    activeOrder?.id,
+    activeOrder?.tracking_token,
+    trackingFinished,
+    shop.id,
+  ]);
 
   const subtotal = cart.reduce((sum, entry) => {
     const extraTotal = entry.selectedChoices.reduce(
@@ -305,6 +478,18 @@ export function ShowToStaffModal({
 
   const handleSendOrderToMpos = async () => {
     if (cart.length === 0 || submitting) return;
+
+    if (!isSelectionResolved) {
+      setSubmitError(
+        tableResolutionError ||
+          tx(
+            'Vui lòng chọn bàn đang hoạt động hoặc chọn Mang về trước khi gửi đơn.',
+            'Please select an active table or choose Takeaway before sending your order.'
+          )
+      );
+      return;
+    }
+
     setSubmitting(true);
     setSubmitError('');
 
@@ -336,40 +521,49 @@ export function ShowToStaffModal({
         };
       });
 
-      const isEditingExisting = Boolean(
-        editingOrder &&
-          editingOrder.status === 'new' &&
-          editingOrder.payment_status === 'unpaid'
-      );
+      const resolvedNewTableId = selectedActiveTable
+        ? selectedActiveTable.id
+        : null;
+      const resolvedNewTableLabel = selectedActiveTable
+        ? selectedActiveTable.name
+        : localTakeaway
+          ? 'Mang về'
+          : initialTableLabel.trim() || 'Mang về';
+
+      const requestBody =
+        isEditingExisting && editingOrder
+          ? {
+              order_id: editingOrder.id,
+              tracking_token: editingOrder.tracking_token,
+              ...(hasEditedOrderTable
+                ? {
+                    table_id: resolvedNewTableId,
+                    table_label: resolvedNewTableLabel,
+                  }
+                : {}),
+              customer_note:
+                `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
+              items: mappedItems,
+            }
+          : {
+              shop_id: shop.id,
+              table_id: resolvedNewTableId,
+              table_label: resolvedNewTableLabel,
+              visitor_lang: locale,
+              customer_note:
+                `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
+              payment_method: paymentMethod,
+              source: 'qr_table',
+              apply_shop_promotions: true,
+              discount_code: promoCalc.voucherCode || undefined,
+              discount_amount: promoCalc.discountAmount,
+              items: mappedItems,
+            };
 
       const res = await fetch('/api/orders', {
         method: isEditingExisting ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          isEditingExisting && editingOrder
-            ? {
-                order_id: editingOrder.id,
-                tracking_token: editingOrder.tracking_token,
-                table_label:
-                  tableNumber.trim() || editingOrder.table_label || 'Bàn khách QR',
-                customer_note:
-                  `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
-                items: mappedItems,
-              }
-            : {
-                shop_id: shop.id,
-                table_label: tableNumber.trim() || 'Bàn khách QR',
-                visitor_lang: locale,
-                customer_note:
-                  `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
-                payment_method: paymentMethod,
-                source: 'qr_table',
-                apply_shop_promotions: true,
-                discount_code: promoCalc.voucherCode || undefined,
-                discount_amount: promoCalc.discountAmount,
-                items: mappedItems,
-              }
-        ),
+        body: JSON.stringify(requestBody),
       });
       const data = await res.json();
 
@@ -409,29 +603,38 @@ export function ShowToStaffModal({
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="show-to-staff-modal-title"
+          initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.96 }}
+          exit={{ opacity: 0, scale: 0.98 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-white"
+          className="fixed inset-0 z-50 flex flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100"
         >
           {/* Top Checkout Confirmation Banner */}
-          <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-4 shadow-lg">
+          <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3.5 sm:py-4 shadow-md shrink-0">
             <div className="mx-auto flex max-w-lg items-start justify-between gap-3">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full bg-black/25 px-3 py-1 text-xs font-extrabold uppercase tracking-wider text-emerald-100">
-                  <ShoppingBag className="h-3.5 w-3.5" />
-                  <span>{labels.showToStaffHeader}</span>
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 rounded-full bg-black/20 px-3 py-1 text-xs font-extrabold uppercase tracking-wider text-emerald-50">
+                  <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{labels.showToStaffHeader}</span>
                 </div>
-                <h2 className="mt-2 flex flex-wrap items-center gap-1.5 text-lg font-black leading-tight text-white">
-                  <span>{shop.name}</span>
+                <h2
+                  id="show-to-staff-modal-title"
+                  className="mt-1.5 flex flex-wrap items-center gap-1.5 text-base sm:text-lg font-black leading-tight text-white"
+                >
+                  <span className="truncate">{shop.name}</span>
                   <span className="text-emerald-200">•</span>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-black/20 px-2.5 py-0.5 text-xs font-bold">
-                    <FlagIcon locale={locale} className="h-3.5 w-5 rounded-[2px]" />
+                    <FlagIcon
+                      locale={locale}
+                      className="h-3.5 w-5 rounded-[2px]"
+                    />
                     <span>{visitorMeta.nativeName}</span>
                   </span>
                 </h2>
-                <p className="mt-0.5 text-xs text-emerald-100/90">
+                <p className="mt-0.5 text-xs text-emerald-50/95">
                   {labels.showToStaffSub}
                 </p>
               </div>
@@ -441,8 +644,8 @@ export function ShowToStaffModal({
                   setActiveOrder(null);
                   onClose();
                 }}
-                aria-label="Close"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black/25 text-white hover:bg-black/40"
+                aria-label={tx('Đóng cửa sổ đặt món', 'Close order modal')}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black/20 text-white hover:bg-black/35 transition"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -450,42 +653,42 @@ export function ShowToStaffModal({
           </div>
 
           {/* Main Content: Either Live Order Tracker OR Cart Selection */}
-          <div className="mx-auto w-full max-w-lg flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          <div className="mx-auto w-full max-w-lg flex-1 overflow-y-auto px-3.5 sm:px-4 py-4 space-y-4">
             {activeOrder ? (
               <motion.div
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="rounded-3xl border-2 border-emerald-500/40 bg-slate-900 p-5 shadow-2xl space-y-5"
+                className="rounded-3xl border-2 border-emerald-500/40 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-lg space-y-5"
               >
-                <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-                  <div>
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
-                      <Sparkles className="h-3.5 w-3.5" />
-                      {orderText.trackerTitle}
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
+                  <div className="min-w-0">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 px-3 py-1 text-xs font-black">
+                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{orderText.trackerTitle}</span>
                     </span>
-                    <h3 className="mt-2 text-2xl font-black text-white">
+                    <h3 className="mt-2 text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
                       {activeOrder.order_code} •{' '}
-                      <span className="text-emerald-400">
+                      <span className="text-emerald-600 dark:text-emerald-400">
                         {formatTableLabel(activeOrder.table_label, locale)}
                       </span>
                     </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                       {labels.autoNotifiedSub}
                     </p>
                   </div>
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400">
+                  <div className="flex h-12 w-12 sm:h-14 sm:w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
                     {activeOrder.status === 'completed' ? (
-                      <CheckCircle2 className="h-8 w-8" />
+                      <CheckCircle2 className="h-7 w-7 sm:h-8 sm:w-8" />
                     ) : activeOrder.status === 'preparing' ? (
-                      <ChefHat className="h-8 w-8 animate-bounce" />
+                      <ChefHat className="h-7 w-7 sm:h-8 sm:w-8 animate-bounce" />
                     ) : (
-                      <Clock className="h-8 w-8 animate-pulse" />
+                      <Clock className="h-7 w-7 sm:h-8 sm:w-8 animate-pulse" />
                     )}
                   </div>
                 </div>
 
                 {/* 3-Step Visual Progress Bar */}
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {[
                     {
                       key: 'new',
@@ -512,15 +715,15 @@ export function ShowToStaffModal({
                       key={step.key}
                       className={`flex items-center gap-3 rounded-2xl border p-3.5 transition ${
                         step.active
-                          ? 'border-emerald-500/40 bg-emerald-950/40 text-emerald-200'
-                          : 'border-slate-800 bg-slate-900/50 text-slate-500'
+                          ? 'border-emerald-500/50 bg-emerald-50 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200'
+                          : 'border-slate-200 bg-slate-100/70 text-slate-500 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-500'
                       }`}
                     >
                       <div
-                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-black ${
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${
                           step.active
-                            ? 'bg-emerald-500 text-slate-950'
-                            : 'bg-slate-800 text-slate-500'
+                            ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                            : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-500'
                         }`}
                       >
                         {step.active ? '✓' : i + 1}
@@ -531,20 +734,20 @@ export function ShowToStaffModal({
                 </div>
 
                 {/* Ordered Items Summary */}
-                <div className="rounded-2xl bg-slate-950/70 p-4 space-y-2 border border-slate-800">
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                <div className="rounded-2xl bg-slate-50 dark:bg-slate-950/70 p-4 space-y-2 border border-slate-200 dark:border-slate-800">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     {labels.orderItemsSentHeading}
                   </p>
                   {activeOrder.items.map((it, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between text-sm py-1 border-b border-slate-800/60 last:border-none"
+                      className="flex items-center justify-between gap-2 text-sm py-1.5 border-b border-slate-200/80 dark:border-slate-800/60 last:border-none"
                     >
-                      <div>
-                        <span className="font-black text-emerald-400 mr-2">
+                      <div className="min-w-0">
+                        <span className="font-black text-emerald-600 dark:text-emerald-400 mr-2">
                           {it.quantity}x
                         </span>
-                        <span className="font-bold text-white">
+                        <span className="font-bold text-slate-900 dark:text-white">
                           {locale === 'vi'
                             ? it.name_vi
                             : it.name_i18n
@@ -552,12 +755,12 @@ export function ShowToStaffModal({
                               : it.name_vi}
                         </span>
                         {locale !== 'vi' && (
-                          <span className="ml-1.5 text-xs text-slate-400">
+                          <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">
                             ({it.name_vi})
                           </span>
                         )}
                       </div>
-                      <span className="font-bold text-slate-300">
+                      <span className="font-bold text-slate-700 dark:text-slate-300 shrink-0">
                         {formatCurrency(
                           (it.unit_price + it.extra_price) * it.quantity,
                           shop.currency
@@ -565,7 +768,7 @@ export function ShowToStaffModal({
                       </span>
                     </div>
                   ))}
-                  <div className="flex items-center justify-between pt-2 text-base font-black text-emerald-400">
+                  <div className="flex items-center justify-between pt-2 text-base font-black text-emerald-700 dark:text-emerald-400">
                     <span>{labels.totalEstimated}</span>
                     <span>
                       {formatCurrency(activeOrder.total_amount, shop.currency)}
@@ -584,22 +787,24 @@ export function ShowToStaffModal({
                     );
                     if (!qrInfo.isConfigured || !qrInfo.qrImageUrl) {
                       return (
-                        <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-3.5 text-center text-xs font-bold text-amber-200">
-                          {locale === 'vi'
-                            ? 'Quán chưa cấu hình mã VietQR tự động. Vui lòng thanh toán trực tiếp với nhân viên tại bàn/quầy.'
-                            : 'Online QR is not configured for this shop. Please pay with staff at your table or counter.'}
+                        <div className="rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200 p-3.5 text-center text-xs font-bold">
+                          {tx(
+                            'Quán chưa cấu hình mã VietQR tự động. Vui lòng thanh toán trực tiếp với nhân viên tại bàn/quầy.',
+                            'Online QR is not configured for this shop. Please pay with staff at your table or counter.'
+                          )}
                         </div>
                       );
                     }
                     return (
-                      <div className="rounded-2xl border border-emerald-500/40 bg-slate-900 p-4 text-center space-y-2.5">
-                        <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
+                      <div className="rounded-2xl border border-emerald-300 bg-emerald-50/60 dark:border-emerald-500/40 dark:bg-slate-900 p-4 text-center space-y-2.5">
+                        <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 px-3 py-1 text-xs font-black">
                           <QrCode className="h-3.5 w-3.5" />
                           <span>{labels.qrPayment}</span>
                         </div>
+                        {/* Keep actual QR strictly light high-contrast in both light & dark modes */}
                         <div
                           style={{ backgroundColor: '#ffffff' }}
-                          className="qr-light-surface mx-auto h-48 w-48 rounded-2xl bg-white p-2 shadow-lg flex items-center justify-center"
+                          className="qr-light-surface mx-auto h-48 w-48 rounded-2xl bg-white p-2 shadow-md border border-slate-200 flex items-center justify-center"
                         >
                           <img
                             src={qrInfo.qrImageUrl}
@@ -607,17 +812,17 @@ export function ShowToStaffModal({
                             className="h-full w-full object-contain"
                           />
                         </div>
-                        <div className="text-xs text-slate-300 space-y-0.5">
-                          <p className="font-bold text-white">
+                        <div className="text-xs text-slate-700 dark:text-slate-300 space-y-0.5">
+                          <p className="font-bold text-slate-900 dark:text-white">
                             {qrInfo.bankShortName}{' '}
                             {qrInfo.accountNumber
                               ? `• ${qrInfo.accountNumber}`
                               : ''}
                           </p>
-                          <p className="text-[11px] text-slate-400 uppercase">
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 uppercase">
                             {qrInfo.accountName}
                           </p>
-                          <p className="text-[11px] font-mono text-amber-300">
+                          <p className="text-[11px] font-mono font-bold text-amber-700 dark:text-amber-300">
                             {qrInfo.transferContent}
                           </p>
                         </div>
@@ -636,7 +841,7 @@ export function ShowToStaffModal({
                         setActiveOrder(null);
                         onEditOrder(target);
                       }}
-                      className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-amber-400 bg-amber-400/20 py-3.5 text-sm font-black text-amber-300 hover:bg-amber-400/30 transition"
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100 dark:bg-amber-400/20 dark:text-amber-300 dark:hover:bg-amber-400/30 py-3.5 text-sm font-black transition"
                     >
                       <Edit3 className="h-4 w-4" />
                       <span>{orderText.editOrderBtn}</span>
@@ -649,7 +854,7 @@ export function ShowToStaffModal({
                     setActiveOrder(null);
                     onClose();
                   }}
-                  className="w-full rounded-2xl bg-slate-800 py-3.5 text-sm font-bold text-white hover:bg-slate-700"
+                  className="w-full rounded-2xl bg-slate-200 text-slate-800 hover:bg-slate-300 dark:bg-slate-800 dark:text-white dark:hover:bg-slate-700 py-3.5 text-sm font-bold transition"
                 >
                   {orderText.orderMoreBtn}
                 </button>
@@ -657,16 +862,17 @@ export function ShowToStaffModal({
             ) : (
               <>
                 {editingOrder && (
-                  <div className="flex items-center justify-between gap-2 rounded-2xl border-2 border-amber-400 bg-amber-500/15 px-3.5 py-2.5 text-amber-200">
+                  <div className="flex items-center justify-between gap-2 rounded-2xl border-2 border-amber-400 bg-amber-50 text-amber-950 dark:bg-amber-500/15 dark:text-amber-200 px-3.5 py-2.5">
                     <div className="min-w-0">
-                      <p className="text-xs font-black text-amber-300">
+                      <p className="text-xs font-black text-amber-900 dark:text-amber-300">
                         ✏️ #{editingOrder.order_code} •{' '}
                         {formatTableLabel(editingOrder.table_label, locale)}
                       </p>
-                      <p className="text-[11px] text-amber-100/90">
-                        {locale === 'vi'
-                          ? 'Bạn có thể tăng/giảm món tại đây hoặc đóng cửa sổ này để chọn thêm món ngoài thực đơn.'
-                          : 'Adjust quantities here or close this sheet to add more dishes from the menu.'}
+                      <p className="text-[11px] text-amber-800 dark:text-amber-100/90">
+                        {tx(
+                          'Bạn có thể tăng/giảm món tại đây hoặc đóng cửa sổ này để chọn thêm món ngoài thực đơn.',
+                          'Adjust quantities here or close this sheet to add more dishes from the menu.'
+                        )}
                       </p>
                     </div>
                     <button
@@ -674,56 +880,178 @@ export function ShowToStaffModal({
                       onClick={onClose}
                       className="shrink-0 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
                     >
-                      {locale === 'vi' ? '+ Chọn thêm món' : '+ Add Items'}
+                      {tx('+ Chọn thêm món', '+ Add Items')}
                     </button>
                   </div>
                 )}
 
-                {/* Quick Table Selector & Payment Method */}
+                {/* Invalid / Inactive QR Table Resolution Warning */}
+                {tableResolutionError && !isSelectionResolved && (
+                  <div
+                    role="alert"
+                    data-testid="modal-table-resolution-warning"
+                    className="rounded-2xl border-2 border-amber-400 bg-amber-50 p-3.5 text-amber-950 dark:border-amber-500/60 dark:bg-amber-950/50 dark:text-amber-100 space-y-1.5"
+                  >
+                    <div className="flex items-center gap-2 text-xs font-black text-amber-800 dark:text-amber-300">
+                      <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span>
+                        {tx(
+                          'Cần xác nhận lại bàn phục vụ',
+                          'Table confirmation required'
+                        )}
+                      </span>
+                    </div>
+                    <p className="text-xs font-semibold leading-relaxed">
+                      {tableResolutionError}
+                    </p>
+                  </div>
+                )}
+
+                {/* Tables Load Error Banner */}
+                {tablesLoadError && (
+                  <div
+                    role="alert"
+                    data-testid="modal-tables-load-error"
+                    className="flex items-center justify-between gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-800 dark:border-rose-700/60 dark:bg-rose-950/50 dark:text-rose-200"
+                  >
+                    <span>⚠️ {tablesLoadError}</span>
+                    {onRetryLoadTables && (
+                      <button
+                        type="button"
+                        onClick={onRetryLoadTables}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-rose-600 px-2.5 py-1 text-[11px] font-black text-white hover:bg-rose-500"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        <span>{tx('Thử lại', 'Retry')}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Configured Active Tables + Takeaway Selector & Payment Method */}
                 {cart.length > 0 && (
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
-                    <div>
-                      <label className="block text-xs font-extrabold uppercase tracking-wider text-emerald-400 mb-2">
-                        {orderText.tablePrompt}
-                      </label>
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {QUICK_TABLES.map((tb) => (
-                          <button
-                            key={tb}
-                            type="button"
-                            onClick={() => setTableNumber(tb)}
-                            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                              tableNumber === tb
-                                ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                            }`}
-                          >
-                            {formatTableLabel(tb, locale)}
-                          </button>
-                        ))}
+                  <div className="rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/90 p-4 space-y-3.5 shadow-2xs">
+                    <div
+                      role="group"
+                      aria-labelledby="modal-table-selector-heading"
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span
+                          id="modal-table-selector-heading"
+                          className="block text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400"
+                        >
+                          {orderText.tablePrompt}
+                        </span>
+                        <span
+                          data-testid="modal-selected-table-badge"
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
+                            isSelectionResolved
+                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
+                              : 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+                          }`}
+                        >
+                          {currentSelectionDisplay}
+                        </span>
                       </div>
-                      <input
-                        type="text"
-                        value={
-                          QUICK_TABLES.includes(tableNumber)
-                            ? formatTableLabel(tableNumber, locale)
-                            : tableNumber
-                        }
-                        onChange={(e) => setTableNumber(e.target.value)}
-                        placeholder={orderText.tableInputPlaceholder}
-                        className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-bold text-white focus:border-emerald-500 focus:outline-none"
-                      />
+
+                      {isEditingExisting && editingOrder && !hasEditedOrderTable && (
+                        <p className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-semibold text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                          {tx(
+                            `Đang giữ nguyên vị trí của đơn #${editingOrder.order_code}: `,
+                            `Keeping existing table for #${editingOrder.order_code}: `
+                          )}
+                          <strong className="text-slate-900 dark:text-white">
+                            {formatTableLabel(editingOrder.table_label, locale)}
+                          </strong>
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {activeTables.map((tb) => {
+                          const isSelected =
+                            (!isEditingExisting || hasEditedOrderTable) &&
+                            !localTakeaway &&
+                            selectedActiveTable?.id === tb.id;
+                          return (
+                            <button
+                              key={tb.id}
+                              type="button"
+                              aria-pressed={isSelected}
+                              data-testid={`modal-table-chip-${tb.id}`}
+                              onClick={() => handleChooseManagedTable(tb)}
+                              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                                isSelected
+                                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                                  : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                              }`}
+                            >
+                              <Utensils className="h-3.5 w-3.5 shrink-0" />
+                              <span>{tb.name}</span>
+                              {tb.section ? (
+                                <span
+                                  className={`text-[10px] font-semibold ${
+                                    isSelected
+                                      ? 'text-emerald-100 dark:text-slate-900'
+                                      : 'text-slate-500 dark:text-slate-400'
+                                  }`}
+                                >
+                                  ({tb.section})
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+
+                        {/* Takeaway Option */}
+                        <button
+                          type="button"
+                          aria-pressed={
+                            (!isEditingExisting || hasEditedOrderTable) &&
+                            localTakeaway
+                          }
+                          data-testid="modal-table-chip-takeaway"
+                          onClick={handleChooseTakeaway}
+                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                            (!isEditingExisting || hasEditedOrderTable) &&
+                            localTakeaway
+                              ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                              : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
+                          <span>{formatTableLabel('Mang về', locale)}</span>
+                        </button>
+                      </div>
+
+                      {tables !== undefined &&
+                        activeTables.length === 0 &&
+                        !tablesLoadError && (
+                          <p className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                            {tx(
+                              'Quán hiện chưa mở bàn tại chỗ. Bạn có thể chọn "Mang về" để gửi đơn.',
+                              'No dine-in tables are currently active. You can select "Takeaway" to place your order.'
+                            )}
+                          </p>
+                        )}
                     </div>
 
                     {/* Payment Method Toggle */}
-                    <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div
+                      role="group"
+                      aria-label={tx(
+                        'Phương thức thanh toán',
+                        'Payment method'
+                      )}
+                      className="grid grid-cols-2 gap-2 pt-1"
+                    >
                       <button
                         type="button"
+                        aria-pressed={paymentMethod === 'cash'}
                         onClick={() => setPaymentMethod('cash')}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-bold transition ${
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2.5 text-xs font-bold transition ${
                           paymentMethod === 'cash'
-                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
-                            : 'border-slate-800 bg-slate-950 text-slate-400'
+                            ? 'border-emerald-600 bg-emerald-50 text-emerald-800 dark:border-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-300'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400'
                         }`}
                       >
                         <Banknote className="h-4 w-4" />
@@ -731,11 +1059,12 @@ export function ShowToStaffModal({
                       </button>
                       <button
                         type="button"
+                        aria-pressed={paymentMethod === 'vietqr'}
                         onClick={() => setPaymentMethod('vietqr')}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-bold transition ${
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border py-2.5 text-xs font-bold transition ${
                           paymentMethod === 'vietqr'
-                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
-                            : 'border-slate-800 bg-slate-950 text-slate-400'
+                            ? 'border-emerald-600 bg-emerald-50 text-emerald-800 dark:border-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-300'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400'
                         }`}
                       >
                         <QrCode className="h-4 w-4" />
@@ -744,32 +1073,41 @@ export function ShowToStaffModal({
                     </div>
 
                     {/* General Order Note */}
-                    <input
-                      type="text"
-                      value={customerNote}
-                      onChange={(e) => setCustomerNote(e.target.value)}
-                      placeholder={orderText.notePlaceholder}
-                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
-                    />
+                    <div>
+                      <label
+                        htmlFor="order-customer-note"
+                        className="sr-only"
+                      >
+                        {orderText.noteLabel}
+                      </label>
+                      <input
+                        id="order-customer-note"
+                        type="text"
+                        value={customerNote}
+                        onChange={(e) => setCustomerNote(e.target.value)}
+                        placeholder={orderText.notePlaceholder}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:placeholder:text-slate-500"
+                      />
+                    </div>
                   </div>
                 )}
 
                 {locale !== 'vi' && cart.length > 0 && (
-                  <p className="px-1 text-[11px] font-medium text-slate-400">
+                  <p className="px-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     ℹ️ {labels.kitchenBilingualNote}
                   </p>
                 )}
 
                 {/* Cart Items List */}
                 {cart.length === 0 ? (
-                  <div className="py-16 text-center text-slate-400">
-                    <p className="text-base font-medium">
+                  <div className="rounded-3xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 py-16 px-6 text-center text-slate-600 dark:text-slate-400 shadow-2xs">
+                    <p className="text-base font-bold text-slate-800 dark:text-slate-200">
                       {labels.emptyCartTitle}
                     </p>
                     <button
                       type="button"
                       onClick={onClose}
-                      className="mt-4 rounded-xl bg-slate-800 px-5 py-2.5 text-sm font-bold text-white"
+                      className="mt-4 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-emerald-500 transition"
                     >
                       {labels.backToMenuBtn}
                     </button>
@@ -787,12 +1125,12 @@ export function ShowToStaffModal({
                     return (
                       <div
                         key={`${entry.item.id}-${idx}`}
-                        className="rounded-3xl border-2 border-slate-800 bg-slate-900 p-4 shadow-md"
+                        className="rounded-3xl border border-slate-200 bg-white dark:border-2 dark:border-slate-800 dark:bg-slate-900 p-4 shadow-sm"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-3">
                             {/* Giant Quantity Badge */}
-                            <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black shadow-md">
+                            <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black shadow-xs">
                               <span className="text-[10px] uppercase leading-none font-extrabold">
                                 {labels.qtyShort}
                               </span>
@@ -803,13 +1141,13 @@ export function ShowToStaffModal({
 
                             <div>
                               {/* Primary Item Name in Customer's Selected Language */}
-                              <h3 className="text-lg font-black leading-snug text-white">
+                              <h3 className="text-base sm:text-lg font-black leading-snug text-slate-900 dark:text-white">
                                 {primaryName}
                               </h3>
 
                               {/* Secondary Vietnamese Name for Kitchen/Counter Accuracy */}
                               {locale !== 'vi' && (
-                                <p className="mt-0.5 text-xs font-semibold text-emerald-300/90">
+                                <p className="mt-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300/90">
                                   🇻🇳 {entry.item.name_i18n.vi}
                                 </p>
                               )}
@@ -820,31 +1158,39 @@ export function ShowToStaffModal({
                                   {entry.selectedChoices.map((c) => (
                                     <span
                                       key={c.id}
-                                      className="rounded-lg bg-emerald-950/90 border border-emerald-700/60 px-2.5 py-1 text-xs font-bold text-emerald-300"
+                                      className="rounded-lg bg-emerald-50 border border-emerald-200 px-2.5 py-1 text-xs font-bold text-emerald-800 dark:bg-emerald-950/90 dark:border-emerald-700/60 dark:text-emerald-300"
                                     >
-                                      • {tField(c.label_i18n, locale)}
-                                      {c.extra_price > 0
-                                        ? ` (+${formatCurrency(c.extra_price, shop.currency)})`
+                                      + {tField(c.label_i18n, locale)}
+                                      {locale !== 'vi' &&
+                                      c.label_i18n.vi &&
+                                      c.label_i18n.vi !==
+                                        tField(c.label_i18n, locale)
+                                        ? ` (${c.label_i18n.vi})`
                                         : ''}
                                     </span>
                                   ))}
                                 </div>
                               )}
 
-                              {/* Quick Tags */}
+                              {/* Dietary / Service Quick Tags */}
                               {entry.quickTags && entry.quickTags.length > 0 && (
                                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                                   {entry.quickTags.map((tagVi, tIdx) => {
                                     const matchedTag = quickTagsPool.find(
-                                      (t) => t.i18n.vi === tagVi
+                                      (qt) => qt.i18n.vi === tagVi
                                     );
-                                    const displayTag = matchedTag
+                                    const localTag = matchedTag
                                       ? tField(matchedTag.i18n, locale)
                                       : tagVi;
+                                    const displayTag =
+                                      locale !== 'vi' && localTag !== tagVi
+                                        ? `${localTag} (${tagVi})`
+                                        : tagVi;
+
                                     return (
                                       <span
                                         key={tIdx}
-                                        className="rounded-lg bg-amber-500/20 border border-amber-500/40 px-2.5 py-0.5 text-xs font-bold text-amber-300"
+                                        className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-1 text-xs font-extrabold text-amber-800 dark:bg-amber-950/90 dark:border-amber-700/60 dark:text-amber-300"
                                       >
                                         ⚠️ {displayTag}
                                       </span>
@@ -855,8 +1201,9 @@ export function ShowToStaffModal({
 
                               {/* Custom Note */}
                               {entry.customNote && (
-                                <p className="mt-2 rounded-xl bg-rose-950/60 border border-rose-700/50 px-3 py-1.5 text-xs font-bold text-rose-200">
-                                  📝 {labels.notePrefix}: &ldquo;{entry.customNote}&rdquo;
+                                <p className="mt-2 rounded-xl bg-rose-50 border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-800 dark:bg-rose-950/60 dark:border-rose-700/50 dark:text-rose-200">
+                                  📝 {labels.notePrefix}: &ldquo;
+                                  {entry.customNote}&rdquo;
                                 </p>
                               )}
                             </div>
@@ -864,13 +1211,13 @@ export function ShowToStaffModal({
                         </div>
 
                         {/* Bottom Line: Price & Quantity Adjuster */}
-                        <div className="mt-4 flex items-center justify-between border-t border-slate-800 pt-3">
+                        <div className="mt-4 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-3">
                           <div>
-                            <span className="text-xs text-slate-400">
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
                               {labels.unitPriceLabel}:{' '}
                               {formatCurrency(unitWithExtra, shop.currency)}
                             </span>
-                            <p className="text-base font-black text-emerald-400">
+                            <p className="text-base font-black text-emerald-600 dark:text-emerald-400">
                               {formatCurrency(lineTotal, shop.currency)}
                             </p>
                           </div>
@@ -878,18 +1225,26 @@ export function ShowToStaffModal({
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
+                              aria-label={tx(
+                                `Giảm số lượng ${primaryName}`,
+                                `Decrease quantity of ${primaryName}`
+                              )}
                               onClick={() => onUpdateQuantity(idx, -1)}
-                              className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700"
+                              className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
                               <Minus className="h-4 w-4" />
                             </button>
-                            <span className="w-6 text-center text-sm font-black">
+                            <span className="w-6 text-center text-sm font-black text-slate-900 dark:text-white">
                               {entry.quantity}
                             </span>
                             <button
                               type="button"
+                              aria-label={tx(
+                                `Tăng số lượng ${primaryName}`,
+                                `Increase quantity of ${primaryName}`
+                              )}
                               onClick={() => onUpdateQuantity(idx, 1)}
-                              className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700"
+                              className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
                               <Plus className="h-4 w-4" />
                             </button>
@@ -905,31 +1260,37 @@ export function ShowToStaffModal({
 
           {/* Sticky Footer: Total & Direct mPOS Order Action */}
           {!activeOrder && cart.length > 0 && (
-            <div className="border-t border-slate-800 bg-slate-900 px-4 pt-4 pb-6">
+            <div className="border-t border-slate-200 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900 px-4 pt-3.5 pb-6 shrink-0">
               <div className="mx-auto max-w-lg space-y-3">
                 {submitError && (
-                  <div className="rounded-xl bg-rose-950/80 border border-rose-700 px-3 py-2 text-xs font-bold text-rose-200">
+                  <div
+                    role="alert"
+                    data-testid="modal-submit-error"
+                    className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-800 dark:bg-rose-950/80 dark:border-rose-700 dark:text-rose-200"
+                  >
                     ⚠️ {submitError}
                   </div>
                 )}
 
                 {promoCalc.discountAmount > 0 && (
-                  <div className="flex items-center justify-between rounded-xl bg-emerald-950/70 border border-emerald-700/60 px-3 py-2 text-xs">
-                    <span className="font-bold text-emerald-300">
+                  <div className="flex items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs dark:bg-emerald-950/70 dark:border-emerald-700/60">
+                    <span className="font-bold text-emerald-800 dark:text-emerald-300">
                       🎁{' '}
                       {promoCalc.promoTitle ||
                         (PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi)
                           .promoBadge}
-                      {promoCalc.voucherCode ? ` (${promoCalc.voucherCode})` : ''}
+                      {promoCalc.voucherCode
+                        ? ` (${promoCalc.voucherCode})`
+                        : ''}
                     </span>
-                    <span className="font-black text-emerald-400">
+                    <span className="font-black text-emerald-600 dark:text-emerald-400">
                       -{formatCurrency(promoCalc.discountAmount, shop.currency)}
                     </span>
                   </div>
                 )}
 
                 {promoCalc.minOrderNeeded > 0 && (
-                  <div className="rounded-xl bg-amber-950/60 border border-amber-700/50 px-3 py-1.5 text-[11px] font-semibold text-amber-300">
+                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-1.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:border-amber-700/50 dark:text-amber-300">
                     {(
                       PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
                     ).unlockHint(
@@ -940,17 +1301,16 @@ export function ShowToStaffModal({
                 )}
 
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold text-slate-300">
-                    {labels.totalEstimated} (
-                    {formatTableLabel(tableNumber || 'Bàn 01', locale)})
+                  <span className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                    {labels.totalEstimated} ({currentSelectionDisplay})
                   </span>
                   <div className="text-right">
                     {promoCalc.discountAmount > 0 && (
-                      <span className="block text-xs text-slate-500 line-through">
+                      <span className="block text-xs text-slate-400 dark:text-slate-500 line-through">
                         {formatCurrency(subtotal, shop.currency)}
                       </span>
                     )}
-                    <span className="text-2xl font-black text-emerald-400">
+                    <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
                       {formatCurrency(grandTotal, shop.currency)}
                     </span>
                   </div>
@@ -985,9 +1345,9 @@ export function ShowToStaffModal({
                       onClearCart();
                       onClose();
                     }}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-300 hover:bg-slate-700"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                   >
-                    <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                    <Trash2 className="h-3.5 w-3.5 text-rose-500 dark:text-rose-400" />
                     <span>{labels.clearSelection}</span>
                   </button>
                 </div>

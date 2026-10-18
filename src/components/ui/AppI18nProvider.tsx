@@ -24,6 +24,15 @@ import {
   setStoredAppLocale,
   translateApp,
 } from '@/lib/app-i18n';
+import {
+  applyThemeToDom,
+  getStoredThemePreference,
+  normalizeThemePreference,
+  THEME_CHANGE_EVENT,
+  THEME_STORAGE_KEY,
+  ThemeMode,
+  ThemePreference,
+} from '@/components/ui/ThemeToggle';
 
 export interface AppI18nContextValue {
   locale: AppLocale;
@@ -60,10 +69,15 @@ export function AppI18nProvider({
     const stored = getStoredAppLocale(undefined, initialLocale);
     setLocaleState(stored);
 
+    applyThemeToDom(getStoredThemePreference());
+
     const handleStorage = (e: StorageEvent) => {
       if (e.key === APP_LOCALE_STORAGE_KEY || e.key === null) {
         const next = normalizeAppLocale(e.newValue);
         setLocaleState(next);
+      }
+      if (e.key === THEME_STORAGE_KEY || e.key === null) {
+        applyThemeToDom(normalizeThemePreference(e.newValue));
       }
     };
 
@@ -75,11 +89,44 @@ export function AppI18nProvider({
       }
     };
 
+    const handleThemeCustom = (e: Event) => {
+      const custom = e as CustomEvent<ThemePreference | ThemeMode>;
+      if (custom.detail) {
+        applyThemeToDom(normalizeThemePreference(custom.detail));
+      }
+    };
+
+    const mql =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)')
+        : null;
+    const handleMediaChange = (e: MediaQueryListEvent) => {
+      if (getStoredThemePreference() === 'system') {
+        applyThemeToDom('system', e.matches);
+      }
+    };
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener(APP_LOCALE_CHANGE_EVENT, handleCustom);
+    window.addEventListener(THEME_CHANGE_EVENT, handleThemeCustom);
+    if (mql) {
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', handleMediaChange);
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(handleMediaChange);
+      }
+    }
     return () => {
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener(APP_LOCALE_CHANGE_EVENT, handleCustom);
+      window.removeEventListener(THEME_CHANGE_EVENT, handleThemeCustom);
+      if (mql) {
+        if (typeof mql.removeEventListener === 'function') {
+          mql.removeEventListener('change', handleMediaChange);
+        } else if (typeof mql.removeListener === 'function') {
+          mql.removeListener(handleMediaChange);
+        }
+      }
     };
   }, [initialLocale]);
 

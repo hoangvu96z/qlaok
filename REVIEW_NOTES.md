@@ -1,3 +1,5 @@
+> **Tài liệu lịch sử / đặc tả.** Nhãn cập nhật 18/10/2026: nội dung bên dưới giữ theo thời điểm ghi, không phải xác nhận trạng thái hiện tại. Xem [README](README.md), [ARCHITECTURE](ARCHITECTURE.md), [APP_REVIEW](docs/APP_REVIEW.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md) cho task tiếp theo. Không dùng mật khẩu mẫu hoặc chỉ dẫn khởi tạo index trong tài liệu cũ.
+
 # Review trước merge — 17/10/2026
 
 Review đối chiếu từ `origin/main` 7863dd7, gồm sửa mobile của Codex và phần triển khai tiếp của AGY. Báo cáo AGY ban đầu là mô tả triển khai, không phải kết luận độc lập rằng mọi thay đổi đã an toàn để deploy.

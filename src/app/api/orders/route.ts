@@ -90,10 +90,19 @@ export async function GET(req: Request) {
       const auth = await requireShopPermission(req, shopId, 'orders.view');
       if (auth.errorResponse) return auth.errorResponse;
 
-      const tableLabel = searchParams.get('tableLabel') || undefined;
-      const sessionId = searchParams.get('sessionId') || undefined;
+      const tableId =
+        searchParams.get('tableId') || searchParams.get('table_id') || undefined;
+      const tableLabel =
+        searchParams.get('tableLabel') ||
+        searchParams.get('table_label') ||
+        undefined;
+      const sessionId =
+        searchParams.get('sessionId') ||
+        searchParams.get('session_id') ||
+        undefined;
       const tableBill = await dbGetTableBill({
         shop_id: shopId,
+        table_id: tableId,
         table_label: tableLabel,
         session_id: sessionId,
       });
@@ -215,6 +224,7 @@ export async function POST(req: Request) {
 
       const tableBill = await dbSettleTableBill({
         shop_id: shopId,
+        table_id: body.table_id ?? body.tableId,
         table_label: body.table_label || body.tableLabel,
         session_id: body.session_id || body.sessionId,
         payment_method: body.payment_method || 'cash',
@@ -233,6 +243,7 @@ export async function POST(req: Request) {
         actorRole: auth.membership.role,
         action: 'settle_table_bill',
         details: {
+          table_id: tableBill.table_id ?? null,
           table_label: tableBill.table_label,
           session_id: tableBill.session_id,
           total_amount: tableBill.total_amount,
@@ -308,6 +319,10 @@ export async function POST(req: Request) {
 
     const {
       shop_id,
+      table_id,
+      tableId,
+      table_code,
+      tableCode,
       table_label = 'Bàn khách',
       session_id,
       visitor_lang = 'vi',
@@ -324,6 +339,10 @@ export async function POST(req: Request) {
       items = [],
     } = body as {
       shop_id: string;
+      table_id?: string | null;
+      tableId?: string | null;
+      table_code?: string | null;
+      tableCode?: string | null;
       table_label?: string;
       session_id?: string;
       visitor_lang?: SupportedLocale;
@@ -424,6 +443,8 @@ export async function POST(req: Request) {
 
     const order = await dbCreateOrder({
       shop_id,
+      table_id: table_id !== undefined ? table_id : tableId,
+      table_code: table_code !== undefined ? table_code : tableCode,
       table_label,
       session_id,
       visitor_lang,
@@ -495,6 +516,10 @@ export async function PATCH(req: Request) {
       refund_reason,
       cancelled_reason,
       restock_items,
+      table_id,
+      tableId,
+      table_code,
+      tableCode,
       table_label,
       customer_note,
       items,
@@ -511,11 +536,18 @@ export async function PATCH(req: Request) {
       refund_reason?: string;
       cancelled_reason?: string;
       restock_items?: boolean;
+      table_id?: string | null;
+      tableId?: string | null;
+      table_code?: string | null;
+      tableCode?: string | null;
       table_label?: string;
       customer_note?: string;
       items?: OrderLineItem[];
       discount_amount?: number;
     };
+
+    const resolvedTableId = table_id !== undefined ? table_id : tableId;
+    const resolvedTableCode = table_code !== undefined ? table_code : tableCode;
 
     const resolvedOrderId = orderId || order_id;
     if (!resolvedOrderId) {
@@ -585,6 +617,9 @@ export async function PATCH(req: Request) {
 
       const updatedByCustomer = await dbUpdateOrderStatus(resolvedOrderId, {
         status: status === 'cancelled' ? 'cancelled' : undefined,
+        table_id: resolvedTableId,
+        table_code: resolvedTableCode,
+        table_label,
         customer_note,
         items,
         canApplyDiscount: false,
@@ -639,7 +674,15 @@ export async function PATCH(req: Request) {
     if (isChangingDiscount || (Array.isArray(items) && items.some((line) =>
       line.discount_percent !== undefined || line.custom_unit_price != null
     ))) requiredPerms.add('discount.apply');
-    if (isEditingItems || table_label !== undefined || customer_note !== undefined) requiredPerms.add('orders.edit_items');
+    if (
+      isEditingItems ||
+      resolvedTableId !== undefined ||
+      resolvedTableCode !== undefined ||
+      table_label !== undefined ||
+      customer_note !== undefined
+    ) {
+      requiredPerms.add('orders.edit_items');
+    }
     if (isCancellingUnpaid) requiredPerms.add('orders.cancel_unpaid');
     if (status !== undefined && status !== existingOrder.status && status !== 'cancelled') requiredPerms.add('orders.fulfill');
     if (requiredPerms.size === 0) requiredPerms.add('orders.fulfill');
@@ -682,6 +725,8 @@ export async function PATCH(req: Request) {
       refunded_by: isRefunding ? auth.user.sub : undefined,
       cancelled_reason,
       restock_items,
+      table_id: resolvedTableId,
+      table_code: resolvedTableCode,
       table_label,
       customer_note,
       items,
