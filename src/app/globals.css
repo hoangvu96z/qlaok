@@ -203,7 +203,7 @@ html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
    3D Scrollytelling & Perspective Utilities (Marketing Landing Page)
    ============================================================================ */
 .perspective-stage {
-  perspective: 1400px;
+  perspective: 1100px;
   transform-style: preserve-3d;
 }
 
@@ -211,22 +211,41 @@ html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
   transform-style: preserve-3d;
 }
 
+/* 3D Glowing Perspective Floor Grid under Hero Stage */
+.floor-grid-3d {
+  background-image:
+    linear-gradient(to right, rgba(16, 185, 129, 0.16) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 185, 129, 0.16) 1px, transparent 1px);
+  background-size: 48px 48px;
+  transform: perspective(700px) rotateX(68deg) scale(1.35);
+  transform-origin: center top;
+  mask-image: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.85) 15%, transparent 72%);
+  -webkit-mask-image: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.85) 15%, transparent 72%);
+}
+
 .card-3d-tilt {
   transform-style: preserve-3d;
   will-change: transform, opacity;
-  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.55s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.35s ease,
+    opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .card-3d-tilt:hover {
-  transform: perspective(1200px) rotateX(3deg) rotateY(-4deg) translateZ(14px) translateY(-6px);
+  transform: perspective(1000px) rotateX(5deg) rotateY(-6deg) translate3d(0, -8px, 26px);
+  box-shadow: 0 28px 65px -15px rgba(16, 185, 129, 0.32);
 }
 
-/* Scroll-triggered 3D entrance state (IntersectionObserver fallback + progressive enhancement) */
+.card-3d-active {
+  transform: perspective(1000px) rotateX(0deg) rotateY(0deg) translate3d(0, -6px, 34px);
+  box-shadow: 0 32px 80px -12px rgba(16, 185, 129, 0.42);
+}
+
+/* Scroll-triggered 3D entrance state (dramatic 3D flip-up on scroll) */
 .scroll-3d-item {
   opacity: 0;
-  transform: perspective(1200px) rotateX(16deg) translateY(44px) scale(0.94);
+  transform: perspective(1000px) rotateX(28deg) rotateY(-6deg) translate3d(0, 64px, -60px) scale(0.9);
   transition: opacity 0.75s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform, opacity;
@@ -234,18 +253,18 @@ html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
 
 .scroll-3d-item.is-inview {
   opacity: 1;
-  transform: perspective(1200px) rotateX(0deg) translateY(0) scale(1);
+  transform: perspective(1000px) rotateX(0deg) rotateY(0deg) translate3d(0, 0, 0) scale(1);
 }
 
 /* Native CSS Scroll-Driven Animation enhancement where supported */
 @keyframes scroll-3d-reveal {
   0% {
-    opacity: 0.15;
-    transform: perspective(1200px) rotateX(18deg) translateY(52px) scale(0.92);
+    opacity: 0.1;
+    transform: perspective(1000px) rotateX(30deg) rotateY(-6deg) translate3d(0, 70px, -70px) scale(0.88);
   }
   100% {
     opacity: 1;
-    transform: perspective(1200px) rotateX(0deg) translateY(0) scale(1);
+    transform: perspective(1000px) rotateX(0deg) rotateY(0deg) translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -254,7 +273,7 @@ html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
     .scroll-3d-native {
       animation: scroll-3d-reveal linear both;
       animation-timeline: view();
-      animation-range: entry 8% cover 34%;
+      animation-range: entry 5% cover 32%;
     }
   }
 }
@@ -262,22 +281,23 @@ html:not(.dark) .theme-surface-page .bg-purple-500\/20:not(.keep-dark-surface) {
 /* Floating 3D depth badges */
 @keyframes float-3d-slow {
   0%, 100% {
-    transform: translate3d(0, 0px, 36px);
+    transform: translate3d(0, 0px, 75px);
   }
   50% {
-    transform: translate3d(0, -8px, 36px);
+    transform: translate3d(0, -10px, 75px);
   }
 }
 
 .float-badge-3d {
-  transform: translate3d(0, 0, 36px);
-  animation: float-3d-slow 4.5s ease-in-out infinite;
+  transform: translate3d(0, 0, 75px);
+  animation: float-3d-slow 4.2s ease-in-out infinite;
 }
 
 /* Accessibility: Respect reduced motion preferences */
 @media (prefers-reduced-motion: reduce) {
   .card-3d-tilt,
   .card-3d-tilt:hover,
+  .card-3d-active,
   .scroll-3d-item,
   .scroll-3d-item.is-inview,
   .scroll-3d-native,
