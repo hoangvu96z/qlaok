@@ -36,6 +36,7 @@ import { startOrderLiveSync } from '@/lib/order-live-sync';
 import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
   AppLanguageSwitcher,
   useAppI18n,
@@ -526,11 +527,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           <Link
             href="/"
             className="flex items-center gap-2.5 min-w-0"
+            aria-label={tx('Qlaok • Trang chủ', 'Qlaok • Home')}
             title={tx('Qlaok • Trang chủ', 'Qlaok • Home')}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-black text-lg shadow-xs">
-              Q
-            </div>
+            <BrandLogo
+              className="h-9 w-9 rounded-xl shadow-xs"
+              alt={isSidebarCollapsed ? 'Qlaok' : ''}
+            />
             {!isSidebarCollapsed && (
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -779,10 +782,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
             <Link
               href="/"
-              className="md:hidden flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white font-black text-sm"
+              aria-label="Qlaok"
+              className="md:hidden flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
               title="Qlaok"
             >
-              Q
+              <BrandLogo className="h-8 w-8 rounded-xl" alt="Qlaok" />
             </Link>
 
             <div className="flex flex-1 items-center gap-1.5 min-w-0">

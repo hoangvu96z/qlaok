@@ -38,6 +38,7 @@ import {
   AppLanguageSwitcher,
   useAppI18n,
 } from '@/components/ui/AppI18nProvider';
+import { BrandLogo } from '@/components/ui/BrandLogo';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
 import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
@@ -378,9 +379,7 @@ export default function MarketingLandingPage() {
       <header className="sticky top-0 z-50 bg-slate-950/85 backdrop-blur-xl border-b border-slate-800/80 keep-dark-surface">
         <div className="mx-auto max-w-6xl px-3 sm:px-4 py-3.5 flex items-center justify-between gap-2 sm:gap-4">
           <Link href="/" className="flex shrink-0 items-center gap-2 sm:gap-2.5">
-            <div className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black text-lg sm:text-xl shadow-lg shadow-emerald-500/25">
-              Q
-            </div>
+            <BrandLogo className="h-9 w-9 sm:h-10 sm:w-10 rounded-2xl shadow-lg shadow-emerald-500/25" />
             <div className="flex items-center">
               <span className="text-base sm:text-lg font-black tracking-tight text-white">
                 Qlaok
@@ -1204,9 +1203,7 @@ export default function MarketingLandingPage() {
       <footer className="mt-auto border-t border-slate-800 bg-slate-950 py-8 keep-dark-surface">
         <div className="mx-auto max-w-6xl px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-400">
           <div className="flex items-center gap-2">
-            <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500 text-slate-950 font-black">
-              Q
-            </span>
+            <BrandLogo className="h-6 w-6 rounded-lg" />
             <span className="font-bold text-white">Qlaok (Quét là OK)</span>
             <span>
               {tx(

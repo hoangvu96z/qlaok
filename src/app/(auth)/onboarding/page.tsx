@@ -19,6 +19,7 @@ import { BusinessVertical, Profile } from '@/types/qlaok';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { getAuthHeaders, getStoredAuthOwner } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
   AppLanguageSwitcher,
   useAppI18n,
@@ -254,9 +255,7 @@ export default function OnboardingWizardPage() {
             href="/"
             className="inline-flex items-center gap-2 text-xs font-extrabold text-slate-300 hover:text-white"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-slate-950 font-black">
-              Q
-            </span>
+            <BrandLogo className="h-7 w-7 rounded-lg" />
             <span>{t('onboarding.title')}</span>
           </Link>
 

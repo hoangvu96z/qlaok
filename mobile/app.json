@@ -4,6 +4,7 @@
     "slug": "qlaok-mobile-owner",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/q-menu.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
@@ -16,6 +17,7 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/q-menu-adaptive.png",
         "backgroundColor": "#10b981"
       },
       "package": "vn.qlaok.owner"

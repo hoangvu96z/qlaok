@@ -21,6 +21,7 @@ import {
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
   AppLanguageSwitcher,
   useAppI18n,
@@ -283,9 +284,9 @@ function LoginFormContent() {
             href="/"
             aria-label={t('auth.backToHome')}
             title={t('auth.backToHome')}
-            className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black text-2xl shadow-lg"
+            className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl shadow-lg"
           >
-            Q
+            <BrandLogo className="h-12 w-12 rounded-2xl" />
           </Link>
           <h1 className="text-2xl font-black tracking-tight">
             {mode === 'register'

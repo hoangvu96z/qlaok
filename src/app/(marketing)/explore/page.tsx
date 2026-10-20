@@ -13,6 +13,7 @@ import { BusinessVertical, Shop } from '@/types/qlaok';
 import { checkShopOpenStatus, LOCALE_META } from '@/lib/i18n-helper';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
   AppLanguageSwitcher,
   useAppI18n,
@@ -66,9 +67,7 @@ export default function ExploreDirectoryPage() {
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
         <div className="mx-auto max-w-6xl px-4 py-3.5 flex items-center justify-between gap-3">
           <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white font-black text-lg">
-              Q
-            </div>
+            <BrandLogo className="h-9 w-9 rounded-xl" />
             <div className="flex items-baseline gap-1.5">
               <span className="text-base font-black text-slate-900">
                 Qlaok Directory

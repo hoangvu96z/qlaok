@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title"><title id="title">Qlaok — open menu</title><rect width="64" height="64" rx="19" fill="#10b981"/><g color="#052e2b"><circle cx="29" cy="29" r="19" fill="none" stroke="currentColor" stroke-width="6.5"/>
+<path d="m40 40 13 13" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+<path d="M29 23c-4-3-8-3-12-2v15c5-1 8 0 12 3 4-3 7-4 12-3V21c-4-1-8-1-12 2Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+<path d="M29 23v16M21 26l4 1M21 31l4 1M33 27l4-1M33 32l4-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></g></svg>

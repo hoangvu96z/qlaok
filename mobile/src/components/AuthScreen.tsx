@@ -1,5 +1,6 @@
 import React, { memo, useState } from 'react';
 import {
+  Image,
   SafeAreaView,
   Text,
   TextInput,
@@ -51,8 +52,13 @@ export const AuthScreen = memo(function AuthScreen() {
         >
           <MobileLanguageSwitcher variant="dark" />
         </View>
-        <View style={styles.logoBadge}>
-          <Text style={styles.logoText}>Q</Text>
+        <View style={[styles.logoBadge, { overflow: 'hidden' }]}>
+          <Image
+            source={require('../../assets/q-menu.png')}
+            accessibilityLabel="Qlaok"
+            resizeMode="cover"
+            style={{ width: '100%', height: '100%' }}
+          />
         </View>
         <Text style={styles.authTitle}>{t('auth.title')}</Text>
         <Text style={styles.authSubtitle}>{t('auth.subtitle')}</Text>
