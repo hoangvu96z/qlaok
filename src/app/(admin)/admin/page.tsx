@@ -49,6 +49,10 @@ import {
   AppLanguageSwitcher,
   useAppI18n,
 } from '@/components/ui/AppI18nProvider';
+import {
+  AppDataTable,
+  type TableColumn,
+} from '@/components/ui/AppDataTable';
 import { formatCurrency } from '@/lib/i18n-helper';
 import type {
   AnalyticsEvent,
@@ -744,6 +748,642 @@ export default function SuperAdminPortalPage() {
     return matchStatus && matchShop;
   });
 
+  const overviewShopColumns: TableColumn<EnrichedShop>[] = [
+    {
+      id: 'shop',
+      name: tx('Cửa hàng', 'Shop'),
+      sortable: true,
+      selector: (shop) => shop.name,
+      minWidth: '180px',
+      wrap: true,
+      cell: (shop) => (
+        <div className="py-1">
+          <p className="font-bold text-white">{shop.name}</p>
+          <p className="text-[11px] text-slate-400">
+            /s/{shop.slug} • {shop.city}
+          </p>
+        </div>
+      ),
+    },
+    {
+      id: 'owner',
+      name: tx('Chủ quán', 'Owner'),
+      sortable: true,
+      selector: (shop) => shop.ownerEmail,
+      minWidth: '180px',
+      wrap: true,
+      cell: (shop) => (
+        <div className="py-1">
+          <p className="font-semibold text-slate-200">{shop.ownerEmail}</p>
+          <span className="inline-block rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-amber-300">
+            {shop.ownerPlan}
+          </span>
+        </div>
+      ),
+    },
+    {
+      id: 'items_orders',
+      name: tx('Món / Đơn', 'Items / Orders'),
+      sortable: true,
+      right: true,
+      selector: (shop) => shop.ordersCount,
+      sortFunction: (a, b) =>
+        Number(a.ordersCount || 0) - Number(b.ordersCount || 0) ||
+        Number(a.itemsCount || 0) - Number(b.itemsCount || 0),
+      minWidth: '140px',
+      cell: (shop) => (
+        <span className="font-semibold text-slate-300">
+          {tx(
+            '{items} món • {orders} đơn',
+            '{items} items • {orders} orders',
+            {
+              items: shop.itemsCount,
+              orders: shop.ordersCount,
+            }
+          )}
+        </span>
+      ),
+    },
+    {
+      id: 'revenue',
+      name: tx('Doanh thu', 'Revenue'),
+      sortable: true,
+      right: true,
+      selector: (shop) => shop.shopGmv,
+      sortFunction: (a, b) => Number(a.shopGmv || 0) - Number(b.shopGmv || 0),
+      minWidth: '130px',
+      cell: (shop) => (
+        <span className="font-black text-emerald-400">
+          {formatCurrency(shop.shopGmv, shop.currency || 'VND')}
+        </span>
+      ),
+    },
+    {
+      id: 'action',
+      name: tx('Thao tác', 'Action'),
+      right: true,
+      ignoreRowClick: true,
+      allowOverflow: true,
+      minWidth: '150px',
+      cell: (shop) => (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleImpersonateShop(shop);
+          }}
+          className="inline-flex items-center gap-1 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
+        >
+          <span>{tx('Quản lý Quán', 'Manage Shop')}</span>
+          <ArrowRight className="h-3 w-3" />
+        </button>
+      ),
+    },
+  ];
+
+  const ownerColumns: TableColumn<EnrichedOwner>[] = [
+    {
+      id: 'owner',
+      name: tx('Chủ quán / Email', 'Owner / Email'),
+      sortable: true,
+      selector: (owner) => owner.email,
+      minWidth: '220px',
+      wrap: true,
+      cell: (owner) => {
+        const isRootAdmin = owner.email.toLowerCase() === SUPER_ADMIN_EMAIL;
+        return (
+          <div className="py-1">
+            <div className="flex items-center gap-2">
+              <span className="font-black text-white">
+                {owner.full_name || tx('Chủ quán', 'Shop Owner')}
+              </span>
+              {isRootAdmin && (
+                <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-black text-slate-950">
+                  👑 SUPER ADMIN
+                </span>
+              )}
+            </div>
+            <p className="text-slate-300 font-semibold mt-0.5">{owner.email}</p>
+            <p className="text-[11px] text-slate-500">
+              ID: {owner.id} {owner.phone ? `• 📞 ${owner.phone}` : ''}
+            </p>
+          </div>
+        );
+      },
+    },
+    {
+      id: 'plan',
+      name: tx('Gói hiện tại', 'Current Plan'),
+      sortable: true,
+      selector: (owner) => owner.plan,
+      sortFunction: (a, b) =>
+        a.plan.localeCompare(b.plan) ||
+        (a.plan_expires_at ? new Date(a.plan_expires_at).getTime() : 0) -
+          (b.plan_expires_at ? new Date(b.plan_expires_at).getTime() : 0),
+      minWidth: '140px',
+      wrap: true,
+      cell: (owner) => (
+        <div className="py-1">
+          <span
+            className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
+              owner.plan === 'premium'
+                ? 'bg-amber-400 text-slate-950'
+                : owner.plan === 'basic'
+                  ? 'bg-emerald-500 text-slate-950'
+                  : 'bg-slate-800 text-slate-300'
+            }`}
+          >
+            {owner.plan}
+          </span>
+          {owner.plan_expires_at && (
+            <p className="text-[10px] text-slate-400 mt-1">
+              {tx('Hết hạn:', 'Expires:')}{' '}
+              {new Date(owner.plan_expires_at).toLocaleDateString(
+                locale === 'en' ? 'en-US' : 'vi-VN'
+              )}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'shops',
+      name: tx('Cửa hàng sở hữu', 'Owned Shops'),
+      sortable: true,
+      selector: (owner) => owner.shopsCount,
+      sortFunction: (a, b) =>
+        Number(a.shopsCount || 0) - Number(b.shopsCount || 0),
+      minWidth: '190px',
+      wrap: true,
+      cell: (owner) =>
+        owner.shops.length === 0 ? (
+          <span className="text-slate-500 italic">
+            {tx('Chưa tạo quán (0)', 'No shops (0)')}
+          </span>
+        ) : (
+          <div className="space-y-1 py-1">
+            {owner.shops.map((s) => (
+              <div key={s.id} className="flex items-center gap-1.5">
+                <span className="font-bold text-emerald-300">{s.name}</span>
+                <span className="text-[10px] text-slate-500">
+                  (/s/{s.slug})
+                </span>
+              </div>
+            ))}
+          </div>
+        ),
+    },
+    {
+      id: 'quick_plan',
+      name: tx('Đổi Gói Nhanh', 'Quick Plan Switch'),
+      ignoreRowClick: true,
+      allowOverflow: true,
+      minWidth: '250px',
+      wrap: true,
+      cell: (owner) => {
+        const isRootAdmin = owner.email.toLowerCase() === SUPER_ADMIN_EMAIL;
+        return (
+          <div className="flex flex-wrap items-center gap-1.5 py-1">
+            {(['free', 'basic', 'premium'] as PlanTier[]).map((tier) => (
+              <button
+                key={tier}
+                type="button"
+                disabled={actionBusy || (isRootAdmin && tier !== 'premium')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  runAdminAction(
+                    {
+                      action: 'update_owner_plan',
+                      ownerId: owner.id,
+                      plan: tier,
+                      durationDays: 30,
+                    },
+                    tx(
+                      'Đã chuyển gói của {email} sang {plan} (+30 ngày)!',
+                      'Switched {email} to {plan} (+30 days)!',
+                      {
+                        email: owner.email,
+                        plan: tier.toUpperCase(),
+                      }
+                    )
+                  );
+                }}
+                className={`rounded-lg px-2.5 py-1 text-[10px] font-black uppercase border transition-all ${
+                  owner.plan === tier
+                    ? 'border-amber-400 bg-amber-400/20 text-amber-300'
+                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500'
+                } disabled:opacity-40`}
+              >
+                {tier}
+              </button>
+            ))}
+            <button
+              type="button"
+              disabled={actionBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                runAdminAction(
+                  {
+                    action: 'update_owner_plan',
+                    ownerId: owner.id,
+                    plan: 'premium',
+                    durationDays: 365,
+                  },
+                  tx(
+                    'Đã gia hạn PREMIUM 1 năm cho {email}!',
+                    'Extended PREMIUM by 1 year for {email}!',
+                    { email: owner.email }
+                  )
+                );
+              }}
+              className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-300 hover:bg-amber-500/20"
+            >
+              {tx('+1 Năm VIP', '+1 Year VIP')}
+            </button>
+          </div>
+        );
+      },
+    },
+    {
+      id: 'security',
+      name: tx('Bảo mật / Xóa', 'Security / Delete'),
+      right: true,
+      ignoreRowClick: true,
+      allowOverflow: true,
+      minWidth: '160px',
+      cell: (owner) => {
+        const isRootAdmin = owner.email.toLowerCase() === SUPER_ADMIN_EMAIL;
+        return (
+          <div className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleResetOwnerPassword(owner);
+              }}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-400"
+            >
+              <KeyRound className="h-3 w-3 text-amber-400" />
+              <span>{tx('Đổi MK', 'Reset PW')}</span>
+            </button>
+            {!isRootAdmin && (
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (
+                    window.confirm(
+                      tx(
+                        'Bạn có chắc muốn xóa tài khoản {email} và toàn bộ {count} cửa hàng của họ?',
+                        'Are you sure you want to delete account {email} and all {count} of their shops?',
+                        {
+                          email: owner.email,
+                          count: owner.shopsCount,
+                        }
+                      )
+                    )
+                  ) {
+                    runAdminAction(
+                      {
+                        action: 'delete_owner',
+                        ownerId: owner.id,
+                        email: owner.email,
+                      },
+                      tx(
+                        'Đã xóa tài khoản {email}',
+                        'Deleted account {email}',
+                        { email: owner.email }
+                      )
+                    );
+                  }
+                }}
+                className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                title={tx('Xóa tài khoản', 'Delete account')}
+                aria-label={tx('Xóa tài khoản', 'Delete account')}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
+
+  const orderColumns: TableColumn<EnrichedOrder>[] = [
+    {
+      id: 'order_code',
+      name: tx('Mã đơn / Bàn', 'Order / Table'),
+      sortable: true,
+      selector: (order) => new Date(order.created_at).getTime() || 0,
+      sortFunction: (a, b) =>
+        (new Date(a.created_at).getTime() || 0) -
+        (new Date(b.created_at).getTime() || 0),
+      minWidth: '165px',
+      wrap: true,
+      cell: (order) => (
+        <div className="py-1">
+          <span className="font-black text-amber-300">#{order.order_code}</span>
+          <p className="font-bold text-white">{order.table_label}</p>
+          <p className="text-[10px] text-slate-500">
+            {new Date(order.created_at).toLocaleString(
+              locale === 'en' ? 'en-US' : 'vi-VN'
+            )}
+          </p>
+        </div>
+      ),
+    },
+    {
+      id: 'shop',
+      name: tx('Cửa hàng', 'Shop'),
+      sortable: true,
+      selector: (order) => order.shopName,
+      minWidth: '165px',
+      wrap: true,
+      cell: (order) => (
+        <div className="py-1">
+          <span className="font-bold text-emerald-300">{order.shopName}</span>
+          <p className="text-[10px] uppercase text-slate-400">
+            {tx('Khách:', 'Guest:')} {order.visitor_lang} •{' '}
+            {order.payment_method}
+          </p>
+        </div>
+      ),
+    },
+    {
+      id: 'items',
+      name: tx('Chi tiết món', 'Items'),
+      sortable: true,
+      selector: (order) => order.items.length,
+      sortFunction: (a, b) => Number(a.items.length) - Number(b.items.length),
+      minWidth: '220px',
+      wrap: true,
+      cell: (order) => (
+        <div className="space-y-0.5 py-1">
+          {order.items.map((line, idx) => (
+            <p key={idx} className="text-slate-200">
+              <strong>{line.quantity}x</strong> {line.name_vi}
+            </p>
+          ))}
+          {order.customer_note && (
+            <p className="text-[11px] text-amber-300 italic">
+              {tx('Ghi chú:', 'Note:')} &ldquo;{order.customer_note}&rdquo;
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'total_amount',
+      name: tx('Tổng tiền', 'Total'),
+      sortable: true,
+      right: true,
+      selector: (order) => order.total_amount,
+      sortFunction: (a, b) =>
+        Number(a.total_amount || 0) - Number(b.total_amount || 0),
+      minWidth: '140px',
+      wrap: true,
+      cell: (order) => (
+        <div className="py-1 text-right font-black text-emerald-400">
+          {formatCurrency(order.total_amount, 'VND')}
+          <span className="block text-[10px] font-bold text-slate-400 uppercase">
+            {order.payment_status === 'paid'
+              ? tx('Đã thanh toán', 'Paid')
+              : tx('Chưa thu tiền', 'Unpaid')}
+          </span>
+        </div>
+      ),
+    },
+    {
+      id: 'status',
+      name: tx('Trạng thái', 'Status'),
+      sortable: true,
+      selector: (order) => order.status,
+      minWidth: '125px',
+      cell: (order) => (
+        <span
+          className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
+            order.status === 'new'
+              ? 'bg-amber-400 text-slate-950'
+              : order.status === 'preparing'
+                ? 'bg-sky-400 text-slate-950'
+                : order.status === 'completed'
+                  ? 'bg-emerald-500 text-slate-950'
+                  : 'bg-rose-500/20 text-rose-300'
+          }`}
+        >
+          {order.status === 'new'
+            ? tx('Mới', 'New')
+            : order.status === 'preparing'
+              ? tx('Đang làm', 'Preparing')
+              : order.status === 'completed'
+                ? tx('Hoàn tất', 'Completed')
+                : tx('Đã hủy', 'Cancelled')}
+        </span>
+      ),
+    },
+    {
+      id: 'actions',
+      name: tx('Xử lý nhanh', 'Quick Action'),
+      right: true,
+      ignoreRowClick: true,
+      allowOverflow: true,
+      minWidth: '165px',
+      cell: (order) => (
+        <div className="inline-flex items-center gap-1.5">
+          {order.status !== 'completed' && (
+            <button
+              type="button"
+              disabled={actionBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                runAdminAction(
+                  {
+                    action: 'update_order_status',
+                    orderId: order.id,
+                    status: 'completed',
+                    payment_status: 'paid',
+                  },
+                  tx('Đã hoàn tất đơn #{code}', 'Completed order #{code}', {
+                    code: order.order_code,
+                  })
+                );
+              }}
+              className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[10px] font-black text-slate-950 hover:bg-emerald-400"
+            >
+              {tx('Hoàn tất', 'Complete')}
+            </button>
+          )}
+          {order.status !== 'cancelled' && (
+            <button
+              type="button"
+              disabled={actionBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                runAdminAction(
+                  {
+                    action: 'update_order_status',
+                    orderId: order.id,
+                    status: 'cancelled',
+                  },
+                  tx(
+                    'Đã hủy đơn #{code} và hoàn tồn kho',
+                    'Cancelled order #{code} and restored stock',
+                    { code: order.order_code }
+                  )
+                );
+              }}
+              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20"
+            >
+              {t('common.cancel')}
+            </button>
+          )}
+        </div>
+      ),
+    },
+  ];
+
+  const transactionColumns: TableColumn<EnrichedTransaction>[] = [
+    {
+      id: 'order_code',
+      name: tx('Mã giao dịch', 'Transaction Code'),
+      sortable: true,
+      selector: (trx) => new Date(trx.created_at).getTime() || 0,
+      sortFunction: (a, b) =>
+        (new Date(a.created_at).getTime() || 0) -
+        (new Date(b.created_at).getTime() || 0),
+      minWidth: '165px',
+      wrap: true,
+      cell: (trx) => (
+        <div className="py-1">
+          <span className="font-mono font-black text-amber-300">
+            {trx.order_code}
+          </span>
+          <p className="text-[10px] text-slate-500">
+            {new Date(trx.created_at).toLocaleString(
+              locale === 'en' ? 'en-US' : 'vi-VN'
+            )}
+          </p>
+        </div>
+      ),
+    },
+    {
+      id: 'owner',
+      name: tx('Chủ quán', 'Owner'),
+      sortable: true,
+      selector: (trx) => trx.ownerEmail,
+      minWidth: '190px',
+      wrap: true,
+      cell: (trx) => (
+        <div className="py-1">
+          <p className="font-bold text-white">{trx.ownerName}</p>
+          <p className="text-[11px] text-slate-400">{trx.ownerEmail}</p>
+        </div>
+      ),
+    },
+    {
+      id: 'target_plan',
+      name: tx('Gói nâng cấp', 'Target Plan'),
+      sortable: true,
+      selector: (trx) => trx.target_plan,
+      minWidth: '130px',
+      cell: (trx) => (
+        <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
+          {trx.target_plan}
+        </span>
+      ),
+    },
+    {
+      id: 'amount',
+      name: tx('Số tiền', 'Amount'),
+      sortable: true,
+      right: true,
+      selector: (trx) => trx.amount,
+      sortFunction: (a, b) => Number(a.amount || 0) - Number(b.amount || 0),
+      minWidth: '130px',
+      cell: (trx) => (
+        <span className="font-black text-emerald-400">
+          {formatCurrency(trx.amount, 'VND')}
+        </span>
+      ),
+    },
+    {
+      id: 'status',
+      name: tx('Trạng thái', 'Status'),
+      sortable: true,
+      selector: (trx) => trx.status,
+      minWidth: '150px',
+      wrap: true,
+      cell: (trx) => (
+        <div className="py-1">
+          <span
+            className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
+              trx.status === 'completed'
+                ? 'bg-emerald-500 text-slate-950'
+                : trx.status === 'pending'
+                  ? 'bg-amber-400 text-slate-950 animate-pulse'
+                  : 'bg-rose-500/20 text-rose-300'
+            }`}
+          >
+            {trx.status === 'completed'
+              ? tx('Hoàn tất', 'Completed')
+              : trx.status === 'pending'
+                ? tx('Chờ duyệt', 'Pending')
+                : trx.status}
+          </span>
+          {trx.bank_ref_id && (
+            <p className="text-[10px] text-slate-500 mt-0.5">
+              Ref: {trx.bank_ref_id}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'action',
+      name: tx('Thao tác', 'Action'),
+      right: true,
+      ignoreRowClick: true,
+      allowOverflow: true,
+      minWidth: '175px',
+      cell: (trx) =>
+        trx.status === 'pending' ? (
+          <button
+            type="button"
+            disabled={actionBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              runAdminAction(
+                {
+                  action: 'approve_transaction',
+                  orderCode: trx.order_code,
+                  ownerId: trx.user_id,
+                },
+                tx(
+                  'Đã duyệt giao dịch {code} & nâng cấp gói {plan} cho {email}!',
+                  'Approved transaction {code} & upgraded {email} to {plan}!',
+                  {
+                    code: trx.order_code,
+                    plan: trx.target_plan.toUpperCase(),
+                    email: trx.ownerEmail,
+                  }
+                )
+              );
+            }}
+            className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-emerald-400"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            <span>{tx('Duyệt & Kích hoạt', 'Approve & Activate')}</span>
+          </button>
+        ) : (
+          <span className="text-[11px] text-slate-500 font-semibold">
+            {tx('Đã hoàn tất', 'Completed')}
+          </span>
+        ),
+    },
+  ];
+
   const NAV_TABS: Array<{
     id: AdminTab;
     label: string;
@@ -1389,71 +2029,18 @@ export default function SuperAdminPortalPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
-                        <thead>
-                          <tr className="border-b border-slate-800 text-slate-400">
-                            <th className="py-2.5 pr-3 font-bold">
-                              {tx('Cửa hàng', 'Shop')}
-                            </th>
-                            <th className="py-2.5 px-3 font-bold">
-                              {tx('Chủ quán', 'Owner')}
-                            </th>
-                            <th className="py-2.5 px-3 font-bold text-right">
-                              {tx('Món / Đơn', 'Items / Orders')}
-                            </th>
-                            <th className="py-2.5 px-3 font-bold text-right">
-                              {tx('Doanh thu', 'Revenue')}
-                            </th>
-                            <th className="py-2.5 pl-3 font-bold text-right">
-                              {tx('Thao tác', 'Action')}
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800/70">
-                          {(data?.shops || []).slice(0, 6).map((shop) => (
-                            <tr key={shop.id} className="hover:bg-slate-800/40">
-                              <td className="py-3 pr-3">
-                                <p className="font-bold text-white">{shop.name}</p>
-                                <p className="text-[11px] text-slate-400">
-                                  /s/{shop.slug} • {shop.city}
-                                </p>
-                              </td>
-                              <td className="py-3 px-3">
-                                <p className="font-semibold text-slate-200">
-                                  {shop.ownerEmail}
-                                </p>
-                                <span className="inline-block rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-amber-300">
-                                  {shop.ownerPlan}
-                                </span>
-                              </td>
-                              <td className="py-3 px-3 text-right font-semibold text-slate-300">
-                                {tx(
-                                  '{items} món • {orders} đơn',
-                                  '{items} items • {orders} orders',
-                                  {
-                                    items: shop.itemsCount,
-                                    orders: shop.ordersCount,
-                                  }
-                                )}
-                              </td>
-                              <td className="py-3 px-3 text-right font-black text-emerald-400">
-                                {formatCurrency(shop.shopGmv, shop.currency || 'VND')}
-                              </td>
-                              <td className="py-3 pl-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleImpersonateShop(shop)}
-                                  className="inline-flex items-center gap-1 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
-                                >
-                                  <span>{tx('Quản lý Quán', 'Manage Shop')}</span>
-                                  <ArrowRight className="h-3 w-3" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900 overflow-hidden">
+                      <AppDataTable<EnrichedShop>
+                        forceDark
+                        keyField="id"
+                        ariaLabel={tx(
+                          'Bảng Xếp Hạng Cửa Hàng',
+                          'Top Performing Shops'
+                        )}
+                        columns={overviewShopColumns}
+                        data={(data?.shops || []).slice(0, 6)}
+                        dense
+                      />
                     </div>
                   )}
                 </div>
@@ -1663,271 +2250,56 @@ export default function SuperAdminPortalPage() {
 
               {/* Owners Table */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Chủ quán / Email', 'Owner / Email')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Gói hiện tại', 'Current Plan')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Cửa hàng sở hữu', 'Owned Shops')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Đổi Gói Nhanh', 'Quick Plan Switch')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold text-right">
-                          {tx('Bảo mật / Xóa', 'Security / Delete')}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/70">
-                      {filteredOwners.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="py-8 px-4 text-center">
-                            <div className="max-w-md mx-auto space-y-2.5">
-                              <p className="text-xs font-bold text-slate-300">
-                                {ownerSearch || ownerPlanFilter !== 'all'
-                                  ? tx(
-                                      'Không tìm thấy tài khoản Chủ quán nào khớp với bộ lọc.',
-                                      'No shop owner accounts match the filters.'
-                                    )
-                                  : tx(
-                                      'Chưa có tài khoản Chủ quán nào.',
-                                      'No shop owner accounts yet.'
-                                    )}
-                              </p>
-                              <div className="flex flex-wrap items-center justify-center gap-2">
-                                {(ownerSearch || ownerPlanFilter !== 'all') && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOwnerSearch('');
-                                      setOwnerPlanFilter('all');
-                                    }}
-                                    className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
-                                  >
-                                    {t('common.clearFilters')}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={fetchAdminData}
-                                  disabled={loading || actionBusy}
-                                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
-                                >
-                                  <RefreshCw className="h-3.5 w-3.5" />
-                                  <span>{t('admin.refreshData')}</span>
-                                </button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredOwners.map((owner) => {
-                          const isRootAdmin =
-                            owner.email.toLowerCase() === SUPER_ADMIN_EMAIL;
-                          return (
-                            <tr key={owner.id} className="hover:bg-slate-800/40">
-                              <td className="py-3.5 px-4">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-black text-white">
-                                    {owner.full_name ||
-                                      tx('Chủ quán', 'Shop Owner')}
-                                  </span>
-                                  {isRootAdmin && (
-                                    <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-black text-slate-950">
-                                      👑 SUPER ADMIN
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-slate-300 font-semibold mt-0.5">
-                                  {owner.email}
-                                </p>
-                                <p className="text-[11px] text-slate-500">
-                                  ID: {owner.id}{' '}
-                                  {owner.phone ? `• 📞 ${owner.phone}` : ''}
-                                </p>
-                              </td>
-
-                              <td className="py-3.5 px-4">
-                                <span
-                                  className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                                    owner.plan === 'premium'
-                                      ? 'bg-amber-400 text-slate-950'
-                                      : owner.plan === 'basic'
-                                        ? 'bg-emerald-500 text-slate-950'
-                                        : 'bg-slate-800 text-slate-300'
-                                  }`}
-                                >
-                                  {owner.plan}
-                                </span>
-                                {owner.plan_expires_at && (
-                                  <p className="text-[10px] text-slate-400 mt-1">
-                                    {tx('Hết hạn:', 'Expires:')}{' '}
-                                    {new Date(
-                                      owner.plan_expires_at
-                                    ).toLocaleDateString(
-                                      locale === 'en' ? 'en-US' : 'vi-VN'
-                                    )}
-                                  </p>
-                                )}
-                              </td>
-
-                              <td className="py-3.5 px-4">
-                                {owner.shops.length === 0 ? (
-                                  <span className="text-slate-500 italic">
-                                    {tx('Chưa tạo quán (0)', 'No shops (0)')}
-                                  </span>
-                                ) : (
-                                  <div className="space-y-1">
-                                    {owner.shops.map((s) => (
-                                      <div
-                                        key={s.id}
-                                        className="flex items-center gap-1.5"
-                                      >
-                                        <span className="font-bold text-emerald-300">
-                                          {s.name}
-                                        </span>
-                                        <span className="text-[10px] text-slate-500">
-                                          (/s/{s.slug})
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </td>
-
-                              <td className="py-3.5 px-4">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  {(['free', 'basic', 'premium'] as PlanTier[]).map(
-                                    (tier) => (
-                                      <button
-                                        key={tier}
-                                        type="button"
-                                        disabled={
-                                          actionBusy ||
-                                          (isRootAdmin && tier !== 'premium')
-                                        }
-                                        onClick={() =>
-                                          runAdminAction(
-                                            {
-                                              action: 'update_owner_plan',
-                                              ownerId: owner.id,
-                                              plan: tier,
-                                              durationDays: 30,
-                                            },
-                                            tx(
-                                              'Đã chuyển gói của {email} sang {plan} (+30 ngày)!',
-                                              'Switched {email} to {plan} (+30 days)!',
-                                              {
-                                                email: owner.email,
-                                                plan: tier.toUpperCase(),
-                                              }
-                                            )
-                                          )
-                                        }
-                                        className={`rounded-lg px-2.5 py-1 text-[10px] font-black uppercase border transition-all ${
-                                          owner.plan === tier
-                                            ? 'border-amber-400 bg-amber-400/20 text-amber-300'
-                                            : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500'
-                                        } disabled:opacity-40`}
-                                      >
-                                        {tier}
-                                      </button>
-                                    )
-                                  )}
-                                  <button
-                                    type="button"
-                                    disabled={actionBusy}
-                                    onClick={() =>
-                                      runAdminAction(
-                                        {
-                                          action: 'update_owner_plan',
-                                          ownerId: owner.id,
-                                          plan: 'premium',
-                                          durationDays: 365,
-                                        },
-                                        tx(
-                                          'Đã gia hạn PREMIUM 1 năm cho {email}!',
-                                          'Extended PREMIUM by 1 year for {email}!',
-                                          { email: owner.email }
-                                        )
-                                      )
-                                    }
-                                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-300 hover:bg-amber-500/20"
-                                  >
-                                    {tx('+1 Năm VIP', '+1 Year VIP')}
-                                  </button>
-                                </div>
-                              </td>
-
-                              <td className="py-3.5 px-4 text-right">
-                                <div className="inline-flex items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleResetOwnerPassword(owner)}
-                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-400"
-                                  >
-                                    <KeyRound className="h-3 w-3 text-amber-400" />
-                                    <span>{tx('Đổi MK', 'Reset PW')}</span>
-                                  </button>
-                                  {!isRootAdmin && (
-                                    <button
-                                      type="button"
-                                      disabled={actionBusy}
-                                      onClick={() => {
-                                        if (
-                                          window.confirm(
-                                            tx(
-                                              'Bạn có chắc muốn xóa tài khoản {email} và toàn bộ {count} cửa hàng của họ?',
-                                              'Are you sure you want to delete account {email} and all {count} of their shops?',
-                                              {
-                                                email: owner.email,
-                                                count: owner.shopsCount,
-                                              }
-                                            )
-                                          )
-                                        ) {
-                                          runAdminAction(
-                                            {
-                                              action: 'delete_owner',
-                                              ownerId: owner.id,
-                                              email: owner.email,
-                                            },
-                                            tx(
-                                              'Đã xóa tài khoản {email}',
-                                              'Deleted account {email}',
-                                              { email: owner.email }
-                                            )
-                                          );
-                                        }
-                                      }}
-                                      className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
-                                      title={tx(
-                                        'Xóa tài khoản',
-                                        'Delete account'
-                                      )}
-                                      aria-label={tx(
-                                        'Xóa tài khoản',
-                                        'Delete account'
-                                      )}
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                <AppDataTable<EnrichedOwner>
+                  forceDark
+                  keyField="id"
+                  ariaLabel={tx('Danh sách Chủ quán', 'Shop Owners List')}
+                  columns={ownerColumns}
+                  data={filteredOwners}
+                  pagination
+                  paginationPerPage={10}
+                  paginationRowsPerPageOptions={[10, 20, 50]}
+                  noDataComponent={
+                    <div className="py-8 px-4 text-center">
+                      <div className="max-w-md mx-auto space-y-2.5">
+                        <p className="text-xs font-bold text-slate-300">
+                          {ownerSearch || ownerPlanFilter !== 'all'
+                            ? tx(
+                                'Không tìm thấy tài khoản Chủ quán nào khớp với bộ lọc.',
+                                'No shop owner accounts match the filters.'
+                              )
+                            : tx(
+                                'Chưa có tài khoản Chủ quán nào.',
+                                'No shop owner accounts yet.'
+                              )}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          {(ownerSearch || ownerPlanFilter !== 'all') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOwnerSearch('');
+                                setOwnerPlanFilter('all');
+                              }}
+                              className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
+                            >
+                              {t('common.clearFilters')}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={fetchAdminData}
+                            disabled={loading || actionBusy}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            <span>{t('admin.refreshData')}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  }
+                />
               </div>
             </div>
           )}
@@ -2295,206 +2667,58 @@ export default function SuperAdminPortalPage() {
 
               {/* Global Orders List */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Mã đơn / Bàn', 'Order / Table')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Cửa hàng', 'Shop')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Chi tiết món', 'Items')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Tổng tiền', 'Total')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Trạng thái', 'Status')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold text-right">
-                          {tx('Xử lý nhanh', 'Quick Action')}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/70">
-                      {filteredOrders.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="py-8 px-4 text-center">
-                            <div className="max-w-md mx-auto space-y-2.5">
-                              <p className="text-xs font-bold text-slate-300">
-                                {orderStatusFilter !== 'all' ||
-                                orderShopFilter !== 'all'
-                                  ? tx(
-                                      'Không có đơn hàng nào khớp với bộ lọc.',
-                                      'No orders match the filters.'
-                                    )
-                                  : tx(
-                                      'Chưa có đơn hàng nào trên hệ thống.',
-                                      'No orders recorded yet.'
-                                    )}
-                              </p>
-                              <div className="flex flex-wrap items-center justify-center gap-2">
-                                {(orderStatusFilter !== 'all' ||
-                                  orderShopFilter !== 'all') && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOrderStatusFilter('all');
-                                      setOrderShopFilter('all');
-                                    }}
-                                    className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
-                                  >
-                                    {t('common.clearFilters')}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={fetchAdminData}
-                                  disabled={loading || actionBusy}
-                                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
-                                >
-                                  <RefreshCw className="h-3.5 w-3.5" />
-                                  <span>{t('admin.refreshData')}</span>
-                                </button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredOrders.map((order) => (
-                          <tr key={order.id} className="hover:bg-slate-800/40">
-                            <td className="py-3.5 px-4">
-                              <span className="font-black text-amber-300">
-                                #{order.order_code}
-                              </span>
-                              <p className="font-bold text-white">
-                                {order.table_label}
-                              </p>
-                              <p className="text-[10px] text-slate-500">
-                                {new Date(order.created_at).toLocaleString(
-                                  locale === 'en' ? 'en-US' : 'vi-VN'
-                                )}
-                              </p>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <span className="font-bold text-emerald-300">
-                                {order.shopName}
-                              </span>
-                              <p className="text-[10px] uppercase text-slate-400">
-                                {tx('Khách:', 'Guest:')} {order.visitor_lang} •{' '}
-                                {order.payment_method}
-                              </p>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <div className="space-y-0.5">
-                                {order.items.map((line, idx) => (
-                                  <p key={idx} className="text-slate-200">
-                                    <strong>{line.quantity}x</strong>{' '}
-                                    {line.name_vi}
-                                  </p>
-                                ))}
-                                {order.customer_note && (
-                                  <p className="text-[11px] text-amber-300 italic">
-                                    {tx('Ghi chú:', 'Note:')} &ldquo;
-                                    {order.customer_note}&rdquo;
-                                  </p>
-                                )}
-                              </div>
-                            </td>
-
-                            <td className="py-3.5 px-4 font-black text-emerald-400">
-                              {formatCurrency(order.total_amount, 'VND')}
-                              <span className="block text-[10px] font-bold text-slate-400 uppercase">
-                                {order.payment_status === 'paid'
-                                  ? tx('Đã thanh toán', 'Paid')
-                                  : tx('Chưa thu tiền', 'Unpaid')}
-                              </span>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <span
-                                className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                                  order.status === 'new'
-                                    ? 'bg-amber-400 text-slate-950'
-                                    : order.status === 'preparing'
-                                      ? 'bg-sky-400 text-slate-950'
-                                      : order.status === 'completed'
-                                        ? 'bg-emerald-500 text-slate-950'
-                                        : 'bg-rose-500/20 text-rose-300'
-                                }`}
-                              >
-                                {order.status === 'new'
-                                  ? tx('Mới', 'New')
-                                  : order.status === 'preparing'
-                                    ? tx('Đang làm', 'Preparing')
-                                    : order.status === 'completed'
-                                      ? tx('Hoàn tất', 'Completed')
-                                      : tx('Đã hủy', 'Cancelled')}
-                              </span>
-                            </td>
-
-                            <td className="py-3.5 px-4 text-right">
-                              <div className="inline-flex items-center gap-1.5">
-                                {order.status !== 'completed' && (
-                                  <button
-                                    type="button"
-                                    disabled={actionBusy}
-                                    onClick={() =>
-                                      runAdminAction(
-                                        {
-                                          action: 'update_order_status',
-                                          orderId: order.id,
-                                          status: 'completed',
-                                          payment_status: 'paid',
-                                        },
-                                        tx(
-                                          'Đã hoàn tất đơn #{code}',
-                                          'Completed order #{code}',
-                                          { code: order.order_code }
-                                        )
-                                      )
-                                    }
-                                    className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[10px] font-black text-slate-950 hover:bg-emerald-400"
-                                  >
-                                    {tx('Hoàn tất', 'Complete')}
-                                  </button>
-                                )}
-                                {order.status !== 'cancelled' && (
-                                  <button
-                                    type="button"
-                                    disabled={actionBusy}
-                                    onClick={() =>
-                                      runAdminAction(
-                                        {
-                                          action: 'update_order_status',
-                                          orderId: order.id,
-                                          status: 'cancelled',
-                                        },
-                                        tx(
-                                          'Đã hủy đơn #{code} và hoàn tồn kho',
-                                          'Cancelled order #{code} and restored stock',
-                                          { code: order.order_code }
-                                        )
-                                      )
-                                    }
-                                    className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20"
-                                  >
-                                    {t('common.cancel')}
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                <AppDataTable<EnrichedOrder>
+                  forceDark
+                  keyField="id"
+                  ariaLabel={tx('Danh sách đơn hàng toàn sàn', 'Global Orders List')}
+                  columns={orderColumns}
+                  data={filteredOrders}
+                  pagination
+                  paginationPerPage={10}
+                  paginationRowsPerPageOptions={[10, 20, 50]}
+                  noDataComponent={
+                    <div className="py-8 px-4 text-center">
+                      <div className="max-w-md mx-auto space-y-2.5">
+                        <p className="text-xs font-bold text-slate-300">
+                          {orderStatusFilter !== 'all' ||
+                          orderShopFilter !== 'all'
+                            ? tx(
+                                'Không có đơn hàng nào khớp với bộ lọc.',
+                                'No orders match the filters.'
+                              )
+                            : tx(
+                                'Chưa có đơn hàng nào trên hệ thống.',
+                                'No orders recorded yet.'
+                              )}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          {(orderStatusFilter !== 'all' ||
+                            orderShopFilter !== 'all') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOrderStatusFilter('all');
+                                setOrderShopFilter('all');
+                              }}
+                              className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
+                            >
+                              {t('common.clearFilters')}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={fetchAdminData}
+                            disabled={loading || actionBusy}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            <span>{t('admin.refreshData')}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  }
+                />
               </div>
             </div>
           )}
@@ -2530,149 +2754,40 @@ export default function SuperAdminPortalPage() {
               </div>
 
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Mã giao dịch', 'Transaction Code')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Chủ quán', 'Owner')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Gói nâng cấp', 'Target Plan')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Số tiền', 'Amount')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold">
-                          {tx('Trạng thái', 'Status')}
-                        </th>
-                        <th className="py-3.5 px-4 font-bold text-right">
-                          {tx('Thao tác', 'Action')}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/70">
-                      {(data.transactions || []).length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="py-8 px-4 text-center">
-                            <div className="max-w-md mx-auto space-y-2.5">
-                              <p className="text-xs font-bold text-slate-300">
-                                {tx(
-                                  'Chưa có giao dịch nâng cấp gói cước nào.',
-                                  'No plan upgrade transactions recorded yet.'
-                                )}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={fetchAdminData}
-                                disabled={loading || actionBusy}
-                                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
-                              >
-                                <RefreshCw className="h-3.5 w-3.5" />
-                                <span>{t('admin.refreshData')}</span>
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        (data.transactions || []).map((trx) => (
-                          <tr key={trx.id} className="hover:bg-slate-800/40">
-                            <td className="py-3.5 px-4">
-                              <span className="font-mono font-black text-amber-300">
-                                {trx.order_code}
-                              </span>
-                              <p className="text-[10px] text-slate-500">
-                                {new Date(trx.created_at).toLocaleString(
-                                  locale === 'en' ? 'en-US' : 'vi-VN'
-                                )}
-                              </p>
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <p className="font-bold text-white">
-                                {trx.ownerName}
-                              </p>
-                              <p className="text-[11px] text-slate-400">
-                                {trx.ownerEmail}
-                              </p>
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
-                                {trx.target_plan}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 font-black text-emerald-400">
-                              {formatCurrency(trx.amount, 'VND')}
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span
-                                className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                                  trx.status === 'completed'
-                                    ? 'bg-emerald-500 text-slate-950'
-                                    : trx.status === 'pending'
-                                      ? 'bg-amber-400 text-slate-950 animate-pulse'
-                                      : 'bg-rose-500/20 text-rose-300'
-                                }`}
-                              >
-                                {trx.status === 'completed'
-                                  ? tx('Hoàn tất', 'Completed')
-                                  : trx.status === 'pending'
-                                    ? tx('Chờ duyệt', 'Pending')
-                                    : trx.status}
-                              </span>
-                              {trx.bank_ref_id && (
-                                <p className="text-[10px] text-slate-500 mt-0.5">
-                                  Ref: {trx.bank_ref_id}
-                                </p>
-                              )}
-                            </td>
-                            <td className="py-3.5 px-4 text-right">
-                              {trx.status === 'pending' ? (
-                                <button
-                                  type="button"
-                                  disabled={actionBusy}
-                                  onClick={() =>
-                                    runAdminAction(
-                                      {
-                                        action: 'approve_transaction',
-                                        orderCode: trx.order_code,
-                                        ownerId: trx.user_id,
-                                      },
-                                      tx(
-                                        'Đã duyệt giao dịch {code} & nâng cấp gói {plan} cho {email}!',
-                                        'Approved transaction {code} & upgraded {email} to {plan}!',
-                                        {
-                                          code: trx.order_code,
-                                          plan: trx.target_plan.toUpperCase(),
-                                          email: trx.ownerEmail,
-                                        }
-                                      )
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-emerald-400"
-                                >
-                                  <CheckCircle2 className="h-3.5 w-3.5" />
-                                  <span>
-                                    {tx(
-                                      'Duyệt & Kích hoạt',
-                                      'Approve & Activate'
-                                    )}
-                                  </span>
-                                </button>
-                              ) : (
-                                <span className="text-[11px] text-slate-500 font-semibold">
-                                  {tx('Đã hoàn tất', 'Completed')}
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                <AppDataTable<EnrichedTransaction>
+                  forceDark
+                  keyField="id"
+                  ariaLabel={tx(
+                    'Giao Dịch Nâng Cấp Gói (VietQR)',
+                    'Plan Upgrade Transactions (VietQR)'
+                  )}
+                  columns={transactionColumns}
+                  data={data.transactions || []}
+                  pagination
+                  paginationPerPage={10}
+                  paginationRowsPerPageOptions={[10, 20, 50]}
+                  noDataComponent={
+                    <div className="py-8 px-4 text-center">
+                      <div className="max-w-md mx-auto space-y-2.5">
+                        <p className="text-xs font-bold text-slate-300">
+                          {tx(
+                            'Chưa có giao dịch nâng cấp gói cước nào.',
+                            'No plan upgrade transactions recorded yet.'
+                          )}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={fetchAdminData}
+                          disabled={loading || actionBusy}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          <span>{t('admin.refreshData')}</span>
+                        </button>
+                      </div>
+                    </div>
+                  }
+                />
               </div>
             </div>
           )}

@@ -23,6 +23,7 @@ import {
   Utensils,
   ArrowLeft,
   AlertTriangle,
+  RotateCcw,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
@@ -31,91 +32,77 @@ import { ShopOrder, ShopTable, TableOrderStats } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
 import { summarizeOrdersByTable } from '@/lib/table-helpers';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
+import {
+  AppDataTable,
+  type TableColumn,
+  type SortOrder,
+} from '@/components/ui/AppDataTable';
+import { downloadDataset } from '@/lib/table-export';
+import {
+  type DateRangeMode,
+  type ReportViewTab,
+  type ReportExportScope,
+  type ReportStatusFilter,
+  type ReportPaymentStatusFilter,
+  type ReportPaymentMethodFilter,
+  type ReportSourceFilter,
+  type ReportSortState,
+  type DailySummaryRow,
+  type ItemSummaryRow,
+  getVnDateKey,
+  getVnTimeString,
+  shiftDateKey,
+  formatDateKeyVi,
+  formatChoicesText,
+  getOrderTotalQuantity,
+  computeEffectiveDateBounds,
+  buildManagedTableMap,
+  filterReportOrders,
+  computeReportKpiStats,
+  summarizeOrdersByDay,
+  summarizeOrdersByItem,
+  formatPaymentStatusLabel,
+  formatPaymentMethodLabel,
+  formatOrderStatusLabel,
+  formatOrderSourceLabel,
+  formatTableKindLabel,
+  getCanonicalOrdersColumns,
+  getCanonicalTablesColumns,
+  getCanonicalDailyColumns,
+  getCanonicalItemsColumns,
+  sortRowsByColumnSpecs,
+  clampReportPage,
+  paginateReportRows,
+  buildCurrentViewExportPayload,
+} from '@/lib/report-view';
 
-type DateRangeMode =
-  | 'today'
-  | 'yesterday'
-  | '7days'
-  | '30days'
-  | 'this_month'
-  | 'single_day'
-  | 'custom_range'
-  | 'all';
+const DEFAULT_SORT_BY_TAB: Record<ReportViewTab, ReportSortState> = {
+  orders_list: { columnId: 'created_at', direction: 'desc' },
+  tables_summary: { columnId: 'collectedRevenue', direction: 'desc' },
+  daily_summary: { columnId: 'dateKey', direction: 'desc' },
+  items_summary: { columnId: 'quantitySold', direction: 'desc' },
+};
 
-function getVnDateKey(dateInput: Date | string | number = new Date()): string {
-  const ts = new Date(dateInput).getTime();
-  if (Number.isNaN(ts)) {
-    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
-  }
-  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
-}
+const DEFAULT_PAGE_BY_TAB: Record<ReportViewTab, number> = {
+  orders_list: 1,
+  tables_summary: 1,
+  daily_summary: 1,
+  items_summary: 1,
+};
 
-function getVnDateTimeString(dateInput: Date | string | number): string {
-  const d = new Date(dateInput);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString('vi-VN', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
-function shiftDateKey(dateKey: string, deltaDays: number): string {
-  const base = new Date(`${dateKey}T00:00:00Z`);
-  if (Number.isNaN(base.getTime())) return getVnDateKey();
-  base.setUTCDate(base.getUTCDate() + deltaDays);
-  return base.toISOString().slice(0, 10);
-}
-
-function formatDateKeyVi(dateKey: string): string {
-  const [y, m, d] = dateKey.split('-');
-  if (!y || !m || !d) return dateKey;
-  return `${d}/${m}/${y}`;
-}
-
-function formatChoicesText(choices: unknown): string {
-  if (!Array.isArray(choices) || choices.length === 0) return '';
-  return choices
-    .map((c) => {
-      if (typeof c === 'string') return c;
-      if (c && typeof c === 'object') {
-        const obj = c as {
-          label_vi?: string;
-          label_i18n?: { vi?: string };
-          extra_price?: number;
-        };
-        const label = obj.label_vi || obj.label_i18n?.vi || '';
-        return label;
-      }
-      return '';
-    })
-    .filter(Boolean)
-    .join(', ');
-}
-
-function escapeCsvCell(val: string | number | null | undefined): string {
-  const str = String(val ?? '');
-  if (str.includes('"') || str.includes(',') || str.includes('\n')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-}
-
-function escapeHtml(val: string | number | null | undefined): string {
-  return String(val ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+const DEFAULT_PER_PAGE_BY_TAB: Record<ReportViewTab, number> = {
+  orders_list: 10,
+  tables_summary: 10,
+  daily_summary: 10,
+  items_summary: 10,
+};
 
 export default function OrdersReportAndExportPage() {
   const { activeShop } = useDashboard();
   const { t, tx } = useAppI18n();
+  const txRef = useRef(tx);
+  txRef.current = tx;
+
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [shopTables, setShopTables] = useState<ShopTable[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -131,22 +118,32 @@ export default function OrdersReportAndExportPage() {
   );
   const [customTo, setCustomTo] = useState<string>(todayVn);
 
-  const [statusFilter, setStatusFilter] = useState<
-    'valid_only' | 'all' | 'completed' | 'preparing' | 'new' | 'cancelled'
-  >('valid_only');
-  const [paymentStatusFilter, setPaymentStatusFilter] = useState<
-    'all' | 'paid' | 'unpaid' | 'refunded'
-  >('all');
-  const [paymentMethodFilter, setPaymentMethodFilter] = useState<
-    'all' | 'cash' | 'vietqr'
-  >('all');
-  const [sourceFilter, setSourceFilter] = useState<
-    'all' | 'counter_pos' | 'qr_table'
-  >('all');
+  const [statusFilter, setStatusFilter] =
+    useState<ReportStatusFilter>('valid_only');
+  const [paymentStatusFilter, setPaymentStatusFilter] =
+    useState<ReportPaymentStatusFilter>('all');
+  const [paymentMethodFilter, setPaymentMethodFilter] =
+    useState<ReportPaymentMethodFilter>('all');
+  const [sourceFilter, setSourceFilter] = useState<ReportSourceFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeViewTab, setActiveViewTab] = useState<
-    'orders_list' | 'tables_summary' | 'daily_summary' | 'items_summary'
-  >('orders_list');
+  const [activeViewTab, setActiveViewTab] =
+    useState<ReportViewTab>('orders_list');
+
+  const [exportScope, setExportScope] =
+    useState<ReportExportScope>('all_filtered');
+  const [exportingFormat, setExportingFormat] = useState<
+    'csv' | 'xlsx' | null
+  >(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const [sortByTab, setSortByTab] =
+    useState<Record<ReportViewTab, ReportSortState>>(DEFAULT_SORT_BY_TAB);
+  const [pageByTab, setPageByTab] =
+    useState<Record<ReportViewTab, number>>(DEFAULT_PAGE_BY_TAB);
+  const [rowsPerPageByTab, setRowsPerPageByTab] = useState<
+    Record<ReportViewTab, number>
+  >(DEFAULT_PER_PAGE_BY_TAB);
+  const [paginationResetToggle, setPaginationResetToggle] = useState(false);
 
   const activeShopIdRef = useRef(activeShop?.id);
   const requestSeqRef = useRef(0);
@@ -158,9 +155,30 @@ export default function OrdersReportAndExportPage() {
       setShopTables([]);
       setLoadError(null);
       setTablesLoadError(null);
+      setExportError(null);
+      setExportingFormat(null);
       setLoading(true);
+      setPageByTab(DEFAULT_PAGE_BY_TAB);
+      setPaginationResetToggle((prev) => !prev);
     }
   }, [activeShop?.id]);
+
+  // Reset pagination to page 1 when filters change (never on locale change)
+  useEffect(() => {
+    setPageByTab(DEFAULT_PAGE_BY_TAB);
+    setPaginationResetToggle((prev) => !prev);
+    setExportError(null);
+  }, [
+    rangeMode,
+    singleDate,
+    customFrom,
+    customTo,
+    statusFilter,
+    paymentStatusFilter,
+    paymentMethodFilter,
+    sourceFilter,
+    searchQuery,
+  ]);
 
   const fetchOrders = useCallback(
     async (silent = false) => {
@@ -214,7 +232,7 @@ export default function OrdersReportAndExportPage() {
           const errData = await ordersRes.json().catch(() => null);
           setLoadError(
             errData?.error ||
-              tx(
+              txRef.current(
                 'Không thể tải danh sách đơn hàng cho báo cáo.',
                 'Failed to load orders for report.'
               )
@@ -248,7 +266,7 @@ export default function OrdersReportAndExportPage() {
           setShopTables(
             Array.isArray(tblData?.tables)
               ? tblData.tables.filter(
-                  (t: ShopTable) => t && t.shop_id === currentShopId
+                  (tb: ShopTable) => tb && tb.shop_id === currentShopId
                 )
               : []
           );
@@ -257,7 +275,7 @@ export default function OrdersReportAndExportPage() {
           const tblErr = await effectiveTablesRes.json().catch(() => null);
           setTablesLoadError(
             tblErr?.error ||
-              tx(
+              txRef.current(
                 'Không thể tải danh mục bàn quản lý.',
                 'Could not load managed tables list.'
               )
@@ -270,7 +288,7 @@ export default function OrdersReportAndExportPage() {
           seq === requestSeqRef.current
         ) {
           setLoadError(
-            tx(
+            txRef.current(
               'Lỗi kết nối khi tải dữ liệu báo cáo.',
               'Network error while loading report data.'
             )
@@ -286,718 +304,1010 @@ export default function OrdersReportAndExportPage() {
         }
       }
     },
-    [activeShop, tx]
+    [activeShop]
   );
 
   useEffect(() => {
-    fetchOrders(false);
+    void fetchOrders(false);
   }, [fetchOrders]);
 
-  // Compute active [startDateKey, endDateKey] in Vietnam Time (YYYY-MM-DD)
-  const effectiveDateBounds = useMemo(() => {
-    const nowKey = getVnDateKey();
-    switch (rangeMode) {
-      case 'today':
-        return {
-          start: nowKey,
-          end: nowKey,
-          label: tx('Hôm nay ({date})', 'Today ({date})', {
-            date: formatDateKeyVi(nowKey),
-          }),
-        };
-      case 'yesterday': {
-        const yKey = shiftDateKey(nowKey, -1);
-        return {
-          start: yKey,
-          end: yKey,
-          label: tx('Hôm qua ({date})', 'Yesterday ({date})', {
-            date: formatDateKeyVi(yKey),
-          }),
-        };
-      }
-      case '7days': {
-        const sKey = shiftDateKey(nowKey, -6);
-        return {
-          start: sKey,
-          end: nowKey,
-          label: tx('7 ngày qua ({start} - {end})', 'Last 7 days ({start} - {end})', {
-            start: formatDateKeyVi(sKey),
-            end: formatDateKeyVi(nowKey),
-          }),
-        };
-      }
-      case '30days': {
-        const sKey = shiftDateKey(nowKey, -29);
-        return {
-          start: sKey,
-          end: nowKey,
-          label: tx('30 ngày qua ({start} - {end})', 'Last 30 days ({start} - {end})', {
-            start: formatDateKeyVi(sKey),
-            end: formatDateKeyVi(nowKey),
-          }),
-        };
-      }
-      case 'this_month': {
-        const sKey = `${nowKey.slice(0, 7)}-01`;
-        return {
-          start: sKey,
-          end: nowKey,
-          label: tx('Tháng này ({start} - {end})', 'This month ({start} - {end})', {
-            start: formatDateKeyVi(sKey),
-            end: formatDateKeyVi(nowKey),
-          }),
-        };
-      }
-      case 'single_day': {
-        const dKey = singleDate || nowKey;
-        return {
-          start: dKey,
-          end: dKey,
-          label: tx('Ngày {date}', 'Date {date}', {
-            date: formatDateKeyVi(dKey),
-          }),
-        };
-      }
-      case 'custom_range': {
-        const from = customFrom || nowKey;
-        const to = customTo || nowKey;
-        const start = from <= to ? from : to;
-        const end = from <= to ? to : from;
-        return {
-          start,
-          end,
-          label: tx('Từ {start} đến {end}', '{start} to {end}', {
-            start: formatDateKeyVi(start),
-            end: formatDateKeyVi(end),
-          }),
-        };
-      }
-      case 'all':
-      default:
-        return {
-          start: '0000-01-01',
-          end: '9999-12-31',
-          label: tx('Tất cả thời gian', 'All time'),
-        };
-    }
-  }, [rangeMode, singleDate, customFrom, customTo, tx]);
+  const effectiveDateBounds = useMemo(
+    () =>
+      computeEffectiveDateBounds(
+        {
+          rangeMode,
+          singleDate,
+          customFrom,
+          customTo,
+        },
+        tx
+      ),
+    [rangeMode, singleDate, customFrom, customTo, tx]
+  );
 
-  const tableById = useMemo(() => {
-    const map = new Map<string, ShopTable>();
-    for (const tb of shopTables) {
-      if (tb && tb.id) {
-        map.set(tb.id, tb);
-      }
-    }
-    return map;
-  }, [shopTables]);
+  const tableById = useMemo(
+    () => buildManagedTableMap(shopTables, activeShop?.id),
+    [shopTables, activeShop?.id]
+  );
 
-  // Filter orders according to selected date bounds + status + payment + source + search
-  const filteredOrders = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return orders.filter((ord) => {
-      const ordDateKey = getVnDateKey(ord.created_at);
-      if (
-        ordDateKey < effectiveDateBounds.start ||
-        ordDateKey > effectiveDateBounds.end
-      ) {
-        return false;
-      }
-
-      if (statusFilter === 'valid_only' && ord.status === 'cancelled') {
-        return false;
-      }
-      if (
-        statusFilter !== 'valid_only' &&
-        statusFilter !== 'all' &&
-        ord.status !== statusFilter
-      ) {
-        return false;
-      }
-
-      if (
-        paymentStatusFilter !== 'all' &&
-        ord.payment_status !== paymentStatusFilter
-      ) {
-        return false;
-      }
-
-      if (
-        paymentMethodFilter !== 'all' &&
-        ord.payment_method !== paymentMethodFilter
-      ) {
-        return false;
-      }
-
-      if (sourceFilter !== 'all' && ord.source !== sourceFilter) {
-        return false;
-      }
-
-      if (q) {
-        const managedTable = ord.table_id
-          ? tableById.get(ord.table_id)
-          : undefined;
-        const matchCode = ord.order_code?.toLowerCase().includes(q);
-        const matchTable =
-          ord.table_label?.toLowerCase().includes(q) ||
-          managedTable?.name?.toLowerCase().includes(q) ||
-          managedTable?.table_code?.toLowerCase().includes(q);
-        const matchNote = ord.customer_note?.toLowerCase().includes(q);
-        const matchItems = (ord.items || []).some((it) =>
-          it.name_vi?.toLowerCase().includes(q)
-        );
-        if (!matchCode && !matchTable && !matchNote && !matchItems) {
-          return false;
+  const filteredOrders = useMemo(
+    () =>
+      filterReportOrders(
+        orders,
+        {
+          dateBounds: effectiveDateBounds,
+          statusFilter,
+          paymentStatusFilter,
+          paymentMethodFilter,
+          sourceFilter,
+          searchQuery,
+        },
+        {
+          shopId: activeShop?.id,
+          tableById,
         }
-      }
+      ),
+    [
+      orders,
+      effectiveDateBounds,
+      statusFilter,
+      paymentStatusFilter,
+      paymentMethodFilter,
+      sourceFilter,
+      searchQuery,
+      activeShop?.id,
+      tableById,
+    ]
+  );
 
-      return true;
+  const tableSummaryList: TableOrderStats[] = useMemo(() => {
+    if (!activeShop) return [];
+    return summarizeOrdersByTable(filteredOrders, activeShop.id, shopTables);
+  }, [filteredOrders, activeShop, shopTables]);
+
+  const kpiStats = useMemo(
+    () => computeReportKpiStats(filteredOrders),
+    [filteredOrders]
+  );
+
+  const dailySummaryList: DailySummaryRow[] = useMemo(
+    () => summarizeOrdersByDay(filteredOrders),
+    [filteredOrders]
+  );
+
+  const itemSummaryList: ItemSummaryRow[] = useMemo(
+    () => summarizeOrdersByItem(filteredOrders, tx('Món khác', 'Other item')),
+    [filteredOrders, tx]
+  );
+
+  // Canonical column specs per tab (shared between UI and export)
+  const ordersSpecs = useMemo(
+    () => getCanonicalOrdersColumns(tx, tableById),
+    [tx, tableById]
+  );
+  const tablesSpecs = useMemo(
+    () => getCanonicalTablesColumns(tx, tableById),
+    [tx, tableById]
+  );
+  const dailySpecs = useMemo(() => getCanonicalDailyColumns(tx), [tx]);
+  const itemsSpecs = useMemo(() => getCanonicalItemsColumns(tx), [tx]);
+
+  // Sorted rows per tab matching current UI sort state
+  const sortedOrders = useMemo(
+    () =>
+      sortRowsByColumnSpecs(
+        filteredOrders,
+        ordersSpecs,
+        sortByTab.orders_list,
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime() ||
+          a.id.localeCompare(b.id)
+      ),
+    [filteredOrders, ordersSpecs, sortByTab.orders_list]
+  );
+
+  const sortedTables = useMemo(
+    () =>
+      sortRowsByColumnSpecs(
+        tableSummaryList,
+        tablesSpecs,
+        sortByTab.tables_summary,
+        (a, b) => a.key.localeCompare(b.key)
+      ),
+    [tableSummaryList, tablesSpecs, sortByTab.tables_summary]
+  );
+
+  const sortedDaily = useMemo(
+    () =>
+      sortRowsByColumnSpecs(
+        dailySummaryList,
+        dailySpecs,
+        sortByTab.daily_summary,
+        (a, b) => b.dateKey.localeCompare(a.dateKey)
+      ),
+    [dailySummaryList, dailySpecs, sortByTab.daily_summary]
+  );
+
+  const sortedItems = useMemo(
+    () =>
+      sortRowsByColumnSpecs(
+        itemSummaryList,
+        itemsSpecs,
+        sortByTab.items_summary,
+        (a, b) => a.itemKey.localeCompare(b.itemKey)
+      ),
+    [itemSummaryList, itemsSpecs, sortByTab.items_summary]
+  );
+
+  // Paginated slices per tab
+  const pagedOrders = useMemo(
+    () =>
+      paginateReportRows(
+        sortedOrders,
+        pageByTab.orders_list,
+        rowsPerPageByTab.orders_list
+      ),
+    [sortedOrders, pageByTab.orders_list, rowsPerPageByTab.orders_list]
+  );
+
+  const pagedTables = useMemo(
+    () =>
+      paginateReportRows(
+        sortedTables,
+        pageByTab.tables_summary,
+        rowsPerPageByTab.tables_summary
+      ),
+    [sortedTables, pageByTab.tables_summary, rowsPerPageByTab.tables_summary]
+  );
+
+  const pagedDaily = useMemo(
+    () =>
+      paginateReportRows(
+        sortedDaily,
+        pageByTab.daily_summary,
+        rowsPerPageByTab.daily_summary
+      ),
+    [sortedDaily, pageByTab.daily_summary, rowsPerPageByTab.daily_summary]
+  );
+
+  const pagedItems = useMemo(
+    () =>
+      paginateReportRows(
+        sortedItems,
+        pageByTab.items_summary,
+        rowsPerPageByTab.items_summary
+      ),
+    [sortedItems, pageByTab.items_summary, rowsPerPageByTab.items_summary]
+  );
+
+  // Clamp out-of-range pages automatically when dataset shrinks
+  useEffect(() => {
+    const clampedOrders = clampReportPage(
+      pageByTab.orders_list,
+      sortedOrders.length,
+      rowsPerPageByTab.orders_list
+    );
+    const clampedTables = clampReportPage(
+      pageByTab.tables_summary,
+      sortedTables.length,
+      rowsPerPageByTab.tables_summary
+    );
+    const clampedDaily = clampReportPage(
+      pageByTab.daily_summary,
+      sortedDaily.length,
+      rowsPerPageByTab.daily_summary
+    );
+    const clampedItems = clampReportPage(
+      pageByTab.items_summary,
+      sortedItems.length,
+      rowsPerPageByTab.items_summary
+    );
+
+    if (
+      clampedOrders !== pageByTab.orders_list ||
+      clampedTables !== pageByTab.tables_summary ||
+      clampedDaily !== pageByTab.daily_summary ||
+      clampedItems !== pageByTab.items_summary
+    ) {
+      setPageByTab({
+        orders_list: clampedOrders,
+        tables_summary: clampedTables,
+        daily_summary: clampedDaily,
+        items_summary: clampedItems,
+      });
+      setPaginationResetToggle((prev) => !prev);
+    }
+  }, [
+    pageByTab,
+    rowsPerPageByTab,
+    sortedOrders.length,
+    sortedTables.length,
+    sortedDaily.length,
+    sortedItems.length,
+  ]);
+
+  const activePagedInfo =
+    activeViewTab === 'orders_list'
+      ? pagedOrders
+      : activeViewTab === 'tables_summary'
+        ? pagedTables
+        : activeViewTab === 'daily_summary'
+          ? pagedDaily
+          : pagedItems;
+
+  const activeExportPayload = useMemo(() => {
+    if (!activeShop) {
+      return null;
+    }
+    return buildCurrentViewExportPayload({
+      shop: {
+        id: activeShop.id,
+        name: activeShop.name,
+        slug: activeShop.slug,
+        currency: activeShop.currency,
+      },
+      activeTab: activeViewTab,
+      exportScope,
+      dateBounds: effectiveDateBounds,
+      filters: {
+        statusFilter,
+        paymentStatusFilter,
+        paymentMethodFilter,
+        sourceFilter,
+        searchQuery,
+      },
+      filteredOrders,
+      shopTables,
+      sortState: sortByTab[activeViewTab],
+      page: activePagedInfo.page,
+      rowsPerPage: activePagedInfo.rowsPerPage,
+      tx,
     });
   }, [
-    orders,
+    activeShop,
+    activeViewTab,
+    exportScope,
     effectiveDateBounds,
     statusFilter,
     paymentStatusFilter,
     paymentMethodFilter,
     sourceFilter,
     searchQuery,
-    tableById,
+    filteredOrders,
+    shopTables,
+    sortByTab,
+    activePagedInfo.page,
+    activePagedInfo.rowsPerPage,
+    tx,
   ]);
 
-  // Per-table summary using client-safe summarizeOrdersByTable on filteredOrders
-  const tableSummaryList: TableOrderStats[] = useMemo(() => {
-    if (!activeShop) return [];
-    return summarizeOrdersByTable(filteredOrders, activeShop.id, shopTables);
-  }, [filteredOrders, activeShop, shopTables]);
+  const canExport =
+    Boolean(activeShop) &&
+    !loading &&
+    !loadError &&
+    !exportingFormat &&
+    Boolean(activeExportPayload && activeExportPayload.exportedRowCount > 0);
 
-  // Compute aggregate KPIs for filtered orders (paid collected revenue vs unpaid/refunded/cancelled without double-counting)
-  const kpiStats = useMemo(() => {
-    const validOrders = filteredOrders.filter((o) => o.status !== 'cancelled');
-    const cancelledOrders = filteredOrders.filter(
-      (o) => o.status === 'cancelled'
-    );
-    const paidOrders = validOrders.filter((o) => o.payment_status === 'paid');
-    const unpaidOrders = validOrders.filter(
-      (o) => o.payment_status !== 'paid' && o.payment_status !== 'refunded'
-    );
-    const refundedOrders = filteredOrders.filter(
-      (o) => o.payment_status === 'refunded'
-    );
-
-    const collectedRevenue = paidOrders.reduce(
-      (sum, o) => sum + Math.max(0, Number(o.total_amount || 0)),
-      0
-    );
-    const unpaidAmount = unpaidOrders.reduce(
-      (sum, o) => sum + Math.max(0, Number(o.total_amount || 0)),
-      0
-    );
-    const refundedAmount = refundedOrders.reduce(
-      (sum, o) => sum + Math.max(0, Number(o.total_amount || 0)),
-      0
-    );
-    const totalRevenue = collectedRevenue;
-    const totalDiscount = validOrders.reduce(
-      (sum, o) => sum + Number(o.discount_amount || 0),
-      0
-    );
-    const cashOrders = paidOrders.filter((o) => o.payment_method === 'cash');
-    const vietqrOrders = paidOrders.filter(
-      (o) => o.payment_method === 'vietqr'
-    );
-    const cashRevenue = cashOrders.reduce(
-      (sum, o) => sum + Math.max(0, Number(o.total_amount || 0)),
-      0
-    );
-    const vietqrRevenue = vietqrOrders.reduce(
-      (sum, o) => sum + Math.max(0, Number(o.total_amount || 0)),
-      0
-    );
-    const totalItemsSold = validOrders.reduce(
-      (sum, o) =>
-        sum +
-        (o.items || []).reduce(
-          (s, it) => s + Math.max(1, Number(it.quantity || 1)),
-          0
-        ),
-      0
-    );
-
-    return {
-      totalCount: filteredOrders.length,
-      validCount: validOrders.length,
-      cancelledCount: cancelledOrders.length,
-      collectedRevenue,
-      unpaidAmount,
-      refundedCount: refundedOrders.length,
-      refundedAmount,
-      totalRevenue,
-      totalDiscount,
-      cashCount: cashOrders.length,
-      cashRevenue,
-      vietqrCount: vietqrOrders.length,
-      vietqrRevenue,
-      paidCount: paidOrders.length,
-      unpaidCount: unpaidOrders.length,
-      totalItemsSold,
-      avgOrderValue:
-        paidOrders.length > 0
-          ? Math.round(collectedRevenue / paidOrders.length)
-          : 0,
-    };
-  }, [filteredOrders]);
-
-  // Daily breakdown summary
-  const dailySummaryList = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        dateKey: string;
-        ordersCount: number;
-        itemsSold: number;
-        cashRevenue: number;
-        vietqrRevenue: number;
-        totalRevenue: number;
+  const handleExportCurrentView = async (format: 'csv' | 'xlsx') => {
+    if (!activeShop || !activeExportPayload || !canExport) return;
+    const expectedShopId = activeShop.id;
+    setExportError(null);
+    setExportingFormat(format);
+    try {
+      if (activeShopIdRef.current !== expectedShopId) {
+        return;
       }
-    >();
-
-    for (const ord of filteredOrders) {
-      if (ord.status === 'cancelled') continue;
-      const dKey = getVnDateKey(ord.created_at);
-      const curr = map.get(dKey) || {
-        dateKey: dKey,
-        ordersCount: 0,
-        itemsSold: 0,
-        cashRevenue: 0,
-        vietqrRevenue: 0,
-        totalRevenue: 0,
-      };
-      const itemQty = (ord.items || []).reduce(
-        (s, it) => s + Math.max(1, Number(it.quantity || 1)),
-        0
+      await downloadDataset(
+        activeExportPayload.dataset,
+        format,
+        activeExportPayload.filenameBase
       );
-      const amt = Number(ord.total_amount || 0);
-      curr.ordersCount += 1;
-      curr.itemsSold += itemQty;
-      curr.totalRevenue += amt;
-      if (ord.payment_method === 'vietqr') {
-        curr.vietqrRevenue += amt;
-      } else {
-        curr.cashRevenue += amt;
-      }
-      map.set(dKey, curr);
-    }
-
-    return Array.from(map.values()).sort((a, b) =>
-      b.dateKey.localeCompare(a.dateKey)
-    );
-  }, [filteredOrders]);
-
-  // Item breakdown summary
-  const itemSummaryList = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        itemName: string;
-        orderAppearances: number;
-        quantitySold: number;
-        revenue: number;
-      }
-    >();
-
-    for (const ord of filteredOrders) {
-      if (ord.status === 'cancelled') continue;
-      for (const line of ord.items || []) {
-        const key = line.name_vi || line.item_id || tx('Món khác', 'Other item');
-        const curr = map.get(key) || {
-          itemName: key,
-          orderAppearances: 0,
-          quantitySold: 0,
-          revenue: 0,
-        };
-        const qty = Math.max(1, Number(line.quantity || 1));
-        const lineRev =
-          (Number(line.unit_price || 0) + Number(line.extra_price || 0)) * qty;
-        curr.orderAppearances += 1;
-        curr.quantitySold += qty;
-        curr.revenue += lineRev;
-        map.set(key, curr);
-      }
-    }
-
-    return Array.from(map.values()).sort(
-      (a, b) => b.quantitySold - a.quantitySold || b.revenue - a.revenue
-    );
-  }, [filteredOrders, tx]);
-
-  // Export 1: CSV Summary by Order (1 row = 1 order)
-  const handleExportOrdersCsv = () => {
-    if (!activeShop) return;
-    const headers = [
-      tx('STT', 'No.'),
-      tx('Mã Đơn', 'Order Code'),
-      tx('Ngày (VN)', 'Date (VN)'),
-      tx('Giờ Tạo (VN)', 'Created Time (VN)'),
-      tx('Bàn / Vị Trí', 'Table / Location'),
-      tx('Nguồn Đơn', 'Source'),
-      tx('Chi Tiết Món Đã Gọi', 'Ordered Items'),
-      tx('Tổng Số Món', 'Total Items'),
-      tx('Tạm Tính', 'Subtotal'),
-      tx('Giảm Giá', 'Discount'),
-      tx('Tổng Thu', 'Total Amount'),
-      tx('Phương Thức Thanh Toán', 'Payment Method'),
-      tx('Trạng Thái Thu Tiền', 'Payment Status'),
-      tx('Trạng Thái Đơn', 'Order Status'),
-      tx('Ghi Chú Bàn', 'Table Note'),
-    ];
-
-    const rows = filteredOrders.map((ord, index) => {
-      const dateKey = formatDateKeyVi(getVnDateKey(ord.created_at));
-      const fullTime = getVnDateTimeString(ord.created_at);
-      const itemsText = (ord.items || [])
-        .map((it) => {
-          const optText = formatChoicesText(it.selected_choices);
-          const noteText = it.custom_note ? ` [${it.custom_note}]` : '';
-          return `${it.quantity}x ${it.name_vi}${optText ? ` (${optText})` : ''}${noteText}`;
-        })
-        .join(' | ');
-      const totalQty = (ord.items || []).reduce(
-        (s, it) => s + Math.max(1, Number(it.quantity || 1)),
-        0
-      );
-
-      return [
-        index + 1,
-        ord.order_code,
-        dateKey,
-        fullTime,
-        ord.table_label,
-        ord.source === 'counter_pos'
-          ? tx('Tại quầy (POS)', 'Counter POS')
-          : tx('Khách quét QR', 'Table QR'),
-        itemsText,
-        totalQty,
-        ord.subtotal_amount ?? ord.total_amount,
-        ord.discount_amount ?? 0,
-        ord.total_amount,
-        ord.payment_method === 'vietqr'
-          ? tx('Chuyển khoản VietQR', 'VietQR Transfer')
-          : tx('Tiền mặt', 'Cash'),
-        ord.payment_status === 'paid'
-          ? tx('Đã thu tiền', 'Paid')
-          : tx('Chưa thu tiền', 'Unpaid'),
-        ord.status === 'completed'
-          ? tx('Hoàn tất', 'Completed')
-          : ord.status === 'preparing'
-            ? tx('Đang chế biến', 'Preparing')
-            : ord.status === 'new'
-              ? tx('Mới chờ nhận', 'New')
-              : tx('Đã hủy', 'Cancelled'),
-        ord.customer_note || '',
-      ];
-    });
-
-    const csvContent =
-      '\uFEFF' +
-      [
-        headers.map(escapeCsvCell).join(','),
-        ...rows.map((r) => r.map(escapeCsvCell).join(',')),
-      ].join('\r\n');
-
-    const blob = new Blob([csvContent], {
-      type: 'text/csv;charset=utf-8;',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Don-Hang-${activeShop.slug}-${effectiveDateBounds.start}_den_${effectiveDateBounds.end}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Export 2: CSV Detailed Line Items (1 row = 1 dish in an order)
-  const handleExportLineItemsCsv = () => {
-    if (!activeShop) return;
-    const headers = [
-      tx('STT', 'No.'),
-      tx('Mã Đơn', 'Order Code'),
-      tx('Ngày (VN)', 'Date (VN)'),
-      tx('Giờ Tạo (VN)', 'Created Time (VN)'),
-      tx('Bàn / Vị Trí', 'Table / Location'),
-      tx('Tên Món', 'Item Name'),
-      tx('Số Lượng', 'Quantity'),
-      tx('Đơn Giá Gốc', 'Base Price'),
-      tx('Phụ Thu Topping/Option', 'Add-on Price'),
-      tx('Thành Tiền Món', 'Line Total'),
-      tx('Option / Topping Đã Chọn', 'Selected Options'),
-      tx('Ghi Chú Món', 'Item Note'),
-      tx('Phương Thức TT', 'Payment Method'),
-      tx('Trạng Thái TT', 'Payment Status'),
-      tx('Trạng Thái Đơn', 'Order Status'),
-    ];
-
-    const rows: Array<Array<string | number>> = [];
-    let stt = 1;
-
-    for (const ord of filteredOrders) {
-      const dateKey = formatDateKeyVi(getVnDateKey(ord.created_at));
-      const fullTime = getVnDateTimeString(ord.created_at);
-      for (const line of ord.items || []) {
-        const qty = Math.max(1, Number(line.quantity || 1));
-        const unitPrice = Number(line.unit_price || 0);
-        const extraPrice = Number(line.extra_price || 0);
-        const lineTotal = (unitPrice + extraPrice) * qty;
-        const optText = formatChoicesText(line.selected_choices);
-
-        rows.push([
-          stt++,
-          ord.order_code,
-          dateKey,
-          fullTime,
-          ord.table_label,
-          line.name_vi,
-          qty,
-          unitPrice,
-          extraPrice,
-          lineTotal,
-          optText,
-          line.custom_note || '',
-          ord.payment_method === 'vietqr'
-            ? tx('Chuyển khoản VietQR', 'VietQR Transfer')
-            : tx('Tiền mặt', 'Cash'),
-          ord.payment_status === 'paid'
-            ? tx('Đã thu tiền', 'Paid')
-            : tx('Chưa thu tiền', 'Unpaid'),
-          ord.status === 'completed'
-            ? tx('Hoàn tất', 'Completed')
-            : ord.status === 'preparing'
-              ? tx('Đang chế biến', 'Preparing')
-              : ord.status === 'new'
-                ? tx('Mới chờ nhận', 'New')
-                : tx('Đã hủy', 'Cancelled'),
-        ]);
-      }
-    }
-
-    const csvContent =
-      '\uFEFF' +
-      [
-        headers.map(escapeCsvCell).join(','),
-        ...rows.map((r) => r.map(escapeCsvCell).join(',')),
-      ].join('\r\n');
-
-    const blob = new Blob([csvContent], {
-      type: 'text/csv;charset=utf-8;',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Chi-Tiet-Mon-Ban-${activeShop.slug}-${effectiveDateBounds.start}_den_${effectiveDateBounds.end}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Export 3: Formatted Excel Report (.xls) with Order Summary + Item Summary + Totals
-  const handleExportExcelReport = () => {
-    if (!activeShop) return;
-
-    const orderRowsHtml = filteredOrders
-      .map((ord, idx) => {
-        const dateKey = formatDateKeyVi(getVnDateKey(ord.created_at));
-        const fullTime = getVnDateTimeString(ord.created_at);
-        const itemsText = (ord.items || [])
-          .map((it) => {
-            const optText = formatChoicesText(it.selected_choices);
-            const noteText = it.custom_note ? ` [${it.custom_note}]` : '';
-            return `${it.quantity}x ${it.name_vi}${optText ? ` (${optText})` : ''}${noteText}`;
-          })
-          .join('; ');
-        const totalQty = (ord.items || []).reduce(
-          (s, it) => s + Math.max(1, Number(it.quantity || 1)),
-          0
-        );
-
-        return `
-          <tr>
-            <td style="text-align:center;">${idx + 1}</td>
-            <td style="font-weight:bold;">#${escapeHtml(ord.order_code)}</td>
-            <td>${escapeHtml(dateKey)}</td>
-            <td>${escapeHtml(fullTime)}</td>
-            <td>${escapeHtml(ord.table_label)}</td>
-            <td>${ord.source === 'counter_pos' ? tx('Tại quầy (POS)', 'Counter POS') : tx('Khách quét QR', 'Table QR')}</td>
-            <td>${escapeHtml(itemsText)}</td>
-            <td style="text-align:center;">${totalQty}</td>
-            <td style="text-align:right;font-weight:bold;">${Number(ord.total_amount || 0)}</td>
-            <td>${ord.payment_method === 'vietqr' ? tx('Chuyển khoản VietQR', 'VietQR Transfer') : tx('Tiền mặt', 'Cash')}</td>
-            <td>${ord.payment_status === 'paid' ? tx('Đã thu tiền', 'Paid') : tx('Chưa thu tiền', 'Unpaid')}</td>
-            <td>${
-              ord.status === 'completed'
-                ? tx('Hoàn tất', 'Completed')
-                : ord.status === 'preparing'
-                  ? tx('Đang chế biến', 'Preparing')
-                  : ord.status === 'new'
-                    ? tx('Mới chờ nhận', 'New')
-                    : tx('Đã hủy', 'Cancelled')
-            }</td>
-            <td>${escapeHtml(ord.customer_note || '')}</td>
-          </tr>
-        `;
-      })
-      .join('');
-
-    const itemRowsHtml = itemSummaryList
-      .map(
-        (item, idx) => `
-          <tr>
-            <td style="text-align:center;">${idx + 1}</td>
-            <td style="font-weight:bold;">${escapeHtml(item.itemName)}</td>
-            <td style="text-align:center;">${item.orderAppearances}</td>
-            <td style="text-align:center;font-weight:bold;">${item.quantitySold}</td>
-            <td style="text-align:right;font-weight:bold;">${item.revenue}</td>
-          </tr>
-        `
-      )
-      .join('');
-
-    const excelHtml = `\uFEFF<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <meta charset="UTF-8" />
-        <style>
-          body { font-family: Arial, sans-serif; font-size: 12px; }
-          table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
-          th, td { border: 1px solid #cbd5e1; padding: 6px 8px; }
-          th { background-color: #0f172a; color: #ffffff; font-weight: bold; }
-          .summary-box td { font-size: 13px; padding: 8px; }
-        </style>
-      </head>
-      <body>
-        <h2>${tx('BÁO CÁO ĐƠN HÀNG & DOANH THU', 'ORDERS & REVENUE REPORT')} — ${escapeHtml(activeShop.name.toUpperCase())}</h2>
-        <p><strong>${tx('Kỳ báo cáo:', 'Period:')}</strong> ${escapeHtml(effectiveDateBounds.label)} | <strong>${tx('Thời điểm xuất file:', 'Exported at:')}</strong> ${escapeHtml(getVnDateTimeString(new Date()))}</p>
-
-        <table class="summary-box">
-          <tr>
-            <th colspan="2">${tx('TỔNG HỢP KẾT QUẢ KINH DOANH TRONG KỲ', 'PERIOD SUMMARY')}</th>
-          </tr>
-          <tr>
-            <td><strong>${tx('Tổng số đơn hợp lệ:', 'Valid orders:')}</strong></td>
-            <td><strong>${tx('{orders} đơn ({items} món bán ra)', '{orders} orders ({items} items sold)', { orders: kpiStats.validCount, items: kpiStats.totalItemsSold })}</strong></td>
-          </tr>
-          <tr>
-            <td><strong>${tx('Doanh thu Tiền mặt:', 'Cash revenue:')}</strong></td>
-            <td>${kpiStats.cashRevenue} (${tx('{count} đơn', '{count} orders', { count: kpiStats.cashCount })})</td>
-          </tr>
-          <tr>
-            <td><strong>${tx('Doanh thu Chuyển khoản (VietQR):', 'VietQR transfer revenue:')}</strong></td>
-            <td>${kpiStats.vietqrRevenue} (${tx('{count} đơn', '{count} orders', { count: kpiStats.vietqrCount })})</td>
-          </tr>
-          <tr>
-            <td><strong>${tx('TỔNG DOANH THU THỰC NHẬN:', 'NET REVENUE:')}</strong></td>
-            <td style="font-size:15px;font-weight:bold;color:#059669;">${kpiStats.totalRevenue}</td>
-          </tr>
-        </table>
-
-        <h3>1. ${tx('DANH SÁCH CHI TIẾT ĐƠN HÀNG ({count} ĐƠN)', 'ORDER DETAILS ({count} ORDERS)', { count: filteredOrders.length })}</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>${tx('STT', 'No.')}</th>
-              <th>${tx('Mã Đơn', 'Order Code')}</th>
-              <th>${tx('Ngày (VN)', 'Date (VN)')}</th>
-              <th>${tx('Giờ Tạo (VN)', 'Time (VN)')}</th>
-              <th>${tx('Bàn / Vị Trí', 'Table')}</th>
-              <th>${tx('Nguồn Đơn', 'Source')}</th>
-              <th>${tx('Chi Tiết Món & Option', 'Items & Options')}</th>
-              <th>${tx('SL Món', 'Qty')}</th>
-              <th>${tx('Tổng Tiền', 'Total')} (${escapeHtml(activeShop.currency)})</th>
-              <th>${tx('Phương Thức TT', 'Payment Method')}</th>
-              <th>${tx('Trạng Thái TT', 'Payment Status')}</th>
-              <th>${tx('Trạng Thái Đơn', 'Order Status')}</th>
-              <th>${tx('Ghi Chú', 'Note')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${orderRowsHtml}
-            <tr style="background-color:#ecfdf5;font-weight:bold;">
-              <td colspan="7" style="text-align:right;">${tx('TỔNG CỘNG ({count} đơn hợp lệ):', 'TOTAL ({count} valid orders):', { count: kpiStats.validCount })}</td>
-              <td style="text-align:center;">${kpiStats.totalItemsSold}</td>
-              <td style="text-align:right;">${kpiStats.totalRevenue}</td>
-              <td colspan="4"></td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h3>2. ${tx('THỐNG KÊ DOANH THU & ĐƠN HÀNG THEO BÀN / VỊ TRÍ', 'REVENUE & ORDERS BY TABLE / LOCATION')}</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>${tx('STT', 'No.')}</th>
-              <th>${tx('Bàn / Vị Trí', 'Table / Location')}</th>
-              <th>${tx('Phân Loại', 'Type')}</th>
-              <th>${tx('Tổng Số Đơn', 'Total Orders')}</th>
-              <th>${tx('Đơn Đã Thu', 'Paid Orders')}</th>
-              <th>${tx('Thực Thu (Đã TT)', 'Collected Revenue')} (${escapeHtml(activeShop.currency)})</th>
-              <th>${tx('Đơn Chưa Thu', 'Unpaid Orders')}</th>
-              <th>${tx('Chưa Thu', 'Unpaid Amount')} (${escapeHtml(activeShop.currency)})</th>
-              <th>${tx('Hoàn Tiền', 'Refunded')} (${escapeHtml(activeShop.currency)})</th>
-              <th>${tx('Đơn Hủy', 'Cancelled')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tableSummaryList
-              .map(
-                (tb, idx) => `
-              <tr>
-                <td style="text-align:center;">${idx + 1}</td>
-                <td style="font-weight:bold;">${escapeHtml(tb.table_label)}</td>
-                <td>${
-                  tb.kind === 'managed'
-                    ? tx('Bàn quản lý', 'Managed table')
-                    : tb.kind === 'takeaway'
-                      ? tx('Mang về', 'Takeaway')
-                      : tx('Lịch sử / Khác', 'Legacy / Other')
-                }</td>
-                <td style="text-align:center;">${tb.orderCount}</td>
-                <td style="text-align:center;">${tb.paidOrderCount}</td>
-                <td style="text-align:right;font-weight:bold;color:#059669;">${tb.collectedRevenue}</td>
-                <td style="text-align:center;">${tb.unpaidOrderCount}</td>
-                <td style="text-align:right;">${tb.unpaidAmount}</td>
-                <td style="text-align:right;">${tb.refundedAmount} (${tb.refundedOrderCount})</td>
-                <td style="text-align:center;">${tb.cancelledOrderCount}</td>
-              </tr>
-            `
+    } catch (err) {
+      console.error(`Failed to export ${format}:`, err);
+      if (activeShopIdRef.current === expectedShopId) {
+        setExportError(
+          err instanceof Error && err.message
+            ? err.message
+            : tx(
+                'Không thể xuất file báo cáo. Vui lòng thử lại.',
+                'Could not export report file. Please try again.'
               )
-              .join('')}
-          </tbody>
-        </table>
-
-        <h3>3. ${tx('THỐNG KÊ SỐ LƯỢNG & DOANH THU THEO TỪNG MÓN BÁN RA', 'REVENUE & QUANTITY BY ITEM')}</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>${tx('STT', 'No.')}</th>
-              <th>${tx('Tên Món', 'Item Name')}</th>
-              <th>${tx('Số Lần Gọi', 'Orders')}</th>
-              <th>${tx('Tổng Số Lượng Bán', 'Qty Sold')}</th>
-              <th>${tx('Doanh Thu Món', 'Revenue')} (${escapeHtml(activeShop.currency)})</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemRowsHtml}
-          </tbody>
-        </table>
-      </body>
-    </html>`;
-
-    const blob = new Blob([excelHtml], {
-      type: 'application/vnd.ms-excel;charset=utf-8;',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Bao-Cao-Don-Hang-${activeShop.slug}-${effectiveDateBounds.start}_den_${effectiveDateBounds.end}.xls`;
-    a.click();
-    URL.revokeObjectURL(url);
+        );
+      }
+    } finally {
+      if (activeShopIdRef.current === expectedShopId) {
+        setExportingFormat(null);
+      }
+    }
   };
+
+  const handleTabSort = useCallback(
+    <T,>(
+      tab: ReportViewTab,
+      selectedColumn: TableColumn<T>,
+      sortDirection: SortOrder
+    ) => {
+      const colId = String(selectedColumn.id || '');
+      if (!colId) return;
+      setSortByTab((prev) => ({
+        ...prev,
+        [tab]: {
+          columnId: colId,
+          direction: sortDirection === 'asc' ? 'asc' : 'desc',
+        },
+      }));
+      setPageByTab((prev) => ({
+        ...prev,
+        [tab]: 1,
+      }));
+      setPaginationResetToggle((prev) => !prev);
+    },
+    []
+  );
+
+  const handleTabPageChange = useCallback((tab: ReportViewTab, page: number) => {
+    setPageByTab((prev) => ({
+      ...prev,
+      [tab]: page,
+    }));
+  }, []);
+
+  const handleTabRowsPerPageChange = useCallback(
+    (tab: ReportViewTab, newPerPage: number, page: number) => {
+      setRowsPerPageByTab((prev) => ({
+        ...prev,
+        [tab]: newPerPage,
+      }));
+      setPageByTab((prev) => ({
+        ...prev,
+        [tab]: page || 1,
+      }));
+    },
+    []
+  );
+
+  const currency = activeShop?.currency || 'VND';
+
+  // Table 1: Orders List Columns
+  const ordersColumns = useMemo<TableColumn<ShopOrder>[]>(() => {
+    const byKey = new Map(ordersSpecs.map((s) => [s.key, s]));
+    return [
+      {
+        id: 'order_code',
+        name: byKey.get('order_code')!.label,
+        sortable: true,
+        width: '120px',
+        selector: (ord) => ord.order_code || '',
+        cell: (ord) => (
+          <span className="font-black text-slate-900 dark:text-slate-100 whitespace-nowrap">
+            #{ord.order_code}
+          </span>
+        ),
+      },
+      {
+        id: 'created_at',
+        name: byKey.get('created_at')!.label,
+        sortable: true,
+        width: '150px',
+        selector: (ord) => new Date(ord.created_at).getTime() || 0,
+        cell: (ord) => (
+          <div className="py-1 whitespace-nowrap">
+            <div className="font-bold text-slate-800 dark:text-slate-200">
+              {formatDateKeyVi(getVnDateKey(ord.created_at))}
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              {getVnTimeString(ord.created_at)}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: 'table_label',
+        name: byKey.get('table_label')!.label,
+        sortable: true,
+        width: '150px',
+        selector: (ord) =>
+          String(byKey.get('table_label')!.getExportValue(ord, 0) ?? ''),
+        cell: (ord) => {
+          const managedTable = ord.table_id
+            ? tableById.get(ord.table_id)
+            : undefined;
+          return (
+            <div className="flex flex-col gap-0.5 py-1 whitespace-nowrap">
+              <span className="inline-block w-fit rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-black text-amber-400">
+                {ord.table_label}
+              </span>
+              {managedTable && managedTable.name !== ord.table_label && (
+                <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                  {tx('Hiện tại:', 'Current:')} {managedTable.name}
+                </span>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: 'source',
+        name: byKey.get('source')!.label,
+        sortable: true,
+        width: '145px',
+        selector: (ord) => formatOrderSourceLabel(ord.source, tx),
+        cell: (ord) => (
+          <span
+            className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[11px] font-bold whitespace-nowrap ${
+              ord.source === 'counter_pos'
+                ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+            }`}
+          >
+            {formatOrderSourceLabel(ord.source, tx)}
+          </span>
+        ),
+      },
+      {
+        id: 'items_summary',
+        name: byKey.get('items_summary')!.label,
+        sortable: true,
+        grow: 2,
+        minWidth: '250px',
+        selector: (ord) =>
+          String(byKey.get('items_summary')!.getExportValue(ord, 0) ?? ''),
+        cell: (ord) => (
+          <div className="space-y-1 py-1.5">
+            {(ord.items || []).map((it, i) => {
+              const optStr = formatChoicesText(it.selected_choices);
+              return (
+                <div
+                  key={i}
+                  className="text-xs text-slate-800 dark:text-slate-200 leading-snug"
+                >
+                  <strong className="font-black text-emerald-700 dark:text-emerald-400">
+                    {it.quantity}x
+                  </strong>{' '}
+                  <span className="font-bold">{it.name_vi}</span>
+                  {optStr && (
+                    <span className="ml-1 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                      ({optStr})
+                    </span>
+                  )}
+                  {it.custom_note && (
+                    <span className="ml-1 text-[11px] italic text-slate-500">
+                      • {it.custom_note}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            {ord.customer_note && (
+              <div className="text-[11px] font-bold text-amber-800 bg-amber-50 rounded px-1.5 py-0.5 inline-block">
+                💬 {ord.customer_note}
+              </div>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: 'items_qty',
+        name: byKey.get('items_qty')!.label,
+        sortable: true,
+        right: true,
+        width: '95px',
+        selector: (ord) => getOrderTotalQuantity(ord),
+        cell: (ord) => (
+          <span className="font-black text-slate-800 dark:text-slate-200">
+            {getOrderTotalQuantity(ord)}
+          </span>
+        ),
+      },
+      {
+        id: 'total_amount',
+        name: byKey.get('total_amount')!.label,
+        sortable: true,
+        right: true,
+        width: '140px',
+        selector: (ord) => Math.max(0, Number(ord.total_amount || 0)),
+        cell: (ord) => (
+          <span className="font-black text-emerald-700 dark:text-emerald-400 whitespace-nowrap text-sm">
+            {formatCurrency(ord.total_amount, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'payment_status',
+        name: byKey.get('payment_status')!.label,
+        sortable: true,
+        width: '150px',
+        selector: (ord) => formatPaymentStatusLabel(ord.payment_status, tx),
+        cell: (ord) => (
+          <span
+            className={`inline-flex w-fit items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-black whitespace-nowrap ${
+              ord.payment_status === 'paid'
+                ? 'bg-emerald-100 text-emerald-800'
+                : ord.payment_status === 'refunded'
+                  ? 'bg-rose-100 text-rose-800'
+                  : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {ord.payment_status === 'refunded' ? (
+              <RotateCcw className="h-3 w-3" />
+            ) : null}
+            <span>{formatPaymentStatusLabel(ord.payment_status, tx)}</span>
+          </span>
+        ),
+      },
+      {
+        id: 'payment_method',
+        name: byKey.get('payment_method')!.label,
+        sortable: true,
+        width: '155px',
+        selector: (ord) => formatPaymentMethodLabel(ord.payment_method, tx),
+        cell: (ord) => (
+          <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+            {formatPaymentMethodLabel(ord.payment_method, tx)}
+          </span>
+        ),
+      },
+      {
+        id: 'status',
+        name: byKey.get('status')!.label,
+        sortable: true,
+        width: '145px',
+        selector: (ord) => formatOrderStatusLabel(ord.status, tx),
+        cell: (ord) => (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase whitespace-nowrap ${
+              ord.status === 'completed'
+                ? 'bg-emerald-100 text-emerald-800'
+                : ord.status === 'preparing'
+                  ? 'bg-blue-100 text-blue-800'
+                  : ord.status === 'new'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-rose-100 text-rose-700'
+            }`}
+          >
+            {ord.status === 'completed' ? (
+              <CheckCircle2 className="h-3 w-3" />
+            ) : ord.status === 'preparing' ? (
+              <ChefHat className="h-3 w-3" />
+            ) : ord.status === 'new' ? (
+              <Clock className="h-3 w-3" />
+            ) : (
+              <XCircle className="h-3 w-3" />
+            )}
+            <span>{formatOrderStatusLabel(ord.status, tx)}</span>
+          </span>
+        ),
+      },
+      {
+        id: 'actions',
+        name: tx('Thao tác', 'Actions'),
+        sortable: false,
+        right: true,
+        width: '120px',
+        cell: (ord) => (
+          <button
+            type="button"
+            onClick={() => setPrintingOrder(ord)}
+            className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-800 hover:bg-slate-100 whitespace-nowrap"
+          >
+            <Printer className="h-3.5 w-3.5 text-emerald-600" />
+            <span>{tx('In Bill', 'Print Bill')}</span>
+          </button>
+        ),
+      },
+    ];
+  }, [ordersSpecs, tableById, tx, currency]);
+
+  // Table 2: By Table Summary Columns
+  const tablesColumns = useMemo<TableColumn<TableOrderStats>[]>(() => {
+    const byKey = new Map(tablesSpecs.map((s) => [s.key, s]));
+    return [
+      {
+        id: 'table_label',
+        name: byKey.get('table_label')!.label,
+        sortable: true,
+        minWidth: '190px',
+        selector: (row) => row.table_label || '',
+        cell: (row) => {
+          const managed = row.table_id
+            ? tableById.get(row.table_id)
+            : undefined;
+          return (
+            <div
+              data-testid={`report-table-summary-row-${row.key}`}
+              className="py-1.5 font-black text-slate-900 dark:text-slate-100"
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span>{row.table_label}</span>
+                {managed?.table_code && (
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-600">
+                    #{managed.table_code}
+                  </span>
+                )}
+                {managed?.is_archived && (
+                  <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700">
+                    {tx('Đã lưu trữ', 'Archived')}
+                  </span>
+                )}
+                {managed && !managed.is_archived && !managed.is_active && (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                    {tx('Tạm ngưng', 'Inactive')}
+                  </span>
+                )}
+              </div>
+              {managed?.section && (
+                <div className="text-[11px] font-medium text-slate-500">
+                  {managed.section}
+                </div>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: 'kind',
+        name: byKey.get('kind')!.label,
+        sortable: true,
+        width: '140px',
+        selector: (row) => formatTableKindLabel(row.kind, tx),
+        cell: (row) => (
+          <span
+            className={`inline-flex rounded-lg px-2 py-0.5 text-[10px] font-black whitespace-nowrap ${
+              row.kind === 'managed'
+                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                : row.kind === 'takeaway'
+                  ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
+                  : 'bg-slate-100 text-slate-700 border border-slate-200'
+            }`}
+          >
+            {formatTableKindLabel(row.kind, tx)}
+          </span>
+        ),
+      },
+      {
+        id: 'orderCount',
+        name: byKey.get('orderCount')!.label,
+        sortable: true,
+        right: true,
+        width: '115px',
+        selector: (row) => row.orderCount,
+        cell: (row) => (
+          <span className="font-black text-slate-800 dark:text-slate-200">
+            {row.orderCount}
+          </span>
+        ),
+      },
+      {
+        id: 'paidOrderCount',
+        name: byKey.get('paidOrderCount')!.label,
+        sortable: true,
+        right: true,
+        width: '120px',
+        selector: (row) => row.paidOrderCount,
+        cell: (row) => (
+          <span className="font-bold text-emerald-700 dark:text-emerald-400">
+            {row.paidOrderCount}
+          </span>
+        ),
+      },
+      {
+        id: 'collectedRevenue',
+        name: byKey.get('collectedRevenue')!.label,
+        sortable: true,
+        right: true,
+        width: '165px',
+        selector: (row) => row.collectedRevenue,
+        cell: (row) => (
+          <span className="font-black text-sm text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
+            {formatCurrency(row.collectedRevenue, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'unpaidOrderCount',
+        name: byKey.get('unpaidOrderCount')!.label,
+        sortable: true,
+        right: true,
+        width: '125px',
+        selector: (row) => row.unpaidOrderCount,
+        cell: (row) => (
+          <span className="font-bold text-amber-700 dark:text-amber-400">
+            {row.unpaidOrderCount}
+          </span>
+        ),
+      },
+      {
+        id: 'unpaidAmount',
+        name: byKey.get('unpaidAmount')!.label,
+        sortable: true,
+        right: true,
+        width: '150px',
+        selector: (row) => row.unpaidAmount,
+        cell: (row) => (
+          <span className="font-bold text-amber-700 dark:text-amber-400 whitespace-nowrap">
+            {formatCurrency(row.unpaidAmount, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'refundedAmount',
+        name: byKey.get('refundedAmount')!.label,
+        sortable: true,
+        right: true,
+        width: '150px',
+        selector: (row) => row.refundedAmount,
+        cell: (row) => (
+          <div className="text-right whitespace-nowrap">
+            <div className="font-bold text-rose-700 dark:text-rose-400">
+              {formatCurrency(row.refundedAmount, currency)}
+            </div>
+            {row.refundedOrderCount > 0 && (
+              <div className="text-[10px] font-semibold text-slate-500">
+                ({row.refundedOrderCount})
+              </div>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: 'cancelledOrderCount',
+        name: byKey.get('cancelledOrderCount')!.label,
+        sortable: true,
+        right: true,
+        width: '110px',
+        selector: (row) => row.cancelledOrderCount,
+        cell: (row) =>
+          row.cancelledOrderCount > 0 ? (
+            <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-black text-rose-700">
+              {row.cancelledOrderCount}
+            </span>
+          ) : (
+            <span className="font-bold text-slate-500">0</span>
+          ),
+      },
+    ];
+  }, [tablesSpecs, tableById, tx, currency]);
+
+  // Table 3: Daily Summary Columns
+  const dailyColumns = useMemo<TableColumn<DailySummaryRow>[]>(() => {
+    const byKey = new Map(dailySpecs.map((s) => [s.key, s]));
+    return [
+      {
+        id: 'dateKey',
+        name: byKey.get('dateKey')!.label,
+        sortable: true,
+        width: '140px',
+        selector: (d) => d.dateKey,
+        cell: (d) => (
+          <span className="font-black text-slate-900 dark:text-slate-100 whitespace-nowrap">
+            📅 {formatDateKeyVi(d.dateKey)}
+          </span>
+        ),
+      },
+      {
+        id: 'ordersCount',
+        name: byKey.get('ordersCount')!.label,
+        sortable: true,
+        right: true,
+        width: '125px',
+        selector: (d) => d.ordersCount,
+        cell: (d) => (
+          <span className="font-black text-slate-800 dark:text-slate-200">
+            {d.ordersCount}
+          </span>
+        ),
+      },
+      {
+        id: 'paidOrdersCount',
+        name: byKey.get('paidOrdersCount')!.label,
+        sortable: true,
+        right: true,
+        width: '135px',
+        selector: (d) => d.paidOrdersCount,
+        cell: (d) => (
+          <span className="font-bold text-emerald-700 dark:text-emerald-400">
+            {d.paidOrdersCount}
+          </span>
+        ),
+      },
+      {
+        id: 'itemsSold',
+        name: byKey.get('itemsSold')!.label,
+        sortable: true,
+        right: true,
+        width: '155px',
+        selector: (d) => d.itemsSold,
+        cell: (d) => (
+          <span className="font-bold text-slate-700 dark:text-slate-300">
+            {d.itemsSold}
+          </span>
+        ),
+      },
+      {
+        id: 'cashRevenue',
+        name: byKey.get('cashRevenue')!.label,
+        sortable: true,
+        right: true,
+        width: '165px',
+        selector: (d) => d.cashRevenue,
+        cell: (d) => (
+          <span className="font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+            {formatCurrency(d.cashRevenue, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'vietqrRevenue',
+        name: byKey.get('vietqrRevenue')!.label,
+        sortable: true,
+        right: true,
+        width: '165px',
+        selector: (d) => d.vietqrRevenue,
+        cell: (d) => (
+          <span className="font-bold text-blue-700 dark:text-blue-400 whitespace-nowrap">
+            {formatCurrency(d.vietqrRevenue, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'collectedRevenue',
+        name: byKey.get('collectedRevenue')!.label,
+        sortable: true,
+        right: true,
+        width: '180px',
+        selector: (d) => d.collectedRevenue,
+        cell: (d) => (
+          <span className="font-black text-sm text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
+            {formatCurrency(d.collectedRevenue, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'unpaidAmount',
+        name: byKey.get('unpaidAmount')!.label,
+        sortable: true,
+        right: true,
+        width: '155px',
+        selector: (d) => d.unpaidAmount,
+        cell: (d) => (
+          <span className="font-bold text-amber-700 dark:text-amber-400 whitespace-nowrap">
+            {formatCurrency(d.unpaidAmount, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'refundedAmount',
+        name: byKey.get('refundedAmount')!.label,
+        sortable: true,
+        right: true,
+        width: '155px',
+        selector: (d) => d.refundedAmount,
+        cell: (d) => (
+          <span className="font-bold text-rose-700 dark:text-rose-400 whitespace-nowrap">
+            {formatCurrency(d.refundedAmount, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'actions',
+        name: tx('Thao tác', 'Actions'),
+        sortable: false,
+        right: true,
+        width: '155px',
+        cell: (d) => (
+          <button
+            type="button"
+            onClick={() => {
+              setSingleDate(d.dateKey);
+              setRangeMode('single_day');
+              setActiveViewTab('orders_list');
+            }}
+            className="rounded-xl bg-slate-100 px-3 py-1.5 text-[11px] font-black text-slate-800 hover:bg-emerald-600 hover:text-white transition whitespace-nowrap"
+          >
+            {tx('Xem chi tiết ngày →', 'View day details →')}
+          </button>
+        ),
+      },
+    ];
+  }, [dailySpecs, tx, currency]);
+
+  // Table 4: By Item Summary Columns
+  const itemsColumns = useMemo<TableColumn<ItemSummaryRow>[]>(() => {
+    const byKey = new Map(itemsSpecs.map((s) => [s.key, s]));
+    return [
+      {
+        id: 'itemName',
+        name: byKey.get('itemName')!.label,
+        sortable: true,
+        grow: 2,
+        minWidth: '220px',
+        selector: (item) => item.itemName,
+        cell: (item) => (
+          <span className="font-black text-slate-900 dark:text-slate-100">
+            {item.itemName}
+          </span>
+        ),
+      },
+      {
+        id: 'orderAppearances',
+        name: byKey.get('orderAppearances')!.label,
+        sortable: true,
+        right: true,
+        width: '140px',
+        selector: (item) => item.orderAppearances,
+        cell: (item) => (
+          <span className="font-bold text-slate-700 dark:text-slate-300">
+            {item.orderAppearances}
+          </span>
+        ),
+      },
+      {
+        id: 'quantitySold',
+        name: byKey.get('quantitySold')!.label,
+        sortable: true,
+        right: true,
+        width: '165px',
+        selector: (item) => item.quantitySold,
+        cell: (item) => (
+          <span className="rounded-lg bg-emerald-100 px-2.5 py-1 font-black text-emerald-900">
+            {item.quantitySold}
+          </span>
+        ),
+      },
+      {
+        id: 'paidQuantitySold',
+        name: byKey.get('paidQuantitySold')!.label,
+        sortable: true,
+        right: true,
+        width: '150px',
+        selector: (item) => item.paidQuantitySold,
+        cell: (item) => (
+          <span className="font-bold text-emerald-700 dark:text-emerald-400">
+            {item.paidQuantitySold}
+          </span>
+        ),
+      },
+      {
+        id: 'grossSales',
+        name: byKey.get('grossSales')!.label,
+        sortable: true,
+        right: true,
+        width: '210px',
+        selector: (item) => item.grossSales,
+        cell: (item) => (
+          <span className="font-black text-sm text-slate-900 dark:text-slate-100 whitespace-nowrap">
+            {formatCurrency(item.grossSales, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'paidGrossSales',
+        name: byKey.get('paidGrossSales')!.label,
+        sortable: true,
+        right: true,
+        width: '220px',
+        selector: (item) => item.paidGrossSales,
+        cell: (item) => (
+          <span className="font-bold text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
+            {formatCurrency(item.paidGrossSales, currency)}
+          </span>
+        ),
+      },
+      {
+        id: 'grossSharePercent',
+        name: byKey.get('grossSharePercent')!.label,
+        sortable: true,
+        right: true,
+        width: '160px',
+        selector: (item) => item.grossSharePercent,
+        cell: (item) => (
+          <span className="font-bold text-slate-600 dark:text-slate-300">
+            {item.grossSharePercent}%
+          </span>
+        ),
+      },
+    ];
+  }, [itemsSpecs, currency]);
 
   if (!activeShop) {
     return (
@@ -1009,6 +1319,18 @@ export default function OrdersReportAndExportPage() {
       </div>
     );
   }
+
+  const activeTabHumanLabel =
+    activeViewTab === 'orders_list'
+      ? tx('Danh sách đơn', 'Orders')
+      : activeViewTab === 'tables_summary'
+        ? tx('Theo bàn', 'By table')
+        : activeViewTab === 'daily_summary'
+          ? tx('Theo ngày', 'Daily summary')
+          : tx('Theo món', 'By item');
+
+  const exportRowCount = activeExportPayload?.exportedRowCount ?? 0;
+  const totalTabRowCount = activeExportPayload?.totalFilteredRowCount ?? 0;
 
   return (
     <div className="space-y-5 pb-12">
@@ -1029,10 +1351,7 @@ export default function OrdersReportAndExportPage() {
             </span>
           </div>
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-            {tx(
-              'Báo cáo',
-              'Reports'
-            )}
+            {tx('Báo cáo', 'Reports')}
           </h1>
           <p className="text-xs text-slate-300">
             {tx(
@@ -1043,49 +1362,119 @@ export default function OrdersReportAndExportPage() {
           </p>
         </div>
 
-        {/* Export File Buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleExportExcelReport}
-            disabled={filteredOrders.length === 0}
-            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 shadow-md hover:bg-emerald-400 disabled:opacity-45 transition"
-          >
-            <FileSpreadsheet className="h-4 w-4" />
-            <span>{tx('Xuất Excel (.xls)', 'Export Excel (.xls)')}</span>
-          </button>
+        {/* Export Controls for Current View */}
+        <div className="flex flex-col sm:items-end gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor="reports-export-scope-select">
+              {tx('Phạm vi xuất dữ liệu', 'Export scope')}
+            </label>
+            <select
+              id="reports-export-scope-select"
+              data-testid="reports-export-scope"
+              value={exportScope}
+              onChange={(e) =>
+                setExportScope(e.target.value as ReportExportScope)
+              }
+              disabled={loading || Boolean(exportingFormat)}
+              className="rounded-2xl border border-slate-700 bg-slate-800 px-3 py-2.5 text-xs font-bold text-slate-100 focus:border-emerald-400 focus:outline-none disabled:opacity-50"
+            >
+              <option value="all_filtered">
+                {tx(
+                  'Tất cả kết quả lọc ({count} dòng)',
+                  'All filtered results ({count} rows)',
+                  { count: totalTabRowCount }
+                )}
+              </option>
+              <option value="current_page">
+                {tx(
+                  'Trang hiện tại ({count} dòng)',
+                  'Current page ({count} rows)',
+                  { count: activePagedInfo.rows.length }
+                )}
+              </option>
+            </select>
 
-          <button
-            type="button"
-            onClick={handleExportOrdersCsv}
-            disabled={filteredOrders.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-extrabold text-white hover:bg-slate-700 disabled:opacity-45 transition"
-          >
-            <Download className="h-4 w-4 text-emerald-400" />
-            <span>{tx('CSV theo đơn', 'Orders CSV')}</span>
-          </button>
+            <button
+              type="button"
+              data-testid="reports-export-csv"
+              onClick={() => void handleExportCurrentView('csv')}
+              disabled={!canExport}
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-extrabold text-white hover:bg-slate-700 disabled:opacity-45 transition"
+            >
+              <Download className="h-4 w-4 text-emerald-400" />
+              <span>
+                {exportingFormat === 'csv'
+                  ? tx('Đang xuất CSV...', 'Exporting CSV...')
+                  : tx('Xuất CSV', 'Export CSV')}
+              </span>
+            </button>
 
-          <button
-            type="button"
-            onClick={handleExportLineItemsCsv}
-            disabled={filteredOrders.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-extrabold text-white hover:bg-slate-700 disabled:opacity-45 transition"
-          >
-            <Utensils className="h-4 w-4 text-amber-400" />
-            <span>{tx('CSV chi tiết món', 'Items CSV')}</span>
-          </button>
+            <button
+              type="button"
+              data-testid="reports-export-xlsx"
+              onClick={() => void handleExportCurrentView('xlsx')}
+              disabled={!canExport}
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 shadow-md hover:bg-emerald-400 disabled:opacity-45 transition"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>
+                {exportingFormat === 'xlsx'
+                  ? tx('Đang xuất Excel...', 'Exporting Excel...')
+                  : tx('Xuất Excel (.xlsx)', 'Export Excel (.xlsx)')}
+              </span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => fetchOrders(false)}
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2.5 text-slate-200 hover:bg-slate-700"
-            title={t('common.refresh')}
-            aria-label={t('common.refresh')}
+            <button
+              type="button"
+              onClick={() => void fetchOrders(false)}
+              disabled={loading || Boolean(exportingFormat)}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800 p-2.5 text-slate-200 hover:bg-slate-700 disabled:opacity-45"
+              title={t('common.refresh')}
+              aria-label={t('common.refresh')}
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`}
+              />
+            </button>
+          </div>
+
+          <p
+            data-testid="reports-export-summary"
+            className="text-[11px] font-semibold text-slate-300"
           >
-            <RefreshCw className="h-4 w-4" />
-          </button>
+            {tx(
+              'Xuất đúng bảng đang xem ({tab}) • {count}/{total} dòng theo thứ tự sắp xếp hiện tại',
+              'Exports current tab ({tab}) • {count}/{total} rows in current sort order',
+              {
+                tab: activeTabHumanLabel,
+                count: exportRowCount,
+                total: totalTabRowCount,
+              }
+            )}
+          </p>
         </div>
       </div>
+
+      {/* Export Error Banner */}
+      {exportError && (
+        <div
+          role="alert"
+          data-testid="reports-export-error"
+          className="flex items-center justify-between gap-3 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-800"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+            <span>{exportError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExportError(null)}
+            className="rounded-lg bg-rose-100 px-2.5 py-1 text-[11px] font-black text-rose-800 hover:bg-rose-200"
+          >
+            {tx('Đóng', 'Dismiss')}
+          </button>
+        </div>
+      )}
 
       {/* Date Range & Custom Filter Card */}
       <div className="rounded-3xl bg-white border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
@@ -1124,7 +1513,6 @@ export default function OrdersReportAndExportPage() {
             ))}
           </div>
 
-          {/* Single Date Picker OR Custom Date Range Inputs */}
           {rangeMode === 'single_day' && (
             <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 rounded-2xl px-3 py-1.5">
               <button
@@ -1204,15 +1592,7 @@ export default function OrdersReportAndExportPage() {
             <select
               value={statusFilter}
               onChange={(e) =>
-                setStatusFilter(
-                  e.target.value as
-                    | 'valid_only'
-                    | 'all'
-                    | 'completed'
-                    | 'preparing'
-                    | 'new'
-                    | 'cancelled'
-                )
+                setStatusFilter(e.target.value as ReportStatusFilter)
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
@@ -1220,7 +1600,10 @@ export default function OrdersReportAndExportPage() {
                 {tx('Trạng thái: Đơn hợp lệ', 'Status: Valid orders')}
               </option>
               <option value="all">
-                {tx('Trạng thái: Tất cả (cả đơn hủy)', 'Status: All (incl. cancelled)')}
+                {tx(
+                  'Trạng thái: Tất cả (cả đơn hủy)',
+                  'Status: All (incl. cancelled)'
+                )}
               </option>
               <option value="completed">
                 {tx('Trạng thái: Đã hoàn tất', 'Status: Completed')}
@@ -1242,7 +1625,7 @@ export default function OrdersReportAndExportPage() {
               value={paymentStatusFilter}
               onChange={(e) =>
                 setPaymentStatusFilter(
-                  e.target.value as 'all' | 'paid' | 'unpaid' | 'refunded'
+                  e.target.value as ReportPaymentStatusFilter
                 )
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
@@ -1267,7 +1650,7 @@ export default function OrdersReportAndExportPage() {
               value={paymentMethodFilter}
               onChange={(e) =>
                 setPaymentMethodFilter(
-                  e.target.value as 'all' | 'cash' | 'vietqr'
+                  e.target.value as ReportPaymentMethodFilter
                 )
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
@@ -1288,9 +1671,7 @@ export default function OrdersReportAndExportPage() {
             <select
               value={sourceFilter}
               onChange={(e) =>
-                setSourceFilter(
-                  e.target.value as 'all' | 'counter_pos' | 'qr_table'
-                )
+                setSourceFilter(e.target.value as ReportSourceFilter)
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
             >
@@ -1335,7 +1716,7 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600">
-              {tx('Tổng số đơn ({period})', 'Total orders ({period})', {
+              {tx('Đơn hợp lệ ({period})', 'Valid orders ({period})', {
                 period: effectiveDateBounds.label,
               })}
             </span>
@@ -1395,7 +1776,7 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-amber-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-amber-800">
-              {tx('Thu Tiền Mặt', 'Cash Revenue')}
+              {tx('Thu Tiền Mặt (Đã TT)', 'Paid Cash Revenue')}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
               <Banknote className="h-4 w-4" />
@@ -1414,7 +1795,7 @@ export default function OrdersReportAndExportPage() {
         <div className="rounded-3xl bg-white border border-blue-200 p-4 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-blue-800">
-              {tx('Chuyển Khoản (VietQR)', 'VietQR Transfer')}
+              {tx('Chuyển Khoản VietQR (Đã TT)', 'Paid VietQR Transfer')}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
               <QrCode className="h-4 w-4" />
@@ -1431,201 +1812,18 @@ export default function OrdersReportAndExportPage() {
         </div>
       </div>
 
-      {/* Per-Table Summary Section (Always available & also accessible via By Table tab) */}
-      <section
-        data-testid="reports-per-table-summary"
-        className="rounded-3xl bg-white border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3.5"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
-              <Utensils className="h-4 w-4 text-emerald-600" />
-              <span>
-                {tx(
-                  'Thống kê doanh thu & đơn hàng theo bàn / vị trí',
-                  'Per-Table Revenue & Order Summary'
-                )}
-              </span>
-            </h2>
-            <p className="text-xs text-slate-500">
-              {tx(
-                'Nhóm theo định danh bàn cố định (table_id) kể cả sau khi đổi tên hoặc lưu trữ bàn. Tách biệt doanh thu đã thu tiền với đơn chưa thu, hoàn tiền và đơn hủy.',
-                'Grouped by stable table_id across renames and archives. Separates paid collected revenue from unpaid, refunded, and cancelled orders.'
-              )}
-            </p>
-          </div>
-          <span className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-800 self-start sm:self-auto">
-            {tx('{count} nhóm bàn / vị trí', '{count} table groups', {
-              count: tableSummaryList.length,
-            })}
-          </span>
-        </div>
-
-        {loading ? (
-          <div className="rounded-2xl border border-slate-200 p-8 text-center space-y-2.5">
-            <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-            <p className="text-xs font-bold text-slate-700">
-              {tx(
-                'Đang tải dữ liệu thống kê theo bàn...',
-                'Loading per-table report data...'
-              )}
-            </p>
-          </div>
-        ) : tableSummaryList.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs font-semibold text-slate-500">
-            {tx(
-              'Chưa có đơn hàng theo bàn nào khớp với bộ lọc hiện tại.',
-              'No table orders match the current filters.'
-            )}
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                  <th className="py-3 px-3.5">
-                    {tx('Bàn / Vị Trí', 'Table / Location')}
-                  </th>
-                  <th className="py-3 px-3 text-center">
-                    {tx('Phân Loại', 'Type')}
-                  </th>
-                  <th className="py-3 px-3 text-center">
-                    {tx('Tổng Đơn', 'Orders')}
-                  </th>
-                  <th className="py-3 px-3 text-right">
-                    {tx('Thực Thu (Đã TT)', 'Collected (Paid)')}
-                  </th>
-                  <th className="py-3 px-3 text-right">
-                    {tx('Chưa Thu Tiền', 'Unpaid')}
-                  </th>
-                  <th className="py-3 px-3 text-right">
-                    {tx('Hoàn Tiền', 'Refunded')}
-                  </th>
-                  <th className="py-3 px-3 text-center">
-                    {tx('Đơn Hủy', 'Cancelled')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {tableSummaryList.map((row) => {
-                  const managed = row.table_id
-                    ? tableById.get(row.table_id)
-                    : undefined;
-                  return (
-                    <tr
-                      key={row.key}
-                      data-testid={`report-table-summary-row-${row.key}`}
-                      className="hover:bg-slate-50 transition"
-                    >
-                      <td className="py-3 px-3.5 font-black text-slate-900">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span>{row.table_label}</span>
-                          {managed?.table_code && (
-                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-600">
-                              #{managed.table_code}
-                            </span>
-                          )}
-                          {managed?.is_archived && (
-                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700">
-                              {tx('Đã lưu trữ', 'Archived')}
-                            </span>
-                          )}
-                          {managed && !managed.is_archived && !managed.is_active && (
-                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                              {tx('Tạm ngưng', 'Inactive')}
-                            </span>
-                          )}
-                        </div>
-                        {managed?.section && (
-                          <div className="text-[11px] font-medium text-slate-500">
-                            {managed.section}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span
-                          className={`inline-flex rounded-lg px-2 py-0.5 text-[10px] font-black ${
-                            row.kind === 'managed'
-                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                              : row.kind === 'takeaway'
-                                ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
-                                : 'bg-slate-100 text-slate-700 border border-slate-200'
-                          }`}
-                        >
-                          {row.kind === 'managed'
-                            ? tx('Bàn quản lý', 'Managed')
-                            : row.kind === 'takeaway'
-                              ? tx('Mang về', 'Takeaway')
-                              : tx('Lịch sử / Khác', 'Legacy')}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 text-center font-black text-slate-800">
-                        {tx('{count} đơn', '{count} orders', {
-                          count: row.orderCount,
-                        })}
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        <div className="font-black text-sm text-emerald-700">
-                          {formatCurrency(
-                            row.collectedRevenue,
-                            activeShop.currency
-                          )}
-                        </div>
-                        <div className="text-[10px] font-semibold text-slate-500">
-                          {tx('{count} đơn đã thu', '{count} paid', {
-                            count: row.paidOrderCount,
-                          })}
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        <div className="font-bold text-amber-700">
-                          {formatCurrency(
-                            row.unpaidAmount,
-                            activeShop.currency
-                          )}
-                        </div>
-                        <div className="text-[10px] font-semibold text-slate-500">
-                          {tx('{count} đơn chưa thu', '{count} unpaid', {
-                            count: row.unpaidOrderCount,
-                          })}
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        <div className="font-bold text-rose-700">
-                          {formatCurrency(
-                            row.refundedAmount,
-                            activeShop.currency
-                          )}
-                        </div>
-                        <div className="text-[10px] font-semibold text-slate-500">
-                          {tx('{count} đơn hoàn', '{count} refunded', {
-                            count: row.refundedOrderCount,
-                          })}
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-center font-bold text-slate-600">
-                        {row.cancelledOrderCount > 0 ? (
-                          <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-black text-rose-700">
-                            {row.cancelledOrderCount}
-                          </span>
-                        ) : (
-                          '0'
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
       {/* View Switcher Tabs */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+        <div
+          role="tablist"
+          aria-label={tx('Chọn chế độ xem báo cáo', 'Report view tabs')}
+          className="flex items-center gap-2 overflow-x-auto no-scrollbar"
+        >
           <button
             type="button"
+            role="tab"
+            aria-selected={activeViewTab === 'orders_list'}
+            data-testid="reports-tab-orders"
             onClick={() => setActiveViewTab('orders_list')}
             className={`rounded-2xl px-4 py-2.5 text-xs font-black transition ${
               activeViewTab === 'orders_list'
@@ -1639,6 +1837,9 @@ export default function OrdersReportAndExportPage() {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeViewTab === 'tables_summary'}
+            data-testid="reports-tab-tables"
             onClick={() => setActiveViewTab('tables_summary')}
             className={`rounded-2xl px-4 py-2.5 text-xs font-black transition ${
               activeViewTab === 'tables_summary'
@@ -1652,6 +1853,9 @@ export default function OrdersReportAndExportPage() {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeViewTab === 'daily_summary'}
+            data-testid="reports-tab-daily"
             onClick={() => setActiveViewTab('daily_summary')}
             className={`rounded-2xl px-4 py-2.5 text-xs font-black transition ${
               activeViewTab === 'daily_summary'
@@ -1667,6 +1871,9 @@ export default function OrdersReportAndExportPage() {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeViewTab === 'items_summary'}
+            data-testid="reports-tab-items"
             onClick={() => setActiveViewTab('items_summary')}
             className={`rounded-2xl px-4 py-2.5 text-xs font-black transition ${
               activeViewTab === 'items_summary'
@@ -1681,8 +1888,7 @@ export default function OrdersReportAndExportPage() {
         </div>
 
         <span className="text-xs font-bold text-slate-500">
-          {tx('Hiển thị', 'Showing')}{' '}
-          <strong>{filteredOrders.length}</strong>{' '}
+          {tx('Hiển thị', 'Showing')} <strong>{filteredOrders.length}</strong>{' '}
           {tx('đơn trong kỳ', 'orders in')}{' '}
           <strong>{effectiveDateBounds.label}</strong>
         </span>
@@ -1690,465 +1896,251 @@ export default function OrdersReportAndExportPage() {
 
       {/* TAB 1: FULL ORDERS LIST TABLE */}
       {activeViewTab === 'orders_list' && (
-        <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
-          {loading ? (
-            <div
-              role="status"
-              data-testid="reports-loading-state"
-              className="p-12 text-center space-y-3"
-            >
-              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-              <p className="text-sm font-bold text-slate-800">
-                {tx('Đang tải dữ liệu đơn hàng...', 'Loading orders data...')}
-              </p>
-              <p className="text-xs text-slate-500">
-                {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
-              </p>
-            </div>
-          ) : filteredOrders.length === 0 ? (
-            <div className="p-12 text-center space-y-2">
-              <p className="text-sm font-bold text-slate-800">
+        <section
+          data-testid="reports-orders-table-section"
+          className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden"
+        >
+          <AppDataTable<ShopOrder>
+            keyField="id"
+            ariaLabel={tx('Bảng danh sách đơn hàng', 'Orders report table')}
+            columns={ordersColumns}
+            data={pagedOrders.rows}
+            progressPending={loading}
+            sortServer
+            defaultSortFieldId={sortByTab.orders_list.columnId}
+            defaultSortAsc={sortByTab.orders_list.direction === 'asc'}
+            onSort={(col, dir) => handleTabSort('orders_list', col, dir)}
+            pagination
+            paginationServer
+            paginationTotalRows={sortedOrders.length}
+            paginationDefaultPage={pagedOrders.page}
+            paginationPerPage={pagedOrders.rowsPerPage}
+            paginationRowsPerPageOptions={[10, 20, 50, 100]}
+            paginationResetDefaultPage={paginationResetToggle}
+            onChangePage={(page) => handleTabPageChange('orders_list', page)}
+            onChangeRowsPerPage={(perPage, page) =>
+              handleTabRowsPerPageChange('orders_list', perPage, page)
+            }
+            noDataComponent={
+              <div className="p-12 text-center space-y-2">
+                <p className="text-sm font-bold text-slate-800">
+                  {tx(
+                    'Không có đơn hàng nào khớp với bộ lọc đã chọn',
+                    'No orders match the selected filters'
+                  )}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {tx(
+                    'Hãy thử chọn "7 ngày qua", "Tháng này" hoặc "Tất cả lịch sử" để xem toàn bộ đơn.',
+                    'Try selecting "Last 7 days", "This month", or "All time" to view all orders.'
+                  )}
+                </p>
+              </div>
+            }
+          />
+          {!loading && sortedOrders.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-emerald-50/70 px-4 py-3 text-xs font-black text-slate-900">
+              <span>
                 {tx(
-                  'Không có đơn hàng nào khớp với bộ lọc đã chọn',
-                  'No orders match the selected filters'
+                  'Tổng cộng ({count} đơn hợp lệ • {items} món):',
+                  'Total ({count} valid orders • {items} items):',
+                  {
+                    count: kpiStats.validCount,
+                    items: kpiStats.totalItemsSold,
+                  }
                 )}
-              </p>
-              <p className="text-xs text-slate-500">
-                {tx(
-                  'Hãy thử chọn "7 ngày qua", "Tháng này" hoặc "Tất cả lịch sử" để xem toàn bộ đơn.',
-                  'Try selecting "Last 7 days", "This month", or "All time" to view all orders.'
-                )}
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-3 text-center">
-                      {tx('STT', 'No.')}
-                    </th>
-                    <th className="py-3.5 px-3">{tx('Mã Đơn', 'Code')}</th>
-                    <th className="py-3.5 px-3">
-                      {tx('Ngày & Giờ (VN)', 'Date & Time (VN)')}
-                    </th>
-                    <th className="py-3.5 px-3">
-                      {tx('Bàn / Vị Trí', 'Table')}
-                    </th>
-                    <th className="py-3.5 px-3">{tx('Nguồn', 'Source')}</th>
-                    <th className="py-3.5 px-3 min-w-[260px]">
-                      {tx('Chi Tiết Món & Option', 'Ordered Items & Options')}
-                    </th>
-                    <th className="py-3.5 px-3 text-center">
-                      {tx('SL Món', 'Qty')}
-                    </th>
-                    <th className="py-3.5 px-3 text-right">
-                      {tx('Tổng Tiền', 'Total')}
-                    </th>
-                    <th className="py-3.5 px-3">
-                      {tx('Thanh Toán', 'Payment')}
-                    </th>
-                    <th className="py-3.5 px-3">{tx('Trạng Thái', 'Status')}</th>
-                    <th className="py-3.5 px-3 text-right">
-                      {tx('Thao Tác', 'Actions')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {filteredOrders.map((ord, idx) => {
-                    const totalQty = (ord.items || []).reduce(
-                      (s, it) => s + Math.max(1, Number(it.quantity || 1)),
-                      0
-                    );
-                    const isCancelled = ord.status === 'cancelled';
-                    const managedTable = ord.table_id
-                      ? tableById.get(ord.table_id)
-                      : undefined;
-
-                    return (
-                      <tr
-                        key={ord.id}
-                        className={`hover:bg-slate-50/90 transition ${
-                          isCancelled ? 'opacity-60 bg-slate-50' : ''
-                        }`}
-                      >
-                        <td className="py-3 px-3 text-center font-bold text-slate-400">
-                          {idx + 1}
-                        </td>
-                        <td className="py-3 px-3 font-black text-slate-900 whitespace-nowrap">
-                          #{ord.order_code}
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <div className="font-bold text-slate-800">
-                            {formatDateKeyVi(getVnDateKey(ord.created_at))}
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {new Date(ord.created_at).toLocaleTimeString(
-                              'vi-VN',
-                              {
-                                timeZone: 'Asia/Ho_Chi_Minh',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                              }
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <div className="flex flex-col gap-0.5">
-                            <span className="inline-block w-fit rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-black text-amber-400">
-                              {ord.table_label}
-                            </span>
-                            {managedTable &&
-                              managedTable.name !== ord.table_label && (
-                                <span className="text-[10px] font-bold text-emerald-700">
-                                  {tx('Hiện tại:', 'Current:')}{' '}
-                                  {managedTable.name}
-                                </span>
-                              )}
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[11px] font-bold ${
-                              ord.source === 'counter_pos'
-                                ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
-                                : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                            }`}
-                          >
-                            {ord.source === 'counter_pos'
-                              ? tx('🖥️ Tại quầy POS', '🖥️ Counter POS')
-                              : tx('📱 Khách QR', '📱 Table QR')}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3">
-                          <div className="space-y-1">
-                            {(ord.items || []).map((it, i) => {
-                              const optStr = formatChoicesText(
-                                it.selected_choices
-                              );
-                              return (
-                                <div
-                                  key={i}
-                                  className="text-xs text-slate-800 leading-snug"
-                                >
-                                  <strong className="font-black text-emerald-700">
-                                    {it.quantity}x
-                                  </strong>{' '}
-                                  <span className="font-bold">{it.name_vi}</span>
-                                  {optStr && (
-                                    <span className="ml-1 text-[11px] font-semibold text-amber-700">
-                                      ({optStr})
-                                    </span>
-                                  )}
-                                  {it.custom_note && (
-                                    <span className="ml-1 text-[11px] italic text-slate-500">
-                                      • {it.custom_note}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            {ord.customer_note && (
-                              <div className="text-[11px] font-bold text-amber-800 bg-amber-50 rounded px-1.5 py-0.5 inline-block">
-                                💬 {ord.customer_note}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 text-center font-black text-slate-800">
-                          {totalQty}
-                        </td>
-                        <td className="py-3 px-3 text-right font-black text-emerald-700 whitespace-nowrap text-sm">
-                          {formatCurrency(ord.total_amount, activeShop.currency)}
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <div className="flex flex-col gap-0.5">
-                            <span
-                              className={`inline-flex w-fit items-center rounded-md px-2 py-0.5 text-[10px] font-black ${
-                                ord.payment_status === 'paid'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}
-                            >
-                              {ord.payment_status === 'paid'
-                                ? tx('✓ Đã thu tiền', '✓ Paid')
-                                : tx('⏳ Chưa thu tiền', '⏳ Unpaid')}
-                            </span>
-                            <span className="text-[11px] font-semibold text-slate-500">
-                              {ord.payment_method === 'vietqr'
-                                ? tx('CK VietQR', 'VietQR')
-                                : tx('Tiền mặt', 'Cash')}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
-                              ord.status === 'completed'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : ord.status === 'preparing'
-                                  ? 'bg-blue-100 text-blue-800'
-                                  : ord.status === 'new'
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-rose-100 text-rose-700'
-                            }`}
-                          >
-                            {ord.status === 'completed' ? (
-                              <>
-                                <CheckCircle2 className="h-3 w-3" />
-                                <span>{tx('Hoàn tất', 'Completed')}</span>
-                              </>
-                            ) : ord.status === 'preparing' ? (
-                              <>
-                                <ChefHat className="h-3 w-3" />
-                                <span>{tx('Đang làm', 'Preparing')}</span>
-                              </>
-                            ) : ord.status === 'new' ? (
-                              <>
-                                <Clock className="h-3 w-3" />
-                                <span>{tx('Chờ nhận', 'New')}</span>
-                              </>
-                            ) : (
-                              <>
-                                <XCircle className="h-3 w-3" />
-                                <span>{tx('Đã hủy', 'Cancelled')}</span>
-                              </>
-                            )}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => setPrintingOrder(ord)}
-                            className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-800 hover:bg-slate-100"
-                          >
-                            <Printer className="h-3.5 w-3.5 text-emerald-600" />
-                            <span>{tx('In Bill', 'Print Bill')}</span>
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-slate-300 bg-emerald-50/80 text-xs font-black text-slate-900">
-                    <td colSpan={6} className="py-3.5 px-3 text-right uppercase">
-                      {tx(
-                        'Tổng cộng ({count} đơn hợp lệ):',
-                        'Total ({count} valid orders):',
-                        { count: kpiStats.validCount }
-                      )}
-                    </td>
-                    <td className="py-3.5 px-3 text-center text-sm">
-                      {tx('{count} món', '{count} items', {
-                        count: kpiStats.totalItemsSold,
-                      })}
-                    </td>
-                    <td className="py-3.5 px-3 text-right text-base text-emerald-700">
-                      {formatCurrency(kpiStats.totalRevenue, activeShop.currency)}
-                    </td>
-                    <td colSpan={3} className="py-3.5 px-3 text-[11px] text-slate-600">
-                      {tx('TM:', 'Cash:')}{' '}
-                      {formatCurrency(kpiStats.cashRevenue, activeShop.currency)} • QR:{' '}
-                      {formatCurrency(kpiStats.vietqrRevenue, activeShop.currency)}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
+              </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-emerald-700 text-sm">
+                  {tx('Thực thu (Đã TT):', 'Collected (Paid):')}{' '}
+                  {formatCurrency(kpiStats.collectedRevenue, currency)}
+                </span>
+                <span className="text-slate-600 font-bold">
+                  {tx('TM:', 'Cash:')}{' '}
+                  {formatCurrency(kpiStats.cashRevenue, currency)} • QR:{' '}
+                  {formatCurrency(kpiStats.vietqrRevenue, currency)}
+                </span>
+              </div>
             </div>
           )}
-        </div>
+        </section>
       )}
 
-      {/* TAB 2: DAILY BREAKDOWN TABLE */}
+      {/* TAB 2: BY TABLE SUMMARY TABLE */}
+      {activeViewTab === 'tables_summary' && (
+        <section
+          data-testid="reports-per-table-summary"
+          className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 px-5 py-4">
+            <div>
+              <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
+                <Utensils className="h-4 w-4 text-emerald-600" />
+                <span>
+                  {tx(
+                    'Thống kê doanh thu & đơn hàng theo bàn / vị trí',
+                    'Per-Table Revenue & Order Summary'
+                  )}
+                </span>
+              </h2>
+              <p className="text-xs text-slate-500">
+                {tx(
+                  'Nhóm theo định danh bàn cố định (table_id) kể cả sau khi đổi tên hoặc lưu trữ bàn. Tách biệt doanh thu đã thu tiền với đơn chưa thu, hoàn tiền và đơn hủy.',
+                  'Grouped by stable table_id across renames and archives. Separates paid collected revenue from unpaid, refunded, and cancelled orders.'
+                )}
+              </p>
+            </div>
+            <span className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-800 self-start sm:self-auto">
+              {tx('{count} nhóm bàn / vị trí', '{count} table groups', {
+                count: tableSummaryList.length,
+              })}
+            </span>
+          </div>
+
+          <AppDataTable<TableOrderStats>
+            keyField="key"
+            ariaLabel={tx('Bảng thống kê theo bàn', 'By-table report table')}
+            columns={tablesColumns}
+            data={pagedTables.rows}
+            progressPending={loading}
+            sortServer
+            defaultSortFieldId={sortByTab.tables_summary.columnId}
+            defaultSortAsc={sortByTab.tables_summary.direction === 'asc'}
+            onSort={(col, dir) => handleTabSort('tables_summary', col, dir)}
+            pagination
+            paginationServer
+            paginationTotalRows={sortedTables.length}
+            paginationDefaultPage={pagedTables.page}
+            paginationPerPage={pagedTables.rowsPerPage}
+            paginationRowsPerPageOptions={[10, 20, 50, 100]}
+            paginationResetDefaultPage={paginationResetToggle}
+            onChangePage={(page) => handleTabPageChange('tables_summary', page)}
+            onChangeRowsPerPage={(perPage, page) =>
+              handleTabRowsPerPageChange('tables_summary', perPage, page)
+            }
+            noDataComponent={
+              <div className="p-12 text-center text-xs font-semibold text-slate-500">
+                {tx(
+                  'Chưa có đơn hàng theo bàn nào khớp với bộ lọc hiện tại.',
+                  'No table orders match the current filters.'
+                )}
+              </div>
+            }
+          />
+        </section>
+      )}
+
+      {/* TAB 3: DAILY BREAKDOWN TABLE */}
       {activeViewTab === 'daily_summary' && (
-        <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
-          {loading ? (
-            <div
-              role="status"
-              data-testid="reports-daily-loading-state"
-              className="p-12 text-center space-y-3"
-            >
-              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-              <p className="text-sm font-bold text-slate-800">
-                {tx(
-                  'Đang tải dữ liệu doanh thu theo ngày...',
-                  'Loading daily revenue data...'
-                )}
-              </p>
-            </div>
-          ) : dailySummaryList.length === 0 ? (
-            <div className="p-12 text-center text-xs font-semibold text-slate-500">
+        <section
+          data-testid="reports-daily-table-section"
+          className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden"
+        >
+          <div className="border-b border-slate-100 px-5 py-3.5">
+            <p className="text-xs font-semibold text-slate-600">
               {tx(
-                'Không có dữ liệu doanh thu ngày trong khoảng thời gian này.',
-                'No daily revenue data in this period.'
+                'Doanh thu thực thu ngày (Tiền mặt, VietQR, Thực thu) chỉ cộng các đơn hợp lệ ĐÃ THU TIỀN, đồng bộ với thẻ KPI tổng quan.',
+                'Daily collected revenue (Cash, VietQR, Collected) sums only non-cancelled PAID orders, matching the top KPI cards.'
               )}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-4">{tx('Ngày (VN)', 'Date (VN)')}</th>
-                    <th className="py-3.5 px-4 text-center">
-                      {tx('Tổng Số Đơn', 'Total Orders')}
-                    </th>
-                    <th className="py-3.5 px-4 text-center">
-                      {tx('Số Món Bán Ra', 'Items Sold')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Thu Tiền Mặt', 'Cash Revenue')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Thu VietQR', 'VietQR Revenue')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Tổng Doanh Thu Ngày', 'Daily Revenue')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Thao Tác', 'Actions')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {dailySummaryList.map((d) => (
-                    <tr key={d.dateKey} className="hover:bg-slate-50">
-                      <td className="py-3.5 px-4 font-black text-slate-900">
-                        📅 {formatDateKeyVi(d.dateKey)}
-                      </td>
-                      <td className="py-3.5 px-4 text-center font-black text-slate-800">
-                        {tx('{count} đơn', '{count} orders', {
-                          count: d.ordersCount,
-                        })}
-                      </td>
-                      <td className="py-3.5 px-4 text-center font-bold text-slate-700">
-                        {tx('{count} món', '{count} items', {
-                          count: d.itemsSold,
-                        })}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-bold text-slate-700">
-                        {formatCurrency(d.cashRevenue, activeShop.currency)}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-bold text-blue-700">
-                        {formatCurrency(d.vietqrRevenue, activeShop.currency)}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-black text-sm text-emerald-700">
-                        {formatCurrency(d.totalRevenue, activeShop.currency)}
-                      </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSingleDate(d.dateKey);
-                            setRangeMode('single_day');
-                            setActiveViewTab('orders_list');
-                          }}
-                          className="rounded-xl bg-slate-100 px-3 py-1.5 text-[11px] font-black text-slate-800 hover:bg-emerald-600 hover:text-white transition"
-                        >
-                          {tx('Xem chi tiết ngày →', 'View day details →')}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+            </p>
+          </div>
+          <AppDataTable<DailySummaryRow>
+            keyField="dateKey"
+            ariaLabel={tx(
+              'Bảng thống kê doanh thu theo ngày',
+              'Daily summary report table'
+            )}
+            columns={dailyColumns}
+            data={pagedDaily.rows}
+            progressPending={loading}
+            sortServer
+            defaultSortFieldId={sortByTab.daily_summary.columnId}
+            defaultSortAsc={sortByTab.daily_summary.direction === 'asc'}
+            onSort={(col, dir) => handleTabSort('daily_summary', col, dir)}
+            pagination
+            paginationServer
+            paginationTotalRows={sortedDaily.length}
+            paginationDefaultPage={pagedDaily.page}
+            paginationPerPage={pagedDaily.rowsPerPage}
+            paginationRowsPerPageOptions={[10, 20, 50, 100]}
+            paginationResetDefaultPage={paginationResetToggle}
+            onChangePage={(page) => handleTabPageChange('daily_summary', page)}
+            onChangeRowsPerPage={(perPage, page) =>
+              handleTabRowsPerPageChange('daily_summary', perPage, page)
+            }
+            noDataComponent={
+              <div className="p-12 text-center text-xs font-semibold text-slate-500">
+                {tx(
+                  'Không có dữ liệu doanh thu ngày trong khoảng thời gian này.',
+                  'No daily revenue data in this period.'
+                )}
+              </div>
+            }
+          />
+        </section>
       )}
 
-      {/* TAB 3: SOLD ITEMS BREAKDOWN TABLE */}
+      {/* TAB 4: SOLD ITEMS BREAKDOWN TABLE */}
       {activeViewTab === 'items_summary' && (
-        <div className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden">
-          {loading ? (
-            <div
-              role="status"
-              data-testid="reports-items-loading-state"
-              className="p-12 text-center space-y-3"
-            >
-              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-              <p className="text-sm font-bold text-slate-800">
-                {tx(
-                  'Đang tải dữ liệu thống kê theo món...',
-                  'Loading item breakdown data...'
-                )}
-              </p>
-            </div>
-          ) : itemSummaryList.length === 0 ? (
-            <div className="p-12 text-center text-xs font-semibold text-slate-500">
+        <section
+          data-testid="reports-items-table-section"
+          className="rounded-3xl bg-white border border-slate-200 shadow-2xs overflow-hidden"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 px-5 py-3.5">
+            <p className="text-xs font-semibold text-slate-600">
               {tx(
-                'Không có món ăn nào được bán trong khoảng thời gian này.',
-                'No items sold in this period.'
+                'Doanh số món gộp tính theo giá món + topping/option trước chiết khấu toàn đơn. Doanh thu thực thu toàn quán (đã trừ giảm giá đơn & chỉ tính đơn đã thu):',
+                'Gross item sales sum canonical item + option prices before order-level discounts. Net collected order revenue (paid orders after order discounts):'
+              )}{' '}
+              <strong className="text-emerald-700">
+                {formatCurrency(kpiStats.collectedRevenue, currency)}
+              </strong>
+              {kpiStats.totalDiscount > 0 && (
+                <span className="ml-1.5 text-rose-600">
+                  • {tx('Giảm giá đơn:', 'Order discounts:')}{' '}
+                  {formatCurrency(kpiStats.totalDiscount, currency)}
+                </span>
               )}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-900 text-[11px] font-black uppercase tracking-wider text-slate-200">
-                    <th className="py-3.5 px-4 text-center">
-                      {tx('Hạng', 'Rank')}
-                    </th>
-                    <th className="py-3.5 px-4">
-                      {tx('Tên Món Ăn / Đồ Uống', 'Item Name')}
-                    </th>
-                    <th className="py-3.5 px-4 text-center">
-                      {tx('Số Đơn Có Gọi', 'Orders')}
-                    </th>
-                    <th className="py-3.5 px-4 text-center">
-                      {tx('Tổng SL Bán Ra', 'Qty Sold')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Doanh Thu Món', 'Item Revenue')}
-                    </th>
-                    <th className="py-3.5 px-4 text-right">
-                      {tx('Tỷ Trọng Doanh Thu', 'Revenue Share')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {itemSummaryList.map((item, idx) => {
-                    const pct =
-                      kpiStats.totalRevenue > 0
-                        ? Math.round(
-                            (item.revenue / kpiStats.totalRevenue) * 100
-                          )
-                        : 0;
-                    return (
-                      <tr key={item.itemName} className="hover:bg-slate-50">
-                        <td className="py-3.5 px-4 text-center font-black text-slate-500">
-                          #{idx + 1}
-                        </td>
-                        <td className="py-3.5 px-4 font-black text-slate-900">
-                          {item.itemName}
-                        </td>
-                        <td className="py-3.5 px-4 text-center font-bold text-slate-600">
-                          {tx('{count} đơn', '{count} orders', {
-                            count: item.orderAppearances,
-                          })}
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <span className="rounded-lg bg-emerald-100 px-2.5 py-1 font-black text-emerald-900">
-                            {tx('{count} phần', '{count} sold', {
-                              count: item.quantitySold,
-                            })}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-black text-sm text-emerald-700">
-                          {formatCurrency(item.revenue, activeShop.currency)}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-bold text-slate-600">
-                          {pct}%
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+            </p>
+            <span className="text-xs font-bold text-slate-700 shrink-0">
+              {tx('Tổng doanh số món gộp:', 'Total gross item sales:')}{' '}
+              <strong>
+                {formatCurrency(kpiStats.grossItemSales, currency)}
+              </strong>
+            </span>
+          </div>
+
+          <AppDataTable<ItemSummaryRow>
+            keyField="itemKey"
+            ariaLabel={tx('Bảng thống kê theo món', 'By-item report table')}
+            columns={itemsColumns}
+            data={pagedItems.rows}
+            progressPending={loading}
+            sortServer
+            defaultSortFieldId={sortByTab.items_summary.columnId}
+            defaultSortAsc={sortByTab.items_summary.direction === 'asc'}
+            onSort={(col, dir) => handleTabSort('items_summary', col, dir)}
+            pagination
+            paginationServer
+            paginationTotalRows={sortedItems.length}
+            paginationDefaultPage={pagedItems.page}
+            paginationPerPage={pagedItems.rowsPerPage}
+            paginationRowsPerPageOptions={[10, 20, 50, 100]}
+            paginationResetDefaultPage={paginationResetToggle}
+            onChangePage={(page) => handleTabPageChange('items_summary', page)}
+            onChangeRowsPerPage={(perPage, page) =>
+              handleTabRowsPerPageChange('items_summary', perPage, page)
+            }
+            noDataComponent={
+              <div className="p-12 text-center text-xs font-semibold text-slate-500">
+                {tx(
+                  'Không có món ăn nào được bán trong khoảng thời gian này.',
+                  'No items sold in this period.'
+                )}
+              </div>
+            }
+          />
+        </section>
       )}
 
       {/* Thermal Receipt Print Modal */}

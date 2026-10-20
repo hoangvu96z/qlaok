@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Check,
   Crown,
@@ -17,6 +17,10 @@ import { getPlanCopy as localizedPlanCopy } from '@/lib/plan-copy';
 import { PaymentTransaction, PlanTier } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  AppDataTable,
+  type TableColumn,
+} from '@/components/ui/AppDataTable';
 
 export default function DashboardBillingPage() {
   const { profile, refreshDashboard } = useDashboard();
@@ -129,6 +133,88 @@ export default function DashboardBillingPage() {
     );
     setTimeout(() => setToast(''), 3000);
   };
+
+  const billingColumns = useMemo<TableColumn<PaymentTransaction>[]>(
+    () => [
+      {
+        id: 'order_code',
+        name: tx('Mã giao dịch', 'Order code'),
+        sortable: true,
+        selector: (item) => item.order_code,
+        minWidth: '150px',
+        cell: (item) => (
+          <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+            {item.order_code}
+          </span>
+        ),
+      },
+      {
+        id: 'target_plan',
+        name: tx('Gói nâng cấp', 'Target plan'),
+        sortable: true,
+        selector: (item) => item.target_plan,
+        minWidth: '130px',
+        cell: (item) => (
+          <span className="uppercase font-bold text-slate-700 dark:text-slate-200">
+            {item.target_plan}
+          </span>
+        ),
+      },
+      {
+        id: 'amount',
+        name: tx('Số tiền', 'Amount'),
+        sortable: true,
+        right: true,
+        selector: (item) => item.amount,
+        sortFunction: (a, b) => Number(a.amount || 0) - Number(b.amount || 0),
+        minWidth: '130px',
+        cell: (item) => (
+          <span className="font-bold text-slate-900 dark:text-slate-100">
+            {formatCurrency(item.amount)}
+          </span>
+        ),
+      },
+      {
+        id: 'status',
+        name: tx('Trạng thái', 'Status'),
+        sortable: true,
+        selector: (item) => item.status,
+        minWidth: '140px',
+        cell: (item) => (
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
+              item.status === 'completed'
+                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
+                : item.status === 'pending'
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+                  : 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300'
+            }`}
+          >
+            {item.status === 'completed'
+              ? tx('Thành công', 'Completed')
+              : item.status === 'pending'
+                ? tx('Đang chờ', 'Pending')
+                : item.status === 'failed'
+                  ? tx('Thất bại', 'Failed')
+                  : item.status}
+          </span>
+        ),
+      },
+      {
+        id: 'bank_ref_id',
+        name: tx('Mã tham chiếu NH', 'Bank reference'),
+        sortable: true,
+        selector: (item) => item.bank_ref_id || '',
+        minWidth: '160px',
+        cell: (item) => (
+          <span className="font-mono text-slate-500 dark:text-slate-400">
+            {item.bank_ref_id || '—'}
+          </span>
+        ),
+      },
+    ],
+    [tx]
+  );
 
   return (
     <div className="space-y-6">
@@ -357,84 +443,43 @@ export default function DashboardBillingPage() {
         <h3 className="text-sm font-extrabold text-slate-900">
           {tx('Lịch sử giao dịch nâng cấp gói', 'Plan Upgrade History')}
         </h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-400">
-                <th className="py-2 font-bold">
-                  {tx('Mã giao dịch', 'Order code')}
-                </th>
-                <th className="py-2 font-bold">
-                  {tx('Gói nâng cấp', 'Target plan')}
-                </th>
-                <th className="py-2 font-bold">{tx('Số tiền', 'Amount')}</th>
-                <th className="py-2 font-bold">{tx('Trạng thái', 'Status')}</th>
-                <th className="py-2 font-bold">
-                  {tx('Mã tham chiếu NH', 'Bank reference')}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loadingBilling ? (
-                <tr data-testid="billing-loading-state">
-                  <td colSpan={5} className="py-8 text-center">
-                    <div className="flex flex-col items-center justify-center gap-2">
-                      <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
-                      <span className="text-xs font-bold text-slate-600">
-                        {tx(
-                          'Đang tải dữ liệu lịch sử giao dịch...',
-                          'Loading transaction history data...'
-                        )}
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              ) : transactions.length === 0 ? (
-                <tr data-testid="billing-empty-state">
-                  <td
-                    colSpan={5}
-                    className="py-6 text-center text-xs font-semibold text-slate-400"
-                  >
-                    {tx(
-                      'Chưa có giao dịch nâng cấp gói nào.',
-                      'No plan upgrade transactions yet.'
-                    )}
-                  </td>
-                </tr>
-              ) : (
-                transactions.map((item) => (
-                  <tr key={item.id}>
-                    <td className="py-2.5 font-mono font-bold text-slate-900">
-                      {item.order_code}
-                    </td>
-                    <td className="py-2.5 uppercase font-bold text-slate-700">
-                      {item.target_plan}
-                    </td>
-                    <td className="py-2.5 font-bold text-slate-900">
-                      {formatCurrency(item.amount)}
-                    </td>
-                    <td className="py-2.5">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
-                          item.status === 'completed'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {item.status === 'completed'
-                          ? tx('Thành công', 'Completed')
-                          : tx('Đang chờ', 'Pending')}
-                      </span>
-                    </td>
-                    <td className="py-2.5 font-mono text-slate-500">
-                      {item.bank_ref_id || '—'}
-                    </td>
-                  </tr>
-                ))
+        <AppDataTable<PaymentTransaction>
+          keyField="id"
+          ariaLabel={tx(
+            'Lịch sử giao dịch nâng cấp gói',
+            'Plan Upgrade History'
+          )}
+          columns={billingColumns}
+          data={transactions}
+          progressPending={loadingBilling}
+          progressComponent={
+            <div data-testid="billing-loading-state" className="py-8 text-center">
+              <div className="flex flex-col items-center justify-center gap-2">
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
+                <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                  {tx(
+                    'Đang tải dữ liệu lịch sử giao dịch...',
+                    'Loading transaction history data...'
+                  )}
+                </span>
+              </div>
+            </div>
+          }
+          noDataComponent={
+            <div
+              data-testid="billing-empty-state"
+              className="py-6 text-center text-xs font-semibold text-slate-400"
+            >
+              {tx(
+                'Chưa có giao dịch nâng cấp gói nào.',
+                'No plan upgrade transactions yet.'
               )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+          }
+          pagination
+          paginationPerPage={10}
+          paginationRowsPerPageOptions={[10, 20, 50]}
+        />
       </div>
     </div>
   );

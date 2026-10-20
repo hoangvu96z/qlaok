@@ -88,6 +88,10 @@ Khi có cấu hình DB, orders đọc DB làm nguồn chính; lỗi DB không đ
 
 **Web:** Supabase Realtime → broker server → `/api/orders/events` SSE có xác thực → client tải lại dữ liệu qua API. Staff cần quyền shop; guest cần header `x-tracking-token`. Không mở public orders/RLS để client HMAC đăng ký trực tiếp. **Mobile:** Supabase Auth JWT → Postgres Changes, refresh canonical data qua API. Fallback 30 giây khi lỗi; dừng subscription/polling theo trạng thái màn hình/app. Xem [REALTIME_NOTES.md](REALTIME_NOTES.md).
 
+## Bảng dữ liệu và export
+
+Bảng web thống nhất qua `react-data-table-component`; export báo cáo dùng CSV và XLSX thật theo tab/bộ lọc đang xem. Xem [phạm vi, chart và quy ước export](docs/DATA_TABLES_AND_EXPORT.md).
+
 ## Kiểm tra
 
 ```bash
