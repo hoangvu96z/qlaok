@@ -23,9 +23,11 @@ import {
   CartSelection,
   CatalogItem,
   Category,
+  PlanTier,
   Shop,
   SupportedLocale,
 } from '@/types/qlaok';
+import { PLAN_CONFIGS } from '@/lib/plan-limits';
 import {
   SEED_CATEGORIES,
   SEED_ITEMS,
@@ -43,7 +45,7 @@ import { ShowToStaffModal } from '@/components/storefront/ShowToStaffModal';
 type HeroSceneId = 'overview' | 'orders' | 'catalog' | 'qrstudio';
 
 export default function MarketingLandingPage() {
-  const { tx } = useAppI18n();
+  const { locale, tx } = useAppI18n();
 
   // Scroll & Mouse 3D state
   const [heroScrollRatio, setHeroScrollRatio] = useState(0);
@@ -196,58 +198,58 @@ export default function MarketingLandingPage() {
     }
   > = {
     orders: {
-      label: tx('🔔 Đơn Bàn & mPOS', '🔔 Table Orders & mPOS'),
+      label: tx('🔔 Đơn tại bàn', '🔔 Table orders'),
       desktopImg: '/screenshots/desktop-web-orders-pos.png',
       desktopCaption: tx(
-        'Web POS tại quầy (Windows / Mac)',
-        'Counter Web POS (Windows / Mac)'
+        'Nhận đơn và thu ngân tại quầy',
+        'Orders and checkout at the counter'
       ),
       mobileImg: '/screenshots/mobile-orders-pos.png',
       mobileCaption: tx(
-        'App Chủ Quán nhận đơn <200ms',
-        'Owner App <200ms Order Alert'
+        'Theo dõi đơn trên điện thoại',
+        'Keep up with orders on your phone'
       ),
       guestImg: '/screenshots/web-storefront-hub.png',
     },
     overview: {
-      label: tx('📊 Tổng Quan & Doanh Thu', '📊 Dashboard & Revenue'),
+      label: tx('📊 Tình hình bán hàng', '📊 Sales at a glance'),
       desktopImg: '/screenshots/desktop-web-dashboard.png',
       desktopCaption: tx(
-        'Web Dashboard Quản Lý Toàn Diện',
-        'Full Web Management Dashboard'
+        'Hôm nay quán bán được bao nhiêu?',
+        'How are sales today?'
       ),
       mobileImg: '/screenshots/mobile-overview-revenue.png',
       mobileCaption: tx(
-        'App Mobile Theo Dõi Doanh Thu 7 Ngày',
-        'Mobile 7-Day Revenue Tracker'
+        'Xem doanh thu khi bạn cần',
+        'Check sales wherever you are'
       ),
       guestImg: '/screenshots/web-guest-menu-en.png',
     },
     catalog: {
-      label: tx('🍜 Thực Đơn & Kho', '🍜 Menu & Stock'),
+      label: tx('🍜 Món và giá bán', '🍜 Menu and prices'),
       desktopImg: '/screenshots/desktop-web-catalog.png',
       desktopCaption: tx(
-        'Quản Lý Món, Giá & Dịch 8 Ngôn Ngữ Trên Web',
-        'Web Catalog & 8-Lang Translation'
+        'Cập nhật món, giá và bản dịch ở một nơi',
+        'Your menu, prices and translations in one place'
       ),
       mobileImg: '/screenshots/mobile-catalog-stock.png',
       mobileCaption: tx(
-        'Bật/Tắt Hết Hàng 1 Chạm Trên Điện Thoại',
-        '1-Tap Stock Toggle on Mobile'
+        'Hết món? Báo khách ngay trên menu',
+        'Let guests know when an item sells out'
       ),
       guestImg: '/screenshots/web-guest-retail-en.png',
     },
     qrstudio: {
-      label: tx('🏁 QR Studio Từng Bàn', '🏁 Table QR Studio'),
+      label: tx('🏁 Mã QR từng bàn', '🏁 QR codes for each table'),
       desktopImg: '/screenshots/desktop-web-qr-studio.png',
       desktopCaption: tx(
-        'Tạo & In Mã QR Định Danh Từng Bàn (300 DPI)',
-        'Generate & Print Table QR Standees'
+        'Tạo mã QR riêng cho từng bàn',
+        'Create a QR code for each table'
       ),
       mobileImg: '/screenshots/mobile-orders-pos.png',
       mobileCaption: tx(
-        'Khách Quét Bàn Nào Báo Đúng Bàn Đó',
-        'Pinpoints Exact Table Number'
+        'Biết đơn mới đến từ bàn nào',
+        'See which table each order comes from'
       ),
       guestImg: '/screenshots/web-storefront-hub.png',
     },
@@ -263,165 +265,75 @@ export default function MarketingLandingPage() {
   // 6 Click-to-Reveal 3D Feature Cards (Headline only until clicked!)
   const interactiveFeatures = [
     {
-      id: 'pos-ecosystem',
-      num: '01',
-      icon: Monitor,
-      accent: 'emerald',
-      title: tx(
-        'Web Quản Lý & mPOS Trên Máy Tính',
-        'Desktop Web Dashboard & Counter mPOS'
-      ),
-      tag: tx('Giao diện Web PC/Tablet', 'Desktop & Tablet Web'),
+      id: 'pos-ecosystem', num: '01', icon: Monitor, accent: 'emerald',
+      title: tx('Đơn nào, bàn nấy. Dễ theo dõi hơn.', 'Every order, with its table.'),
+      tag: tx('Tại quầy', 'At the counter'),
       desktopImg: '/screenshots/desktop-web-dashboard.png',
       mobileImg: '/screenshots/desktop-web-orders-pos.png',
       bullets: [
-        tx(
-          'Màn hình rộng trực quan tại quầy thu ngân: sơ đồ bàn, bộ lọc đơn hàng và tự động in hóa đơn nhiệt.',
-          'Widescreen counter interface: table map, live order queue, and automatic thermal receipt printing.'
-        ),
-        tx(
-          'Biểu đồ doanh thu 7 ngày, tỷ trọng chuyển khoản VietQR / Tiền mặt và khung giờ cao điểm.',
-          '7-day revenue charts, VietQR vs. Cash breakdown, and peak-hour analytics.'
-        ),
-        tx(
-          'Sidebar thu gọn linh hoạt, hỗ trợ chế độ Sáng/Tối và phân quyền Thu ngân / Phục vụ / Bếp.',
-          'Collapsible sidebar, Light/Dark mode, and role-based Cashier / Waiter / Kitchen permissions.'
-        ),
+        tx('Xem các đơn theo bàn để nhân viên biết cần phục vụ ở đâu.', 'See orders by table so staff know where they belong.'),
+        tx('Theo dõi riêng đơn đã phục vụ và đơn đã thu tiền.', 'Keep track of what has been served and what has been paid.'),
+        tx('Xem doanh thu và món bán chạy để chuẩn bị cho buổi bán tiếp theo.', 'Check sales and popular items to plan for your next shift.'),
       ],
     },
     {
-      id: 'mobile-owner-app',
-      num: '02',
-      icon: Smartphone,
-      accent: 'amber',
-      title: tx(
-        'App Mobile Chủ Quán (iOS & Android)',
-        'Owner Mobile App (iOS & Android)'
-      ),
-      tag: tx('Đi vắng vẫn nắm trọn quán', 'Manage on the go'),
+      id: 'mobile-owner-app', num: '02', icon: Smartphone, accent: 'amber',
+      title: tx('Ra ngoài vẫn biết quán đang bán ra sao.', 'Stay close to your business, even when you’re out.'),
+      tag: tx('Trên điện thoại', 'On your phone'),
       desktopImg: '/screenshots/mobile-orders-pos.png',
       mobileImg: '/screenshots/mobile-overview-revenue.png',
       bullets: [
-        tx(
-          'Nhận chuông báo đơn mới tức thì (< 200ms) qua kết nối Realtime tiết kiệm pin.',
-          'Instant new-order chimes (< 200ms) powered by battery-efficient Realtime WebSockets.'
-        ),
-        tx(
-          'Bấm "Nhận đơn & Báo bếp", "Xác nhận đã thu" hoặc xem phiếu in ngay trên điện thoại.',
-          '1-tap "Accept & Send to Kitchen", "Mark Paid", and mobile receipt preview.'
-        ),
-        tx(
-          'Chuyển đổi nhanh giữa nhiều chi nhánh (Quán ăn, Spa, Cửa hàng đặc sản) chỉ với 1 chạm.',
-          'Switch between multiple store branches in a single tap.'
-        ),
+        tx('Mở ứng dụng để xem đơn mới và tình hình bán hàng.', 'Open the app to check new orders and sales.'),
+        tx('Nhận đơn, xác nhận thu tiền và xem trước phiếu ngay trên điện thoại.', 'Accept orders, confirm payments and preview receipts on your phone.'),
+        tx('Chuyển giữa các quán bạn quản lý trong cùng một tài khoản.', 'Switch between the businesses you manage with one account.'),
       ],
     },
     {
-      id: 'guest-web-qr',
-      num: '03',
-      icon: QrCode,
-      accent: 'sky',
-      title: tx(
-        'Menu Web QR 8 Ngôn Ngữ Cho Khách',
-        '8-Language Guest Web QR Menu'
-      ),
-      tag: tx('0 giây tải ứng dụng', 'Zero app download'),
+      id: 'guest-web-qr', num: '03', icon: QrCode, accent: 'sky',
+      title: tx('Khách quét mã, thong thả chọn món.', 'Scan, browse and choose at your own pace.'),
+      tag: tx('Không cần tải app', 'No app to download'),
       desktopImg: '/screenshots/desktop-web-qr-studio.png',
       mobileImg: '/screenshots/web-guest-menu-en.png',
       bullets: [
-        tx(
-          'Khách quét mã tại bàn mở ngay bằng Safari/Chrome đúng ngôn ngữ điện thoại (Việt, Anh, Hàn, Nhật, Trung, Tây Ban Nha, Ý, Nga).',
-          'Opens directly in Safari/Chrome in the guest’s phone language (VI, EN, KO, JA, ZH, ES, IT, RU).'
-        ),
-        tx(
-          'Mọi món khách nước ngoài chọn đều tự động dịch ngược sang Tiếng Việt to rõ cho nhân viên & bếp.',
-          'Foreign guest selections are automatically translated back into clear Vietnamese for your kitchen.'
-        ),
-        tx(
-          'Tích hợp sẵn Popup Voucher chào mừng và banner Flash Sale giờ vàng tại bàn.',
-          'Built-in welcome voucher popups and happy-hour Flash Sale banners.'
-        ),
+        tx('Đặt mã QR tại bàn để khách mở menu bằng điện thoại của mình.', 'Place a QR code on each table so guests can open the menu on their phones.'),
+        tx('Khách chọn ngôn ngữ quen thuộc trong các ngôn ngữ quán đã bật; hỗ trợ tối đa 8 ngôn ngữ tùy gói.', 'Guests choose from your enabled languages, with up to 8 available depending on your plan.'),
+        tx('Món và lựa chọn của khách hiển thị rõ trong đơn để nhân viên dễ kiểm tra.', 'Items and guest choices stay together in the order for staff to review.'),
       ],
     },
     {
-      id: 'ai-menu-scanner',
-      num: '04',
-      icon: ScanLine,
-      accent: 'purple',
-      title: tx(
-        'AI Chụp Ảnh Menu Giấy Lên Kệ 30 Giây',
-        'AI Paper Menu Scanner in 30 Seconds'
-      ),
-      tag: tx('Không cần gõ tay từng món', 'Zero manual typing'),
+      id: 'ai-menu-scanner', num: '04', icon: ScanLine, accent: 'purple',
+      title: tx('Đưa menu giấy lên mạng, bớt phải gõ lại.', 'Bring your paper menu online with less typing.'),
+      tag: tx('AI hỗ trợ nhập món', 'A helping hand with setup'),
       desktopImg: '/screenshots/desktop-web-catalog.png',
       mobileImg: '/screenshots/mobile-catalog-stock.png',
       bullets: [
-        tx(
-          'Chụp ảnh tờ thực đơn giấy hoặc bảng giá dịch vụ, AI tự bóc tách danh mục, tên món và giá tiền.',
-          'Snap a photo of any printed menu; AI extracts categories, dish names, and prices.'
-        ),
-        tx(
-          'Tự động biên dịch chuẩn văn phong ẩm thực & dịch vụ sang 8 ngôn ngữ quốc tế.',
-          'Automatically generates culinary-grade translations across all 8 languages.'
-        ),
-        tx(
-          'Chỉnh giá nhanh (-5k/+5k) và gạt nút "Hết hàng" đồng bộ tức thì giữa Web và App.',
-          'Quick price nudges (-5k/+5k) and 1-tap Sold Out toggles synced across Web and Mobile.'
-        ),
+        tx('Ở gói Premium, tải ảnh menu để AI gợi ý tên món, nhóm món và giá.', 'On Premium, upload a menu photo to get suggested items, categories and prices.'),
+        tx('Bạn kiểm tra và chỉnh lại nội dung trước khi lưu; bản dịch cũng có thể sửa cho đúng cách quán mình gọi món.', 'Review and edit before saving, and adjust translations to suit your menu.'),
+        tx('Khi đổi giá hoặc hết món, cập nhật menu để khách biết trước khi chọn.', 'Update prices and sold-out items so guests see what is available.'),
       ],
     },
     {
-      id: 'multi-chime-push',
-      num: '05',
-      icon: BellRing,
-      accent: 'rose',
-      title: tx(
-        'Chuông Báo Đơn Windows/Mac & Điện Thoại',
-        'Windows/Mac Push & Custom POS Chimes'
-      ),
-      tag: tx('Không bao giờ sót đơn bàn', 'Never miss a table order'),
+      id: 'multi-chime-push', num: '05', icon: BellRing, accent: 'rose',
+      title: tx('Có đơn mới, quầy dễ để ý hơn.', 'A little heads-up when a new order arrives.'),
+      tag: tx('Thông báo đơn', 'Order alerts'),
       desktopImg: '/screenshots/desktop-web-orders-pos.png',
       mobileImg: '/screenshots/mobile-orders-pos.png',
       bullets: [
-        tx(
-          'Tuỳ chỉnh âm lượng & kiểu chuông tại quầy (Chuông quầy đôi, Siêu to cho quán đông, Chuông tiền về).',
-          'Customizable counter chimes (Double Bell, Loud Kitchen Alert, Cash Register).'
-        ),
-        tx(
-          'Kết hợp thông báo đẩy trình duyệt (Browser Notification) hiện прямо ra góc màn hình Windows/macOS kể cả khi thu nhỏ tab.',
-          'Native browser push notifications pop up on Windows/macOS even when the browser tab is minimized.'
-        ),
-        tx(
-          'Tự động phát lại nhắc nhở nếu đơn mới tại bàn chưa được nhân viên bấm nhận.',
-          'Optional repeat reminders until staff acknowledge new table orders.'
-        ),
+        tx('Bật chuông báo đơn trên màn hình quản lý đang mở tại quầy.', 'Turn on order chimes while your counter screen is open.'),
+        tx('Chọn kiểu chuông và âm lượng phù hợp với không gian quán.', 'Choose a chime and volume that suit your space.'),
+        tx('Cho phép thông báo trên thiết bị để dễ nhận biết khi có đơn mới.', 'Allow device notifications for another way to notice new orders.'),
       ],
     },
     {
-      id: 'three-verticals',
-      num: '06',
-      icon: Languages,
-      accent: 'teal',
-      title: tx(
-        '3 Ngành Hàng: Quán Ăn • Spa & Nail • Đặc Sản',
-        '3 Verticals: F&B • Spa & Nail • Retail'
-      ),
-      tag: tx('Giao diện chuyên biệt từng ngành', 'Tailored per industry'),
+      id: 'three-verticals', num: '06', icon: Languages, accent: 'teal',
+      title: tx('Quán ăn, tiệm nhỏ đều có cách dùng riêng.', 'A menu that fits what you do.'),
+      tag: tx('Phù hợp nhiều mô hình', 'For different businesses'),
       desktopImg: '/screenshots/web-guest-menu-en.png',
       mobileImg: '/screenshots/web-guest-retail-en.png',
       bullets: [
-        tx(
-          'Ẩm thực & Cafe: Chọn size, topping, mức đá/đường, ghi chú không hành/ít cay.',
-          'Food & Cafe: Size, toppings, ice/sugar levels, and dietary notes.'
-        ),
-        tx(
-          'Spa, Nail & Massage: Hiển thị thời lượng phút làm dịch vụ, quy trình trị liệu và chọn phòng VIP.',
-          'Spa & Nail: Treatment duration badges, step-by-step descriptions, and room selection.'
-        ),
-        tx(
-          'Shop Đặc Sản & Lưu Niệm: Bố cục lưới sản phẩm đẹp mắt kèm ghi chú đóng gói quà tặng.',
-          'Specialty Retail: Grid catalog layout with gift-wrapping options.'
-        ),
+        tx('Quán ăn, cà phê: để khách chọn size, topping và ghi chú theo ý thích.', 'Cafés and eateries: let guests choose sizes, extras and notes.'),
+        tx('Spa, nail: giới thiệu dịch vụ, giá và thời lượng để khách dễ chọn.', 'Spas and nail salons: show services, prices and durations clearly.'),
+        tx('Cửa hàng: trưng bày sản phẩm và nhận ghi chú đóng gói từ khách.', 'Shops: display products and collect packing requests from customers.'),
       ],
     },
   ];
@@ -429,23 +341,23 @@ export default function MarketingLandingPage() {
   const videoChapters = [
     {
       time: 0,
-      label: tx('01. Web + App Mobile', '01. Web + Mobile App'),
+      label: tx('01. Quản lý quán', '01. Your daily overview'),
     },
     {
       time: 3,
-      label: tx('02. Khách Quét QR', '02. Guest Scans QR'),
+      label: tx('02. Khách chọn món', '02. Guests choose'),
     },
     {
       time: 6,
-      label: tx('03. Chuông Đơn <200ms', '03. <200ms Order Chime'),
+      label: tx('03. Nhận đơn mới', '03. New orders arrive'),
     },
     {
       time: 9,
-      label: tx('04. Kho & Thực Đơn', '04. Menu & Stock'),
+      label: tx('04. Cập nhật menu', '04. Update your menu'),
     },
     {
       time: 12,
-      label: tx('05. Doanh Thu & QR Bàn', '05. Revenue & Table QR'),
+      label: tx('05. Xem bán hàng', '05. Check your sales'),
     },
   ];
 
@@ -460,43 +372,43 @@ export default function MarketingLandingPage() {
   return (
     <div
       ref={pageRef}
-      className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-emerald-500 selection:text-slate-950"
+      className="min-h-screen overflow-x-clip bg-slate-950 text-slate-100 flex flex-col selection:bg-emerald-500 selection:text-slate-950"
     >
       {/* Top Navbar */}
       <header className="sticky top-0 z-50 bg-slate-950/85 backdrop-blur-xl border-b border-slate-800/80 keep-dark-surface">
-        <div className="mx-auto max-w-6xl px-4 py-3.5 flex items-center justify-between gap-4">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black text-xl shadow-lg shadow-emerald-500/25">
+        <div className="mx-auto max-w-6xl px-3 sm:px-4 py-3.5 flex items-center justify-between gap-2 sm:gap-4">
+          <Link href="/" className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+            <div className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-500 text-slate-950 font-black text-lg sm:text-xl shadow-lg shadow-emerald-500/25">
               Q
             </div>
-            <div>
-              <span className="text-lg font-black tracking-tight text-white">
+            <div className="flex items-center">
+              <span className="text-base sm:text-lg font-black tracking-tight text-white">
                 Qlaok
               </span>
-              <span className="hidden sm:inline-block ml-2 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-300">
-                {tx('Web POS + App Mobile ✨', 'Web POS + Mobile App ✨')}
+              <span className="hidden sm:inline-block ml-2 whitespace-nowrap rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-300">
+                {tx('Quét là OK', 'Scan and you’re set')}
               </span>
             </div>
           </Link>
 
-          <nav className="hidden md:flex items-center gap-6 text-xs font-bold text-slate-300">
+          <nav className="hidden xl:flex items-center gap-5 whitespace-nowrap text-xs font-bold text-slate-300">
             <a
               href="#video-demo"
               className="hover:text-emerald-400 transition-colors"
             >
-              {tx('Video Demo', 'Video Demo')}
+              {tx('Cách hoạt động', 'How it works')}
             </a>
             <a
               href="#features-3d"
               className="hover:text-emerald-400 transition-colors"
             >
-              {tx('Tính năng 3D', '3D Features')}
+              {tx('Giúp gì cho quán?', 'How it helps')}
             </a>
             <a
               href="#live-demo"
               className="hover:text-emerald-400 transition-colors"
             >
-              {tx('Bản thử QR', 'Try QR Menu')}
+              {tx('Thử menu mẫu', 'Try a sample menu')}
             </a>
             <Link
               href="/explore"
@@ -512,20 +424,23 @@ export default function MarketingLandingPage() {
             </Link>
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <AppLanguageSwitcher />
             <Link
               href="/login"
-              className="rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-bold text-slate-200 hover:border-slate-500 hover:text-white transition-colors"
+              className="hidden sm:inline-flex shrink-0 whitespace-nowrap items-center rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-bold text-slate-200 hover:border-slate-500 hover:text-white transition-colors"
             >
               {tx('Đăng nhập', 'Sign in')}
             </Link>
             <Link
               href="/login?mode=register"
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 shadow-md shadow-emerald-500/20 hover:bg-emerald-400 transition-all"
+              className="inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 rounded-xl bg-emerald-500 px-2.5 sm:px-4 py-2 text-xs font-black text-slate-950 shadow-md shadow-emerald-500/20 hover:bg-emerald-400 transition-all"
             >
-              <span>{tx('Tạo quán miễn phí', 'Start Free')}</span>
-              <ArrowRight className="h-3.5 w-3.5" />
+              <span className="sm:hidden">{tx('Bắt đầu', 'Start free')}</span>
+              <span className="hidden sm:inline">
+                {tx('Bắt đầu miễn phí', 'Start free')}
+              </span>
+              <ArrowRight className="h-3.5 w-3.5 shrink-0" />
             </Link>
           </div>
         </div>
@@ -549,26 +464,30 @@ export default function MarketingLandingPage() {
           {/* Ultra-Clean Center Headline (Zero Wall of Text!) */}
           <div className="text-center max-w-4xl mx-auto space-y-4">
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-1.5 text-xs font-extrabold text-emerald-300">
-              <Sparkles className="h-3.5 w-3.5" />
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
               <span>
                 {tx(
-                  'HỆ SINH THÁI ĐỒNG BỘ: WEB QUẢN LÝ × APP MOBILE × MENU QR 8 NGÔN NGỮ',
-                  'ALL-IN-ONE: WEB DASHBOARD × MOBILE APP × 8-LANGUAGE QR MENU'
+                  'Menu QR và quản lý bán hàng cho quán của bạn',
+                  'QR menus and everyday tools for your business'
                 )}
               </span>
             </div>
 
-            <h1 className="text-3xl sm:text-6xl font-black tracking-tight leading-[1.08] text-white">
-              {tx('Khách quét ', 'Guests scan ')}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
-                {tx('Web QR 8 ngôn ngữ.', '8-Language Web QR.')}
+            <h1 className="text-3xl sm:text-6xl font-black tracking-tight leading-[1.12] sm:leading-[1.08] text-white">
+              <span className="block">
+                {tx('Khách chọn món dễ hơn.', 'Ordering feels easier.')}
               </span>
-              <br />
-              {tx('Chủ quán vận hành trên ', 'Owners run live on ')}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-emerald-300 to-emerald-400">
-                {tx('Web POS & App Mobile.', 'Web POS & Mobile App.')}
+              <span className="block text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-emerald-300 to-emerald-400">
+                {tx('Bạn nhẹ việc hơn.', 'You have less to juggle.')}
               </span>
             </h1>
+
+            <p className="mx-auto max-w-2xl text-sm sm:text-base text-slate-300 leading-relaxed">
+              {tx(
+                'Khách quét mã để xem menu, chọn món theo ý thích. Bạn nhận đơn theo bàn, cập nhật món và theo dõi bán hàng ở một nơi.',
+                'Guests scan to browse your menu and choose what they like. You keep table orders, menu updates and sales together in one place.'
+              )}
+            </p>
 
             {/* CTAs + Scene Switcher Pills */}
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
@@ -577,21 +496,21 @@ export default function MarketingLandingPage() {
                 className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-6 py-3.5 text-sm font-black text-slate-950 shadow-xl shadow-emerald-500/30 hover:bg-emerald-400 transition-all active:scale-98"
               >
                 <QrCode className="h-5 w-5" />
-                <span>{tx('Tạo Quán Miễn Phí', 'Create Free Store')}</span>
+                <span>{tx('Bắt đầu miễn phí', 'Get started free')}</span>
               </Link>
               <a
                 href="#video-demo"
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/90 px-5 py-3.5 text-sm font-bold text-white hover:border-emerald-400 transition-all"
               >
                 <Play className="h-4 w-4 text-emerald-400 fill-emerald-400" />
-                <span>{tx('Xem Video Demo (15s)', 'Watch 15s Video Demo')}</span>
+                <span>{tx('Xem cách Qlaok hoạt động', 'See how Qlaok works')}</span>
               </a>
               <Link
                 href="/login"
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900/60 px-5 py-3.5 text-sm font-bold text-slate-200 hover:text-white transition-all"
               >
                 <Monitor className="h-4 w-4 text-amber-300" />
-                <span>{tx('Vào Web Quản Lý', 'Open Web Dashboard')}</span>
+                <span>{tx('Vào quản lý quán', 'Manage your business')}</span>
               </Link>
             </div>
 
@@ -644,11 +563,11 @@ export default function MarketingLandingPage() {
                     <span className="h-3 w-3 rounded-full bg-amber-400" />
                     <span className="h-3 w-3 rounded-full bg-emerald-500" />
                     <span className="ml-2 rounded-lg bg-slate-950 px-3 py-1 text-[11px] font-bold text-slate-300">
-                      💻 qlaok.com/dashboard — {currentScene.desktopCaption}
+                      💻 {currentScene.desktopCaption}
                     </span>
                   </div>
                   <span className="hidden sm:inline-block rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-black text-emerald-300">
-                    WEB DASHBOARD & POS
+                    {tx('Quản lý tại quầy', 'Counter workspace')}
                   </span>
                 </div>
                 <img
@@ -658,7 +577,7 @@ export default function MarketingLandingPage() {
                 />
               </div>
 
-              {/* FRONT-LEFT 3D LAYER (translateZ +60px): Guest Web QR Menu */}
+              {/* FRONT-LEFT 3D LAYER (translateZ +60px): Guest menu Menu */}
               <div
                 style={{
                   transform:
@@ -667,12 +586,12 @@ export default function MarketingLandingPage() {
                 className="hidden md:block absolute -left-4 bottom-2 w-[215px] rounded-[30px] border-4 border-sky-400/80 bg-slate-950 shadow-[0_30px_70px_-10px_rgba(14,165,233,0.45)] overflow-hidden"
               >
                 <div className="bg-slate-950 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[10px] font-black text-sky-300">
-                  <span>🌐 {tx('Web QR Khách', 'Guest Web QR')}</span>
-                  <span>8 Langs</span>
+                  <span>🌐 {tx('Menu cho khách', 'Guest menu')}</span>
+                  <span>{tx('Đa ngôn ngữ', 'Multilingual')}</span>
                 </div>
                 <img
                   src={currentScene.guestImg}
-                  alt="Guest Web QR Storefront"
+                  alt={tx('Menu khách xem trên điện thoại', 'The menu guests see on their phones')}
                   className="w-full h-[350px] object-cover object-top"
                 />
               </div>
@@ -686,7 +605,7 @@ export default function MarketingLandingPage() {
                 className="hidden sm:block absolute -right-2 sm:-right-4 -bottom-2 w-[210px] sm:w-[235px] rounded-[32px] border-4 border-emerald-400 bg-slate-950 shadow-[0_35px_80px_-10px_rgba(16,185,129,0.55)] overflow-hidden"
               >
                 <div className="bg-slate-950 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[10px] font-black text-emerald-300">
-                  <span>📱 {tx('App Chủ Quán', 'Owner App')}</span>
+                  <span>📱 {tx('Dành cho chủ quán', 'For owners')}</span>
                   <span>iOS & Android</span>
                 </div>
                 <img
@@ -718,14 +637,14 @@ export default function MarketingLandingPage() {
               <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-emerald-400">
                 <Film className="h-4 w-4" />
                 {tx(
-                  'Video Demo Hệ Sinh Thái (Web + App Mobile)',
-                  'Ecosystem Video Tour (Web + Mobile App)'
+                  'Một vòng quanh Qlaok',
+                  'A quick look at Qlaok'
                 )}
               </span>
               <h2 className="text-2xl sm:text-4xl font-black text-white">
                 {tx(
-                  '15 giây xem trọn luồng Web & App hoạt động',
-                  '15-Second Tour: Web POS & Mobile App in Action'
+                  'Từ lúc khách chọn món đến khi bạn nhận đơn',
+                  'From choosing a dish to receiving an order'
                 )}
               </h2>
             </div>
@@ -787,14 +706,14 @@ export default function MarketingLandingPage() {
             <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-3.5 py-1 text-xs font-extrabold text-amber-300">
               <MousePointerClick className="h-3.5 w-3.5" />
               {tx(
-                'Bấm vào từng tiêu đề để mở hình ảnh 3D chi tiết',
-                'Click any title below to reveal its 3D visual & details'
+                'Chọn việc bạn muốn tìm hiểu thêm',
+                'Choose what you would like to explore'
               )}
             </span>
             <h2 className="text-2xl sm:text-4xl font-black text-white">
               {tx(
-                '6 mảnh ghép tự động hóa toàn diện cửa hàng',
-                '6 Pillars to Automate Your Entire Store'
+                'Bớt việc lặt vặt, thêm thời gian cho khách',
+                'Less busywork. More time for your guests.'
               )}
             </h2>
           </div>
@@ -804,11 +723,14 @@ export default function MarketingLandingPage() {
             {interactiveFeatures.map((feat) => {
               const Icon = feat.icon;
               const isOpen = expandedFeatureId === feat.id;
+              const panelId = `feature-panel-${feat.id}`;
 
               return (
                 <button
                   key={feat.id}
                   type="button"
+                  aria-expanded={isOpen}
+                  aria-controls={panelId}
                   onClick={() =>
                     setExpandedFeatureId((prev) =>
                       prev === feat.id ? null : feat.id
@@ -865,13 +787,16 @@ export default function MarketingLandingPage() {
               if (!activeFeat) return null;
 
               return (
-                <div className="perspective-stage pt-2">
+                <div
+                  id={`feature-panel-${activeFeat.id}`}
+                  className="perspective-stage pt-2"
+                >
                   <div className="card-3d-active rounded-3xl border-2 border-emerald-500/60 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/30 p-6 sm:p-8 shadow-2xl">
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
                       {/* Left: Concise 3 Bullet Points */}
                       <div className="lg:col-span-5 space-y-4">
                         <div className="inline-flex items-center gap-2 rounded-xl bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
-                          <span>MỤC {activeFeat.num}</span>
+                          <span>{tx('Tính năng', 'Feature')} {activeFeat.num}</span>
                           <span>•</span>
                           <span>{activeFeat.tag}</span>
                         </div>
@@ -894,7 +819,7 @@ export default function MarketingLandingPage() {
                             href="/login?mode=register"
                             className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-black text-slate-950 hover:bg-emerald-400"
                           >
-                            <span>{tx('Dùng thử tính năng này', 'Try This Feature')}</span>
+                            <span>{tx('Bắt đầu với quán của bạn', 'Try it for your business')}</span>
                             <ArrowRight className="h-3.5 w-3.5" />
                           </Link>
                         </div>
@@ -904,7 +829,7 @@ export default function MarketingLandingPage() {
                       <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-12 gap-4 items-center perspective-stage">
                         <div className="sm:col-span-8 rounded-2xl border-2 border-slate-700 bg-slate-950 overflow-hidden shadow-2xl md:[transform:perspective(900px)_rotateY(-6deg)]">
                           <div className="bg-slate-900 px-3 py-1.5 border-b border-slate-800 text-[10px] font-bold text-slate-300">
-                            💻 {tx('Giao diện Web', 'Web Interface')}
+                            💻 {tx('Trên máy tính', 'On your computer')}
                           </div>
                           <img
                             src={activeFeat.desktopImg}
@@ -914,7 +839,7 @@ export default function MarketingLandingPage() {
                         </div>
                         <div className="sm:col-span-4 rounded-2xl border-2 border-emerald-400/70 bg-slate-950 overflow-hidden shadow-2xl md:[transform:perspective(900px)_rotateY(8deg)_translateZ(20px)]">
                           <div className="bg-slate-900 px-3 py-1.5 border-b border-slate-800 text-[10px] font-bold text-emerald-300">
-                            📱 {tx('App / Mobile', 'Mobile View')}
+                            📱 {tx('Trên điện thoại', 'On your phone')}
                           </div>
                           <img
                             src={activeFeat.mobileImg}
@@ -946,8 +871,8 @@ export default function MarketingLandingPage() {
             </span>
             <h2 className="text-2xl sm:text-4xl font-black text-white leading-tight">
               {tx(
-                'Bấm thử Menu QR 8 ngôn ngữ ngay tại đây',
-                'Test the Live 8-Language QR Menu Right Here'
+                'Thử làm khách của quán bạn',
+                'See it through your guests’ eyes'
               )}
             </h2>
 
@@ -956,7 +881,7 @@ export default function MarketingLandingPage() {
                 {[
                   {
                     id: 'fnb' as BusinessVertical,
-                    label: tx('🍜 Quán Ăn', '🍜 Food & Cafe'),
+                    label: tx('🍜 Quán ăn', '🍜 Food & Cafe'),
                   },
                   {
                     id: 'service' as BusinessVertical,
@@ -964,7 +889,7 @@ export default function MarketingLandingPage() {
                   },
                   {
                     id: 'retail' as BusinessVertical,
-                    label: tx('🛍️ Đặc Sản', '🛍️ Retail Shop'),
+                    label: tx('🛍️ Cửa hàng', '🛍️ Retail Shop'),
                   },
                 ].map((tab) => (
                   <button
@@ -1093,91 +1018,160 @@ export default function MarketingLandingPage() {
           <div className="text-center space-y-2">
             <h2 className="text-2xl sm:text-4xl font-black text-white">
               {tx(
-                'Bắt đầu 0đ. Nâng cấp bất cứ lúc nào.',
-                'Start at 0đ. Upgrade Anytime.'
+                'Bắt đầu miễn phí, chọn gói khi bạn cần thêm.',
+                'Start free. Upgrade when you need more.'
               )}
             </h2>
             <p className="text-xs font-bold text-slate-400">
               {tx(
-                '👆 Bấm vào từng gói để xem quyền lợi chi tiết',
-                '👆 Click any plan card to expand its features'
+                'Chọn một gói để xem những gì phù hợp với quán bạn.',
+                'Choose a plan to see what fits your business.'
               )}
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 perspective-stage">
-            {[
-              {
-                id: 'free',
-                name: tx('Khởi Đầu', 'Starter'),
-                price: '0đ',
-                sub: tx('Miễn phí trọn đời', 'Free forever'),
-                popular: false,
-                perks: [
-                  tx('Tối đa 5 món / dịch vụ', 'Up to 5 items'),
-                  tx('2 ngôn ngữ (Việt + Anh)', '2 languages (VI + EN)'),
-                  tx('Mã QR Cửa hàng & Bàn', 'Store & Table QR'),
-                ],
-              },
-              {
-                id: 'pro',
-                name: tx('Chuyên Nghiệp', 'Pro & Premium'),
-                price: tx('Từ 39.000đ', 'From 39,000đ'),
-                sub: tx('/ tháng • Đầy đủ Web & App', '/ month • Full Web & App'),
-                popular: true,
-                perks: [
-                  tx('Mở khóa 8 ngôn ngữ + AI Menu Scanner', '8 languages + AI Scanner'),
-                  tx('App Mobile Chủ Quán + Chuông Realtime', 'Owner App + Realtime Chimes'),
-                  tx('Flash Sale, Voucher & Phân quyền nhân viên', 'Flash Sales & Staff Roles'),
-                ],
-              },
-              {
-                id: 'chain',
-                name: tx('Đa Chi Nhánh', 'Multi-Branch'),
-                price: tx('VietQR Tự Động', 'Instant VietQR'),
-                sub: tx('Kích hoạt trong 5 giây', 'Activated in 5 seconds'),
-                popular: false,
-                perks: [
-                  tx('Quản lý nhiều quán trên 1 tài khoản', 'Multi-store switcher'),
-                  tx('Báo cáo doanh thu & Xuất file Excel', 'Revenue & Excel export'),
-                  tx('Hỗ trợ ưu tiên 24/7', 'Priority 24/7 support'),
-                ],
-              },
-            ].map((plan) => {
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {(
+              [
+                {
+                  id: PLAN_CONFIGS.free.tier,
+                  name: tx('Miễn phí', 'Free'),
+                  priceMonthly: PLAN_CONFIGS.free.priceMonthly,
+                  maxItems: PLAN_CONFIGS.free.maxItems,
+                  maxLangs: PLAN_CONFIGS.free.maxLangs,
+                  sub: tx(
+                    'Cho bạn bắt đầu với menu nhỏ.',
+                    'For getting started with a small menu.'
+                  ),
+                  popular: false,
+                  extraPerk: tx(
+                    'Mã QR Cửa quán & QR từng bàn',
+                    'Door QR & table QR codes'
+                  ),
+                },
+                {
+                  id: PLAN_CONFIGS.basic.tier,
+                  name: tx('Cơ bản', 'Basic'),
+                  priceMonthly: PLAN_CONFIGS.basic.priceMonthly,
+                  maxItems: PLAN_CONFIGS.basic.maxItems,
+                  maxLangs: PLAN_CONFIGS.basic.maxLangs,
+                  sub: tx(
+                    '/ tháng · Khi menu có thêm món.',
+                    '/ month · Room for a growing menu.'
+                  ),
+                  popular: true,
+                  extraPerk: tx(
+                    'Tùy chỉnh màu sắc thương hiệu',
+                    'Your brand colors'
+                  ),
+                },
+                {
+                  id: PLAN_CONFIGS.premium.tier,
+                  name: tx('Đầy đủ hơn', 'Premium'),
+                  priceMonthly: PLAN_CONFIGS.premium.priceMonthly,
+                  maxItems: PLAN_CONFIGS.premium.maxItems,
+                  maxLangs: PLAN_CONFIGS.premium.maxLangs,
+                  sub: tx(
+                    '/ tháng · Thêm công cụ để bớt việc.',
+                    '/ month · More tools to lighten the workload.'
+                  ),
+                  popular: false,
+                  extraPerk: tx(
+                    'Nhập món từ ảnh menu bằng AI',
+                    'AI menu photo import'
+                  ),
+                },
+              ] as Array<{
+                id: PlanTier;
+                name: string;
+                priceMonthly: number;
+                maxItems: number;
+                maxLangs: number;
+                sub: string;
+                popular: boolean;
+                extraPerk: string;
+              }>
+            ).map((plan) => {
               const isExpanded = expandedPlanId === plan.id;
+              const panelId = `plan-perks-${plan.id}`;
+              const formattedPrice = new Intl.NumberFormat(
+                locale === 'en' ? 'en-US' : 'vi-VN',
+                {
+                  style: 'currency',
+                  currency: 'VND',
+                  maximumFractionDigits: 0,
+                }
+              ).format(plan.priceMonthly);
+
+              const itemsPerk =
+                plan.maxItems >= 999999
+                  ? tx(
+                      'Không giới hạn số lượng món / dịch vụ',
+                      'Unlimited menu items and services'
+                    )
+                  : tx(
+                      'Tối đa {count} món / dịch vụ',
+                      'Up to {count} menu items or services',
+                      { count: plan.maxItems }
+                    );
+
+              const langsPerk =
+                plan.maxLangs === 1
+                  ? tx('Hỗ trợ {count} ngôn ngữ', '{count} menu language', {
+                      count: plan.maxLangs,
+                    })
+                  : tx(
+                      'Hỗ trợ tối đa {count} ngôn ngữ',
+                      'Up to {count} menu languages',
+                      { count: plan.maxLangs }
+                    );
+
+              const perks = [itemsPerk, langsPerk, plan.extraPerk];
+              const isFree = plan.id === 'free';
+
               return (
                 <div
                   key={plan.id}
-                  onClick={() =>
-                    setExpandedPlanId((prev) =>
-                      prev === plan.id ? null : plan.id
-                    )
-                  }
-                  className={`cursor-pointer scroll-3d-item scroll-3d-native card-3d-tilt rounded-3xl border p-6 flex flex-col justify-between gap-4 ${
+                  className={`rounded-3xl border p-6 flex flex-col justify-between gap-4 transition-colors ${
                     plan.popular
-                      ? 'border-2 border-emerald-500 bg-slate-900 shadow-[0_25px_70px_-15px_rgba(16,185,129,0.3)]'
-                      : 'border-slate-800 bg-slate-900/80'
+                      ? 'border-2 border-emerald-500 bg-slate-900 shadow-[0_25px_70px_-15px_rgba(16,185,129,0.3)] hover:border-emerald-400'
+                      : 'border-slate-800 bg-slate-900/80 hover:border-slate-700'
                   }`}
                 >
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
-                        {plan.name}
-                      </span>
-                      <ChevronDown
-                        className={`h-4 w-4 text-slate-400 transition-transform ${
-                          isExpanded ? 'rotate-180 text-emerald-400' : ''
-                        }`}
-                      />
-                    </div>
-                    <div className="text-3xl font-black text-white">
-                      {plan.price}
-                    </div>
-                    <div className="text-xs text-slate-400">{plan.sub}</div>
+                    <button
+                      type="button"
+                      aria-expanded={isExpanded}
+                      aria-controls={panelId}
+                      onClick={() =>
+                        setExpandedPlanId((prev) =>
+                          prev === plan.id ? null : plan.id
+                        )
+                      }
+                      className="w-full cursor-pointer text-left space-y-2 rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
+                          {plan.name}
+                        </span>
+                        <ChevronDown
+                          className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${
+                            isExpanded ? 'rotate-180 text-emerald-400' : ''
+                          }`}
+                        />
+                      </div>
+                      <div className="text-3xl font-black text-white">
+                        {formattedPrice}
+                      </div>
+                      <div className="text-xs text-slate-400">{plan.sub}</div>
+                    </button>
 
                     {isExpanded && (
-                      <ul className="space-y-2 pt-3 border-t border-slate-800 text-xs text-slate-200">
-                        {plan.perks.map((p, i) => (
+                      <ul
+                        id={panelId}
+                        className="space-y-2 pt-3 border-t border-slate-800 text-xs text-slate-200"
+                      >
+                        {perks.map((p, i) => (
                           <li key={i} className="flex items-center gap-2">
                             <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
                             <span>{p}</span>
@@ -1188,17 +1182,16 @@ export default function MarketingLandingPage() {
                   </div>
 
                   <Link
-                    href={plan.popular ? '/pricing' : '/login?mode=register'}
-                    onClick={(e) => e.stopPropagation()}
+                    href={isFree ? '/login?mode=register' : '/pricing'}
                     className={`w-full rounded-2xl py-3 text-center text-xs font-black transition-colors ${
                       plan.popular
                         ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
                         : 'border border-slate-700 bg-slate-800 text-white hover:bg-slate-700'
                     }`}
                   >
-                    {plan.popular
-                      ? tx('Xem bảng giá', 'View Pricing')
-                      : tx('Tạo quán ngay', 'Start Free')}
+                    {isFree
+                      ? tx('Bắt đầu miễn phí', 'Start free')
+                      : tx('Xem chi tiết gói', 'View plan details')}
                   </Link>
                 </div>
               );
@@ -1217,8 +1210,8 @@ export default function MarketingLandingPage() {
             <span className="font-bold text-white">Qlaok (Quét là OK)</span>
             <span>
               {tx(
-                '— Web POS, App Mobile & Menu QR 8 Ngôn Ngữ',
-                '— Web POS, Mobile App & 8-Language QR Menu'
+                '— Khách dễ chọn, quán dễ bán.',
+                '— Easier ordering. Simpler days.'
               )}
             </span>
           </div>

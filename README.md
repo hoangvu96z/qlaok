@@ -8,6 +8,8 @@ Cập nhật theo workspace ngày **18/10/2026**. Nền tảng menu/trang cửa 
 
 ## Chức năng hiện tại
 
+Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào nhu cầu chủ quán và thông tin gói thực tế. Xem [review nội dung homepage](docs/HOMEPAGE_COPY_REVIEW.md).
+
 - QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn và theo dõi bằng token riêng.
 - Dashboard: tổng quan, đơn hàng/POS, catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing.
 - mPOS: tạo/sửa đơn, phục vụ, thu/hoàn tiền, giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in. Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` độc lập payment `unpaid/paid/refunded`.
