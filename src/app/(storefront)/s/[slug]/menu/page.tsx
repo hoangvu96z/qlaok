@@ -45,6 +45,9 @@ import {
   filterSelectableTables,
   resolveScopedTableQrVerification,
   resolveStorefrontMenuTableState,
+  shouldRefreshStorefrontCatalog,
+  STOREFRONT_MENU_POLL_INTERVAL_MS,
+  STOREFRONT_MENU_STALE_REFRESH_MS,
   type ScopedTableQrVerification,
   type StorefrontTableChoice,
 } from '@/lib/table-helpers';
@@ -231,6 +234,8 @@ export default function StorefrontMenuPage() {
   const restoredOrderShopRef = useRef<string | null>(null);
   const requestSeqRef = useRef(0);
   const initializedSlugRef = useRef<string | null>(null);
+  const inFlightFetchRef = useRef(false);
+  const lastFetchedAtRef = useRef(0);
 
   // Reset shop-scoped cart/order/selection state when navigating to a different shop slug,
   // and clear stale table QR verification / manual choice when table query params change on the same slug.
@@ -291,7 +296,11 @@ export default function StorefrontMenuPage() {
         seq !== requestSeqRef.current;
 
       try {
-        const shopUrlParams = new URLSearchParams({ slug: currentSlug });
+        inFlightFetchRef.current = true;
+        const shopUrlParams = new URLSearchParams({
+          slug: currentSlug,
+          view: 'menu',
+        });
         if (requestedTableId) {
           shopUrlParams.set('tableId', requestedTableId);
           if (requestedTableSig) {
@@ -312,6 +321,7 @@ export default function StorefrontMenuPage() {
         if (isStaleRequest()) {
           return;
         }
+        lastFetchedAtRef.current = Date.now();
 
         const loadedShop: Shop = data.shop;
         // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
@@ -416,31 +426,102 @@ export default function StorefrontMenuPage() {
         if (isInitial && activeSlugRef.current === currentSlug) {
           setLoading(false);
         }
+      } finally {
+        if (seq === requestSeqRef.current) {
+          inFlightFetchRef.current = false;
+        }
       }
     },
     [slug, langParam, isTableQrEntry, qrTableIdParam, qrTableSigParam]
   );
 
   useEffect(() => {
+    lastFetchedAtRef.current = 0;
     fetchCatalogData(true);
+
+    const refreshIfEligible = (minAgeMs: number) => {
+      const visibilityState =
+        typeof document !== 'undefined' ? document.visibilityState : 'visible';
+      const isOnline =
+        typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
+          ? navigator.onLine
+          : true;
+      if (
+        shouldRefreshStorefrontCatalog({
+          visibilityState,
+          isOnline,
+          isFetchInFlight: inFlightFetchRef.current,
+          lastFetchedAtMs: lastFetchedAtRef.current,
+          nowMs: Date.now(),
+          minAgeMs,
+        })
+      ) {
+        void fetchCatalogData(false);
+      }
+    };
 
     let bc: BroadcastChannel | null = null;
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = () => {
-        fetchCatalogData(false);
+        void fetchCatalogData(false);
       };
     }
 
+    const handleVisibilityOrFocus = () => {
+      refreshIfEligible(STOREFRONT_MENU_STALE_REFRESH_MS);
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', handleVisibilityOrFocus);
+      window.addEventListener('online', handleVisibilityOrFocus);
+    }
+
     const interval = setInterval(() => {
-      fetchCatalogData(false);
-    }, 4000);
+      refreshIfEligible(STOREFRONT_MENU_POLL_INTERVAL_MS);
+    }, STOREFRONT_MENU_POLL_INTERVAL_MS);
 
     return () => {
       if (bc) bc.close();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener(
+          'visibilitychange',
+          handleVisibilityOrFocus
+        );
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', handleVisibilityOrFocus);
+        window.removeEventListener('online', handleVisibilityOrFocus);
+      }
       clearInterval(interval);
     };
   }, [fetchCatalogData]);
+
+  // Refresh catalog/table availability when opening the order modal if data is stale
+  useEffect(() => {
+    if (!isStaffModalOpen) return;
+    const visibilityState =
+      typeof document !== 'undefined' ? document.visibilityState : 'visible';
+    const isOnline =
+      typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
+        ? navigator.onLine
+        : true;
+    if (
+      shouldRefreshStorefrontCatalog({
+        visibilityState,
+        isOnline,
+        isFetchInFlight: inFlightFetchRef.current,
+        lastFetchedAtMs: lastFetchedAtRef.current,
+        nowMs: Date.now(),
+        minAgeMs: STOREFRONT_MENU_STALE_REFRESH_MS,
+      })
+    ) {
+      void fetchCatalogData(false);
+    }
+  }, [isStaffModalOpen, fetchCatalogData]);
 
   const currentShopId =
     shop &&

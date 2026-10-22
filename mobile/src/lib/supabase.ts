@@ -288,6 +288,10 @@ export interface MobileShopOrder {
   provisional_printed_count?: number;
   receipt_printed_count?: number;
   customer_note?: string;
+  refund_reason?: string | null;
+  cancelled_reason?: string | null;
+  restock_items?: boolean;
+  waste_recorded?: boolean;
   source?: 'qr_table' | 'counter_pos';
   created_at: string;
   updated_at: string;

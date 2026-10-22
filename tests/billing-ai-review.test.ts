@@ -41,9 +41,11 @@ const {
 } = await import('@/lib/plan-limits');
 const { POST: translatePost } = await import('@/app/api/ai/translate/route');
 const { POST: ocrPost } = await import('@/app/api/ai/ocr-menu/route');
-const { resetAiRateLimitsForTest, AI_RATE_LIMITS } = await import(
-  '@/app/api/ai/_lib/guard'
-);
+const {
+  resetAiRateLimitsForTest,
+  AI_RATE_LIMITS,
+  isMembershipAllowedForCatalogAi,
+} = await import('@/app/api/ai/_lib/guard');
 const { POST: paymentPost } = await import('@/app/api/webhooks/payment/route');
 
 let profilePlan: string | null = 'free';
@@ -56,6 +58,7 @@ let mockMemberships: Array<{
   shop_id: string;
   user_id: string;
   role: string;
+  permissions?: string[] | null;
   is_active: boolean;
 }> = [];
 let mockProfiles: Record<
@@ -433,6 +436,514 @@ test('/api/ai/ocr-menu rate limits at 10 requests per window', async () => {
     post('/api/ai/ocr-menu', ownerToken, { useDemo: true, vertical: 'fnb' })
   );
   assert.equal(limited.status, 429);
+});
+
+test('/api/ai/ocr-menu enforces server-resolved authorized shop owner plan instead of member profile plan', async () => {
+  // 1. Free-plan staff member on a Premium owner's shop is ALLOWED (both with explicit shopId and unambiguous membership)
+  mockProfiles['review-ai-owner'] = {
+    id: 'review-ai-owner',
+    plan: 'premium',
+  };
+  mockProfiles['staff-free-profile'] = {
+    id: 'staff-free-profile',
+    plan: 'free',
+  };
+  mockMemberships.push({
+    id: 'mem-staff-premium-shop',
+    shop_id: 'shop-review-owner',
+    user_id: 'staff-free-profile',
+    role: 'staff',
+    permissions: ['catalog.manage', 'orders.view'],
+    is_active: true,
+  });
+
+  const freeStaffToken = issueSessionToken({
+    id: 'staff-free-profile',
+    email: 'staff-free@qlaok.vn',
+    role: 'staff',
+  });
+
+  // Explicit shopId -> passes plan gate (returns 400 for empty OCR input after plan check)
+  const memberOnPremiumShopRes = await ocrPost(
+    post('/api/ai/ocr-menu', freeStaffToken, {
+      shopId: 'shop-review-owner',
+    })
+  );
+  assert.equal(memberOnPremiumShopRes.status, 400);
+
+  // Unambiguous single active membership when shopId is omitted -> also resolves shop owner's premium plan
+  const memberImplicitShopRes = await ocrPost(
+    post('/api/ai/ocr-menu', freeStaffToken, {})
+  );
+  assert.equal(memberImplicitShopRes.status, 400);
+
+  // 2. Premium-plan member working on a Free/Basic owner's shop is REJECTED with 403 PLAN_FEATURE_LOCKED
+  mockProfiles['owner-demo-001'] = {
+    id: 'owner-demo-001',
+    plan: 'basic',
+  };
+  mockProfiles['member-with-own-premium'] = {
+    id: 'member-with-own-premium',
+    plan: 'premium',
+  };
+  mockMemberships.push({
+    id: 'mem-premium-user-on-basic-shop',
+    shop_id: 'shop-fnb-001',
+    user_id: 'member-with-own-premium',
+    role: 'staff',
+    permissions: ['catalog.manage'],
+    is_active: true,
+  });
+
+  const premiumMemberToken = issueSessionToken({
+    id: 'member-with-own-premium',
+    email: 'premium-member@qlaok.vn',
+    role: 'staff',
+  });
+
+  const memberOnBasicShopExplicit = await ocrPost(
+    post('/api/ai/ocr-menu', premiumMemberToken, {
+      shopId: 'shop-fnb-001',
+      rawOcrText: 'CA PHE DEN 25K',
+      // Forged client claims must be ignored by the server:
+      ownerId: 'member-with-own-premium',
+      owner_id: 'review-ai-owner',
+      plan: 'premium',
+    })
+  );
+  assert.equal(memberOnBasicShopExplicit.status, 403);
+  const basicLockedBody = await memberOnBasicShopExplicit.json();
+  assert.equal(basicLockedBody.code, 'PLAN_FEATURE_LOCKED');
+
+  const memberOnBasicShopImplicit = await ocrPost(
+    post('/api/ai/ocr-menu', premiumMemberToken, {
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(memberOnBasicShopImplicit.status, 403);
+  const basicImplicitBody = await memberOnBasicShopImplicit.json();
+  assert.equal(basicImplicitBody.code, 'PLAN_FEATURE_LOCKED');
+
+  // 3. Multi-shop user who owns a Premium shop ('shop-review-owner') AND is a member of a Basic shop ('shop-fnb-001')
+  mockMemberships.push({
+    id: 'mem-owner-as-staff-on-basic-shop',
+    shop_id: 'shop-fnb-001',
+    user_id: 'review-ai-owner',
+    role: 'staff',
+    permissions: ['catalog.manage'],
+    is_active: true,
+  });
+
+  // Targeting the Basic shop -> 403 PLAN_FEATURE_LOCKED (uses shop-fnb-001 owner's basic plan, NOT caller's premium plan)
+  const multiShopBasicTarget = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      shopId: 'shop-fnb-001',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(multiShopBasicTarget.status, 403);
+  assert.equal((await multiShopBasicTarget.json()).code, 'PLAN_FEATURE_LOCKED');
+
+  // Targeting their own Premium shop -> passes plan gate (400 empty input)
+  const multiShopPremiumTarget = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      shopId: 'shop-review-owner',
+    })
+  );
+  assert.equal(multiShopPremiumTarget.status, 400);
+
+  // Omitting shopId when authorized across multiple distinct shop owners -> fails closed (403 AMBIGUOUS_SHOP_CONTEXT)
+  const multiShopAmbiguous = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(multiShopAmbiguous.status, 403);
+  assert.equal(
+    (await multiShopAmbiguous.json()).code,
+    'AMBIGUOUS_SHOP_CONTEXT'
+  );
+});
+
+test('/api/ai/ocr-menu rejects unauthorized, inactive-member, insufficient-permission, invalid-shopId, and DB-error requests', async () => {
+  mockProfiles['review-ai-owner'] = {
+    id: 'review-ai-owner',
+    plan: 'premium',
+  };
+  mockProfiles['outsider-user'] = {
+    id: 'outsider-user',
+    plan: 'free',
+  };
+
+  const outsiderToken = issueSessionToken({
+    id: 'outsider-user',
+    email: 'outsider@qlaok.vn',
+    role: 'owner',
+  });
+
+  // 1. Outsider targeting a Premium shop they do not own or belong to -> 403 FORBIDDEN_SHOP_ACCESS
+  const crossShopRes = await ocrPost(
+    post('/api/ai/ocr-menu', outsiderToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(crossShopRes.status, 403);
+  assert.equal((await crossShopRes.json()).code, 'FORBIDDEN_SHOP_ACCESS');
+
+  // 2. Deactivated member (is_active: false) on a Premium shop -> 403 FORBIDDEN_SHOP_ACCESS
+  mockMemberships.push({
+    id: 'mem-inactive-staff',
+    shop_id: 'shop-review-owner',
+    user_id: 'outsider-user',
+    role: 'staff',
+    permissions: ['catalog.manage'],
+    is_active: false,
+  });
+  const inactiveRes = await ocrPost(
+    post('/api/ai/ocr-menu', outsiderToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(inactiveRes.status, 403);
+  assert.equal((await inactiveRes.json()).code, 'FORBIDDEN_SHOP_ACCESS');
+
+  // 3. Active cashier without catalog.manage permission -> 403 INSUFFICIENT_SHOP_PERMISSION
+  mockMemberships[0] = {
+    id: 'mem-cashier-no-catalog',
+    shop_id: 'shop-review-owner',
+    user_id: 'outsider-user',
+    role: 'cashier',
+    permissions: ['orders.view', 'orders.manage'],
+    is_active: true,
+  };
+  const cashierRes = await ocrPost(
+    post('/api/ai/ocr-menu', outsiderToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(cashierRes.status, 403);
+  assert.equal(
+    (await cashierRes.json()).code,
+    'INSUFFICIENT_SHOP_PERMISSION'
+  );
+
+  // 4. Invalid shopId type or blank string -> 400 INVALID_SHOP_ID
+  const badShopIdRes = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      shopId: 99999,
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(badShopIdRes.status, 400);
+  assert.equal((await badShopIdRes.json()).code, 'INVALID_SHOP_ID');
+
+  // 5. Nonexistent shopId -> 404 SHOP_NOT_FOUND
+  const missingShopRes = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      shopId: 'shop-nonexistent-999',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(missingShopRes.status, 404);
+  assert.equal((await missingShopRes.json()).code, 'SHOP_NOT_FOUND');
+
+  // 6. DB failure on shops or shop_memberships fails closed with 403
+  resetAiRateLimitsForTest();
+  mockTableErrors.shops = { code: 'XX000', message: 'db down' };
+  const dbFailRes = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(dbFailRes.status, 403);
+  assert.equal((await dbFailRes.json()).code, 'AI_SHOP_AUTH_CHECK_FAILED');
+});
+
+test('isMembershipAllowedForCatalogAi and /api/ai/ocr-menu enforce canonical role defaults for null permissions, fail closed on unknown roles, allow explicit catalog.manage or active owner, and deny inactive memberships', async () => {
+  mockProfiles['review-ai-owner'] = {
+    id: 'review-ai-owner',
+    plan: 'premium',
+  };
+
+  // Unit assertions on isMembershipAllowedForCatalogAi:
+  // 1. Active staff/cashier with null or omitted permissions -> denied (role defaults lack catalog.manage)
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-staff-null',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-staff',
+      role: 'staff',
+      permissions: null,
+      is_active: true,
+    }),
+    false
+  );
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-cashier-null',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-cashier',
+      role: 'cashier',
+      permissions: null,
+      is_active: true,
+    }),
+    false
+  );
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-staff-undef',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-staff',
+      role: 'staff',
+      is_active: true,
+    }),
+    false
+  );
+
+  // 2. Active staff/cashier with explicit catalog.manage -> allowed
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-staff-explicit',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-staff',
+      role: 'staff',
+      permissions: ['catalog.manage'],
+      is_active: true,
+    }),
+    true
+  );
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-cashier-explicit',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-cashier',
+      role: 'cashier',
+      permissions: ['orders.view', 'catalog.manage'],
+      is_active: true,
+    }),
+    true
+  );
+
+  // 3. Active owner -> allowed regardless of permissions array/null
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-owner-null',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-owner',
+      role: 'owner',
+      permissions: null,
+      is_active: true,
+    }),
+    true
+  );
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-owner-empty',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-owner',
+      role: 'owner',
+      permissions: [],
+      is_active: true,
+    }),
+    true
+  );
+
+  // 4. Inactive memberships -> denied even for owner or explicit catalog.manage
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-owner-inactive',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-owner',
+      role: 'owner',
+      permissions: null,
+      is_active: false,
+    }),
+    false
+  );
+  assert.equal(
+    isMembershipAllowedForCatalogAi({
+      id: 'mem-staff-inactive',
+      shop_id: 'shop-review-owner',
+      user_id: 'u-staff',
+      role: 'staff',
+      permissions: ['catalog.manage'],
+      is_active: false,
+    }),
+    false
+  );
+
+  // 5. Unknown roles -> fail closed even with null or explicit catalog.manage permissions
+  for (const unknownRole of ['manager', 'viewer', 'admin', '']) {
+    assert.equal(
+      isMembershipAllowedForCatalogAi({
+        id: `mem-unknown-${unknownRole}`,
+        shop_id: 'shop-review-owner',
+        user_id: 'u-unknown',
+        role: unknownRole,
+        permissions: null,
+        is_active: true,
+      }),
+      false
+    );
+    assert.equal(
+      isMembershipAllowedForCatalogAi({
+        id: `mem-unknown-explicit-${unknownRole}`,
+        shop_id: 'shop-review-owner',
+        user_id: 'u-unknown',
+        role: unknownRole,
+        permissions: ['catalog.manage'],
+        is_active: true,
+      }),
+      false
+    );
+  }
+
+  // Route-level regression assertions against /api/ai/ocr-menu on a Premium owner's shop:
+  const memberId = 'member-role-defaults-01';
+  mockProfiles[memberId] = { id: memberId, plan: 'free' };
+  const memberToken = issueSessionToken({
+    id: memberId,
+    email: 'member-defaults@qlaok.vn',
+    role: 'staff',
+  });
+
+  // Active staff with permissions: null -> 403 INSUFFICIENT_SHOP_PERMISSION (explicit shopId) and 403 FORBIDDEN_SHOP_ACCESS (implicit)
+  mockMemberships = [
+    {
+      id: 'mem-route-staff-null',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'staff',
+      permissions: null,
+      is_active: true,
+    },
+  ];
+  const staffNullExplicit = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(staffNullExplicit.status, 403);
+  assert.equal(
+    (await staffNullExplicit.json()).code,
+    'INSUFFICIENT_SHOP_PERMISSION'
+  );
+
+  const staffNullImplicit = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(staffNullImplicit.status, 403);
+  assert.equal((await staffNullImplicit.json()).code, 'FORBIDDEN_SHOP_ACCESS');
+
+  // Active cashier with permissions: null -> 403 INSUFFICIENT_SHOP_PERMISSION
+  mockMemberships = [
+    {
+      id: 'mem-route-cashier-null',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'cashier',
+      permissions: null,
+      is_active: true,
+    },
+  ];
+  const cashierNullExplicit = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(cashierNullExplicit.status, 403);
+  assert.equal(
+    (await cashierNullExplicit.json()).code,
+    'INSUFFICIENT_SHOP_PERMISSION'
+  );
+
+  // Unknown role with explicit catalog.manage -> 403 INSUFFICIENT_SHOP_PERMISSION (fails closed)
+  mockMemberships = [
+    {
+      id: 'mem-route-unknown-role',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'manager',
+      permissions: ['catalog.manage'],
+      is_active: true,
+    },
+  ];
+  const unknownRoleRes = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(unknownRoleRes.status, 403);
+  assert.equal(
+    (await unknownRoleRes.json()).code,
+    'INSUFFICIENT_SHOP_PERMISSION'
+  );
+
+  // Active cashier with explicit catalog.manage -> passes guard (returns 400 on empty OCR input)
+  resetAiRateLimitsForTest();
+  mockMemberships = [
+    {
+      id: 'mem-route-cashier-explicit',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'cashier',
+      permissions: ['catalog.manage'],
+      is_active: true,
+    },
+  ];
+  const cashierExplicitAllowed = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+    })
+  );
+  assert.equal(cashierExplicitAllowed.status, 400);
+
+  // Active owner membership with permissions: null -> passes guard (returns 400 on empty OCR input)
+  mockMemberships = [
+    {
+      id: 'mem-route-owner-null',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'owner',
+      permissions: null,
+      is_active: true,
+    },
+  ];
+  const ownerMembershipAllowed = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+    })
+  );
+  assert.equal(ownerMembershipAllowed.status, 400);
+
+  // Inactive owner membership -> 403 FORBIDDEN_SHOP_ACCESS
+  mockMemberships = [
+    {
+      id: 'mem-route-owner-inactive',
+      shop_id: 'shop-review-owner',
+      user_id: memberId,
+      role: 'owner',
+      permissions: null,
+      is_active: false,
+    },
+  ];
+  const inactiveOwnerDenied = await ocrPost(
+    post('/api/ai/ocr-menu', memberToken, {
+      shopId: 'shop-review-owner',
+      rawOcrText: 'CA PHE DEN 25K',
+    })
+  );
+  assert.equal(inactiveOwnerDenied.status, 403);
+  assert.equal((await inactiveOwnerDenied.json()).code, 'FORBIDDEN_SHOP_ACCESS');
 });
 
 test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV_SIMULATE, and provider webhook / dev simulation enforce secret and ownership', async () => {

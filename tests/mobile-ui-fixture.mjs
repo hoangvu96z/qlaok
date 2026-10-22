@@ -61,7 +61,18 @@ const server = http.createServer(async (req, res) => {
     if (body.payment_status === 'paid' && (!permissions[role].includes('payment.collect') || firstPaymentFails)) {
       firstPaymentFails = false; return send({ error: 'Không thể thu tiền: API từ chối thử nghiệm (403)' }, 403);
     }
-    Object.assign(order, { ...(body.status ? { status: body.status } : {}), ...(body.payment_status ? { payment_status: body.payment_status } : {}) });
+    if (body.payment_status === 'refunded' && (!body.refund_reason || !String(body.refund_reason).trim())) {
+      return send({ error: 'Vui lòng nhập lý do hoàn tiền.', code: 'REFUND_REASON_REQUIRED' }, 400);
+    }
+    if (body.status === 'cancelled' && (!body.cancelled_reason || !String(body.cancelled_reason).trim())) {
+      return send({ error: 'Vui lòng nhập lý do hủy đơn.', code: 'CANCEL_REASON_REQUIRED' }, 400);
+    }
+    Object.assign(order, {
+      ...(body.status ? { status: body.status } : {}),
+      ...(body.payment_status ? { payment_status: body.payment_status } : {}),
+      ...(body.refund_reason ? { refund_reason: String(body.refund_reason).trim() } : {}),
+      ...(body.cancelled_reason ? { cancelled_reason: String(body.cancelled_reason).trim() } : {}),
+    });
     return send({ order });
   }
   if (url.pathname === '/rest/v1/categories') return send([{ id: `cat-${shopId}`, shop_id: shopId, name_i18n: { vi: 'Món chính' }, is_active: true, sort_order: 1 }]);

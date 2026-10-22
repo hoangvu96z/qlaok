@@ -197,3 +197,50 @@ test('sync and async locale persistence round-trips and handles storage errors g
   await savePersistedMobileLocale('vi', asyncAdapter);
   assert.equal(await loadPersistedMobileLocale(asyncAdapter), 'vi');
 });
+
+test('mobile auth recovery translations interpolate email and cover all error states in VI and EN', () => {
+  assert.equal(
+    translateMobile('vi', 'auth.forgotPasswordPrompt'),
+    'Quên mật khẩu?'
+  );
+  assert.equal(
+    translateMobile('en', 'auth.forgotPasswordPrompt'),
+    'Forgot password?'
+  );
+  assert.match(
+    translateMobile('vi', 'auth.recoverySentNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /Nếu owner@qlaok\.com/
+  );
+  assert.doesNotMatch(
+    translateMobile('vi', 'auth.recoverySentNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /^Đã gửi/
+  );
+  assert.match(
+    translateMobile('en', 'auth.recoverySentNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /If owner@qlaok\.com/
+  );
+  assert.doesNotMatch(
+    translateMobile('en', 'auth.recoverySentNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /^Reset instructions sent/
+  );
+  assert.match(
+    translateMobile('vi', 'auth.recoverySuccessNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /owner@qlaok\.com/
+  );
+  assert.match(
+    translateMobile('en', 'auth.recoverySuccessNotice', {
+      email: 'owner@qlaok.com',
+    }),
+    /owner@qlaok\.com/
+  );
+});

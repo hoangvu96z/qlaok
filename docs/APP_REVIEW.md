@@ -1,6 +1,6 @@
-> Báo cáo nền của lượt rà soát tài liệu ban đầu. Task bàn/theme/UI triển khai sau đó đã hoàn tất; xem [kết quả kiểm thử hiện tại](CODEX_TABLES_REVIEW.md) và [hướng dẫn quản lý bàn](TABLE_MANAGEMENT.md).
+> Báo cáo nền của lượt rà soát tài liệu ban đầu (18/10/2026, giữ nguyên tính lịch sử bên dưới). Xem thêm phần **Cập nhật rà soát và đóng lỗi — 22/10/2026** ở cuối tài liệu, [kết quả kiểm thử bàn/theme](CODEX_TABLES_REVIEW.md) và [hướng dẫn quản lý bàn](TABLE_MANAGEMENT.md).
 
-# Rà soát app và tài liệu — 18/10/2026
+# Rà soát app và tài liệu — 18/10/2026 (Lịch sử)
 
 ## Phạm vi và phương pháp
 
@@ -24,7 +24,7 @@ Rà soát cấu trúc và các luồng chính qua CodeGraph explore/node, status
 
 ## Điểm cần theo dõi cho task tiếp
 
-1. **Webhook SaaS:** `verifyWebhookSignatureOrSecret` còn secret fallback trong source khi không cấu hình env. Đã ghi hạn chế; chưa sửa vì lượt này chỉ tài liệu/rules. Cần hardening riêng và regression nếu đổi hành vi.
+1. **Webhook SaaS (ghi nhận ngày 18/10/2026 — đã đóng ngày 22/10/2026):** Thời điểm 18/10, `verifyWebhookSignatureOrSecret` còn secret fallback trong source khi không cấu hình env. *Cập nhật hiện trạng 22/10/2026:* `getConfiguredWebhookSecret` và `verifyWebhookSignatureOrSecret` tại `src/app/api/webhooks/payment/route.ts` đã bỏ hoàn toàn secret mặc định; khi thiếu hoặc để trống `PAYMENT_WEBHOOK_SECRET`, endpoint từ chối mọi callback với HTTP `503`.
 2. **Health:** `GET /api/health` gọi seed và vẫn trả `status: ok` dù readiness false; không dùng HTTP 200 làm bằng chứng mọi dịch vụ hoạt động.
 3. **Khả năng mở rộng:** order reload/statistics còn dựa lịch sử đầy đủ; catalog không có stream riêng.
 4. **Tooling:** root `lint` dùng `next lint`, thiếu cấu hình/dependency ESLint; không khẳng định lint pass. CodeGraph status cảnh báo index từ engine cũ; graph không thay compiler/test.
@@ -52,3 +52,31 @@ Rà soát cấu trúc và các luồng chính qua CodeGraph explore/node, status
 - `git diff --check` và kiểm tra tồn tại các link file Markdown trong README/architecture/rules/review/mobile README.
 
 Node cảnh báo MODULE_TYPELESS_PACKAGE_JSON ở các test TypeScript; suite vẫn exit 0. Chưa chạy build trong lượt chỉ sửa Markdown/rules này; kết quả build trong notes cũ thuộc lượt trước. Không chạy E2E ghi dữ liệu, migration production, deploy, máy in hoặc thiết bị thật. Không sửa source nghiệp vụ.
+
+---
+
+## Cập nhật rà soát và đóng lỗi — 22/10/2026
+
+### Các lỗi và hành vi đã xác minh đóng trong source hiện tại
+
+1. **Webhook thanh toán gói SaaS (`src/app/api/webhooks/payment/route.ts`):** Đã loại bỏ hoàn toàn secret fallback mặc định. `getConfiguredWebhookSecret()` trả `null` khi thiếu/trống `PAYMENT_WEBHOOK_SECRET` và `verifyWebhookSignatureOrSecret()` trả HTTP `503` từ chối mọi callback; so sánh header secret/HMAC dùng `crypto.timingSafeEqual`.
+2. **Khôi phục mật khẩu / OTP (`src/lib/auth-recovery.ts`, `mobile/src/lib/auth-recovery.ts`):** Đồng bộ chuẩn hóa email, kiểm tra tài khoản không hỗ trợ recovery, phân loại lỗi rate-limit/network/provider và xác thực mã OTP/token recovery giữa web và mobile.
+3. **Bộ chuyển ngôn ngữ Storefront (`src/components/storefront/LanguageSwitcher.tsx`, `src/lib/i18n-helper.ts`, `/s/[slug]`, `/s/[slug]/menu`):** Tôn trọng đúng danh sách `supported_langs` đã cấu hình của quán (chuẩn hóa qua `normalizeShopSupportedLangs`, mặc định `['vi', 'en']` khi chưa có cấu hình hợp lệ, và giới hạn theo gói chủ quán qua `getAllowedLocalesForPlan`), chỉ hiển thị và chọn trong đúng danh sách ngôn ngữ được quán hỗ trợ.
+4. **Onboarding an toàn khi thử lại (`src/lib/onboarding-flow.ts`, `src/app/(auth)/onboarding/page.tsx`):** Khi tạo quán thành công nhưng bước `bulk_import` danh mục/món đầu tiên gặp lỗi một phần, luồng giữ lại `draftShop` đã lưu và dùng cặp ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để thử nhập lại an toàn mà không tạo trùng quán hoặc trùng danh mục/món.
+5. **Kiểm tra gói và quyền AI OCR (`src/app/api/ai/ocr-menu/route.ts`, `src/app/api/ai/_lib/guard.ts`):** `requireAiOcrPlan` xác định đúng chủ sở hữu của quán đang chọn mà người gọi được phép truy cập để kiểm tra gói có `allowAiOcr` (`403 PLAN_FEATURE_LOCKED` nếu gói không mở), đồng thời bắt buộc nhân viên/thu ngân phải có quyền chuẩn `catalog.manage` (`403 INSUFFICIENT_SHOP_PERMISSION`).
+6. **Lý do hoàn tiền và hủy đơn trên Mobile & Server (`mobile/src/lib/order-actions.ts`, `mobile/src/components/tabs/OrdersTab.tsx`, `mobile/App.tsx`, `src/app/api/orders/route.ts`):** Mobile mở hộp thoại yêu cầu nhập lý do theo ngôn ngữ VI/EN đang chọn trước khi gửi yêu cầu hủy đơn hoặc hoàn tiền (và chặn hủy trực tiếp đơn đã thu tiền khi chưa hoàn tiền); server kiểm tra bắt buộc lý do không rỗng, tối đa 500 ký tự (`CANCEL_REASON_REQUIRED`, `REFUND_REASON_REQUIRED`, `REASON_TOO_LONG`) và lưu `cancelled_reason` / `refund_reason` vào đơn cùng bản ghi audit.
+
+### Kết quả kiểm chứng tại root (22/10/2026)
+
+- Web/mobile typecheck: **pass** (`npm run typecheck`, `npm run typecheck --prefix mobile`).
+- Unit tests: **86/86** pass (`npm run test:unit`).
+- Review tests: **97/97** pass (`npm run test:review`).
+- SQL tests: **1/1** pass (`npm run test:sql`).
+- Mobile tests: **40/40** pass (`npm test --prefix mobile`).
+- Production build: **pass** (`npm run build`).
+
+### Hạng mục chưa kiểm chứng (Unverified)
+
+- Chưa kiểm chứng browser E2E ghi dữ liệu trực tiếp và luồng gửi email qua live SMTP.
+- Chưa kiểm chứng nhận push notification trên thiết bị vật lý (APNs/FCM thật).
+- Chưa kiểm chứng in phần cứng trên máy in nhiệt/POS thật và hành vi môi trường production thực tế.

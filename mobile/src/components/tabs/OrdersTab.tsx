@@ -1,13 +1,22 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   ScrollView,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  MAX_ORDER_REASON_LENGTH,
+  MobileOrderReasonActionType,
+  MobileOrderStatusUpdateOptions,
+  normalizeOrderReason,
+  validateOrderActionReason,
+} from '../../lib/order-actions';
 import {
   formatVnd,
   MobileOrderPaymentStatus,
@@ -25,7 +34,8 @@ interface OrdersTabProps {
   onUpdateOrderStatus: (
     orderId: string,
     status: 'new' | 'preparing' | 'completed' | 'cancelled',
-    payment_status?: MobileOrderPaymentStatus
+    payment_status?: MobileOrderPaymentStatus,
+    options?: MobileOrderStatusUpdateOptions
   ) => void;
   onPrintOrder: (order: MobileShopOrder) => void;
   pendingOrderIds?: string[];
@@ -52,6 +62,13 @@ export const OrdersTab = memo(function OrdersTab({
   theme,
 }: OrdersTabProps) {
   const { t } = useMobileI18n();
+  const [reasonPrompt, setReasonPrompt] = useState<{
+    action: MobileOrderReasonActionType;
+    order: MobileShopOrder;
+  } | null>(null);
+  const [reasonDraft, setReasonDraft] = useState('');
+  const [reasonError, setReasonError] = useState('');
+
   const newOrdersCount = orders.filter((o) => o.status === 'new').length;
   const preparingOrdersCount = orders.filter(
     (o) => o.status === 'preparing'
@@ -63,22 +80,16 @@ export const OrdersTab = memo(function OrdersTab({
       (o.status !== 'cancelled' && o.payment_status === 'unpaid')
   ).length;
 
+  const closeReasonPrompt = () => {
+    setReasonPrompt(null);
+    setReasonDraft('');
+    setReasonError('');
+  };
+
   const confirmCancelOrder = (order: MobileShopOrder) => {
-    Alert.alert(
-      t('orders.confirmCancelTitle'),
-      t('orders.confirmCancelDesc', {
-        code: order.order_code,
-        table: order.table_label,
-      }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('orders.actionCancel'),
-          style: 'destructive',
-          onPress: () => onUpdateOrderStatus(order.id, 'cancelled'),
-        },
-      ]
-    );
+    setReasonPrompt({ action: 'cancel', order });
+    setReasonDraft('');
+    setReasonError('');
   };
 
   const confirmMarkPaid = (order: MobileShopOrder) => {
@@ -99,22 +110,50 @@ export const OrdersTab = memo(function OrdersTab({
   };
 
   const confirmRefundOrder = (order: MobileShopOrder) => {
-    Alert.alert(
-      t('orders.confirmRefundTitle'),
-      t('orders.confirmRefundDesc', {
-        code: order.order_code,
-        total: formatVnd(order.total_amount),
-      }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('orders.actionRefund'),
-          style: 'destructive',
-          onPress: () =>
-            onUpdateOrderStatus(order.id, order.status, 'refunded'),
-        },
-      ]
+    setReasonPrompt({ action: 'refund', order });
+    setReasonDraft('');
+    setReasonError('');
+  };
+
+  const submitReasonPrompt = () => {
+    if (!reasonPrompt) return;
+    const validation = validateOrderActionReason(
+      reasonPrompt.action,
+      reasonDraft
     );
+    if (!validation.ok) {
+      if (validation.code === 'REASON_TOO_LONG') {
+        setReasonError(
+          t('orders.reasonTooLong', { max: MAX_ORDER_REASON_LENGTH })
+        );
+      } else {
+        setReasonError(
+          t(
+            reasonPrompt.action === 'refund'
+              ? 'orders.refundReasonRequired'
+              : 'orders.cancelReasonRequired'
+          )
+        );
+      }
+      return;
+    }
+
+    const targetOrder = reasonPrompt.order;
+    const action = reasonPrompt.action;
+    const reason = validation.reason;
+    closeReasonPrompt();
+
+    if (action === 'refund') {
+      onUpdateOrderStatus(targetOrder.id, targetOrder.status, 'refunded', {
+        refundReason: reason,
+      });
+      return;
+    }
+
+    onUpdateOrderStatus(targetOrder.id, 'cancelled', undefined, {
+      cancelledReason: reason,
+      restockItems: targetOrder.status === 'new',
+    });
   };
 
   const visibleOrders = orders.filter((o) => {
@@ -342,6 +381,50 @@ export const OrdersTab = memo(function OrdersTab({
                 </View>
               ) : null}
 
+              {order.refund_reason ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginTop: 4,
+                  }}
+                >
+                  <Ionicons
+                    name="return-down-back-outline"
+                    size={12}
+                    color="#b91c1c"
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={[styles.orderNoteText, { color: '#b91c1c' }]}>
+                    {t('orders.reasonBadgeRefund', {
+                      reason: order.refund_reason,
+                    })}
+                  </Text>
+                </View>
+              ) : null}
+
+              {order.cancelled_reason ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginTop: 4,
+                  }}
+                >
+                  <Ionicons
+                    name="close-circle-outline"
+                    size={12}
+                    color="#b91c1c"
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={[styles.orderNoteText, { color: '#b91c1c' }]}>
+                    {t('orders.reasonBadgeCancel', {
+                      reason: order.cancelled_reason,
+                    })}
+                  </Text>
+                </View>
+              ) : null}
+
               {/* Order Action Buttons */}
               <View style={styles.orderActionsRow}>
                 {isOrderPending && (
@@ -537,6 +620,157 @@ export const OrdersTab = memo(function OrdersTab({
           );
         })
       )}
+
+      <Modal
+        visible={Boolean(reasonPrompt)}
+        transparent
+        animationType="fade"
+        onRequestClose={closeReasonPrompt}
+      >
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15, 23, 42, 0.55)',
+            justifyContent: 'center',
+            paddingHorizontal: 18,
+          }}
+        >
+          <View
+            style={{
+              backgroundColor: theme.card,
+              borderRadius: 18,
+              padding: 18,
+              borderWidth: 1,
+              borderColor: theme.border,
+              gap: 10,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 16,
+                fontWeight: '900',
+                color: theme.text,
+              }}
+            >
+              {reasonPrompt?.action === 'refund'
+                ? t('orders.confirmRefundTitle')
+                : t('orders.confirmCancelTitle')}
+            </Text>
+
+            <Text
+              style={{
+                fontSize: 13,
+                color: theme.subText,
+                lineHeight: 19,
+              }}
+            >
+              {reasonPrompt?.action === 'refund'
+                ? t('orders.confirmRefundDesc', {
+                    code: reasonPrompt.order.order_code,
+                    total: formatVnd(reasonPrompt.order.total_amount),
+                  })
+                : t('orders.confirmCancelDesc', {
+                    code: reasonPrompt?.order.order_code ?? '',
+                    table: reasonPrompt?.order.table_label ?? '',
+                  })}
+            </Text>
+
+            <Text
+              style={[
+                styles.fieldLabel,
+                { color: theme.subText, marginTop: 4, marginBottom: 2 },
+              ]}
+            >
+              {reasonPrompt?.action === 'refund'
+                ? t('orders.refundReasonLabel')
+                : t('orders.cancelReasonLabel')}
+            </Text>
+
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.subCard,
+                  borderColor: reasonError ? '#ef4444' : theme.border,
+                  color: theme.text,
+                  minHeight: 72,
+                  textAlignVertical: 'top',
+                },
+              ]}
+              placeholder={
+                reasonPrompt?.action === 'refund'
+                  ? t('orders.refundReasonPlaceholder')
+                  : t('orders.cancelReasonPlaceholder')
+              }
+              placeholderTextColor={theme.subText}
+              value={reasonDraft}
+              onChangeText={(text) => {
+                setReasonDraft(text);
+                if (reasonError) setReasonError('');
+              }}
+              maxLength={MAX_ORDER_REASON_LENGTH}
+              multiline
+              autoFocus
+            />
+
+            {reasonError ? (
+              <Text
+                style={{
+                  fontSize: 11,
+                  fontWeight: '700',
+                  color: '#ef4444',
+                }}
+              >
+                {reasonError}
+              </Text>
+            ) : null}
+
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'flex-end',
+                gap: 10,
+                marginTop: 6,
+              }}
+            >
+              <TouchableOpacity
+                style={[
+                  styles.btnCancel,
+                  {
+                    backgroundColor: '#f1f5f9',
+                    borderColor: '#cbd5e1',
+                    borderWidth: 1,
+                    flex: 1,
+                  },
+                ]}
+                onPress={closeReasonPrompt}
+              >
+                <Text style={[styles.btnCancelText, { color: '#334155' }]}>
+                  {t('common.cancel')}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.btnCancel,
+                  {
+                    backgroundColor: '#dc2626',
+                    flex: 1,
+                  },
+                  !normalizeOrderReason(reasonDraft) && { opacity: 0.6 },
+                ]}
+                onPress={submitReasonPrompt}
+              >
+                <Text style={[styles.btnCancelText, { color: '#ffffff' }]}>
+                  {reasonPrompt?.action === 'refund'
+                    ? t('orders.actionRefund')
+                    : t('orders.actionCancel')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 });

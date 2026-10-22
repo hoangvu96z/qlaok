@@ -30,8 +30,20 @@ import {
   AppLanguageSwitcher,
   useAppI18n,
 } from '@/components/ui/AppI18nProvider';
+import {
+  buildPasswordRecoveryRedirectUrl,
+  completeMobilePasswordRecoveryWithCode,
+  completePasswordRecoverySession,
+  formatGenericPasswordRecoveryNotice,
+  parseRecoveryUrlSignals,
+  type PasswordRecoveryCodeFailureReason,
+  type PasswordRecoveryFailureReason,
+  requestMobilePasswordRecovery,
+  resolveLoginAuthMode,
+  type WebLoginAuthMode,
+} from '@/lib/auth-recovery';
 
-type AuthMode = 'password_login' | 'register' | 'otp';
+type AuthMode = WebLoginAuthMode;
 
 /**
  * Keeps the previously selected shop when it is still accessible (owned or
@@ -55,8 +67,10 @@ function LoginFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t, tx } = useAppI18n();
-  const initialMode =
-    searchParams.get('mode') === 'register' ? 'register' : 'password_login';
+  const initialMode: AuthMode = resolveLoginAuthMode({
+    searchParams,
+    hash: typeof window !== 'undefined' ? window.location.hash : null,
+  });
   const [mode, setMode] = useState<AuthMode>(initialMode);
 
   const [email, setEmail] = useState('');
@@ -65,6 +79,11 @@ function LoginFormContent() {
   const [phone, setPhone] = useState('');
   const [otpToken, setOtpToken] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [recoverySessionReady, setRecoverySessionReady] = useState(false);
+  const [recoverySent, setRecoverySent] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{
@@ -74,21 +93,208 @@ function LoginFormContent() {
 
   const supabaseEnabled = isSupabaseConfigured();
 
+  const formatWebRecoveryFailure = (
+    reason: PasswordRecoveryFailureReason | PasswordRecoveryCodeFailureReason,
+    fallbackMessage?: string
+  ): string => {
+    switch (reason) {
+      case 'invalid_email':
+        return tx(
+          'Vui lòng nhập địa chỉ email hợp lệ để đặt lại mật khẩu.',
+          'Please enter a valid email address to reset your password.'
+        );
+      case 'unsupported_account':
+        return (
+          fallbackMessage?.trim() ||
+          tx(
+            'Tài khoản dùng thử, quản trị hệ thống hoặc tài khoản mật khẩu cục bộ không hỗ trợ tự đặt lại mật khẩu qua email.',
+            'Demo, system, or custom-credential accounts do not support self-service password reset via email.'
+          )
+        );
+      case 'unsupported_provider':
+        return tx(
+          'Khôi phục mật khẩu qua email chưa được bật trên môi trường này. Vui lòng liên hệ quản trị viên.',
+          'Email password reset is not enabled in this environment. Please contact your administrator.'
+        );
+      case 'rate_limited':
+        return tx(
+          'Bạn đã gửi quá nhiều yêu cầu đặt lại mật khẩu. Vui lòng đợi vài phút rồi thử lại.',
+          'Too many password reset requests. Please wait a few minutes and try again.'
+        );
+      case 'network_error':
+        return tx(
+          'Không thể kết nối máy chủ xác thực. Vui lòng kiểm tra kết nối mạng và thử lại.',
+          'Unable to reach the authentication server. Please check your connection and try again.'
+        );
+      case 'invalid_code':
+        return tx(
+          'Mã khôi phục không hợp lệ hoặc đã hết hạn. Vui lòng kiểm tra lại email.',
+          'The recovery code is invalid or expired. Please check your email and try again.'
+        );
+      case 'weak_password':
+        return tx(
+          'Mật khẩu mới phải có ít nhất 6 ký tự.',
+          'New password must be at least 6 characters.'
+        );
+      case 'password_mismatch':
+        return tx(
+          'Mật khẩu xác nhận không khớp với mật khẩu mới.',
+          'Confirmation password does not match the new password.'
+        );
+      case 'provider_error':
+      default:
+        return (
+          fallbackMessage?.trim() ||
+          tx(
+            'Không thể xử lý yêu cầu đặt lại mật khẩu. Vui lòng thử lại.',
+            'Could not complete password reset request. Please try again.'
+          )
+        );
+    }
+  };
+
   useEffect(() => {
+    const hash = typeof window !== 'undefined' ? window.location.hash : null;
+    const resolved = resolveLoginAuthMode({ searchParams, hash });
     const modeParam = searchParams.get('mode');
-    if (modeParam === 'register') {
-      setMode('register');
-    } else if (modeParam === 'login') {
-      setMode('password_login');
+    if (
+      resolved === 'reset' ||
+      modeParam === 'register' ||
+      modeParam === 'otp' ||
+      modeParam === 'login'
+    ) {
+      setMode(resolved);
     }
   }, [searchParams]);
+
+  // Listen for Supabase PASSWORD_RECOVERY session and handle email link recovery tokens
+  useEffect(() => {
+    if (!supabaseEnabled) return;
+    const supabase = createClient();
+    if (!supabase) return;
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      const currentSignals = parseRecoveryUrlSignals({
+        searchParams,
+        hash: typeof window !== 'undefined' ? window.location.hash : null,
+      });
+      if (
+        event === 'PASSWORD_RECOVERY' ||
+        (event === 'SIGNED_IN' && currentSignals.hasRecoveryCallbackSignal)
+      ) {
+        setMode('reset');
+        setRecoverySessionReady(true);
+        if (session?.user?.email) {
+          setEmail(session.user.email);
+        }
+        setMessage({
+          type: 'success',
+          text: tx(
+            'Phiên đặt lại mật khẩu đã sẵn sàng. Vui lòng nhập mật khẩu mới bên dưới.',
+            'Password recovery session is ready. Please enter your new password below.'
+          ),
+        });
+      }
+    });
+
+    const signals = parseRecoveryUrlSignals({
+      searchParams,
+      hash: typeof window !== 'undefined' ? window.location.hash : null,
+    });
+
+    if (signals.hashErrorDescription) {
+      setMode('reset');
+      setRecoverySessionReady(false);
+      setMessage({
+        type: 'error',
+        text: tx(
+          'Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn. Vui lòng gửi lại yêu cầu mới.',
+          'The password reset link is invalid or has expired. Please request a new reset link.'
+        ),
+      });
+    } else if (signals.tokenHash && signals.isResetMode) {
+      setMode('reset');
+      void supabase.auth
+        .verifyOtp({
+          token_hash: signals.tokenHash,
+          type: 'recovery',
+        })
+        .then(({ data, error }) => {
+          if (error) {
+            setRecoverySessionReady(false);
+            setMessage({
+              type: 'error',
+              text: tx(
+                'Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn. Vui lòng gửi lại yêu cầu mới.',
+                'The password reset link is invalid or has expired. Please request a new reset link.'
+              ),
+            });
+            return;
+          }
+          setRecoverySessionReady(true);
+          if (data?.user?.email) {
+            setEmail(data.user.email);
+          }
+          setMessage({
+            type: 'success',
+            text: tx(
+              'Phiên đặt lại mật khẩu đã sẵn sàng. Vui lòng nhập mật khẩu mới bên dưới.',
+              'Password recovery session is ready. Please enter your new password below.'
+            ),
+          });
+        });
+    } else if (signals.isResetMode) {
+      void (async () => {
+        if (
+          signals.code &&
+          typeof supabase.auth.exchangeCodeForSession === 'function'
+        ) {
+          const existingSession = await supabase.auth.getSession();
+          if (!existingSession.data?.session) {
+            const exchanged = await supabase.auth.exchangeCodeForSession(
+              signals.code
+            );
+            if (exchanged.error) {
+              setRecoverySessionReady(false);
+              setMessage({
+                type: 'error',
+                text: tx(
+                  'Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn. Vui lòng gửi lại yêu cầu mới.',
+                  'The password reset link is invalid or has expired. Please request a new reset link.'
+                ),
+              });
+              return;
+            }
+          }
+        }
+        const { data } = await supabase.auth.getSession();
+        if (data?.session?.user) {
+          setMode('reset');
+          setRecoverySessionReady(true);
+          if (data.session.user.email) {
+            setEmail(data.session.user.email);
+          }
+        }
+      })();
+    }
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabaseEnabled, searchParams, tx]);
 
   // If already logged in, allow quick redirect or switching accounts
   useEffect(() => {
     const existing = getStoredAuthOwner();
-    if (existing && !searchParams.get('switch')) {
-      // Do not auto-redirect if user explicitly opened /login?mode=register
-      if (!searchParams.get('mode')) {
+    const signals = parseRecoveryUrlSignals({
+      searchParams,
+      hash: typeof window !== 'undefined' ? window.location.hash : null,
+    });
+    if (existing && !searchParams.get('switch') && !signals.isResetMode) {
+      // Do not auto-redirect if user explicitly opened /login?mode=... or recovery flow
+      if (!searchParams.get('mode') && mode !== 'reset') {
         router.replace(
           isSuperAdmin(existing)
             ? '/admin'
@@ -96,7 +302,7 @@ function LoginFormContent() {
         );
       }
     }
-  }, [router, searchParams]);
+  }, [router, searchParams, mode]);
 
   const handleDemoLogin = async () => {
     setMessage(null);
@@ -287,6 +493,93 @@ function LoginFormContent() {
           }
           router.push(sanitizeNextPath(searchParams.get('next')) || '/dashboard');
         }
+        return;
+      }
+
+      if (mode === 'reset') {
+        const supabase = createClient();
+        if (recoverySessionReady) {
+          const result = await completePasswordRecoverySession({
+            email,
+            newPassword,
+            confirmPassword: confirmNewPassword,
+            authClient: supabase?.auth ?? null,
+          });
+          if (!result.ok) {
+            throw new Error(
+              formatWebRecoveryFailure(result.reason, result.errorMessage)
+            );
+          }
+          setPassword(newPassword);
+          setNewPassword('');
+          setConfirmNewPassword('');
+          setRecoveryCode('');
+          setRecoverySessionReady(false);
+          setRecoverySent(false);
+          setMode('password_login');
+          setMessage({
+            type: 'success',
+            text: tx(
+              'Đã cập nhật mật khẩu mới thành công. Vui lòng đăng nhập bằng mật khẩu mới.',
+              'Password updated successfully. Please sign in with your new password.'
+            ),
+          });
+          return;
+        }
+
+        if (recoverySent && recoveryCode.trim().length > 0) {
+          const result = await completeMobilePasswordRecoveryWithCode({
+            email,
+            code: recoveryCode,
+            newPassword,
+            confirmPassword: confirmNewPassword,
+            authClient: supabase?.auth ?? null,
+          });
+          if (!result.ok) {
+            throw new Error(
+              formatWebRecoveryFailure(result.reason, result.errorMessage)
+            );
+          }
+          setPassword(newPassword);
+          setNewPassword('');
+          setConfirmNewPassword('');
+          setRecoveryCode('');
+          setRecoverySent(false);
+          setMode('password_login');
+          setMessage({
+            type: 'success',
+            text: tx(
+              'Đã cập nhật mật khẩu mới thành công. Vui lòng đăng nhập bằng mật khẩu mới.',
+              'Password updated successfully. Please sign in with your new password.'
+            ),
+          });
+          return;
+        }
+
+        const redirectTo = buildPasswordRecoveryRedirectUrl(
+          typeof window !== 'undefined' ? window.location.origin : ''
+        );
+        const result = await requestMobilePasswordRecovery({
+          email,
+          redirectTo,
+          authClient: supabase?.auth ?? null,
+        });
+
+        if (!result.ok) {
+          throw new Error(
+            formatWebRecoveryFailure(result.reason, result.errorMessage)
+          );
+        }
+
+        setRecoverySent(true);
+        setMessage({
+          type: 'success',
+          text: tx(
+            formatGenericPasswordRecoveryNotice(result.email, 'vi'),
+            formatGenericPasswordRecoveryNotice(result.email, 'en')
+          ),
+        });
+        return;
       }
     } catch (err) {
       setMessage({
@@ -323,7 +616,9 @@ function LoginFormContent() {
           <h1 className="text-2xl font-black tracking-tight">
             {mode === 'register'
               ? t('auth.registerTitle')
-              : t('auth.loginTitle')}
+              : mode === 'reset'
+                ? tx('Đặt lại mật khẩu', 'Reset password')
+                : t('auth.loginTitle')}
           </h1>
           <p className="text-xs text-slate-400">{t('auth.subtitle')}</p>
           {supabaseEnabled && (
@@ -447,11 +742,27 @@ function LoginFormContent() {
             </div>
           </div>
 
-          {mode !== 'otp' && (
+          {mode !== 'otp' && mode !== 'reset' && (
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">
-                {t('auth.passwordLabel')} *
-              </label>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-xs font-bold text-slate-300">
+                  {t('auth.passwordLabel')} *
+                </label>
+                {mode === 'password_login' && (
+                  <button
+                    type="button"
+                    data-testid="login-forgot-password-btn"
+                    onClick={() => {
+                      setMode('reset');
+                      setRecoverySent(false);
+                      setMessage(null);
+                    }}
+                    className="text-[11px] font-bold text-emerald-400 hover:underline"
+                  >
+                    {tx('Quên mật khẩu?', 'Forgot password?')}
+                  </button>
+                )}
+              </div>
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
                 <input
@@ -467,6 +778,135 @@ function LoginFormContent() {
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
                 />
               </div>
+            </div>
+          )}
+
+          {mode === 'reset' && recoverySessionReady && (
+            <div
+              data-testid="login-recovery-update-form"
+              className="space-y-3"
+            >
+              <div
+                data-testid="login-recovery-session-banner"
+                className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] font-semibold text-emerald-300"
+              >
+                {tx(
+                  'Phiên khôi phục hợp lệ. Nhập mật khẩu mới để hoàn tất đặt lại mật khẩu.',
+                  'Recovery session verified. Enter your new password below to finish resetting.'
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  {tx('Mật khẩu mới *', 'New password *')}
+                </label>
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <input
+                    type="password"
+                    data-testid="login-recovery-new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    placeholder={tx(
+                      'Tối thiểu 6 ký tự',
+                      'At least 6 characters'
+                    )}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  {tx('Xác nhận mật khẩu mới *', 'Confirm new password *')}
+                </label>
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <input
+                    type="password"
+                    data-testid="login-recovery-confirm-password"
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    placeholder={tx(
+                      'Nhập lại mật khẩu mới',
+                      'Re-enter new password'
+                    )}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {mode === 'reset' && !recoverySessionReady && recoverySent && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  {tx(
+                    'Mã khôi phục trong email (tùy chọn nếu không bấm liên kết)',
+                    'Recovery code from email (optional if not using the link)'
+                  )}
+                </label>
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <input
+                    type="text"
+                    value={recoveryCode}
+                    onChange={(e) => setRecoveryCode(e.target.value)}
+                    placeholder={tx(
+                      'Nhập mã khôi phục...',
+                      'Enter recovery code...'
+                    )}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-mono font-bold text-white focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+              {recoveryCode.trim().length > 0 && (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      {tx('Mật khẩu mới *', 'New password *')}
+                    </label>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                      <input
+                        type="password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        required
+                        minLength={6}
+                        placeholder={tx(
+                          'Tối thiểu 6 ký tự',
+                          'At least 6 characters'
+                        )}
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      {tx('Xác nhận mật khẩu mới *', 'Confirm new password *')}
+                    </label>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                      <input
+                        type="password"
+                        value={confirmNewPassword}
+                        onChange={(e) => setConfirmNewPassword(e.target.value)}
+                        required
+                        minLength={6}
+                        placeholder={tx(
+                          'Nhập lại mật khẩu mới',
+                          'Re-enter new password'
+                        )}
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -492,6 +932,7 @@ function LoginFormContent() {
           <button
             type="submit"
             disabled={loading}
+            data-testid="login-submit-btn"
             className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 py-3 text-xs font-black text-slate-950 hover:bg-emerald-400 disabled:opacity-50 shadow-lg"
           >
             <span>
@@ -501,12 +942,43 @@ function LoginFormContent() {
                   ? t('auth.loginSubmit')
                   : mode === 'register'
                     ? t('auth.registerSubmit')
-                    : otpSent
-                      ? tx('Xác nhận mã OTP', 'Verify OTP code')
-                      : tx('Gửi mã OTP qua Email', 'Send OTP via Email')}
+                    : mode === 'reset'
+                      ? recoverySessionReady
+                        ? tx('Cập nhật mật khẩu mới', 'Update new password')
+                        : recoverySent && recoveryCode.trim().length > 0
+                          ? tx(
+                              'Xác nhận mã & cập nhật mật khẩu',
+                              'Verify code & update password'
+                            )
+                          : tx(
+                              'Gửi liên kết đặt lại mật khẩu',
+                              'Send password reset link'
+                            )
+                      : otpSent
+                        ? tx('Xác nhận mã OTP', 'Verify OTP code')
+                        : tx('Gửi mã OTP qua Email', 'Send OTP via Email')}
             </span>
             {!loading && <ArrowRight className="h-4 w-4" />}
           </button>
+
+          {mode === 'reset' && (
+            <button
+              type="button"
+              data-testid="login-recovery-back-btn"
+              onClick={() => {
+                setMode('password_login');
+                setRecoverySessionReady(false);
+                setRecoverySent(false);
+                setRecoveryCode('');
+                setNewPassword('');
+                setConfirmNewPassword('');
+                setMessage(null);
+              }}
+              className="w-full text-center text-xs font-bold text-emerald-400 hover:underline pt-1"
+            >
+              {tx('← Quay lại đăng nhập', '← Back to sign in')}
+            </button>
+          )}
         </form>
 
         {/* Optional Demo Preview Button at the bottom */}

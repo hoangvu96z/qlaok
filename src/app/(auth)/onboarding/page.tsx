@@ -24,10 +24,15 @@ import {
   AppLanguageSwitcher,
   useAppI18n,
 } from '@/components/ui/AppI18nProvider';
+import {
+  executeOnboardingCompletion,
+  formatOnboardingBulkImportError,
+  type OnboardingDraftShop,
+} from '@/lib/onboarding-flow';
 
 export default function OnboardingWizardPage() {
   const router = useRouter();
-  const { t, tx } = useAppI18n();
+  const { locale, t, tx } = useAppI18n();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [ownerProfile, setOwnerProfile] = useState<Profile | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -51,6 +56,12 @@ export default function OnboardingWizardPage() {
 
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [createdDraftShop, setCreatedDraftShop] =
+    useState<OnboardingDraftShop | null>(null);
+  const [catalogImportServerError, setCatalogImportServerError] = useState<
+    string | null
+  >(null);
+  const [catalogImportFailed, setCatalogImportFailed] = useState(false);
   // Guard against silently creating duplicate stores for users who already
   // own or belong to a shop.
   const [existingShops, setExistingShops] = useState<{
@@ -118,9 +129,10 @@ export default function OnboardingWizardPage() {
     }
   };
 
-  const handleCompleteOnboarding = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitOnboardingFlow = async () => {
     if (!shopName.trim()) {
+      setCatalogImportFailed(false);
+      setCatalogImportServerError(null);
       setErrorMsg(
         tx('Vui lòng nhập tên cửa hàng.', 'Please enter store name.')
       );
@@ -130,144 +142,78 @@ export default function OnboardingWizardPage() {
 
     setCreating(true);
     setErrorMsg('');
+    setCatalogImportFailed(false);
+    setCatalogImportServerError(null);
 
     try {
-      const slugBase = shopName
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/đ/g, 'd')
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-
-      // 1. Translate first item & category into 5 languages via AI
-      const transRes = await fetch('/api/ai/translate', {
-        method: 'POST',
+      const result = await executeOnboardingCompletion({
+        locale,
+        ownerId: ownerProfile?.id,
+        ownerPhone: ownerProfile?.phone,
+        vertical,
+        shopName,
+        taglineVi,
+        city,
+        address,
+        phone,
+        wifiSsid,
+        wifiPassword,
+        categoryVi,
+        firstItemNameVi,
+        firstItemPrice,
+        existingDraftShop: createdDraftShop,
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          vertical,
-          categoryNameVi: categoryVi,
-          itemNameVi: firstItemNameVi,
-        }),
+        onDraftShopSaved: (draftShop) => {
+          setCreatedDraftShop(draftShop);
+          if (typeof window !== 'undefined' && draftShop.id) {
+            localStorage.setItem('qlaok_active_shop_id', draftShop.id);
+          }
+        },
       });
-      const transData = await transRes.json();
 
-      // 2. Create Shop attached to the logged-in Owner
-      const shopRes = await fetch('/api/shops', {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          owner_id: ownerProfile?.id,
-          name: shopName.trim(),
-          slug: slugBase || `shop-${Date.now()}`,
-          vertical,
-          tagline_i18n: {
-            vi:
-              taglineVi.trim() ||
-              `Chào mừng quý khách đến với ${shopName.trim()}`,
-            en: `Welcome to ${shopName.trim()}`,
-            ko: `${shopName.trim()}에 오신 것을 환영합니다`,
-            ja: `${shopName.trim()}へようこそ`,
-            zh: `欢迎光临 ${shopName.trim()}`,
-          },
-          description_i18n: {
-            vi: `Menu & Bảng giá đa ngôn ngữ chính thức của ${shopName.trim()}.`,
-          },
-          logo_url: null,
-          cover_urls: [],
-          address: address.trim() || city,
-          city,
-          google_maps_url: `https://maps.google.com/?q=${encodeURIComponent(
-            `${shopName} ${city}`
-          )}`,
-          google_review_url: `https://maps.google.com/?q=${encodeURIComponent(
-            `${shopName} ${city}`
-          )}`,
-          phone_contact: phone.trim() || ownerProfile?.phone || '',
-          zalo_phone: phone.trim() || ownerProfile?.phone || '',
-          wifi_info: {
-            ssid: wifiSsid.trim(),
-            password: wifiPassword.trim(),
-          },
-          opening_hours: {
-            mon: { open: '08:00', close: '22:00', closed: false },
-            tue: { open: '08:00', close: '22:00', closed: false },
-            wed: { open: '08:00', close: '22:00', closed: false },
-            thu: { open: '08:00', close: '22:00', closed: false },
-            fri: { open: '08:00', close: '22:00', closed: false },
-            sat: { open: '08:00', close: '22:00', closed: false },
-            sun: { open: '08:00', close: '22:00', closed: false },
-          },
-          supported_langs: ['vi', 'en', 'ko', 'ja', 'zh'],
-          currency: 'VND',
-          theme_config: {
-            primaryColor:
-              vertical === 'service'
-                ? '#8b5cf6'
-                : vertical === 'retail'
-                  ? '#f59e0b'
-                  : '#10b981',
-            layout: vertical === 'retail' ? 'grid' : 'list',
-          },
-          // New stores start as drafts; owners go live from the dashboard
-          // header "Go live" toggle once the menu is ready.
-          is_published: false,
-        }),
-      });
-      const shopData = await shopRes.json();
-      if (!shopRes.ok) {
-        throw new Error(
-          shopData.error ||
-            tx('Không thể tạo cửa hàng', 'Could not create store')
-        );
+      if (!result.ok) {
+        if (result.draftShop) {
+          setCreatedDraftShop(result.draftShop);
+        }
+        if (result.stage === 'catalog_import') {
+          setCatalogImportFailed(true);
+          setCatalogImportServerError(result.serverError);
+        } else if (
+          result.stage === 'validation' &&
+          !shopName.trim() &&
+          !result.draftShop
+        ) {
+          setStep(1);
+        }
+        setErrorMsg(result.errorMessage);
+        return;
       }
 
-      const createdShop = shopData.shop;
-
-      // 3. Bulk import initial category and translated item
-      await fetch('/api/catalog', {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          action: 'bulk_import',
-          shopId: createdShop.id,
-          categories: [
-            {
-              name_i18n: transData.category_i18n || {
-                vi: categoryVi,
-                en: 'Signature Selection',
-                ko: '추천 메뉴',
-                ja: 'おすすめ',
-                zh: '招牌推荐',
-              },
-              items: [
-                {
-                  price: Number(firstItemPrice.replace(/[^\d]/g, '')) || 35000,
-                  duration_mins: vertical === 'service' ? 60 : null,
-                  name_i18n: transData.name_i18n || { vi: firstItemNameVi },
-                  desc_i18n: transData.desc_i18n || { vi: '' },
-                },
-              ],
-            },
-          ],
-        }),
-      });
-
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('qlaok_active_shop_id', createdShop.id);
+      if (typeof window !== 'undefined' && result.draftShop?.id) {
+        localStorage.setItem('qlaok_active_shop_id', result.draftShop.id);
       }
 
-      router.push('/dashboard/qr-studio');
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : tx('Lỗi khi tạo quán', 'Error creating store')
-      );
+      if (result.redirectHref) {
+        router.push(result.redirectHref);
+      }
     } finally {
       setCreating(false);
     }
   };
+
+  const handleCompleteOnboarding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitOnboardingFlow();
+  };
+
+  const activeErrorMessage =
+    catalogImportFailed && createdDraftShop
+      ? formatOnboardingBulkImportError({
+          locale,
+          shopName: createdDraftShop.name || shopName,
+          serverError: catalogImportServerError,
+        })
+      : errorMsg;
 
   if (checkingAuth) {
     return (
@@ -359,9 +305,36 @@ export default function OnboardingWizardPage() {
           </div>
         </div>
 
-        {errorMsg && (
-          <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs font-bold text-rose-300">
-            ⚠️ {errorMsg}
+        {activeErrorMessage && (
+          <div
+            role="alert"
+            data-testid="onboarding-error-banner"
+            className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-xs font-bold text-rose-300 space-y-2.5"
+          >
+            <p>⚠️ {activeErrorMessage}</p>
+            {catalogImportFailed && createdDraftShop && (
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => void submitOnboardingFlow()}
+                  disabled={creating}
+                  data-testid="onboarding-retry-catalog-import"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-black text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                >
+                  {creating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  <span>
+                    {tx(
+                      'Thử nhập lại món đầu tiên',
+                      'Retry importing first item'
+                    )}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -633,6 +606,30 @@ export default function OnboardingWizardPage() {
               </p>
             </div>
 
+            {createdDraftShop && (
+              <div
+                data-testid="onboarding-draft-preserved"
+                className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs text-emerald-200 space-y-1"
+              >
+                <p className="font-extrabold flex items-center gap-1.5 text-emerald-300">
+                  <Check className="h-4 w-4 shrink-0" />
+                  <span>
+                    {tx(
+                      'Đã lưu quán nháp "{name}" (chưa công khai)',
+                      'Draft store "{name}" saved (unpublished)',
+                      { name: createdDraftShop.name || shopName.trim() }
+                    )}
+                  </span>
+                </p>
+                <p className="text-[11px] text-slate-300">
+                  {tx(
+                    'Khi thử lại, hệ thống sẽ giữ nguyên quán nháp này và chỉ nhập lại món đầu tiên, không tạo trùng cửa hàng.',
+                    'Retrying will keep this draft store and only re-import the first item without creating a duplicate store.'
+                  )}
+                </p>
+              </div>
+            )}
+
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
@@ -681,7 +678,8 @@ export default function OnboardingWizardPage() {
               <button
                 type="button"
                 onClick={() => setStep(2)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-300"
+                disabled={Boolean(createdDraftShop) || creating}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-300 disabled:opacity-40"
               >
                 <ArrowLeft className="h-4 w-4" />
                 <span>{t('common.back')}</span>
@@ -690,22 +688,35 @@ export default function OnboardingWizardPage() {
               <button
                 type="submit"
                 disabled={creating}
+                data-testid="onboarding-submit-step3"
                 className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-6 py-3.5 text-xs font-black text-slate-950 shadow-lg hover:bg-emerald-400 disabled:opacity-50"
               >
                 {creating ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span>
-                      {tx(
-                        'Đang tạo quán & mã QR...',
-                        'Creating store & QR codes...'
-                      )}
+                      {createdDraftShop
+                        ? tx(
+                            'Đang nhập lại món đầu tiên...',
+                            'Retrying first item import...'
+                          )
+                        : tx(
+                            'Đang tạo quán & mã QR...',
+                            'Creating store & QR codes...'
+                          )}
                     </span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-4 w-4" />
-                    <span>{t('onboarding.submitButton')}</span>
+                    <span>
+                      {createdDraftShop
+                        ? tx(
+                            'Thử nhập lại món đầu tiên',
+                            'Retry importing first item'
+                          )
+                        : t('onboarding.submitButton')}
+                    </span>
                   </>
                 )}
               </button>

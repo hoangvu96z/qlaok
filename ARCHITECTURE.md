@@ -1,6 +1,6 @@
 # Kiến trúc Qlaok
 
-Đối chiếu source trong workspace ngày **18/10/2026** qua CodeGraph. Không khẳng định trạng thái production. Bắt đầu với [README](README.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md).
+Đối chiếu source trong workspace ngày **22/10/2026** qua CodeGraph. Không khẳng định trạng thái production. Bắt đầu với [README](README.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md).
 
 ## Các ứng dụng và công nghệ
 
@@ -50,7 +50,7 @@ Các đường `/posts`, `/settings` trong bảng là hậu tố của `/dashboa
 
 API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/service-requests`, `/push-tokens`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
 
-`/api/ai/translate` và `/api/ai/ocr-menu` yêu cầu phiên đăng nhập (`requireAuthenticatedUser`) và giới hạn tần suất in-memory theo user (translate 30 req/10 phút, OCR 10 req/10 phút → 429). OCR thật (không phải `useDemo`) chỉ cho gói có `allowAiOcr` (Premium) hoặc Super Admin, trả `403 PLAN_FEATURE_LOCKED`. `/api/webhooks/payment` không có secret mặc định: thiếu `PAYMENT_WEBHOOK_SECRET` thì mọi webhook từ nhà cung cấp bị từ chối (503); `action=create_order` yêu cầu chủ quán/profile owner hoặc Super Admin đã xác thực (thu ngân/nhân viên bị từ chối 403, chỉ Super Admin được chỉ định `ownerId` khác).
+`/api/ai/translate` và `/api/ai/ocr-menu` yêu cầu phiên đăng nhập (`requireAuthenticatedUser`) và giới hạn tần suất in-memory theo user (translate 30 req/10 phút, OCR 10 req/10 phút → 429). OCR thật (không phải `useDemo`) đi qua `requireAiOcrPlan` (`src/app/api/ai/_lib/guard.ts`): xác định chủ sở hữu của quán đang chọn mà caller có quyền truy cập, kiểm tra gói của chủ quán có `allowAiOcr` (Premium, hoặc Super Admin; nếu không trả `403 PLAN_FEATURE_LOCKED`), đồng thời yêu cầu membership thu ngân/nhân viên phải có quyền chuẩn `catalog.manage` (`403 INSUFFICIENT_SHOP_PERMISSION`). `/api/webhooks/payment` không có secret mặc định: thiếu `PAYMENT_WEBHOOK_SECRET` thì mọi webhook từ nhà cung cấp bị từ chối (503); `action=create_order` yêu cầu chủ quán/profile owner hoặc Super Admin đã xác thực (thu ngân/nhân viên bị từ chối 403, chỉ Super Admin được chỉ định `ownerId` khác).
 
 ## Bảng dữ liệu và file báo cáo
 
@@ -69,7 +69,8 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | `src/lib/order-pricing.ts` | Công thức pricing dùng chung; không nhận tổng client làm nguồn quyết định |
 | `src/lib/server-auth.ts` | Kiểm phiên HMAC hoặc Supabase JWT, auth guards, kiểm quyền shop và admin |
 | `src/lib/shop-permissions.ts` | Membership và quyền theo shop; không dùng local để khôi phục quyền đã revoke |
-| `src/lib/auth-session.ts`, `auth-credentials.ts` | Phiên web/legacy credentials, khởi tạo admin khi được cấu hình |
+| `src/lib/auth-session.ts`, `auth-credentials.ts`, `auth-recovery.ts` | Phiên web/legacy credentials, khởi tạo admin khi được cấu hình, chuẩn hóa khôi phục mật khẩu/OTP đồng bộ với `mobile/src/lib/auth-recovery.ts` |
+| `src/lib/onboarding-flow.ts` | Tạo quán nháp và bulk import danh mục/món đầu tiên; giữ lại `draftShop` đã lưu và dùng ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để retry an toàn sau lỗi một phần |
 | `src/lib/dashboard-context.tsx` | Session, shop đang chọn và membership phía dashboard |
 | `src/lib/order-events.ts` | Broker một upstream privileged subscription cho SSE đã được cấp quyền |
 | `src/lib/order-live-sync.ts` | Fetch SSE, refresh, debounce, fallback và lifecycle trên web |
@@ -86,7 +87,7 @@ CodeGraph trả source và quan hệ để định vị, không chứng minh m�
 1. Guest gửi cart từ `ShowToStaffModal`; POS gửi từ workspace thu ngân. API phân biệt guest và staff, kiểm quyền cho hành động có đặc quyền.
 2. Engine tải catalog của shop, kiểm item/options, tính giá và tổng giảm giá ở server, kiểm tồn theo nhu cầu cộng dồn. Không tin giá client hoặc ID của shop khác.
 3. Khi DB được cấu hình, RPC/commit và schema migration chịu trách nhiệm tính nguyên tử, stock và chống replay. Không báo thành công nếu commit lỗi.
-4. Fulfillment `new → preparing → completed` và `cancelled` tách khỏi `unpaid/paid/refunded`. Đã phục vụ không tự có nghĩa đã nhận tiền; thu, hoàn, hủy, restock phải theo transition/quyền riêng.
+4. Fulfillment `new → preparing → completed` và `cancelled` tách khỏi `unpaid/paid/refunded`. Đã phục vụ không tự có nghĩa đã nhận tiền; thu, hoàn, hủy, restock phải theo transition/quyền riêng. Khi hủy đơn hoặc hoàn tiền trên web và mobile (`mobile/src/lib/order-actions.ts`), giao diện yêu cầu nhập lý do theo ngôn ngữ hiện tại (VI/EN); `PATCH /api/orders` kiểm tra lý do bắt buộc (không rỗng, tối đa 500 ký tự, trả `CANCEL_REASON_REQUIRED` / `REFUND_REASON_REQUIRED` / `REASON_TOO_LONG`) và ghi nhận `cancelled_reason` / `refund_reason` vào đơn cùng audit log.
 5. Bill theo table/session có thể gồm nhiều đơn. Payment idempotency không được áp lại vào lượt gọi món tiếp theo. Client gửi expected total để phát hiện số tiền đã thay đổi.
 6. In bếp/tạm tính/biên nhận có counter riêng. Web ghi nhận yêu cầu in qua browser; mobile preview không được giả lập thành công in phần cứng.
 
@@ -111,7 +112,7 @@ Mobile `useShopRealtimeOrders` dùng Supabase JWT đăng ký trực tiếp theo 
 
 ## Hai miền ngôn ngữ
 
-- Storefront/catalog: `vi/en/ko/ja/zh/es/it/ru`, chịu quota gói và `shop.supported_langs`, preference `qlaok_lang`.
+- Storefront/catalog: `vi/en/ko/ja/zh/es/it/ru`, chịu quota gói và `shop.supported_langs`, preference `qlaok_lang`. Trang storefront (`/s/[slug]`, `/s/[slug]/menu`) và `LanguageSwitcher` chuẩn hóa danh sách ngôn ngữ của quán qua `normalizeShopSupportedLangs` (mặc định `['vi', 'en']` khi chưa cấu hình hợp lệ), giới hạn theo gói chủ quán qua `getAllowedLocalesForPlan` và chỉ hiển thị/cho phép chuyển đúng các ngôn ngữ mà quán hỗ trợ.
 - Web app/marketing/auth/admin: VI/EN, `AppI18nProvider`, preference `qlaok_app_locale`. Nội dung merchant giữ nguyên nếu chưa có bản dịch.
 - Mobile dùng `MobileI18nProvider` và resource riêng; native lưu SecureStore, web localStorage. Đổi locale không được reset draft, fetch lại dữ liệu khởi tạo hay làm lặp chuông.
 

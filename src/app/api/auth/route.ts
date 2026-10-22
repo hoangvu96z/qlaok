@@ -21,6 +21,11 @@ import {
 } from '@/lib/server-auth';
 import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
 import { dbGetUserShopMemberships } from '@/lib/shop-permissions';
+import {
+  formatGenericPasswordRecoveryNotice,
+  isReservedUnsupportedRecoveryEmail,
+  isValidRecoveryEmail,
+} from '@/lib/auth-recovery';
 import type { Profile, Shop, ShopMembership } from '@/types/qlaok';
 
 /**
@@ -95,7 +100,13 @@ export async function POST(req: Request) {
       phone = '',
       supabaseAccessToken = '',
     } = body as {
-      action: 'register' | 'login' | 'demo_login' | 'sync_user' | 'logout';
+      action:
+        | 'register'
+        | 'login'
+        | 'demo_login'
+        | 'sync_user'
+        | 'logout'
+        | 'check_recovery';
       email?: string;
       password?: string;
       fullName?: string;
@@ -111,6 +122,40 @@ export async function POST(req: Request) {
 
     const normalizedEmail = email.trim().toLowerCase();
     const isAdminUser = isSuperAdminEmail(normalizedEmail);
+
+    if (action === 'check_recovery') {
+      if (!isValidRecoveryEmail(normalizedEmail)) {
+        return NextResponse.json(
+          {
+            accepted: false,
+            supported: false,
+            reason: 'invalid_email',
+            code: 'INVALID_EMAIL',
+            error: 'Vui lòng nhập địa chỉ email hợp lệ.',
+          },
+          { status: 400 }
+        );
+      }
+      if (isReservedUnsupportedRecoveryEmail(normalizedEmail) || isAdminUser) {
+        return NextResponse.json(
+          {
+            accepted: false,
+            supported: false,
+            reason: 'unsupported_account',
+            code: 'RECOVERY_UNSUPPORTED_ACCOUNT',
+            error:
+              'Tài khoản dùng thử hoặc quản trị hệ thống không hỗ trợ tự đặt lại mật khẩu qua email.',
+          },
+          { status: 409 }
+        );
+      }
+      // Never inspect custom credentials or DB profiles here to prevent public account enumeration.
+      return NextResponse.json({
+        accepted: true,
+        supported: true,
+        notice: formatGenericPasswordRecoveryNotice(null, 'vi'),
+      });
+    }
 
     // P0 Security Fix: Reject any attempt to register or overwrite the Super Admin account BEFORE DB access
     if (action === 'register') {

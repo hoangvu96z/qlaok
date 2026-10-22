@@ -490,6 +490,39 @@ export function resolveStorefrontMenuTableState(input: {
   };
 }
 
+export const STOREFRONT_MENU_POLL_INTERVAL_MS = 30_000;
+export const STOREFRONT_MENU_STALE_REFRESH_MS = 10_000;
+
+export function shouldRefreshStorefrontCatalog(input: {
+  visibilityState?: string | null;
+  isOnline?: boolean | null;
+  isFetchInFlight?: boolean;
+  lastFetchedAtMs?: number;
+  nowMs?: number;
+  minAgeMs?: number;
+}): boolean {
+  if (input.isFetchInFlight) {
+    return false;
+  }
+  if (input.isOnline === false) {
+    return false;
+  }
+  const vis = (input.visibilityState ?? 'visible').trim().toLowerCase();
+  if (vis === 'hidden' || vis === 'prerender') {
+    return false;
+  }
+  const minAgeMs = Math.max(
+    0,
+    Number(input.minAgeMs ?? STOREFRONT_MENU_POLL_INTERVAL_MS)
+  );
+  const lastFetchedAtMs = Number(input.lastFetchedAtMs ?? 0);
+  const nowMs = Number(input.nowMs ?? Date.now());
+  if (lastFetchedAtMs > 0 && nowMs - lastFetchedAtMs < minAgeMs) {
+    return false;
+  }
+  return true;
+}
+
 export function canUseStorefrontTableServiceActions(input: {
   lockedTable: ShopTable | null;
   tableQrVerified: boolean | null;

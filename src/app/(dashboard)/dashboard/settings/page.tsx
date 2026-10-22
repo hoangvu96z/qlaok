@@ -26,6 +26,7 @@ import {
   Landmark,
   CreditCard,
   Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import { getAuthHeaders } from '@/lib/auth-session';
@@ -38,6 +39,10 @@ import {
   SupportedLocale,
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import {
+  normalizeShopSlugInput,
+  requiresSlugChangeConfirmation,
+} from '@/lib/shop-setup-checklist';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
@@ -173,9 +178,11 @@ export default function DashboardSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [isSlugConfirmModalOpen, setIsSlugConfirmModalOpen] = useState(false);
 
   useEffect(() => {
     if (!activeShop) return;
+    setIsSlugConfirmModalOpen(false);
     setName(activeShop.name);
     setSlug(activeShop.slug);
     setVertical(activeShop.vertical);
@@ -289,8 +296,23 @@ export default function DashboardSettingsPage() {
     }
   };
 
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const slugConfirmation = requiresSlugChangeConfirmation(
+    activeShop.slug,
+    slug
+  );
+
+  const performSaveSettings = async () => {
+    const normalizedSlug = normalizeShopSlugInput(slug);
+    if (!normalizedSlug) {
+      setErrorMsg(
+        tx(
+          'Vui lòng nhập đường dẫn QR (Slug) hợp lệ.',
+          'Please enter a valid QR URL slug.'
+        )
+      );
+      return;
+    }
+
     setSaving(true);
     setErrorMsg('');
     setSavedSuccess(false);
@@ -336,7 +358,7 @@ export default function DashboardSettingsPage() {
         body: JSON.stringify({
           id: activeShop.id,
           name,
-          slug,
+          slug: normalizedSlug,
           vertical,
           logo_url: logoUrl.trim() || null,
           cover_urls: nextCoverUrls,
@@ -370,6 +392,8 @@ export default function DashboardSettingsPage() {
         );
       }
 
+      setSlug(normalizedSlug);
+
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('qlaok_realtime_sync');
         bc.postMessage({ type: 'shop_updated', shopId: activeShop.id });
@@ -388,6 +412,27 @@ export default function DashboardSettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalizedSlug = normalizeShopSlugInput(slug);
+    if (!normalizedSlug) {
+      setErrorMsg(
+        tx(
+          'Vui lòng nhập đường dẫn QR (Slug) hợp lệ.',
+          'Please enter a valid QR URL slug.'
+        )
+      );
+      return;
+    }
+
+    if (slugConfirmation.required) {
+      setIsSlugConfirmModalOpen(true);
+      return;
+    }
+
+    await performSaveSettings();
   };
 
   // Live preview shop object combining current form state + active promotions
@@ -1197,8 +1242,25 @@ export default function DashboardSettingsPage() {
               type="text"
               value={slug}
               onChange={(e) => setSlug(e.target.value)}
+              data-testid="settings-slug-input"
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-mono font-bold text-emerald-700"
             />
+            {slugConfirmation.required && (
+              <p
+                data-testid="settings-slug-changed-warning"
+                className="mt-1.5 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-900"
+              >
+                ⚠️{' '}
+                {tx(
+                  'Đổi từ /s/{oldSlug} sang /s/{newSlug} sẽ làm vô hiệu các bảng mã QR đã in trước đây.',
+                  'Changing /s/{oldSlug} to /s/{newSlug} will invalidate previously printed QR codes.',
+                  {
+                    oldSlug: slugConfirmation.currentNormalized,
+                    newSlug: slugConfirmation.nextNormalized,
+                  }
+                )}
+              </p>
+            )}
           </div>
 
           <div>
@@ -1538,6 +1600,95 @@ export default function DashboardSettingsPage() {
         isOpen={previewPopupOpen}
         onClose={() => setPreviewPopupOpen(false)}
       />
+
+      {/* Slug Change Confirmation Modal */}
+      {isSlugConfirmModalOpen && slugConfirmation.required && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="slug-confirm-modal-title"
+          data-testid="settings-slug-confirm-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-3xl border border-amber-300 bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div className="space-y-1">
+                <h3
+                  id="slug-confirm-modal-title"
+                  className="text-base font-black text-slate-900"
+                >
+                  {tx(
+                    'Xác nhận đổi đường dẫn QR của quán?',
+                    'Confirm changing store QR URL slug?'
+                  )}
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {tx(
+                    'Khi đổi đường dẫn (Slug), mọi mã QR dán cửa và QR tại bàn đã in theo đường dẫn cũ sẽ không còn truy cập được. Bạn sẽ cần tải và in lại mã QR mới trong mục Thiết kế & In QR.',
+                    'Changing your store URL slug invalidates all previously printed Door QR and Table QR codes using the old link. You will need to reprint updated QR codes from QR Studio.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-500">
+                  {tx('Đường dẫn cũ:', 'Current QR path:')}
+                </span>
+                <code className="rounded-lg bg-rose-100 px-2 py-0.5 font-mono font-bold text-rose-800 line-through">
+                  /s/{slugConfirmation.currentNormalized}
+                </code>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-700">
+                  {tx('Đường dẫn mới:', 'New QR path:')}
+                </span>
+                <code className="rounded-lg bg-emerald-100 px-2 py-0.5 font-mono font-bold text-emerald-800">
+                  /s/{slugConfirmation.nextNormalized}
+                </code>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
+              <button
+                type="button"
+                data-testid="settings-slug-confirm-revert"
+                onClick={() => {
+                  setSlug(activeShop.slug);
+                  setIsSlugConfirmModalOpen(false);
+                }}
+                className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+              >
+                {tx('Giữ nguyên đường dẫn cũ', 'Keep original slug')}
+              </button>
+              <button
+                type="button"
+                data-testid="settings-slug-confirm-cancel"
+                onClick={() => setIsSlugConfirmModalOpen(false)}
+                className="rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="settings-slug-confirm-accept"
+                disabled={saving}
+                onClick={() => {
+                  setIsSlugConfirmModalOpen(false);
+                  void performSaveSettings();
+                }}
+                className="rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-black text-slate-950 shadow-sm hover:bg-amber-400 disabled:opacity-50"
+              >
+                {tx('Tôi hiểu, vẫn đổi & lưu', 'I understand, save new slug')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </form>
   );
 }

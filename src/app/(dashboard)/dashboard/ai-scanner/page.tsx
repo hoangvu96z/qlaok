@@ -79,6 +79,7 @@ export default function DashboardAiScannerPage() {
       method: 'POST',
       headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
+        shopId: activeShop.id,
         imageBase64: imgBase64 ?? previewImage ?? undefined,
         mimeType: 'image/webp',
         rawOcrText: textToAnalyze,

@@ -23,11 +23,15 @@ import {
   Clock,
   Activity,
   Loader2,
+  CheckCircle2,
+  Circle,
+  ListChecks,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
+import { evaluateShopSetupChecklist } from '@/lib/shop-setup-checklist';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
@@ -43,6 +47,9 @@ interface AnalyticsSummary {
     percentage: number;
   }>;
   topItems: CatalogItem[];
+  totalCatalogItems?: number;
+  availableCatalogItems?: number;
+  activeTablesCount?: number;
   todayRevenue?: number;
   totalRevenue?: number;
   todayOrdersCount?: number;
@@ -260,6 +267,15 @@ export default function DashboardOverviewPage() {
     (summary?.totalOrdersCount || 0) + (summary?.showToStaffCount || 0) || 18;
   const completedOrders = summary?.completedOrdersCount || 12;
 
+  const setupChecklist = evaluateShopSetupChecklist({
+    shop: activeShop,
+    totalCatalogItems: summary?.totalCatalogItems,
+    availableCatalogItems:
+      summary?.availableCatalogItems ??
+      summary?.topItems?.filter((item) => item.is_available !== false).length,
+    activeTablesCount: summary?.activeTablesCount,
+  });
+
   return (
     <div className="space-y-6">
       {/* Welcome Banner */}
@@ -333,6 +349,128 @@ export default function DashboardOverviewPage() {
             <QrCode className="h-4 w-4 text-emerald-200" />
             <span>{tx('In mã QR', 'Print QR')}</span>
           </Link>
+        </div>
+      </div>
+
+      {/* First-Run Store Setup Checklist (derived from persisted state) */}
+      <div
+        data-testid="dashboard-setup-checklist"
+        className={`rounded-3xl border p-5 shadow-2xs space-y-4 ${
+          setupChecklist.isAllCompleted
+            ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-800/50 dark:bg-slate-900'
+            : 'border-amber-300 bg-white dark:border-amber-500/40 dark:bg-slate-900'
+        }`}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${
+                setupChecklist.isAllCompleted
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-amber-400 text-slate-950'
+              }`}
+            >
+              <ListChecks className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                  {setupChecklist.isAllCompleted
+                    ? tx(
+                        'Đã hoàn tất thiết lập cửa hàng (5/5)',
+                        'Essential store setup complete (5/5)'
+                      )
+                    : tx(
+                        'Checklist thiết lập quán lần đầu',
+                        'First-run store setup checklist'
+                      )}
+                </h2>
+                <span
+                  data-testid="dashboard-setup-progress-badge"
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
+                    setupChecklist.isAllCompleted
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-100 text-amber-900'
+                  }`}
+                >
+                  {tx(
+                    '{done}/{total} bước hoàn tất',
+                    '{done}/{total} completed',
+                    {
+                      done: setupChecklist.completedCount,
+                      total: setupChecklist.totalCount,
+                    }
+                  )}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+                {setupChecklist.isAllCompleted
+                  ? tx(
+                      'Thông tin liên hệ, VietQR, thực đơn, mã QR bàn và trạng thái công khai của quán đều đã sẵn sàng đón khách.',
+                      'Store contact info, VietQR payment, menu items, table QR codes, and live status are all configured.'
+                    )
+                  : tx(
+                      'Hoàn thành các bước cơ bản dưới đây để khách quét QR tại bàn, gọi món và thanh toán trơn tru.',
+                      'Complete these essential steps so guests can scan table QR codes, order, and pay smoothly.'
+                    )}
+              </p>
+            </div>
+          </div>
+
+          <div className="w-full sm:w-44 shrink-0 space-y-1">
+            <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 dark:text-slate-300">
+              <span>{tx('Tiến độ', 'Progress')}</span>
+              <span>{setupChecklist.progressPercent}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                style={{ width: `${setupChecklist.progressPercent}%` }}
+                className="h-full rounded-full bg-emerald-600 transition-all duration-300"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2.5">
+          {setupChecklist.steps.map((step) => (
+            <Link
+              key={step.id}
+              href={step.href}
+              data-testid={`setup-checklist-step-${step.id}`}
+              data-completed={step.completed ? 'true' : 'false'}
+              className={`group flex flex-col justify-between rounded-2xl border p-3.5 transition-all ${
+                step.completed
+                  ? 'border-emerald-200 bg-white/90 hover:border-emerald-400 dark:border-emerald-900/50 dark:bg-slate-950/60'
+                  : 'border-amber-200 bg-amber-50/50 hover:border-amber-400 hover:bg-amber-50 dark:border-slate-800 dark:bg-slate-950'
+              }`}
+            >
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  {step.completed ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      {tx('Đã xong', 'Done')}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-200/80 px-2 py-0.5 text-[10px] font-extrabold text-amber-950">
+                      <Circle className="h-3 w-3 text-amber-700" />
+                      {tx('Cần thiết lập', 'Action needed')}
+                    </span>
+                  )}
+                  <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-emerald-600 transition-colors" />
+                </div>
+                <h3 className="text-xs font-extrabold text-slate-900 dark:text-white">
+                  {tx(step.titleVi, step.titleEn)}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {tx(step.descVi, step.descEn)}
+                </p>
+              </div>
+              <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-black text-emerald-700 dark:text-emerald-400 group-hover:underline">
+                {tx(step.ctaVi, step.ctaEn)} →
+              </span>
+            </Link>
+          ))}
         </div>
       </div>
 

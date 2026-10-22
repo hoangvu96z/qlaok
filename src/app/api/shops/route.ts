@@ -72,7 +72,11 @@ export async function GET(req: Request) {
       allowUnpublished = data.shops.some((s) => s.slug === slug);
     }
 
-    const bundle = await dbGetStorefrontBundle(slug, { allowUnpublished });
+    const view = (searchParams.get('view') ?? '').trim().toLowerCase();
+    const bundle = await dbGetStorefrontBundle(slug, {
+      allowUnpublished,
+      includePosts: view !== 'menu',
+    });
     if (!bundle) {
       return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
     }

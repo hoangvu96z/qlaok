@@ -34,6 +34,11 @@ import {
   supabase,
 } from './src/lib/supabase';
 import {
+  buildOrderStatusPatchPayload,
+  MAX_ORDER_REASON_LENGTH,
+  type MobileOrderStatusUpdateOptions,
+} from './src/lib/order-actions';
+import {
   type NotificationTapRoute,
   resolveNotificationTapTargetShop,
 } from './src/lib/push-notifications';
@@ -613,12 +618,38 @@ function Workspace({ userId }: { userId: string }) {
     async (
       orderId: string,
       status: 'new' | 'preparing' | 'completed' | 'cancelled',
-      payment_status?: MobileOrderPaymentStatus
+      payment_status?: MobileOrderPaymentStatus,
+      options?: MobileOrderStatusUpdateOptions
     ) => {
       if (!activeShop) return;
       const shopId = activeShop.id;
       const generation = loadGeneration.current;
       if (scopeRef.current !== shopId || pendingOrders.current.has(orderId)) return;
+
+      const existingOrder = orders.find((o) => o.id === orderId) ?? null;
+      const built = buildOrderStatusPatchPayload({
+        shopId,
+        orderId,
+        status,
+        payment_status,
+        existingOrder,
+        options,
+      });
+      if (!built.ok) {
+        if (built.code === 'REFUND_REASON_REQUIRED') {
+          setOrderError(t('orders.refundReasonRequired'));
+        } else if (built.code === 'CANCEL_REASON_REQUIRED') {
+          setOrderError(t('orders.cancelReasonRequired'));
+        } else if (built.code === 'REASON_TOO_LONG') {
+          setOrderError(
+            t('orders.reasonTooLong', { max: MAX_ORDER_REASON_LENGTH })
+          );
+        } else if (built.code === 'PAID_ORDER_REQUIRES_REFUND_FIRST') {
+          setOrderError(t('orders.paidCancelRequiresRefund'));
+        }
+        return;
+      }
+
       pendingOrders.current.add(orderId);
       setPendingOrderIds((prev) =>
         prev.includes(orderId) ? prev : [...prev, orderId]
@@ -628,17 +659,7 @@ function Workspace({ userId }: { userId: string }) {
         const response = await fetchApi('/api/orders', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shop_id: shopId,
-            orderId,
-            status,
-            payment_status,
-            ...(payment_status === 'refunded' ? { refund_reason: 'Hoàn tiền xác nhận tại quầy' } : {}),
-            ...(status === 'cancelled' && orders.find((o) => o.id === orderId)?.status !== 'new' ? { restock_items: false } : {}),
-            ...(payment_status === 'paid'
-              ? { payment_idempotency_key: `${orderId}:paid`, expected_total: orders.find((o) => o.id === orderId)?.total_amount }
-              : {}),
-          }),
+          body: JSON.stringify(built.payload),
         });
         const { order } = await response.json();
         if (!order || order.id !== orderId || order.shop_id !== shopId) {

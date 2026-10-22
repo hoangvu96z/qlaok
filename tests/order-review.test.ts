@@ -22,8 +22,12 @@ import {
 } from '@/lib/db';
 import { setShopMembershipDbClientForTest } from '@/lib/shop-permissions';
 import { issueSessionToken, SESSION_COOKIE_NAME } from '@/lib/server-auth';
-import { GET as getOrdersRoute } from '@/app/api/orders/route';
+import {
+  GET as getOrdersRoute,
+  PATCH as patchOrdersRoute,
+} from '@/app/api/orders/route';
 import { buildMobileOverviewMetrics } from '../mobile/src/lib/overview-metrics';
+import { buildOrderStatusPatchPayload } from '../mobile/src/lib/order-actions';
 
 test('engine commits against isolated PostgreSQL, rejects failed writes, and enforces payment/stock invariants', async () => {
   const db = new PGlite({ extensions: { uuid_ossp } });
@@ -561,6 +565,144 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     assert.equal(staffJson.stats.totalOrdersCount, 1005);
     assert.equal(staffJson.stats.newOrdersCount, 1);
     assert.equal(staffJson.stats.preparingOrdersCount, 1);
+
+    // 7. PATCH /api/orders requires non-empty refund_reason and cancelled_reason and persists user-entered reasons
+    const orderForRefund = await dbCreateOrder({
+      shop_id: 'stats-shop',
+      table_label: 'Bàn 08',
+      items: [
+        {
+          item_id: 'stats-item',
+          name_vi: 'Cà phê muối',
+          quantity: 1,
+          unit_price: 10000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(orderForRefund.id, {
+      status: 'completed',
+      payment_status: 'paid',
+      expected_total: 10000,
+    });
+
+    const emptyRefundRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${ownerToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'stats-shop',
+          orderId: orderForRefund.id,
+          status: 'completed',
+          payment_status: 'refunded',
+          refund_reason: '   ',
+        }),
+      })
+    );
+    assert.equal(emptyRefundRes.status, 400);
+    const emptyRefundJson = await emptyRefundRes.json();
+    assert.equal(emptyRefundJson.code, 'REFUND_REASON_REQUIRED');
+
+    const mobileRefundBuilt = buildOrderStatusPatchPayload({
+      shopId: 'stats-shop',
+      orderId: orderForRefund.id,
+      status: 'completed',
+      payment_status: 'refunded',
+      options: { refundReason: '  Khách báo món bị nguội  ' },
+    });
+    assert.equal(mobileRefundBuilt.ok, true);
+    if (mobileRefundBuilt.ok) {
+      const validRefundRes = await patchOrdersRoute(
+        new Request('http://localhost/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: `${SESSION_COOKIE_NAME}=${ownerToken}`,
+          },
+          body: JSON.stringify(mobileRefundBuilt.payload),
+        })
+      );
+      assert.equal(validRefundRes.status, 200);
+      const validRefundJson = await validRefundRes.json();
+      assert.equal(validRefundJson.order.payment_status, 'refunded');
+      assert.equal(
+        validRefundJson.order.refund_reason,
+        'Khách báo món bị nguội'
+      );
+    }
+
+    const orderForCancel = await dbCreateOrder({
+      shop_id: 'stats-shop',
+      table_label: 'Bàn 09',
+      items: [
+        {
+          item_id: 'stats-item',
+          name_vi: 'Cà phê muối',
+          quantity: 1,
+          unit_price: 10000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(orderForCancel.id, { status: 'preparing' });
+
+    const emptyCancelRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${ownerToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'stats-shop',
+          orderId: orderForCancel.id,
+          status: 'cancelled',
+        }),
+      })
+    );
+    assert.equal(emptyCancelRes.status, 400);
+    const emptyCancelJson = await emptyCancelRes.json();
+    assert.equal(emptyCancelJson.code, 'CANCEL_REASON_REQUIRED');
+
+    const mobileCancelBuilt = buildOrderStatusPatchPayload({
+      shopId: 'stats-shop',
+      orderId: orderForCancel.id,
+      status: 'cancelled',
+      existingOrder: {
+        id: orderForCancel.id,
+        status: 'preparing',
+        payment_status: 'unpaid',
+        total_amount: 10000,
+      },
+      options: { cancelledReason: '  Khách hủy món khi đang làm  ' },
+    });
+    assert.equal(mobileCancelBuilt.ok, true);
+    if (mobileCancelBuilt.ok) {
+      const validCancelRes = await patchOrdersRoute(
+        new Request('http://localhost/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: `${SESSION_COOKIE_NAME}=${ownerToken}`,
+          },
+          body: JSON.stringify(mobileCancelBuilt.payload),
+        })
+      );
+      assert.equal(validCancelRes.status, 200);
+      const validCancelJson = await validCancelRes.json();
+      assert.equal(validCancelJson.order.status, 'cancelled');
+      assert.equal(
+        validCancelJson.order.cancelled_reason,
+        'Khách hủy món khi đang làm'
+      );
+      assert.equal(mobileCancelBuilt.payload.restock_items, false);
+      assert.equal(validCancelJson.order.waste_recorded, true);
+    }
   } finally {
     setMposDbClientForTests(null);
     setSupabaseDbClientForTests(null);

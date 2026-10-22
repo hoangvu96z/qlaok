@@ -68,7 +68,9 @@ import {
 } from '@/lib/server-auth';
 import {
   hashPassword,
+  readCredentials,
   verifyPassword,
+  writeCredentials,
 } from '@/lib/auth-credentials';
 import { GET as adminGet, POST as adminPost } from '@/app/api/admin/route';
 import { POST as authPost } from '@/app/api/auth/route';
@@ -83,7 +85,44 @@ import {
   POST as shopsPost,
   PATCH as shopsPatch,
 } from '@/app/api/shops/route';
-import type { CatalogItem, OpeningHours } from '@/types/qlaok';
+import {
+  shouldRefreshStorefrontCatalog,
+  STOREFRONT_MENU_POLL_INTERVAL_MS,
+  STOREFRONT_MENU_STALE_REFRESH_MS,
+} from '@/lib/table-helpers';
+import {
+  evaluateShopSetupChecklist,
+  hasConfiguredStoreInfo,
+  normalizeShopSlugInput,
+  requiresSlugChangeConfirmation,
+} from '@/lib/shop-setup-checklist';
+import {
+  buildPasswordRecoveryRedirectUrl,
+  completeMobilePasswordRecoveryWithCode,
+  completePasswordRecoverySession,
+  formatGenericPasswordRecoveryNotice,
+  parseRecoveryUrlSignals,
+  requestMobilePasswordRecovery,
+  resolveLoginAuthMode,
+} from '../mobile/src/lib/auth-recovery';
+import {
+  buildPasswordRecoveryRedirectUrl as buildWebPasswordRecoveryRedirectUrl,
+  completePasswordRecoverySession as completeWebPasswordRecoverySession,
+  formatGenericPasswordRecoveryNotice as formatWebGenericPasswordRecoveryNotice,
+  parseRecoveryUrlSignals as parseWebRecoveryUrlSignals,
+  resolveLoginAuthMode as resolveWebLoginAuthMode,
+} from '@/lib/auth-recovery';
+import {
+  buildOnboardingFirstCategoryId,
+  buildOnboardingFirstItemId,
+  executeOnboardingCompletion,
+  formatOnboardingBulkImportError,
+} from '@/lib/onboarding-flow';
+import {
+  dbBulkImportCatalog,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
+import type { CatalogItem, Category, OpeningHours, Shop } from '@/types/qlaok';
 
 // ============================================================================
 // SUITE 1: VIETNAM 34 PROVINCES & CITIES
@@ -2559,5 +2598,1094 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
     assert.deepEqual(normalizeShopSupportedLangs([]), ['vi', 'en']);
     assert.deepEqual(normalizeShopSupportedLangs(undefined), ['vi', 'en']);
     assert.deepEqual(getAllowedLocalesForPlan('premium', normalizeShopSupportedLangs(['vi'])), ['vi']);
+  });
+
+  test('G.8 LanguageSwitcher shows only the configured locale for one-language stores while omitted supportedLangs retains ALL_LOCALES', async () => {
+    await import('./tsx-review-loader.mjs');
+    const React = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { LanguageSwitcher } = await import(
+      '@/components/storefront/LanguageSwitcher'
+    );
+
+    const oneLangVi = getAllowedLocalesForPlan(
+      'premium',
+      normalizeShopSupportedLangs(['vi'])
+    );
+    assert.deepEqual(oneLangVi, ['vi']);
+
+    const singleViHtml = renderToStaticMarkup(
+      React.createElement(LanguageSwitcher, {
+        currentLocale: 'vi',
+        supportedLangs: oneLangVi,
+        onChange: () => {},
+      })
+    );
+    assert.ok(singleViHtml.includes(LOCALE_META.vi.nativeName));
+    for (const loc of ALL_LOCALES) {
+      if (loc === 'vi') continue;
+      assert.equal(
+        singleViHtml.includes(LOCALE_META[loc].nativeName),
+        false,
+        `One-language store (vi) must not show ${loc}`
+      );
+    }
+
+    const freePlanSingleHtml = renderToStaticMarkup(
+      React.createElement(LanguageSwitcher, {
+        currentLocale: 'ko',
+        supportedLangs: getAllowedLocalesForPlan(
+          'free',
+          normalizeShopSupportedLangs(['ko', 'en'])
+        ),
+        onChange: () => {},
+      })
+    );
+    assert.ok(freePlanSingleHtml.includes(LOCALE_META.ko.nativeName));
+    for (const loc of ALL_LOCALES) {
+      if (loc === 'ko') continue;
+      assert.equal(
+        freePlanSingleHtml.includes(LOCALE_META[loc].nativeName),
+        false,
+        `Free-plan one-language store (ko) must not show ${loc}`
+      );
+    }
+
+    const omittedPropHtml = renderToStaticMarkup(
+      React.createElement(LanguageSwitcher, {
+        currentLocale: 'vi',
+        onChange: () => {},
+      })
+    );
+    for (const loc of ALL_LOCALES) {
+      assert.ok(
+        omittedPropHtml.includes(LOCALE_META[loc].nativeName),
+        `Omitted supportedLangs prop must retain default ALL_LOCALES (${loc})`
+      );
+    }
+  });
+});
+
+describe('Screen flow audit residuals: menu polling, mobile password recovery, setup checklist, slug confirmation', () => {
+  test('R.1 storefront menu polling uses 30s visible interval, pauses when hidden/offline/in-flight, and view=menu omits posts payload', async () => {
+    assert.equal(STOREFRONT_MENU_POLL_INTERVAL_MS, 30_000);
+    assert.equal(STOREFRONT_MENU_STALE_REFRESH_MS, 10_000);
+
+    // Pauses when tab is hidden
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'hidden',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 1_000,
+        nowMs: 60_000,
+      }),
+      false
+    );
+
+    // Pauses when offline
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: false,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 1_000,
+        nowMs: 60_000,
+      }),
+      false
+    );
+
+    // Pauses when a request is already in flight
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: true,
+        lastFetchedAtMs: 1_000,
+        nowMs: 60_000,
+      }),
+      false
+    );
+
+    // Skips when fetched recently within minAgeMs
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 50_000,
+        nowMs: 55_000,
+        minAgeMs: STOREFRONT_MENU_POLL_INTERVAL_MS,
+      }),
+      false
+    );
+
+    // Allows refresh when visible, online, idle, and older than minAgeMs
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 10_000,
+        nowMs: 41_000,
+        minAgeMs: STOREFRONT_MENU_POLL_INTERVAL_MS,
+      }),
+      true
+    );
+
+    // GET /api/shops?slug=pho-hoi-an&view=menu omits posts while keeping menu catalog & tables
+    const menuRes = await shopsGet(
+      new Request('http://localhost:3000/api/shops?slug=pho-hoi-an&view=menu')
+    );
+    assert.equal(menuRes.status, 200);
+    const menuPayload = await menuRes.json();
+    assert.equal(menuPayload.shop?.slug, 'pho-hoi-an');
+    assert.ok(Array.isArray(menuPayload.categories) && menuPayload.categories.length > 0);
+    assert.ok(Array.isArray(menuPayload.items) && menuPayload.items.length > 0);
+    assert.ok(Array.isArray(menuPayload.tables));
+    assert.deepEqual(menuPayload.posts, []);
+  });
+
+  test('R.2 password recovery routes to /login?mode=reset, handles Supabase recovery sessions + updateUser, preserves mobile OTP recovery, and rejects demo/admin/custom-credential accounts', async () => {
+    // 0. Redirect URL and URL mode/session signal resolution
+    assert.equal(
+      buildPasswordRecoveryRedirectUrl('https://qlaok.vunph.click/'),
+      'https://qlaok.vunph.click/login?mode=reset'
+    );
+    assert.equal(
+      buildWebPasswordRecoveryRedirectUrl('https://qlaok.com'),
+      'https://qlaok.com/login?mode=reset'
+    );
+
+    assert.equal(
+      resolveLoginAuthMode({
+        searchParams: new URLSearchParams('mode=reset'),
+      }),
+      'reset'
+    );
+    assert.equal(
+      resolveWebLoginAuthMode({
+        searchParams: new URLSearchParams('mode=otp'),
+      }),
+      'otp'
+    );
+    assert.equal(
+      resolveWebLoginAuthMode({
+        searchParams: new URLSearchParams('mode=register'),
+      }),
+      'register'
+    );
+    assert.equal(
+      resolveWebLoginAuthMode({
+        searchParams: new URLSearchParams('mode=login'),
+      }),
+      'password_login'
+    );
+
+    const hashRecoverySignals = parseWebRecoveryUrlSignals({
+      searchParams: new URLSearchParams('mode=reset'),
+      hash: '#access_token=sb-rec-tok&refresh_token=sb-ref&type=recovery',
+    });
+    assert.equal(hashRecoverySignals.isResetMode, true);
+    assert.equal(hashRecoverySignals.hasRecoveryCallbackSignal, true);
+    assert.equal(hashRecoverySignals.accessToken, 'sb-rec-tok');
+
+    const tokenHashSignals = parseRecoveryUrlSignals({
+      searchParams: new URLSearchParams('token_hash=th_abc123&type=recovery'),
+    });
+    assert.equal(tokenHashSignals.isResetMode, true);
+    assert.equal(tokenHashSignals.hasRecoveryCallbackSignal, true);
+    assert.equal(tokenHashSignals.tokenHash, 'th_abc123');
+
+    const pkceSignals = parseWebRecoveryUrlSignals({
+      searchParams: new URLSearchParams('mode=reset&code=pkce_code_99'),
+    });
+    assert.equal(pkceSignals.isResetMode, true);
+    assert.equal(pkceSignals.hasRecoveryCallbackSignal, true);
+    assert.equal(pkceSignals.code, 'pkce_code_99');
+
+    const expiredHashSignals = parseWebRecoveryUrlSignals({
+      searchParams: new URLSearchParams(''),
+      hash: '#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired',
+    });
+    assert.equal(expiredHashSignals.isResetMode, true);
+    assert.equal(
+      expiredHashSignals.hashErrorDescription,
+      'Email link is invalid or has expired'
+    );
+
+    // 1. Invalid email rejected before network call
+    let called = false;
+    const invalidRes = await requestMobilePasswordRecovery({
+      email: 'not-an-email',
+      authClient: {
+        resetPasswordForEmail: async () => {
+          called = true;
+          return { data: {}, error: null };
+        },
+      },
+    });
+    assert.equal(invalidRes.ok, false);
+    if (!invalidRes.ok) {
+      assert.equal(invalidRes.reason, 'invalid_email');
+    }
+    assert.equal(called, false);
+
+    // 2. Demo & system accounts report unsupported_account
+    const demoRes = await requestMobilePasswordRecovery({
+      email: '  CHUQUAN@qlaok.vn ',
+      authClient: {
+        resetPasswordForEmail: async () => ({ data: {}, error: null }),
+      },
+    });
+    assert.equal(demoRes.ok, false);
+    if (!demoRes.ok) {
+      assert.equal(demoRes.reason, 'unsupported_account');
+    }
+
+    // 2b. Public /api/auth check_recovery and helpers cannot be used to enumerate custom-credential vs unknown emails
+    const initialCreds = readCredentials();
+    const customEmail = 'custom-cred-owner@example.com';
+    const unknownEmail = 'unknown-nonexistent-owner@example.com';
+    try {
+      writeCredentials({
+        ...initialCreds,
+        [customEmail]: {
+          passwordHash: hashPassword('customPass123'),
+          profileId: 'owner-custom-cred-test',
+        },
+      });
+
+      const demoCheckRes = await authPost(
+        new Request('http://localhost/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'check_recovery',
+            email: 'chuquan@qlaok.vn',
+          }),
+        })
+      );
+      assert.equal(demoCheckRes.status, 409);
+      const demoCheckBody = await demoCheckRes.json();
+      assert.equal(demoCheckBody.supported, false);
+      assert.equal(demoCheckBody.reason, 'unsupported_account');
+
+      const adminCheckRes = await authPost(
+        new Request('http://localhost/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'check_recovery',
+            email: 'hoangvu96z@gmail.com',
+          }),
+        })
+      );
+      assert.equal(adminCheckRes.status, 409);
+
+      const customCheckRes = await authPost(
+        new Request('http://localhost/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'check_recovery',
+            email: customEmail,
+          }),
+        })
+      );
+      const unknownCheckRes = await authPost(
+        new Request('http://localhost/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'check_recovery',
+            email: unknownEmail,
+          }),
+        })
+      );
+
+      // Identical HTTP status and identical JSON payload for custom-credential and unknown emails
+      assert.equal(customCheckRes.status, 200);
+      assert.equal(unknownCheckRes.status, 200);
+      const customCheckBody = await customCheckRes.json();
+      const unknownCheckBody = await unknownCheckRes.json();
+      assert.deepEqual(customCheckBody, unknownCheckBody);
+      assert.equal(customCheckBody.accepted, true);
+      assert.equal(customCheckBody.supported, true);
+      assert.match(customCheckBody.notice, /^Nếu email thuộc tài khoản/);
+      assert.doesNotMatch(customCheckBody.notice, /^Đã gửi/i);
+
+      // Client helper also returns uniform generic guidance without confirming account existence
+      const viGeneric = formatGenericPasswordRecoveryNotice(customEmail, 'vi');
+      const enGeneric = formatWebGenericPasswordRecoveryNotice(
+        unknownEmail,
+        'en'
+      );
+      assert.match(viGeneric, /^Nếu custom-cred-owner@example\.com/);
+      assert.match(viGeneric, /Tài khoản mật khẩu nội bộ, dùng thử hoặc quản trị/);
+      assert.doesNotMatch(viGeneric, /^Đã gửi/i);
+      assert.match(enGeneric, /^If unknown-nonexistent-owner@example\.com/);
+      assert.match(enGeneric, /Local-password, demo, or admin accounts/);
+      assert.doesNotMatch(enGeneric, /^Reset instructions sent/i);
+    } finally {
+      writeCredentials(initialCreds);
+    }
+
+    // 3. Missing authClient reports unsupported_provider
+    const noProviderRes = await requestMobilePasswordRecovery({
+      email: 'owner@example.com',
+      authClient: null,
+    });
+    assert.equal(noProviderRes.ok, false);
+    if (!noProviderRes.ok) {
+      assert.equal(noProviderRes.reason, 'unsupported_provider');
+    }
+
+    // 4. Rate-limited error classified as rate_limited
+    const rateLimitedRes = await requestMobilePasswordRecovery({
+      email: 'owner@example.com',
+      authClient: {
+        resetPasswordForEmail: async () => ({
+          data: null,
+          error: {
+            message:
+              'For security purposes, you can only request this once every 60 seconds',
+            status: 429,
+          },
+        }),
+      },
+    });
+    assert.equal(rateLimitedRes.ok, false);
+    if (!rateLimitedRes.ok) {
+      assert.equal(rateLimitedRes.reason, 'rate_limited');
+    }
+
+    // 5. Valid recovery request passes normalized email and redirectTo pointing to /login?mode=reset
+    let capturedEmail = '';
+    let capturedRedirect = '';
+    const redirectUrl = buildPasswordRecoveryRedirectUrl(
+      'https://qlaok.vunph.click'
+    );
+    const okRes = await requestMobilePasswordRecovery({
+      email: '  Owner.Cafe@Example.com ',
+      redirectTo: redirectUrl,
+      authClient: {
+        resetPasswordForEmail: async (email, options) => {
+          capturedEmail = email;
+          capturedRedirect = options?.redirectTo || '';
+          return { data: {}, error: null };
+        },
+      },
+    });
+    assert.equal(okRes.ok, true);
+    if (okRes.ok) {
+      assert.equal(okRes.email, 'owner.cafe@example.com');
+      assert.equal(okRes.redirectTo, 'https://qlaok.vunph.click/login?mode=reset');
+    }
+    assert.equal(capturedEmail, 'owner.cafe@example.com');
+    assert.equal(
+      capturedRedirect,
+      'https://qlaok.vunph.click/login?mode=reset'
+    );
+
+    // 6. Completing recovery from an active Supabase PASSWORD_RECOVERY session validates inputs and calls updateUser
+    const mismatchSessionRes = await completeWebPasswordRecoverySession({
+      email: 'owner.cafe@example.com',
+      newPassword: 'newpassword123',
+      confirmPassword: 'differentPassword123',
+      authClient: {
+        updateUser: async () => ({ data: {}, error: null }),
+      },
+    });
+    assert.equal(mismatchSessionRes.ok, false);
+    if (!mismatchSessionRes.ok) {
+      assert.equal(mismatchSessionRes.reason, 'password_mismatch');
+    }
+
+    let sessionUpdatedPassword = '';
+    const sessionCompletedRes = await completePasswordRecoverySession({
+      newPassword: 'updatedViaSessionLink!',
+      confirmPassword: 'updatedViaSessionLink!',
+      authClient: {
+        updateUser: async ({ password }) => {
+          sessionUpdatedPassword = password;
+          return {
+            data: { user: { email: 'Owner.Cafe@Example.com' } },
+            error: null,
+          };
+        },
+      },
+    });
+    assert.equal(sessionCompletedRes.ok, true);
+    if (sessionCompletedRes.ok) {
+      assert.equal(sessionCompletedRes.email, 'owner.cafe@example.com');
+    }
+    assert.equal(sessionUpdatedPassword, 'updatedViaSessionLink!');
+
+    // 7. Completing recovery with OTP code + new password validates inputs and updates password
+    const shortCodeRes = await completeMobilePasswordRecoveryWithCode({
+      email: 'owner.cafe@example.com',
+      code: '123',
+      newPassword: 'newpassword123',
+      authClient: {},
+    });
+    assert.equal(shortCodeRes.ok, false);
+    if (!shortCodeRes.ok) {
+      assert.equal(shortCodeRes.reason, 'invalid_code');
+    }
+
+    const weakPassRes = await completeMobilePasswordRecoveryWithCode({
+      email: 'owner.cafe@example.com',
+      code: '123456',
+      newPassword: '123',
+      authClient: {},
+    });
+    assert.equal(weakPassRes.ok, false);
+    if (!weakPassRes.ok) {
+      assert.equal(weakPassRes.reason, 'weak_password');
+    }
+
+    let verifiedOtpToken = '';
+    let updatedPassword = '';
+    const completedRes = await completeMobilePasswordRecoveryWithCode({
+      email: 'Owner.Cafe@Example.com',
+      code: ' 654321 ',
+      newPassword: 'strongNewPassword!',
+      confirmPassword: 'strongNewPassword!',
+      authClient: {
+        verifyOtp: async (params) => {
+          assert.equal(params.type, 'recovery');
+          verifiedOtpToken = 'token' in params ? params.token : '';
+          return { data: { session: { access_token: 'tok-1' } }, error: null };
+        },
+        updateUser: async ({ password }) => {
+          updatedPassword = password;
+          return { data: {}, error: null };
+        },
+      },
+    });
+    assert.equal(completedRes.ok, true);
+    assert.equal(verifiedOtpToken, '654321');
+    assert.equal(updatedPassword, 'strongNewPassword!');
+  });
+
+  test('R.3 evaluateShopSetupChecklist derives completion purely from persisted store, payment, catalog, table, and publish state', () => {
+    const draftShop: Shop = {
+      ...SEED_SHOPS[0],
+      id: 'shop-draft-setup-test',
+      name: 'Quán Mới Khởi Tạo',
+      slug: 'quan-moi-khoi-tao',
+      address: 'Đà Nẵng',
+      city: 'Đà Nẵng',
+      phone_contact: '',
+      zalo_phone: '',
+      wifi_info: { ssid: '', password: '' },
+      theme_config: { primaryColor: '#10b981', layout: 'list' },
+      is_published: false,
+    };
+
+    assert.equal(hasConfiguredStoreInfo(draftShop), false);
+    const initialChecklist = evaluateShopSetupChecklist({
+      shop: draftShop,
+      totalCatalogItems: 0,
+      availableCatalogItems: 0,
+      activeTablesCount: 0,
+    });
+    assert.equal(initialChecklist.completedCount, 0);
+    assert.equal(initialChecklist.totalCount, 5);
+    assert.equal(initialChecklist.isAllCompleted, false);
+
+    const readyShop: Shop = {
+      ...draftShop,
+      address: '88 Trần Phú, Hải Châu',
+      phone_contact: '0912345678',
+      wifi_info: { ssid: 'QuanMoi_5G', password: 'mypassword' },
+      theme_config: {
+        primaryColor: '#10b981',
+        layout: 'list',
+        paymentConfig: {
+          mode: 'vietqr_auto',
+          bankId: 'MB',
+          bankName: 'MB Bank',
+          accountNumber: '0912345678',
+          accountName: 'NGUYEN VAN B',
+        },
+      },
+      is_published: true,
+    };
+
+    const fullChecklist = evaluateShopSetupChecklist({
+      shop: readyShop,
+      totalCatalogItems: 5,
+      availableCatalogItems: 5,
+      activeTablesCount: 6,
+    });
+    assert.equal(fullChecklist.completedCount, 5);
+    assert.equal(fullChecklist.progressPercent, 100);
+    assert.equal(fullChecklist.isAllCompleted, true);
+  });
+
+  test('R.4 requiresSlugChangeConfirmation requires confirmation only when normalized slug actually changes', () => {
+    assert.equal(normalizeShopSlugInput('  Phở Hội An #1  '), 'pho-hoi-an-1');
+
+    const unchanged = requiresSlugChangeConfirmation(
+      'pho-hoi-an',
+      '  PHO-HOI-AN '
+    );
+    assert.equal(unchanged.required, false);
+    assert.equal(unchanged.currentNormalized, 'pho-hoi-an');
+    assert.equal(unchanged.nextNormalized, 'pho-hoi-an');
+
+    const changed = requiresSlugChangeConfirmation(
+      'pho-hoi-an',
+      'pho-hoi-an-branch-2'
+    );
+    assert.equal(changed.required, true);
+    assert.equal(changed.currentNormalized, 'pho-hoi-an');
+    assert.equal(changed.nextNormalized, 'pho-hoi-an-branch-2');
+  });
+
+  test('R.5 executeOnboardingCompletion checks bulk_import !res.ok, preserves draft shop without redirecting, and retries catalog import without creating duplicate shops', async () => {
+    let translateCalls = 0;
+    let shopCreateCalls = 0;
+    let catalogImportCalls = 0;
+    let shouldFailCatalog = true;
+    const savedDraftIds: string[] = [];
+
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/ai/translate') {
+        translateCalls += 1;
+        return new Response(
+          JSON.stringify({
+            category_i18n: { vi: 'Món Đặc Trưng', en: 'Signature' },
+            name_i18n: { vi: 'Bạc xỉu đá', en: 'Iced White Coffee' },
+            desc_i18n: { vi: 'Thơm béo', en: 'Creamy' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url === '/api/shops') {
+        shopCreateCalls += 1;
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          name?: string;
+          slug?: string;
+          is_published?: boolean;
+        };
+        assert.equal(
+          body.is_published,
+          false,
+          'Onboarding must create store as an unpublished draft'
+        );
+        return new Response(
+          JSON.stringify({
+            shop: {
+              id: `shop-onboard-draft-${shopCreateCalls}`,
+              name: body.name || 'Cà Phê Phố Cổ',
+              slug: body.slug || 'ca-phe-pho-co',
+              is_published: false,
+            },
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url === '/api/catalog') {
+        catalogImportCalls += 1;
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          action?: string;
+          shopId?: string;
+        };
+        assert.equal(body.action, 'bulk_import');
+        assert.equal(body.shopId, 'shop-onboard-draft-1');
+        if (shouldFailCatalog) {
+          return new Response(
+            JSON.stringify({
+              error: 'Không thể ghi dữ liệu danh mục vào cơ sở dữ liệu.',
+            }),
+            { status: 500, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            createdCategories: [{ id: 'cat-1' }],
+            createdItems: [{ id: 'item-1' }],
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+
+    // 1. First attempt: shop creation succeeds, bulk_import returns 500 (!res.ok)
+    const firstAttemptVi = await executeOnboardingCompletion({
+      locale: 'vi',
+      ownerId: 'owner-onboard-01',
+      vertical: 'fnb',
+      shopName: 'Cà Phê Phố Cổ',
+      taglineVi: 'Hương vị Hội An',
+      city: 'Đà Nẵng',
+      address: '12 Trần Phú',
+      phone: '0905123456',
+      wifiSsid: 'PhoCo_5G',
+      wifiPassword: '88888888',
+      categoryVi: 'Món Đặc Trưng',
+      firstItemNameVi: 'Bạc xỉu đá',
+      firstItemPrice: '35000',
+      fetchImpl: mockFetch,
+      onDraftShopSaved: (draft) => savedDraftIds.push(draft.id),
+    });
+
+    assert.equal(firstAttemptVi.ok, false);
+    assert.equal(firstAttemptVi.stage, 'catalog_import');
+    assert.equal(firstAttemptVi.catalogImported, false);
+    assert.equal(
+      firstAttemptVi.redirectHref,
+      null,
+      'Must NOT redirect to /dashboard/qr-studio when bulk_import fails'
+    );
+    assert.equal(firstAttemptVi.retryAvailable, true);
+    assert.equal(firstAttemptVi.draftShop?.id, 'shop-onboard-draft-1');
+    assert.equal(firstAttemptVi.draftShop?.is_published, false);
+    assert.deepEqual(savedDraftIds, ['shop-onboard-draft-1']);
+    assert.equal(shopCreateCalls, 1);
+    assert.equal(catalogImportCalls, 1);
+    assert.match(firstAttemptVi.errorMessage, /Quán nháp "Cà Phê Phố Cổ" đã được lưu/);
+    assert.match(firstAttemptVi.errorMessage, /Thử nhập lại món đầu tiên/);
+    assert.doesNotMatch(firstAttemptVi.errorMessage, /Đã thêm .* món mới/);
+
+    // Verify EN localization of the actionable error
+    const enError = formatOnboardingBulkImportError({
+      locale: 'en',
+      shopName: 'Cà Phê Phố Cổ',
+      serverError: firstAttemptVi.serverError,
+    });
+    assert.match(enError, /Draft store "Cà Phê Phố Cổ" was saved/);
+    assert.match(enError, /Retry importing first item/);
+
+    // 2. Retry with preserved draftShop: skips POST /api/shops and succeeds when bulk_import returns 201
+    shouldFailCatalog = false;
+    const retryAttemptEn = await executeOnboardingCompletion({
+      locale: 'en',
+      ownerId: 'owner-onboard-01',
+      vertical: 'fnb',
+      shopName: 'Cà Phê Phố Cổ',
+      taglineVi: 'Hương vị Hội An',
+      city: 'Đà Nẵng',
+      address: '12 Trần Phú',
+      phone: '0905123456',
+      wifiSsid: 'PhoCo_5G',
+      wifiPassword: '88888888',
+      categoryVi: 'Món Đặc Trưng',
+      firstItemNameVi: 'Bạc xỉu đá',
+      firstItemPrice: '35000',
+      existingDraftShop: firstAttemptVi.draftShop,
+      fetchImpl: mockFetch,
+      onDraftShopSaved: (draft) => savedDraftIds.push(draft.id),
+    });
+
+    assert.equal(retryAttemptEn.ok, true);
+    assert.equal(retryAttemptEn.stage, 'completed');
+    assert.equal(retryAttemptEn.catalogImported, true);
+    assert.equal(retryAttemptEn.redirectHref, '/dashboard/qr-studio');
+    assert.equal(retryAttemptEn.draftShop?.id, 'shop-onboard-draft-1');
+    assert.equal(
+      shopCreateCalls,
+      1,
+      'Retry must reuse the existing draft shop instead of creating a duplicate store'
+    );
+    assert.equal(catalogImportCalls, 2);
+    assert.equal(translateCalls, 2);
+  });
+
+  test('R.6 onboarding retry idempotency: first import persists category then fails on item, retry succeeds with one category, one first item, and one shop POST; normal imports without IDs remain unchanged', async () => {
+    const categoriesStore: Category[] = [];
+    const itemsStore: CatalogItem[] = [];
+    let failItemWrite = true;
+    let shopPostCalls = 0;
+
+    const mockSupabaseClient = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select() {
+              return {
+                limit: async () => ({
+                  data: [{ id: 'shop-onboard-idempotent-1' }],
+                  error: null,
+                }),
+              };
+            },
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            select() {
+              return {
+                limit: async () => ({
+                  data: [{ plan: 'premium' }],
+                  error: null,
+                }),
+              };
+            },
+          };
+        }
+        if (table === 'categories') {
+          return {
+            select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+              return {
+                eq(col: string, val: string) {
+                  if (opts?.head) {
+                    const count = categoriesStore.filter(
+                      (c) => c[col as keyof Category] === val
+                    ).length;
+                    return Promise.resolve({ count, data: null, error: null });
+                  }
+                  return {
+                    maybeSingle: async () => {
+                      const found =
+                        categoriesStore.find(
+                          (c) => c[col as keyof Category] === val
+                        ) ?? null;
+                      return { data: found, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            update(patch: Partial<Category>) {
+              return {
+                eq(_col: string, val: string) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          const idx = categoriesStore.findIndex(
+                            (c) => c.id === val
+                          );
+                          if (idx === -1) {
+                            return {
+                              data: null,
+                              error: { message: 'Category not found' },
+                            };
+                          }
+                          categoriesStore[idx] = {
+                            ...categoriesStore[idx],
+                            ...patch,
+                          };
+                          return { data: categoriesStore[idx], error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            upsert(payload: Category) {
+              return {
+                select() {
+                  return {
+                    single: async () => {
+                      const idx = categoriesStore.findIndex(
+                        (c) => c.id === payload.id
+                      );
+                      if (idx >= 0) {
+                        categoriesStore[idx] = {
+                          ...categoriesStore[idx],
+                          ...payload,
+                        };
+                        return { data: categoriesStore[idx], error: null };
+                      }
+                      categoriesStore.push({ ...payload });
+                      return {
+                        data: categoriesStore[categoriesStore.length - 1],
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'items') {
+          return {
+            select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+              return {
+                eq(col: string, val: string) {
+                  if (opts?.head) {
+                    const count = itemsStore.filter(
+                      (i) => i[col as keyof CatalogItem] === val
+                    ).length;
+                    return Promise.resolve({ count, data: null, error: null });
+                  }
+                  return {
+                    maybeSingle: async () => {
+                      const found =
+                        itemsStore.find(
+                          (i) => i[col as keyof CatalogItem] === val
+                        ) ?? null;
+                      return { data: found, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            update(patch: Partial<CatalogItem>) {
+              return {
+                eq(_col: string, val: string) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          if (failItemWrite) {
+                            return {
+                              data: null,
+                              error: { message: 'ITEM_WRITE_FAILED' },
+                            };
+                          }
+                          const idx = itemsStore.findIndex((i) => i.id === val);
+                          if (idx === -1) {
+                            return {
+                              data: null,
+                              error: { message: 'Item not found' },
+                            };
+                          }
+                          itemsStore[idx] = {
+                            ...itemsStore[idx],
+                            ...patch,
+                          } as CatalogItem;
+                          return { data: itemsStore[idx], error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            insert(payload: CatalogItem) {
+              return {
+                select() {
+                  return {
+                    single: async () => {
+                      if (failItemWrite) {
+                        return {
+                          data: null,
+                          error: { message: 'ITEM_WRITE_FAILED' },
+                        };
+                      }
+                      itemsStore.push({ ...payload });
+                      return {
+                        data: itemsStore[itemsStore.length - 1],
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        throw new Error(`Unexpected table in test mock: ${table}`);
+      },
+    };
+
+    setSupabaseDbClientForTests(mockSupabaseClient);
+    try {
+      const mockFetch: typeof fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/ai/translate') {
+          return new Response(
+            JSON.stringify({
+              category_i18n: { vi: 'Món Đặc Trưng', en: 'Signature' },
+              name_i18n: { vi: 'Phở Tái Nạm', en: 'Beef Pho' },
+              desc_i18n: { vi: 'Nước dùng đậm đà', en: 'Rich broth' },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url === '/api/shops') {
+          shopPostCalls += 1;
+          const body = JSON.parse(String(init?.body || '{}')) as {
+            name?: string;
+            slug?: string;
+          };
+          return new Response(
+            JSON.stringify({
+              shop: {
+                id: 'shop-onboard-idempotent-1',
+                name: body.name || 'Phở Phố Cổ',
+                slug: body.slug || 'pho-pho-co',
+                is_published: false,
+              },
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url === '/api/catalog') {
+          const body = JSON.parse(String(init?.body || '{}')) as {
+            action?: string;
+            shopId: string;
+            categories: Parameters<typeof dbBulkImportCatalog>[1];
+          };
+          assert.equal(body.action, 'bulk_import');
+          assert.equal(
+            body.categories[0]?.id,
+            buildOnboardingFirstCategoryId(body.shopId)
+          );
+          assert.equal(
+            body.categories[0]?.items[0]?.id,
+            buildOnboardingFirstItemId(body.shopId)
+          );
+          try {
+            const result = await dbBulkImportCatalog(
+              body.shopId,
+              body.categories
+            );
+            return new Response(JSON.stringify(result), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch (err) {
+            return new Response(
+              JSON.stringify({
+                error: err instanceof Error ? err.message : 'Import failed',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      };
+
+      // 1. First import persists the category then fails on item
+      const firstAttempt = await executeOnboardingCompletion({
+        locale: 'vi',
+        ownerId: 'owner-onboard-01',
+        vertical: 'fnb',
+        shopName: 'Phở Phố Cổ',
+        taglineVi: 'Hương vị truyền thống',
+        city: 'Đà Nẵng',
+        address: '12 Trần Phú',
+        phone: '0905123456',
+        wifiSsid: 'PhoPhoCo',
+        wifiPassword: '88888888',
+        categoryVi: 'Món Đặc Trưng',
+        firstItemNameVi: 'Phở Tái Nạm',
+        firstItemPrice: '55000',
+        fetchImpl: mockFetch,
+      });
+
+      assert.equal(firstAttempt.ok, false);
+      assert.equal(firstAttempt.stage, 'catalog_import');
+      assert.equal(firstAttempt.draftShop?.id, 'shop-onboard-idempotent-1');
+      assert.equal(shopPostCalls, 1);
+      assert.equal(
+        categoriesStore.length,
+        1,
+        'First import must persist the first category before item failure'
+      );
+      assert.equal(
+        categoriesStore[0].id,
+        'onboarding:shop-onboard-idempotent-1:first-category'
+      );
+      assert.equal(itemsStore.length, 0);
+
+      // 2. Retry with the saved draft succeeds; assert one category, one first item, and only one shop POST overall
+      failItemWrite = false;
+      const retryAttempt = await executeOnboardingCompletion({
+        locale: 'vi',
+        ownerId: 'owner-onboard-01',
+        vertical: 'fnb',
+        shopName: 'Phở Phố Cổ',
+        taglineVi: 'Hương vị truyền thống',
+        city: 'Đà Nẵng',
+        address: '12 Trần Phú',
+        phone: '0905123456',
+        wifiSsid: 'PhoPhoCo',
+        wifiPassword: '88888888',
+        categoryVi: 'Món Đặc Trưng',
+        firstItemNameVi: 'Phở Tái Nạm',
+        firstItemPrice: '55000',
+        existingDraftShop: firstAttempt.draftShop,
+        fetchImpl: mockFetch,
+      });
+
+      assert.equal(retryAttempt.ok, true);
+      assert.equal(retryAttempt.stage, 'completed');
+      assert.equal(shopPostCalls, 1, 'Must only make one shop POST overall');
+      assert.equal(
+        categoriesStore.length,
+        1,
+        'Retry must reuse the deterministic onboarding category instead of duplicating it'
+      );
+      assert.equal(
+        categoriesStore[0].id,
+        'onboarding:shop-onboard-idempotent-1:first-category'
+      );
+      assert.equal(
+        itemsStore.length,
+        1,
+        'Retry must persist exactly one first item'
+      );
+      assert.equal(
+        itemsStore[0].id,
+        'onboarding:shop-onboard-idempotent-1:first-item'
+      );
+      assert.equal(
+        itemsStore[0].category_id,
+        'onboarding:shop-onboard-idempotent-1:first-category'
+      );
+
+      // 3. Normal imports without IDs remain unchanged (generate distinct new categories/items)
+      const normalFirst = await dbBulkImportCatalog(
+        'shop-onboard-idempotent-1',
+        [
+          {
+            name_i18n: { vi: 'Đồ Uống', en: 'Drinks' },
+            items: [
+              {
+                price: 25000,
+                name_i18n: { vi: 'Trà đá', en: 'Iced Tea' },
+                desc_i18n: { vi: '' },
+              },
+            ],
+          },
+        ]
+      );
+      const normalSecond = await dbBulkImportCatalog(
+        'shop-onboard-idempotent-1',
+        [
+          {
+            name_i18n: { vi: 'Đồ Uống', en: 'Drinks' },
+            items: [
+              {
+                price: 25000,
+                name_i18n: { vi: 'Trà đá', en: 'Iced Tea' },
+                desc_i18n: { vi: '' },
+              },
+            ],
+          },
+        ]
+      );
+
+      assert.equal(normalFirst.createdCategories.length, 1);
+      assert.equal(normalSecond.createdCategories.length, 1);
+      assert.match(normalFirst.createdCategories[0].id, /^cat-/);
+      assert.match(normalSecond.createdCategories[0].id, /^cat-/);
+      assert.notEqual(
+        normalFirst.createdCategories[0].id,
+        normalSecond.createdCategories[0].id
+      );
+      assert.match(normalFirst.createdItems[0].id, /^item-/);
+      assert.match(normalSecond.createdItems[0].id, /^item-/);
+      assert.notEqual(
+        normalFirst.createdItems[0].id,
+        normalSecond.createdItems[0].id
+      );
+      assert.equal(categoriesStore.length, 3);
+      assert.equal(itemsStore.length, 3);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
   });
 });

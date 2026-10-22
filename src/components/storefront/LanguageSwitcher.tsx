@@ -22,10 +22,9 @@ export function LanguageSwitcher({
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const available =
-    supportedLangs && supportedLangs.length > 1
-      ? supportedLangs
-      : ALL_LOCALES;
+  const available = Array.isArray(supportedLangs)
+    ? supportedLangs
+    : ALL_LOCALES;
 
   const activeMeta = LOCALE_META[currentLocale] || LOCALE_META.vi;
   const labels = UI_LABELS[currentLocale] || UI_LABELS.vi;

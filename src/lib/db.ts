@@ -508,9 +508,10 @@ export async function dbGetShopById(shopId: string): Promise<Shop | undefined> {
 
 export async function dbGetStorefrontBundle(
   slug: string,
-  options?: { allowUnpublished?: boolean }
+  options?: { allowUnpublished?: boolean; includePosts?: boolean }
 ) {
   const { dbGetPublicShopTables } = await import('@/lib/shop-tables');
+  const shouldIncludePosts = options?.includePosts !== false;
 
   if (!testDbClientOverride && !isSupabaseConfigured()) {
     const seedShop = SEED_SHOPS.find((s) => s.slug === slug);
@@ -523,9 +524,9 @@ export async function dbGetStorefrontBundle(
       (c) => c.shop_id === shop.id && c.is_active
     );
     const items = SEED_ITEMS.filter((i) => i.shop_id === shop.id);
-    const posts = SEED_POSTS.filter(
-      (p) => p.shop_id === shop.id && p.is_active
-    );
+    const posts = shouldIncludePosts
+      ? SEED_POSTS.filter((p) => p.shop_id === shop.id && p.is_active)
+      : [];
     const tables = await dbGetPublicShopTables(shop.id);
     return {
       shop,
@@ -555,7 +556,7 @@ export async function dbGetStorefrontBundle(
   const [
     { data: categories },
     { data: items },
-    { data: posts },
+    postsRes,
     tables,
   ] = await Promise.all([
     sb
@@ -569,14 +570,17 @@ export async function dbGetStorefrontBundle(
       .select('*')
       .eq('shop_id', shop.id)
       .order('sort_order', { ascending: true }),
-    sb
-      .from('posts')
-      .select('*')
-      .eq('shop_id', shop.id)
-      .eq('is_active', true)
-      .order('is_pinned', { ascending: false }),
+    shouldIncludePosts
+      ? sb
+          .from('posts')
+          .select('*')
+          .eq('shop_id', shop.id)
+          .eq('is_active', true)
+          .order('is_pinned', { ascending: false })
+      : Promise.resolve({ data: [] as Post[] }),
     dbGetPublicShopTables(shop.id),
   ]);
+  const posts = postsRes?.data;
 
   const normalizedCategories = ((categories || []) as Category[]).map((c) => {
     const seedCat = SEED_CATEGORIES.find((sc) => sc.id === c.id);
@@ -1033,8 +1037,10 @@ export async function dbDeleteItem(itemId: string): Promise<boolean> {
 export async function dbBulkImportCatalog(
   shopId: string,
   categoriesPayload: Array<{
+    id?: string;
     name_i18n: Category['name_i18n'];
     items: Array<{
+      id?: string;
       price: number;
       duration_mins?: number | null;
       name_i18n: CatalogItem['name_i18n'];
@@ -1049,7 +1055,12 @@ export async function dbBulkImportCatalog(
   const createdItems: CatalogItem[] = [];
 
   for (const catData of categoriesPayload) {
+    const categoryId =
+      typeof catData.id === 'string' && catData.id.trim()
+        ? catData.id.trim()
+        : undefined;
     const newCat = await dbUpsertCategory({
+      ...(categoryId ? { id: categoryId } : {}),
       shop_id: shopId,
       name_i18n: catData.name_i18n,
       is_active: true,
@@ -1057,7 +1068,12 @@ export async function dbBulkImportCatalog(
     createdCategories.push(newCat);
 
     for (const itemData of catData.items) {
+      const itemId =
+        typeof itemData.id === 'string' && itemData.id.trim()
+          ? itemData.id.trim()
+          : undefined;
       const newItem = await dbUpsertItem({
+        ...(itemId ? { id: itemId } : {}),
         shop_id: shopId,
         category_id: newCat.id,
         price: Number(itemData.price || 0),
@@ -1196,14 +1212,17 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
   }
 
   const resolvedShopId = targetShopId || SEED_SHOPS[0].id;
-  const [{ data: eventsData }, { data: itemsData }] = await Promise.all([
-    sb
-      .from('analytics_events')
-      .select('*')
-      .eq('shop_id', resolvedShopId)
-      .order('created_at', { ascending: false }),
-    sb.from('items').select('*').eq('shop_id', resolvedShopId),
-  ]);
+  const { dbGetPublicShopTables } = await import('@/lib/shop-tables');
+  const [{ data: eventsData }, { data: itemsData }, publicTables] =
+    await Promise.all([
+      sb
+        .from('analytics_events')
+        .select('*')
+        .eq('shop_id', resolvedShopId)
+        .order('created_at', { ascending: false }),
+      sb.from('items').select('*').eq('shop_id', resolvedShopId),
+      dbGetPublicShopTables(resolvedShopId).catch(() => []),
+    ]);
 
   const events = (eventsData || []) as AnalyticsEvent[];
   const rawItems = ((itemsData || []) as CatalogItem[]).map((i) => ({
@@ -1215,6 +1234,9 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     resolvedShopId,
     items
   );
+  const activeTablesCount = Array.isArray(publicTables)
+    ? publicTables.filter((t) => t && t.is_active && !t.is_archived).length
+    : 0;
 
   const scanDoorCount = events.filter(
     (e) => e.event_type === 'scan_door'
@@ -1267,6 +1289,9 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     totalScans: scanDoorCount + scanTableCount,
     langBreakdown,
     topItems,
+    totalCatalogItems: items.length,
+    availableCatalogItems: items.filter((i) => i.is_available !== false).length,
+    activeTablesCount,
     ...mposStats,
     mposStats,
     recentEvents: events.slice(0, 15),

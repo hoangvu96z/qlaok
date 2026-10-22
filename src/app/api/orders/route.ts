@@ -806,6 +806,71 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'Đơn đã thu tiền: hãy xác nhận hoàn tiền trước khi hủy.' }, { status: 409 });
     }
 
+    const rawRefundReason =
+      typeof refund_reason === 'string'
+        ? refund_reason
+        : typeof (body as { refundReason?: unknown }).refundReason === 'string'
+          ? (body as { refundReason: string }).refundReason
+          : undefined;
+    const rawCancelledReason =
+      typeof cancelled_reason === 'string'
+        ? cancelled_reason
+        : typeof (body as { cancel_reason?: unknown }).cancel_reason === 'string'
+          ? (body as { cancel_reason: string }).cancel_reason
+          : typeof (body as { cancelledReason?: unknown }).cancelledReason ===
+              'string'
+            ? (body as { cancelledReason: string }).cancelledReason
+            : undefined;
+
+    if (
+      payment_status === 'refunded' &&
+      existingOrder.payment_status !== 'refunded'
+    ) {
+      const trimmedRefundReason = rawRefundReason ? rawRefundReason.trim() : '';
+      if (!trimmedRefundReason) {
+        return NextResponse.json(
+          {
+            error: 'Vui lòng nhập lý do hoàn tiền.',
+            code: 'REFUND_REASON_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+      if (trimmedRefundReason.length > 500) {
+        return NextResponse.json(
+          {
+            error: 'Lý do hoàn tiền không được vượt quá 500 ký tự.',
+            code: 'REASON_TOO_LONG',
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (status === 'cancelled' && existingOrder.status !== 'cancelled') {
+      const trimmedCancelledReason = rawCancelledReason
+        ? rawCancelledReason.trim()
+        : '';
+      if (!trimmedCancelledReason) {
+        return NextResponse.json(
+          {
+            error: 'Vui lòng nhập lý do hủy đơn.',
+            code: 'CANCEL_REASON_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+      if (trimmedCancelledReason.length > 500) {
+        return NextResponse.json(
+          {
+            error: 'Lý do hủy đơn không được vượt quá 500 ký tự.',
+            code: 'REASON_TOO_LONG',
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const updated = await dbUpdateOrderStatus(resolvedOrderId, {
       status,
       payment_method,
@@ -815,9 +880,9 @@ export async function PATCH(req: Request) {
         req.headers.get('x-idempotency-key') ||
         undefined,
       paid_by: isMarkingPaid ? auth.user.sub : undefined,
-      refund_reason,
+      refund_reason: rawRefundReason?.trim(),
       refunded_by: isRefunding ? auth.user.sub : undefined,
-      cancelled_reason,
+      cancelled_reason: rawCancelledReason?.trim(),
       restock_items,
       table_id: resolvedTableId,
       table_code: resolvedTableCode,
@@ -851,6 +916,12 @@ export async function PATCH(req: Request) {
         total_amount: updated.total_amount,
         bill_version: updated.bill_version,
         waste_recorded: updated.waste_recorded,
+        ...(updated.refund_reason
+          ? { refund_reason: updated.refund_reason }
+          : {}),
+        ...(updated.cancelled_reason
+          ? { cancelled_reason: updated.cancelled_reason }
+          : {}),
       },
     });
 

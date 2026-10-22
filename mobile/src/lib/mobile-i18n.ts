@@ -49,6 +49,35 @@ const VI_MOBILE_DICTIONARY = {
   'auth.submitting': 'Đang đăng nhập...',
   'auth.errorFallback': 'Vui lòng kiểm tra lại email hoặc mật khẩu',
   'auth.createStorePrompt': 'Chưa có tài khoản cửa hàng? Đăng ký trên Web',
+  'auth.forgotPasswordPrompt': 'Quên mật khẩu?',
+  'auth.recoveryTitle': 'Khôi phục mật khẩu',
+  'auth.recoverySubtitle':
+    'Nhập email tài khoản để nhận mã hoặc liên kết đặt lại mật khẩu',
+  'auth.recoverySendBtn': 'Gửi yêu cầu khôi phục',
+  'auth.recoverySending': 'Đang gửi yêu cầu...',
+  'auth.recoverySentNotice':
+    'Nếu {email} là tài khoản được hỗ trợ khôi phục qua email, hướng dẫn đặt lại mật khẩu sẽ được gửi tới hộp thư. Tài khoản mật khẩu nội bộ, dùng thử hoặc quản trị cần liên hệ quản trị viên.',
+  'auth.recoveryCodeLabel': 'Mã khôi phục trong email',
+  'auth.recoveryNewPasswordLabel': 'Mật khẩu mới (tối thiểu 6 ký tự)',
+  'auth.recoveryCompleteBtn': 'Cập nhật mật khẩu mới',
+  'auth.recoveryCompleting': 'Đang cập nhật mật khẩu...',
+  'auth.recoverySuccessNotice':
+    'Đã đặt lại mật khẩu cho {email}. Bạn có thể đăng nhập bằng mật khẩu mới.',
+  'auth.recoveryBackToLogin': '← Quay lại đăng nhập',
+  'auth.recoveryOpenWebFallback': 'Mở trang khôi phục trên Web',
+  'auth.recoveryErrInvalidEmail':
+    'Vui lòng nhập địa chỉ email hợp lệ để khôi phục mật khẩu.',
+  'auth.recoveryErrUnsupportedAccount':
+    'Tài khoản dùng thử, quản trị hệ thống hoặc tài khoản mật khẩu cục bộ không hỗ trợ tự đặt lại mật khẩu trên ứng dụng.',
+  'auth.recoveryErrUnsupportedProvider':
+    'Tính năng đặt lại mật khẩu qua email hiện không khả dụng trên máy chủ này. Vui lòng mở trang Web hoặc liên hệ quản trị viên.',
+  'auth.recoveryErrRateLimited':
+    'Bạn đã gửi quá nhiều yêu cầu khôi phục. Vui lòng đợi vài phút rồi thử lại.',
+  'auth.recoveryErrNetwork':
+    'Không thể kết nối máy chủ xác thực. Vui lòng kiểm tra mạng và thử lại.',
+  'auth.recoveryErrInvalidCode':
+    'Mã khôi phục không hợp lệ hoặc đã hết hạn. Vui lòng kiểm tra lại email.',
+  'auth.recoveryErrWeakPassword': 'Mật khẩu mới phải có ít nhất 6 ký tự.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Quản lý quán',
@@ -118,10 +147,24 @@ const VI_MOBILE_DICTIONARY = {
   'orders.actionViewTicket': 'Xem phiếu in',
   'orders.confirmCancelTitle': 'Xác nhận hủy đơn',
   'orders.confirmCancelDesc': 'Bạn có chắc muốn hủy đơn #{code} ({table})?',
+  'orders.cancelReasonLabel': 'Lý do hủy đơn *',
+  'orders.cancelReasonPlaceholder': 'VD: Khách đổi ý, hết món...',
+  'orders.cancelReasonRequired':
+    'Vui lòng nhập lý do hủy đơn trước khi xác nhận.',
   'orders.confirmPaidTitle': 'Xác nhận đã thu tiền',
   'orders.confirmPaidDesc': 'Xác nhận đã thu {total} cho đơn #{code}?',
   'orders.confirmRefundTitle': 'Xác nhận hoàn tiền',
   'orders.confirmRefundDesc': 'Xác nhận hoàn tiền {total} cho đơn #{code}?',
+  'orders.refundReasonLabel': 'Lý do hoàn tiền *',
+  'orders.refundReasonPlaceholder':
+    'VD: Món lỗi, khách hủy sau khi thanh toán...',
+  'orders.refundReasonRequired':
+    'Vui lòng nhập lý do hoàn tiền trước khi xác nhận.',
+  'orders.reasonTooLong': 'Lý do không được vượt quá {max} ký tự.',
+  'orders.paidCancelRequiresRefund':
+    'Đơn đã thu tiền: hãy xác nhận hoàn tiền trước khi hủy.',
+  'orders.reasonBadgeRefund': 'Lý do hoàn tiền: {reason}',
+  'orders.reasonBadgeCancel': 'Lý do hủy: {reason}',
   'orders.fetchErrorTitle': 'Không thể tải danh sách đơn hàng',
   'orders.retryBtn': 'Thử lại',
 
@@ -278,6 +321,36 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'auth.submitting': 'Signing in...',
   'auth.errorFallback': 'Please check your email or password',
   'auth.createStorePrompt': 'Need a store account? Register on Web',
+  'auth.forgotPasswordPrompt': 'Forgot password?',
+  'auth.recoveryTitle': 'Reset password',
+  'auth.recoverySubtitle':
+    'Enter your account email to receive a password reset link or code',
+  'auth.recoverySendBtn': 'Send reset instructions',
+  'auth.recoverySending': 'Sending request...',
+  'auth.recoverySentNotice':
+    'If {email} belongs to an account that supports email recovery, reset instructions will be sent to your inbox. Local-password, demo, or admin accounts require administrator support.',
+  'auth.recoveryCodeLabel': 'Recovery code from email',
+  'auth.recoveryNewPasswordLabel': 'New password (at least 6 characters)',
+  'auth.recoveryCompleteBtn': 'Save new password',
+  'auth.recoveryCompleting': 'Updating password...',
+  'auth.recoverySuccessNotice':
+    'Password updated for {email}. You can now sign in with your new password.',
+  'auth.recoveryBackToLogin': '← Back to sign in',
+  'auth.recoveryOpenWebFallback': 'Open password recovery on Web',
+  'auth.recoveryErrInvalidEmail':
+    'Please enter a valid email address to reset your password.',
+  'auth.recoveryErrUnsupportedAccount':
+    'Demo, system, or custom-credential accounts do not support self-service password reset in the app.',
+  'auth.recoveryErrUnsupportedProvider':
+    'Email password reset is currently unavailable on this server. Please use the web recovery page or contact your administrator.',
+  'auth.recoveryErrRateLimited':
+    'Too many reset requests. Please wait a few minutes and try again.',
+  'auth.recoveryErrNetwork':
+    'Unable to reach the authentication server. Please check your connection and try again.',
+  'auth.recoveryErrInvalidCode':
+    'The recovery code is invalid or expired. Please check your email and try again.',
+  'auth.recoveryErrWeakPassword':
+    'New password must be at least 6 characters.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Store Manager',
@@ -347,10 +420,24 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'orders.actionViewTicket': 'Print preview',
   'orders.confirmCancelTitle': 'Cancel order',
   'orders.confirmCancelDesc': 'Are you sure you want to cancel order #{code} ({table})?',
+  'orders.cancelReasonLabel': 'Cancellation reason *',
+  'orders.cancelReasonPlaceholder': 'e.g. Guest changed mind, item sold out...',
+  'orders.cancelReasonRequired':
+    'Please enter a cancellation reason before confirming.',
   'orders.confirmPaidTitle': 'Confirm payment',
   'orders.confirmPaidDesc': 'Confirm collecting {total} for order #{code}?',
   'orders.confirmRefundTitle': 'Confirm refund',
   'orders.confirmRefundDesc': 'Confirm refunding {total} for order #{code}?',
+  'orders.refundReasonLabel': 'Refund reason *',
+  'orders.refundReasonPlaceholder':
+    'e.g. Wrong item, guest cancelled after paying...',
+  'orders.refundReasonRequired':
+    'Please enter a refund reason before confirming.',
+  'orders.reasonTooLong': 'Reason must not exceed {max} characters.',
+  'orders.paidCancelRequiresRefund':
+    'Paid order: please confirm a refund before cancelling.',
+  'orders.reasonBadgeRefund': 'Refund reason: {reason}',
+  'orders.reasonBadgeCancel': 'Cancel reason: {reason}',
   'orders.fetchErrorTitle': 'Unable to load orders',
   'orders.retryBtn': 'Retry',
 

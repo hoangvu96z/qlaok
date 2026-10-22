@@ -40,7 +40,10 @@ các migration trong repo theo thứ tự trước khi chạy phiên bản này.
 REST gửi Bearer token hiện tại, báo lỗi HTTP và timeout 15 giây. Không dùng dữ liệu
 `theme_config.recent_orders` thay thế khi API từ chối. Xác nhận thu tiền chỉ mở
 biên nhận từ đơn server trả về thành công; thao tác đã phục vụ giữ nguyên payment.
-In trên mobile hiện vẫn là preview/mô phỏng, chưa tích hợp máy in.
+Hoàn tiền (`payment_status: 'refunded'`) và hủy đơn (`status: 'cancelled'`) mở hộp
+thoại xác nhận đa ngôn ngữ (VI/EN), bắt buộc nhập lý do không rỗng và gửi
+`refund_reason` / `cancelled_reason` qua `PATCH /api/orders` đồng bộ với web và
+validation phía server. In trên mobile hiện vẫn là preview/mô phỏng, chưa tích hợp máy in.
 
 Kiểm tra từ thư mục mobile: `npm run typecheck` và `npm test` (dùng Node 24 như verify CI).
 Chưa có kiểm thử thiết bị cho cold start, refresh token, SecureStore và máy in.

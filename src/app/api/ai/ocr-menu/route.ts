@@ -38,6 +38,8 @@ export async function POST(req: Request) {
       rawOcrText,
       useDemo = false,
     } = body as {
+      shopId?: unknown;
+      shop_id?: unknown;
       imageBase64?: string;
       mimeType?: string;
       rawOcrText?: string;
@@ -45,6 +47,12 @@ export async function POST(req: Request) {
       useDemo?: boolean;
     };
     vertical = body.vertical || 'fnb';
+    const rawShopId =
+      body.shopId !== undefined
+        ? body.shopId
+        : body.shop_id !== undefined
+          ? body.shop_id
+          : (new URL(req.url).searchParams.get('shopId') ?? undefined);
 
     if (useDemo) {
       const demoData = getDemoOcrResult(vertical);
@@ -54,8 +62,10 @@ export async function POST(req: Request) {
       });
     }
 
-    // Server-side plan gate: real OCR / AI Vision requires a plan with allowAiOcr
-    const planLock = await requireAiOcrPlan(guard.user);
+    // Server-side plan gate: real OCR / AI Vision requires a plan with allowAiOcr on the active authorized shop owner
+    const planLock = await requireAiOcrPlan(guard.user, {
+      shopId: rawShopId,
+    });
     if (planLock) return planLock;
 
     extractedText = (rawOcrText || '').trim();
