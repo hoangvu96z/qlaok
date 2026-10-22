@@ -43,3 +43,21 @@ test('catalog and posts pages confirm deletes and check res.ok', () => {
   assert.match(posts, /await confirm\(/);
   assert.match(posts, /if \(!res\.ok\)/);
 });
+
+test('kitchen page uses authenticated SSE live sync, preserves tickets on transient errors, and gates fulfillment PATCH', () => {
+  const kitchen = read('src/app/(dashboard)/dashboard/kitchen/page.tsx');
+  assert.doesNotMatch(kitchen, /window\.alert\(/);
+  assert.match(kitchen, /startOrderLiveSync\(/);
+  assert.match(kitchen, /buildKitchenOrdersUrl\(/);
+  assert.match(kitchen, /createKitchenShopScopeTracker\(/);
+  assert.match(kitchen, /reconcileKitchenOrdersFetch\(/);
+  assert.match(kitchen, /shouldShowKitchenConfirmedEmptyState\(/);
+  assert.match(kitchen, /buildKitchenFulfillPatchPayload\(/);
+  assert.match(kitchen, /canPerformKitchenFulfill\(/);
+  assert.match(kitchen, /method:\s*'PATCH',\s*headers:\s*getAuthHeaders\(/);
+  assert.match(kitchen, /\/login\?next=\/dashboard\/kitchen/);
+  assert.match(kitchen, /Quá hạn \(≥ \{minutes\}p\)/);
+  assert.match(kitchen, /Overdue \(≥ \{minutes\}m\)/);
+  assert.doesNotMatch(kitchen, />\s*\{minutes\}[pm]/);
+  assert.doesNotMatch(kitchen, /payment_status/);
+});

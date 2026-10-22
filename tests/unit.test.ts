@@ -122,7 +122,35 @@ import {
   dbBulkImportCatalog,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
-import type { CatalogItem, Category, OpeningHours, Shop } from '@/types/qlaok';
+import { execFileSync } from 'node:child_process';
+import { canAccessDashboardHref } from '@/lib/dashboard-nav';
+import {
+  DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES,
+  DEFAULT_KDS_OVERDUE_THRESHOLD_MS,
+  buildKitchenFulfillPatchPayload,
+  buildKitchenOrdersUrl,
+  canPerformKitchenFulfill,
+  createInitialKitchenOrdersState,
+  createKitchenShopScopeTracker,
+  formatKitchenLineOptionLabel,
+  formatKitchenOrderAge,
+  getKitchenOrderAgeMinutes,
+  getNextKitchenOrderStatus,
+  isActiveKitchenOrder,
+  isKitchenOrderOverdue,
+  isKitchenShopScopeCurrent,
+  reconcileKitchenOrdersFetch,
+  selectAndSortKitchenOrders,
+  shouldShowKitchenConfirmedEmptyState,
+  summarizeKitchenQueue,
+} from '@/lib/kitchen-display';
+import type {
+  CatalogItem,
+  Category,
+  OpeningHours,
+  Shop,
+  ShopOrder,
+} from '@/types/qlaok';
 
 // ============================================================================
 // SUITE 1: VIETNAM 34 PROVINCES & CITIES
@@ -3686,6 +3714,810 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       assert.equal(itemsStore.length, 3);
     } finally {
       setSupabaseDbClientForTests(null);
+    }
+  });
+});
+
+// ============================================================================
+// SUITE 14: KITCHEN DISPLAY SYSTEM (KDS)
+// ============================================================================
+describe('Suite 14: Kitchen Display System (kitchen-display.ts, KitchenTicketCard, /api/orders)', () => {
+  const baseOrder = (overrides: Partial<ShopOrder>): ShopOrder => ({
+    id: 'ord-kds-default',
+    shop_id: 'shop-fnb-001',
+    order_code: '#KDS01',
+    table_label: 'Bàn 01',
+    visitor_lang: 'vi',
+    source: 'qr_table',
+    customer_note: '',
+    status: 'new',
+    payment_status: 'unpaid',
+    payment_method: 'cash',
+    subtotal_amount: 45000,
+    total_amount: 45000,
+    items: [
+      {
+        item_id: 'item-fnb-01',
+        name_vi: 'Phở bò tái nạm',
+        name_i18n: { vi: 'Phở bò tái nạm', en: 'Rare & Flank Beef Pho' },
+        quantity: 2,
+        unit_price: 45000,
+        extra_price: 5000,
+        selected_choices: [
+          {
+            id: 'opt-1',
+            label_vi: 'Thêm hành',
+            label_i18n: { vi: 'Thêm hành', en: 'Extra scallions' },
+            extra_price: 0,
+          },
+        ],
+        quick_tags: ['Ít cay'],
+        custom_note: 'Nước béo riêng',
+      },
+    ],
+    created_at: '2026-10-22T09:00:00.000Z',
+    updated_at: '2026-10-22T09:00:00.000Z',
+    ...overrides,
+  });
+
+  test('14.1 Active-order selection and oldest-first sorting exclude completed/cancelled and cross-shop orders', () => {
+    const orders: ShopOrder[] = [
+      baseOrder({
+        id: 'ord-completed',
+        order_code: '#1001',
+        status: 'completed',
+        created_at: '2026-10-22T08:00:00.000Z',
+      }),
+      baseOrder({
+        id: 'ord-cancelled',
+        order_code: '#1002',
+        status: 'cancelled',
+        created_at: '2026-10-22T08:05:00.000Z',
+      }),
+      baseOrder({
+        id: 'ord-other-shop',
+        shop_id: 'shop-other-999',
+        order_code: '#1003',
+        status: 'new',
+        created_at: '2026-10-22T08:10:00.000Z',
+      }),
+      baseOrder({
+        id: 'ord-newer-new',
+        order_code: '#1006',
+        status: 'new',
+        created_at: '2026-10-22T09:10:00.000Z',
+      }),
+      baseOrder({
+        id: 'ord-oldest-prep',
+        order_code: '#1004',
+        status: 'preparing',
+        created_at: '2026-10-22T08:45:00.000Z',
+      }),
+      baseOrder({
+        id: 'ord-middle-new',
+        order_code: '#1005',
+        status: 'new',
+        created_at: '2026-10-22T08:55:00.000Z',
+      }),
+      // Duplicate ID must be deduplicated
+      baseOrder({
+        id: 'ord-middle-new',
+        order_code: '#1005',
+        status: 'new',
+        created_at: '2026-10-22T08:55:00.000Z',
+      }),
+    ];
+
+    assert.equal(isActiveKitchenOrder(orders[0], 'shop-fnb-001'), false);
+    assert.equal(isActiveKitchenOrder(orders[1], 'shop-fnb-001'), false);
+    assert.equal(isActiveKitchenOrder(orders[2], 'shop-fnb-001'), false);
+    assert.equal(isActiveKitchenOrder(orders[4], 'shop-fnb-001'), true);
+
+    const activeAll = selectAndSortKitchenOrders(orders, {
+      shopId: 'shop-fnb-001',
+      statusFilter: 'all',
+    });
+    assert.deepEqual(
+      activeAll.map((o) => o.id),
+      ['ord-oldest-prep', 'ord-middle-new', 'ord-newer-new'],
+      'KDS must include only active orders for the shop and sort oldest created_at first'
+    );
+
+    const onlyNew = selectAndSortKitchenOrders(orders, {
+      shopId: 'shop-fnb-001',
+      statusFilter: 'new',
+    });
+    assert.deepEqual(
+      onlyNew.map((o) => o.id),
+      ['ord-middle-new', 'ord-newer-new']
+    );
+
+    const onlyPreparing = selectAndSortKitchenOrders(orders, {
+      shopId: 'shop-fnb-001',
+      statusFilter: 'preparing',
+    });
+    assert.deepEqual(
+      onlyPreparing.map((o) => o.id),
+      ['ord-oldest-prep']
+    );
+  });
+
+  test('14.2 Overdue threshold defaults to 15 minutes and queue summary counts active/overdue tickets accurately', () => {
+    assert.equal(DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES, 15);
+    assert.equal(DEFAULT_KDS_OVERDUE_THRESHOLD_MS, 15 * 60 * 1000);
+
+    const createdAt = '2026-10-22T09:00:00.000Z';
+    const createdMs = Date.parse(createdAt);
+
+    // 14m 59s -> 14 whole minutes -> NOT overdue
+    const before15m = createdMs + 14 * 60 * 1000 + 59 * 1000;
+    assert.equal(getKitchenOrderAgeMinutes(createdAt, before15m), 14);
+    assert.equal(isKitchenOrderOverdue(createdAt, before15m), false);
+    assert.equal(formatKitchenOrderAge(createdAt, 'vi', before15m), '14 phút');
+    assert.equal(formatKitchenOrderAge(createdAt, 'en', before15m), '14m');
+
+    // Exactly 15m 00s -> overdue
+    const exact15m = createdMs + 15 * 60 * 1000;
+    assert.equal(getKitchenOrderAgeMinutes(createdAt, exact15m), 15);
+    assert.equal(isKitchenOrderOverdue(createdAt, exact15m), true);
+
+    // < 1 minute -> 'Vừa xong' / 'Just now'
+    assert.equal(
+      formatKitchenOrderAge(createdAt, 'vi', createdMs + 20_000),
+      'Vừa xong'
+    );
+    assert.equal(
+      formatKitchenOrderAge(createdAt, 'en', createdMs + 20_000),
+      'Just now'
+    );
+
+    // >= 60 minutes -> natural hours + minutes formatting
+    const exact60m = createdMs + 60 * 60 * 1000;
+    assert.equal(formatKitchenOrderAge(createdAt, 'vi', exact60m), '1 giờ');
+    assert.equal(formatKitchenOrderAge(createdAt, 'en', exact60m), '1h');
+
+    const after75m = createdMs + 75 * 60 * 1000;
+    assert.equal(
+      formatKitchenOrderAge(createdAt, 'vi', after75m),
+      '1 giờ 15 phút'
+    );
+    assert.equal(formatKitchenOrderAge(createdAt, 'en', after75m), '1h 15m');
+
+    const summary = summarizeKitchenQueue(
+      [
+        baseOrder({
+          id: 'o-1',
+          status: 'new',
+          created_at: '2026-10-22T08:40:00.000Z', // 20m old -> overdue
+        }),
+        baseOrder({
+          id: 'o-2',
+          status: 'preparing',
+          created_at: '2026-10-22T08:45:00.000Z', // 15m old -> overdue
+        }),
+        baseOrder({
+          id: 'o-3',
+          status: 'new',
+          created_at: '2026-10-22T08:52:00.000Z', // 8m old -> not overdue
+        }),
+        baseOrder({
+          id: 'o-4',
+          status: 'completed',
+          created_at: '2026-10-22T08:00:00.000Z', // completed -> ignored
+        }),
+      ],
+      {
+        shopId: 'shop-fnb-001',
+        nowMs: Date.parse('2026-10-22T09:00:00.000Z'),
+      }
+    );
+
+    assert.deepEqual(summary, {
+      totalActive: 3,
+      newCount: 2,
+      preparingCount: 1,
+      overdueCount: 2,
+    });
+  });
+
+  test('14.3 Navigation and action helpers enforce orders.view for viewing and orders.fulfill for KDS transitions without payment fields', () => {
+    const ownerMember = {
+      role: 'owner' as const,
+      permissions: DEFAULT_ROLE_PERMISSIONS.owner,
+      is_active: true,
+    };
+    const staffMember = {
+      role: 'staff' as const,
+      permissions: DEFAULT_ROLE_PERMISSIONS.staff,
+      is_active: true,
+    };
+    const cashierMember = {
+      role: 'cashier' as const,
+      permissions: DEFAULT_ROLE_PERMISSIONS.cashier,
+      is_active: true,
+    };
+    const viewAndPayOnlyMember = {
+      role: 'cashier' as const,
+      permissions: ['orders.view' as const, 'payment.collect' as const],
+      is_active: true,
+    };
+    const catalogOnlyMember = {
+      role: 'staff' as const,
+      permissions: ['catalog.manage' as const],
+      is_active: true,
+    };
+    const inactiveStaffMember = {
+      role: 'staff' as const,
+      permissions: DEFAULT_ROLE_PERMISSIONS.staff,
+      is_active: false,
+    };
+
+    // Navigation access to /dashboard/kitchen requires orders.view
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', ownerMember),
+      true
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', staffMember),
+      true
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', cashierMember),
+      true
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', viewAndPayOnlyMember),
+      true,
+      'Member with orders.view can view KDS status'
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', catalogOnlyMember),
+      false,
+      'Member without orders.view cannot access /dashboard/kitchen'
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/kitchen', inactiveStaffMember),
+      false
+    );
+
+    // KDS fulfillment actions require orders.fulfill
+    assert.equal(canPerformKitchenFulfill(ownerMember), true);
+    assert.equal(canPerformKitchenFulfill(staffMember), true);
+    assert.equal(canPerformKitchenFulfill(cashierMember), true);
+    assert.equal(
+      canPerformKitchenFulfill(viewAndPayOnlyMember),
+      false,
+      'Member without orders.fulfill must not have KDS fulfill actions enabled'
+    );
+    assert.equal(canPerformKitchenFulfill(inactiveStaffMember), false);
+    assert.equal(canPerformKitchenFulfill(null), false);
+
+    // Status transitions: new -> preparing -> completed
+    assert.equal(getNextKitchenOrderStatus('new'), 'preparing');
+    assert.equal(getNextKitchenOrderStatus('preparing'), 'completed');
+    assert.equal(getNextKitchenOrderStatus('completed'), null);
+    assert.equal(getNextKitchenOrderStatus('cancelled'), null);
+
+    const startCookingPayload = buildKitchenFulfillPatchPayload({
+      shopId: 'shop-fnb-001',
+      orderId: 'ord-kds-100',
+      currentStatus: 'new',
+    });
+    assert.deepEqual(startCookingPayload, {
+      shop_id: 'shop-fnb-001',
+      order_id: 'ord-kds-100',
+      status: 'preparing',
+    });
+    assert.equal(
+      'payment_status' in
+        (startCookingPayload as unknown as Record<string, unknown>),
+      false,
+      'KDS payload must never include payment_status'
+    );
+    assert.equal(
+      'payment_method' in
+        (startCookingPayload as unknown as Record<string, unknown>),
+      false,
+      'KDS payload must never include payment_method'
+    );
+
+    const markDonePayload = buildKitchenFulfillPatchPayload({
+      shopId: 'shop-fnb-001',
+      orderId: 'ord-kds-100',
+      currentStatus: 'preparing',
+    });
+    assert.deepEqual(markDonePayload, {
+      shop_id: 'shop-fnb-001',
+      order_id: 'ord-kds-100',
+      status: 'completed',
+    });
+
+    assert.equal(
+      buildKitchenFulfillPatchPayload({
+        shopId: 'shop-fnb-001',
+        orderId: 'ord-kds-100',
+        currentStatus: 'completed',
+      }),
+      null
+    );
+  });
+
+  test('14.4 reconcileKitchenOrdersFetch avoids false confirmed-empty state on initial error, preserves tickets on transient errors, and isolates stale-shop callbacks/results', () => {
+    const sampleTicket = baseOrder({ id: 'ord-keep-1', order_code: '#KEEP1' });
+
+    // 1. Initial state before any fetch has succeeded: hasLoaded is false
+    const unloadedState = createInitialKitchenOrdersState('shop-fnb-001');
+    assert.equal(unloadedState.hasLoaded, false);
+    assert.equal(
+      shouldShowKitchenConfirmedEmptyState({
+        state: unloadedState,
+        activeShopId: 'shop-fnb-001',
+        visibleTicketsCount: 0,
+        loading: false,
+      }),
+      false,
+      'Must not show confirmed-empty state before any successful fetch'
+    );
+
+    // 2. Initial-load failure must keep hasLoaded=false and never show confirmed-empty state
+    const afterInitialError = reconcileKitchenOrdersFetch(unloadedState, {
+      shopId: 'shop-fnb-001',
+      activeShopId: 'shop-fnb-001',
+      ok: false,
+      status: 500,
+      error: 'Initial load failed',
+    });
+    assert.equal(afterInitialError.hasLoaded, false);
+    assert.equal(afterInitialError.orders.length, 0);
+    assert.equal(afterInitialError.fetchError, 'Initial load failed');
+    assert.equal(
+      shouldShowKitchenConfirmedEmptyState({
+        state: afterInitialError,
+        activeShopId: 'shop-fnb-001',
+        visibleTicketsCount: 0,
+        loading: false,
+      }),
+      false,
+      'Initial-load error must not show a false "all active tickets cleared" empty state'
+    );
+
+    // 3. Confirmed empty after a successful fetch with zero active tickets
+    const confirmedEmptyState = reconcileKitchenOrdersFetch(afterInitialError, {
+      shopId: 'shop-fnb-001',
+      activeShopId: 'shop-fnb-001',
+      ok: true,
+      orders: [],
+    });
+    assert.equal(confirmedEmptyState.hasLoaded, true);
+    assert.equal(confirmedEmptyState.fetchError, null);
+    assert.equal(
+      shouldShowKitchenConfirmedEmptyState({
+        state: confirmedEmptyState,
+        activeShopId: 'shop-fnb-001',
+        visibleTicketsCount: 0,
+        loading: false,
+      }),
+      true,
+      'Confirmed-empty state renders only after a successful fetch with no active tickets'
+    );
+
+    // 4. Successful fetch with active ticket
+    const loadedWithTicket = reconcileKitchenOrdersFetch(confirmedEmptyState, {
+      shopId: 'shop-fnb-001',
+      activeShopId: 'shop-fnb-001',
+      ok: true,
+      orders: [sampleTicket],
+    });
+    assert.equal(loadedWithTicket.shopId, 'shop-fnb-001');
+    assert.equal(loadedWithTicket.hasLoaded, true);
+    assert.equal(loadedWithTicket.orders.length, 1);
+    assert.equal(loadedWithTicket.fetchError, null);
+
+    // 5. Transient network/503 failure on the same shop must keep tickets visible and hasLoaded=true
+    const afterTransientError = reconcileKitchenOrdersFetch(loadedWithTicket, {
+      shopId: 'shop-fnb-001',
+      activeShopId: 'shop-fnb-001',
+      ok: false,
+      status: 503,
+      error: 'Service temporarily unavailable',
+    });
+    assert.equal(
+      afterTransientError.orders.length,
+      1,
+      'Transient fetch failure must not clear active KDS tickets for the same shop'
+    );
+    assert.equal(afterTransientError.orders[0].id, 'ord-keep-1');
+    assert.equal(afterTransientError.hasLoaded, true);
+    assert.equal(
+      afterTransientError.fetchError,
+      'Service temporarily unavailable'
+    );
+    assert.equal(afterTransientError.sessionExpired, false);
+
+    // 6. 401 on the same shop marks sessionExpired while preserving current view
+    const after401 = reconcileKitchenOrdersFetch(afterTransientError, {
+      shopId: 'shop-fnb-001',
+      activeShopId: 'shop-fnb-001',
+      ok: false,
+      status: 401,
+      error: 'Unauthorized',
+    });
+    assert.equal(after401.orders.length, 1);
+    assert.equal(after401.sessionExpired, true);
+
+    // 7. Switching to another shop that errors must NOT leak previous shop tickets or hasLoaded
+    const switchedShopError = reconcileKitchenOrdersFetch(after401, {
+      shopId: 'shop-fnb-002',
+      activeShopId: 'shop-fnb-002',
+      ok: false,
+      status: 500,
+      error: 'Failed to load new shop',
+    });
+    assert.equal(switchedShopError.shopId, 'shop-fnb-002');
+    assert.equal(switchedShopError.hasLoaded, false);
+    assert.equal(
+      switchedShopError.orders.length,
+      0,
+      'Switching shops must not retain another shop tickets'
+    );
+
+    // 8. Regression: Stale-shop PATCH / fetch callback isolation after switching shops
+    const tracker = createKitchenShopScopeTracker('shop-fnb-001');
+    const shopAPatchScope = tracker.canStartForShop('shop-fnb-001');
+    assert.ok(shopAPatchScope, 'Operation for active shop-fnb-001 can start');
+    assert.equal(
+      tracker.isCurrent(shopAPatchScope, 'shop-fnb-001'),
+      true
+    );
+
+    // User switches active shop to shop-fnb-002 while shop-fnb-001 PATCH/fetch is in flight
+    const shopBScope = tracker.setActiveShop('shop-fnb-002');
+    assert.equal(shopBScope.shopId, 'shop-fnb-002');
+    const shopBState = createInitialKitchenOrdersState('shop-fnb-002');
+
+    // Old PATCH callback from shop-fnb-001 resolves after switch:
+    // - isCurrent is false (blocks membership update, PATCH follow-up refresh, and broadcast)
+    assert.equal(
+      tracker.isCurrent(shopAPatchScope, 'shop-fnb-001'),
+      false,
+      'In-flight operation token from shop-fnb-001 must be invalidated after switching to shop-fnb-002'
+    );
+    assert.equal(
+      isKitchenShopScopeCurrent({
+        operationShopId: 'shop-fnb-001',
+        currentShopId: tracker.getCurrentScope().shopId,
+      }),
+      false
+    );
+
+    // - If an old fetchKitchenOrders closure that captured shop-fnb-001 is invoked, canStartForShop rejects it
+    assert.equal(
+      tracker.canStartForShop('shop-fnb-001'),
+      null,
+      'Stale fetch closure for shop-fnb-001 must not start against shop-fnb-002 scope'
+    );
+
+    // - If a stale fetch result for shop-fnb-001 arrives late, reconcileKitchenOrdersFetch ignores it
+    const afterStaleShopAResult = reconcileKitchenOrdersFetch(shopBState, {
+      shopId: 'shop-fnb-001',
+      activeShopId: tracker.getCurrentScope().shopId,
+      ok: true,
+      orders: [sampleTicket],
+    });
+    assert.equal(
+      afterStaleShopAResult,
+      shopBState,
+      'Stale fetch result from shop-fnb-001 must not overwrite shop-fnb-002 state'
+    );
+    assert.equal(afterStaleShopAResult.shopId, 'shop-fnb-002');
+    assert.equal(afterStaleShopAResult.orders.length, 0);
+
+    // Disposing the tracker invalidates even the current shop scope
+    tracker.dispose();
+    assert.equal(tracker.isDisposed(), true);
+    assert.equal(tracker.isCurrent(shopBScope, 'shop-fnb-002'), false);
+    assert.equal(tracker.canStartForShop('shop-fnb-002'), null);
+  });
+
+  test('14.5 KitchenTicketCard renders order code, table/takeaway, age, overdue alert, item options/notes, and gates touch actions by canFulfill', () => {
+    const createdAt = '2026-10-22T08:30:00.000Z';
+    const ticket = baseOrder({
+      id: 'ord-card-1',
+      order_code: '#KDS88',
+      table_label: 'Bàn 12',
+      customer_note: 'Khách dị ứng đậu phộng',
+      status: 'new',
+      created_at: createdAt,
+    });
+
+    assert.equal(
+      formatKitchenLineOptionLabel(ticket.items[0].selected_choices[0], 'vi'),
+      'Thêm hành'
+    );
+    assert.equal(
+      formatKitchenLineOptionLabel(ticket.items[0].selected_choices[0], 'en'),
+      'Extra scallions'
+    );
+
+    const ssrScript = `
+      import React from 'react';
+      import { renderToStaticMarkup } from 'react-dom/server';
+      import { KitchenTicketCard } from './src/components/dashboard/KitchenTicketCard.tsx';
+      const ticket = ${JSON.stringify(ticket)};
+      const nowMs = Date.parse('2026-10-22T08:50:00.000Z');
+      const htmlWithFulfill = renderToStaticMarkup(
+        React.createElement(KitchenTicketCard, {
+          order: ticket,
+          locale: 'vi',
+          nowMs,
+          canFulfill: true,
+          isUpdating: false,
+          onAdvanceStatus: () => {},
+        })
+      );
+      const htmlReadOnlyEn = renderToStaticMarkup(
+        React.createElement(KitchenTicketCard, {
+          order: { ...ticket, table_label: 'Mang đi', status: 'preparing' },
+          locale: 'en',
+          nowMs,
+          canFulfill: false,
+          isUpdating: false,
+          onAdvanceStatus: () => {},
+        })
+      );
+      console.log(JSON.stringify({ htmlWithFulfill, htmlReadOnlyEn }));
+    `;
+
+    const rawOut = execFileSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--import',
+        './tests/register-ts.mjs',
+        '--import',
+        './tests/tsx-review-loader.mjs',
+        '--input-type=module',
+        '-e',
+        ssrScript,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 30000 }
+    );
+    const { htmlWithFulfill, htmlReadOnlyEn } = JSON.parse(rawOut.trim()) as {
+      htmlWithFulfill: string;
+      htmlReadOnlyEn: string;
+    };
+
+    assert.ok(htmlWithFulfill.includes('#KDS88'), 'Must render order code');
+    assert.ok(htmlWithFulfill.includes('Bàn 12'), 'Must render table label');
+    assert.ok(htmlWithFulfill.includes('20 phút'), 'Must render elapsed age');
+    assert.ok(
+      htmlWithFulfill.includes('Từ 15 phút (≥ 15p)'),
+      'Must render inclusive >= 15m overdue indicator'
+    );
+    assert.ok(
+      htmlWithFulfill.includes('Phở bò tái nạm') &&
+        htmlWithFulfill.includes('x2'),
+      'Must render item name and quantity'
+    );
+    assert.ok(
+      htmlWithFulfill.includes('Thêm hành') &&
+        htmlWithFulfill.includes('Ít cay'),
+      'Must render selected options and quick tags'
+    );
+    assert.ok(
+      htmlWithFulfill.includes('Nước béo riêng'),
+      'Must render line custom_note'
+    );
+    assert.ok(
+      htmlWithFulfill.includes('Khách dị ứng đậu phộng'),
+      'Must render order customer_note'
+    );
+    assert.ok(
+      htmlWithFulfill.includes('Bắt đầu làm'),
+      'Must render start-cooking action when canFulfill is true'
+    );
+    assert.ok(
+      !htmlWithFulfill.includes('Đã thanh toán'),
+      'Must not conflate KDS fulfillment card with payment actions'
+    );
+
+    assert.ok(
+      htmlReadOnlyEn.includes('Takeaway'),
+      'Must localize takeaway label in English'
+    );
+    assert.ok(
+      htmlReadOnlyEn.includes('≥ 15m threshold'),
+      'Must render inclusive >= 15m threshold label in English'
+    );
+    assert.ok(
+      htmlReadOnlyEn.includes('Rare &amp; Flank Beef Pho'),
+      'Must render localized English item name when available'
+    );
+    assert.ok(
+      htmlReadOnlyEn.includes('Extra scallions'),
+      'Must render localized English option label'
+    );
+    assert.ok(
+      htmlReadOnlyEn.includes(
+        'View only — requires orders.fulfill permission to mark done'
+      ),
+      'Must show view-only notice and hide action button when canFulfill is false'
+    );
+    assert.ok(
+      !htmlReadOnlyEn.includes('Done (Complete)'),
+      'Must not render fulfillment action button when canFulfill is false'
+    );
+  });
+
+  test('14.6 Server PATCH /api/orders enforces orders.fulfill on KDS transitions and preserves unpaid payment_status', async () => {
+    const viewOnlyCashierId = 'user-kds-cashier-no-fulfill';
+    const kitchenStaffId = 'user-kds-staff-fulfill';
+
+    try {
+      // Upsert a cashier without orders.fulfill and a kitchen staff with orders.fulfill
+      await dbUpsertShopMembership({
+        shop_id: 'shop-fnb-001',
+        user_id: viewOnlyCashierId,
+        role: 'cashier',
+        permissions: ['orders.view', 'payment.collect'],
+        is_active: true,
+      });
+      await dbUpsertShopMembership({
+        shop_id: 'shop-fnb-001',
+        user_id: kitchenStaffId,
+        role: 'staff',
+        permissions: ['orders.view', 'orders.fulfill'],
+        is_active: true,
+      });
+
+      const created = await dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn KDS 05',
+        customer_note: 'Làm nhanh giúp khách',
+        items: [
+          {
+            item_id: SEED_ITEMS[0].id,
+            name_vi: SEED_ITEMS[0].name_i18n.vi || 'Món thử KDS',
+            quantity: 1,
+            unit_price: SEED_ITEMS[0].price,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      });
+      assert.equal(created.status, 'new');
+      assert.equal(created.payment_status, 'unpaid');
+
+      const cashierToken = issueSessionToken({
+        id: viewOnlyCashierId,
+        email: 'cashier-kds@example.com',
+        role: 'owner',
+      });
+      const staffToken = issueSessionToken({
+        id: kitchenStaffId,
+        email: 'kitchen-staff@example.com',
+        role: 'owner',
+      });
+
+      const startPayload = buildKitchenFulfillPatchPayload({
+        shopId: 'shop-fnb-001',
+        orderId: created.id,
+        currentStatus: created.status,
+      });
+      assert.ok(startPayload);
+
+      // 1. Cashier without orders.fulfill is rejected by PATCH /api/orders with 403
+      const forbiddenRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cashierToken}`,
+          },
+          body: JSON.stringify(startPayload),
+        })
+      );
+      assert.equal(
+        forbiddenRes.status,
+        403,
+        'Member without orders.fulfill must be rejected with 403 on KDS status transition'
+      );
+      const forbiddenBody = await forbiddenRes.json();
+      assert.equal(forbiddenBody.code, 'INSUFFICIENT_SHOP_PERMISSION');
+
+      // 2. Staff with orders.fulfill transitions new -> preparing; payment_status stays unpaid
+      const prepRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${staffToken}`,
+          },
+          body: JSON.stringify(startPayload),
+        })
+      );
+      assert.equal(prepRes.status, 200);
+      const prepBody = await prepRes.json();
+      assert.equal(prepBody.order.status, 'preparing');
+      assert.equal(prepBody.order.payment_status, 'unpaid');
+      assert.equal(prepBody.order.paid_at, undefined);
+
+      // 3. Staff with orders.fulfill transitions preparing -> completed; payment_status STILL stays unpaid
+      const completePayload = buildKitchenFulfillPatchPayload({
+        shopId: 'shop-fnb-001',
+        orderId: created.id,
+        currentStatus: prepBody.order.status,
+      });
+      assert.ok(completePayload);
+
+      const doneRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${staffToken}`,
+          },
+          body: JSON.stringify(completePayload),
+        })
+      );
+      assert.equal(doneRes.status, 200);
+      const doneBody = await doneRes.json();
+      assert.equal(doneBody.order.status, 'completed');
+      assert.equal(
+        doneBody.order.payment_status,
+        'unpaid',
+        'Completing service in KDS must never mark an order paid'
+      );
+      assert.equal(doneBody.order.paid_at, undefined);
+
+      // 4. Completed order is excluded from KDS active queue but remains in shop order history
+      const persistedOrder = await dbGetOrderById(created.id);
+      assert.ok(
+        persistedOrder,
+        'Completed order must remain preserved in order history outside KDS'
+      );
+      assert.equal(persistedOrder?.status, 'completed');
+      assert.equal(
+        isActiveKitchenOrder(persistedOrder, 'shop-fnb-001'),
+        false,
+        'Completed order must no longer appear in KDS active queue'
+      );
+
+      // 5. Scoped GET /api/orders?shopId=shop-fnb-001&view=kds excludes the completed order and omits stats/catalog
+      assert.equal(
+        buildKitchenOrdersUrl('shop-fnb-001'),
+        '/api/orders?shopId=shop-fnb-001&view=kds'
+      );
+      const kdsGetRes = await ordersGet(
+        new Request(
+          `http://localhost:3000${buildKitchenOrdersUrl('shop-fnb-001')}`,
+          {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${staffToken}` },
+          }
+        )
+      );
+      assert.equal(kdsGetRes.status, 200);
+      const kdsGetBody = await kdsGetRes.json();
+      assert.equal(
+        kdsGetBody.orders.some((o: { id: string }) => o.id === created.id),
+        false,
+        'GET /api/orders?view=kds must exclude completed orders'
+      );
+      assert.equal(
+        kdsGetBody.orders.every(
+          (o: { shop_id: string; status: string }) =>
+            o.shop_id === 'shop-fnb-001' &&
+            (o.status === 'new' || o.status === 'preparing')
+        ),
+        true,
+        'GET /api/orders?view=kds must return only active orders for the requested shop'
+      );
+      assert.equal('stats' in kdsGetBody, false);
+      assert.equal('serviceRequests' in kdsGetBody, false);
+    } finally {
+      await dbDeleteShopMembership('shop-fnb-001', viewOnlyCashierId);
+      await dbDeleteShopMembership('shop-fnb-001', kitchenStaffId);
     }
   });
 });

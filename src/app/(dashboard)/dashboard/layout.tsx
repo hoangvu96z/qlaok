@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   BellRing,
+  ChefHat,
   UtensilsCrossed,
   ScanLine,
   QrCode,
@@ -83,6 +84,11 @@ const NAV_ITEMS: Array<{
     labelKey: 'nav.orders',
     icon: BellRing,
     isOrders: true,
+  },
+  {
+    href: '/dashboard/kitchen',
+    labelKey: 'nav.kitchen',
+    icon: ChefHat,
   },
   {
     href: '/dashboard/reports',

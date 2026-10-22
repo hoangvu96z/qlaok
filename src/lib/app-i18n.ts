@@ -85,6 +85,7 @@ const VI_APP_DICTIONARY = {
   // Header & Sidebar Navigation
   'nav.overview': 'Tổng quan',
   'nav.orders': 'Đơn hàng',
+  'nav.kitchen': 'Màn hình bếp',
   'nav.reports': 'Báo cáo',
   'nav.catalog': 'Menu & Tồn kho',
   'nav.aiScanner': 'Quét Menu AI',
@@ -286,6 +287,7 @@ const EN_APP_DICTIONARY: Record<AppTranslationKey, string> = {
   // Header & Sidebar Navigation
   'nav.overview': 'Overview',
   'nav.orders': 'Orders',
+  'nav.kitchen': 'Kitchen',
   'nav.reports': 'Reports',
   'nav.catalog': 'Menu & Stock',
   'nav.aiScanner': 'AI Menu Scan',

@@ -41,6 +41,7 @@ flowchart TD
 | `/s/[slug]`, `/s/[slug]/menu` | QR Cửa, QR Bàn và menu theo ngành |
 | `/dashboard` | Tổng quan doanh thu và tồn kho |
 | `/dashboard/orders` | POS, đơn, thanh toán và in |
+| `/dashboard/kitchen` | Màn hình bếp (KDS): hàng đợi đơn đang làm (`new`, `preparing`), ưu tiên đơn cũ nhất trước, cảnh báo quá 15 phút và thao tác chạm `new → preparing → completed` |
 | `/dashboard/catalog`, `/posts`, `/settings` | Nội dung và cấu hình shop |
 | `/dashboard/reports`, `/billing` | Báo cáo và gói SaaS |
 | `/dashboard/ai-scanner`, `/qr-studio` | OCR/import và xuất QR |
@@ -62,7 +63,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | --- | --- |
 | `src/types/qlaok.ts` | Contracts locale, catalog, đơn, membership, shop theme, payment |
 | `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, analytics, billing và seed (chỉ tự seed dữ liệu demo ở môi trường non-production; trên `NODE_ENV=production` khi `public.shops` rỗng trả `{ ready: true, seeded: false }` mà không tự ghi demo shop) |
-| `src/lib/mpos-store.ts` | Orders, stock, giá canonical, transition, bill theo bàn/session và bộ đếm in |
+| `src/lib/mpos-store.ts` | Orders, stock, giá canonical, transition, bill theo bàn/session, hàng đợi bếp đang hoạt động (`dbGetShopActiveKitchenOrders`) và bộ đếm in |
 | `src/lib/shop-tables.ts` | Store bàn, kiểm tra bàn cùng quán/đang hoạt động, owner mutation và public DTO |
 | `src/lib/service-requests.ts` | Yêu cầu phục vụ tại bàn (`call_staff`, `request_bill`) xác thực chữ ký QR bàn, chống spam lặp theo bàn/loại và chuyển trạng thái `pending → acknowledged → resolved` |
 | `src/lib/table-helpers.ts` | Helper client-safe: URL QR, resolve lựa chọn, lọc bàn và thống kê theo ID |
@@ -74,6 +75,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | `src/lib/dashboard-context.tsx` | Session, shop đang chọn và membership phía dashboard |
 | `src/lib/order-events.ts` | Broker một upstream privileged subscription cho SSE đã được cấp quyền |
 | `src/lib/order-live-sync.ts` | Fetch SSE, refresh, debounce, fallback và lifecycle trên web |
+| `src/lib/kitchen-display.ts` | Helper KDS (`/dashboard/kitchen`, `KitchenTicketCard.tsx`): URL truy vấn riêng `GET /api/orders?shopId=...&view=kds` (lọc `new`, `preparing` ở DB trước khi phân trang `.range()`), lọc/sắp xếp theo `created_at` tăng dần, ngưỡng quá hạn từ 15 phút (`≥ 15p`), kiểm quyền `orders.fulfill`, tạo payload PATCH trạng thái không đụng trường thanh toán, cô lập scope theo shop và giữ nguyên vé đang hiển thị khi lỗi tải tạm thời |
 | `src/lib/order-chime.ts` | Cấu hình và phát âm báo đơn |
 | `src/lib/push-notifications.ts` | Lưu/xóa Expo push token theo user + shop (`orders.view`), gửi push VI/EN cho chủ quán và nhân sự `orders.view` khi có đơn QR khách mới (chống lặp theo replay đơn/in-memory sau khi có ticket `ok`, chỉ đếm ticket `status === 'ok'` và tự dọn token `DeviceNotRegistered`); mobile hủy token best-effort trước `signOut` cả khi đăng xuất và khi gặp HTTP 401 (không lặp 401 đệ quy, không chặn xóa phiên local nếu token đã hết hạn) |
 | `src/lib/payment-qr.ts` | Cấu hình/URL QR thanh toán merchant |

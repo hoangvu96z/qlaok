@@ -9,6 +9,7 @@ import {
   dbComputeShopRevenueAndInventoryStats,
   dbCreateOrder,
   dbGetOrderById,
+  dbGetShopActiveKitchenOrders,
   dbGetShopOrders,
   dbSettleTableBill,
   dbUpdateOrderStatus,
@@ -120,6 +121,7 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     private table: string;
     private columns = '*';
     private filters: Array<[string, unknown]> = [];
+    private inFilters: Array<[string, readonly unknown[]]> = [];
     private orderColumns: Array<{ column: string; ascending: boolean }> = [];
     private rowLimit: number | null = null;
     private rowOffset = 0;
@@ -144,6 +146,10 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
       this.filters.push([column, value]);
       return this;
     }
+    in(column: string, values: readonly unknown[]) {
+      this.inFilters.push([column, values]);
+      return this;
+    }
     order(column: string, options?: { ascending?: boolean }) {
       this.orderColumns.push({
         column,
@@ -164,9 +170,17 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
         assert.match(value, /^[a-z_]+$/i);
         return `"${value}"`;
       };
-      const where = this.filters
-        .map(([key], i) => `${identifier(key)}=$${i + 1}`)
-        .join(' AND ');
+      const params: unknown[] = [];
+      const whereParts: string[] = [];
+      for (const [key, value] of this.filters) {
+        params.push(value);
+        whereParts.push(`${identifier(key)}=$${params.length}`);
+      }
+      for (const [key, values] of this.inFilters) {
+        params.push(values.map((v) => String(v)));
+        whereParts.push(`${identifier(key)} = ANY($${params.length}::text[])`);
+      }
+      const where = whereParts.join(' AND ');
       const orderBy =
         this.orderColumns.length > 0
           ? ` ORDER BY ${this.orderColumns
@@ -187,10 +201,7 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
               .map((value) => identifier(value.trim()))
               .join(',')
       } FROM ${identifier(this.table)}${where ? ` WHERE ${where}` : ''}${orderBy} LIMIT ${effectiveLimit} OFFSET ${this.rowOffset}`;
-      const { rows } = await db.query(
-        sql,
-        this.filters.map(([, value]) => value)
-      );
+      const { rows } = await db.query(sql, params);
       return { data: this.single ? rows[0] ?? null : rows, error: null };
     }
     then(
@@ -565,6 +576,118 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     assert.equal(staffJson.stats.totalOrdersCount, 1005);
     assert.equal(staffJson.stats.newOrdersCount, 1);
     assert.equal(staffJson.stats.preparingOrdersCount, 1);
+
+    // 6b. KDS read path (dbGetShopActiveKitchenOrders & GET /api/orders?shopId=...&view=kds):
+    //     - Filters to 'new' and 'preparing' in the DB BEFORE the 1000-row cap so active orders older than
+    //       1000 newer completed orders are never lost.
+    //     - Paginates across pages via .range(), isolates by shopId, requires orders.view, and omits catalog/stats work.
+    await db.exec(`
+      INSERT INTO profiles(id, email) VALUES ('catalog-only-user', 'catalog-only@test.local'), ('other-shop-owner', 'other-owner@test.local');
+      INSERT INTO shops(id, owner_id, slug, name, is_published) VALUES ('other-kds-shop', 'other-shop-owner', 'other-kds-shop', 'Other KDS Shop', true);
+      INSERT INTO shop_memberships(id, shop_id, user_id, role, permissions, is_active)
+        VALUES ('mem-catalog-only', 'stats-shop', 'catalog-only-user', 'staff', '["catalog.manage"]'::jsonb, true);
+      INSERT INTO orders (
+        id, shop_id, order_code, table_label, visitor_lang, status, payment_method, payment_status,
+        items, subtotal_amount, discount_amount, total_amount, source, created_at, updated_at
+      ) VALUES (
+        'ord-other-shop-active', 'other-kds-shop', 'OTH-01', 'Bàn 01', 'vi', 'new', 'cash', 'unpaid',
+        '[]'::jsonb, 10000, 0, 10000, 'qr_table', NOW(), NOW()
+      );
+    `);
+
+    // General dbGetShopOrders('stats-shop') only sees the 1000 newer completed orders
+    assert.equal(
+      cappedOrders.some(
+        (o) =>
+          o.id === 'ord-beyond-1004-new-unpaid' ||
+          o.id === 'ord-beyond-1005-prep-unpaid'
+      ),
+      false,
+      'Unfiltered 1000-row list misses the 2 older active orders behind 1000 completed orders'
+    );
+
+    // Scoped KDS helper retrieves both older active orders sorted oldest-first (05:00 before 06:00)
+    const activeKdsOrders = await dbGetShopActiveKitchenOrders('stats-shop');
+    assert.deepEqual(
+      activeKdsOrders.map((o) => o.id),
+      ['ord-beyond-1005-prep-unpaid', 'ord-beyond-1004-new-unpaid'],
+      'dbGetShopActiveKitchenOrders must return active orders older than 1000 newer completed orders, oldest first'
+    );
+
+    // Multi-page .range() pagination for KDS when active orders span multiple pages
+    const multiPageKdsOrders = await dbGetShopActiveKitchenOrders(
+      'stats-shop',
+      undefined,
+      { pageSize: 1, maxPages: 5 }
+    );
+    assert.deepEqual(
+      multiPageKdsOrders.map((o) => o.id),
+      ['ord-beyond-1005-prep-unpaid', 'ord-beyond-1004-new-unpaid']
+    );
+    await assert.rejects(
+      dbGetShopActiveKitchenOrders('stats-shop', undefined, {
+        pageSize: 1,
+        maxPages: 1,
+      }),
+      /DB_KDS_PAGE_LIMIT_REACHED/
+    );
+
+    // KDS API route: anonymous -> 401, missing shopId -> 400, member without orders.view -> 403, cross-shop -> 403
+    const anonKdsRes = await getOrdersRoute(
+      new Request('http://localhost/api/orders?shopId=stats-shop&view=kds')
+    );
+    assert.equal(anonKdsRes.status, 401);
+
+    const missingShopKdsRes = await getOrdersRoute(
+      new Request('http://localhost/api/orders?view=kds', {
+        headers: { cookie: `${SESSION_COOKIE_NAME}=${staffToken}` },
+      })
+    );
+    assert.equal(missingShopKdsRes.status, 400);
+    const missingShopKdsJson = await missingShopKdsRes.json();
+    assert.equal(missingShopKdsJson.code, 'SHOP_ID_REQUIRED');
+
+    const catalogOnlyToken = issueSessionToken({
+      id: 'catalog-only-user',
+      email: 'catalog-only@test.local',
+      role: 'staff',
+    });
+    const forbiddenKdsRes = await getOrdersRoute(
+      new Request('http://localhost/api/orders?shopId=stats-shop&view=kds', {
+        headers: { cookie: `${SESSION_COOKIE_NAME}=${catalogOnlyToken}` },
+      })
+    );
+    assert.equal(forbiddenKdsRes.status, 403);
+
+    const crossShopKdsRes = await getOrdersRoute(
+      new Request(
+        'http://localhost/api/orders?shopId=other-kds-shop&view=kds',
+        {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${staffToken}` },
+        }
+      )
+    );
+    assert.equal(crossShopKdsRes.status, 403);
+
+    // Authorized KDS API route returns only active orders for stats-shop + membership, without stats/catalog/serviceRequests
+    const kdsRes = await getOrdersRoute(
+      new Request('http://localhost/api/orders?shopId=stats-shop&view=kds', {
+        headers: { cookie: `${SESSION_COOKIE_NAME}=${staffToken}` },
+      })
+    );
+    assert.equal(kdsRes.status, 200);
+    const kdsJson = await kdsRes.json();
+    assert.deepEqual(
+      kdsJson.orders.map((o: { id: string }) => o.id),
+      ['ord-beyond-1005-prep-unpaid', 'ord-beyond-1004-new-unpaid']
+    );
+    assert.equal(kdsJson.membership?.user_id, 'staff-stats');
+    assert.equal('stats' in kdsJson, false, 'KDS response must omit stats work');
+    assert.equal(
+      'serviceRequests' in kdsJson,
+      false,
+      'KDS response must omit serviceRequests work'
+    );
 
     // 7. PATCH /api/orders requires non-empty refund_reason and cancelled_reason and persists user-entered reasons
     const orderForRefund = await dbCreateOrder({

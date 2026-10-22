@@ -36,6 +36,7 @@ export const CLIENT_ALL_SHOP_PERMISSIONS: ShopPermission[] = [
 export const DASHBOARD_NAV_REQUIREMENTS: Record<string, DashboardNavRequirement> = {
   '/dashboard': { anyOf: ['reports.view'] },
   '/dashboard/orders': { anyOf: ['orders.view'] },
+  '/dashboard/kitchen': { anyOf: ['orders.view'] },
   '/dashboard/reports': { anyOf: ['reports.view'] },
   '/dashboard/catalog': { anyOf: ['catalog.manage', 'inventory.adjust'] },
   '/dashboard/ai-scanner': { anyOf: ['catalog.manage'] },
@@ -112,6 +113,7 @@ export function getFallbackDashboardHref(
 ): string | null {
   const order = [
     '/dashboard/orders',
+    '/dashboard/kitchen',
     '/dashboard',
     '/dashboard/catalog',
     '/dashboard/qr-studio',

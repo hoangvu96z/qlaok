@@ -1310,6 +1310,193 @@ export async function dbGetShopOrders(shopId: string): Promise<ShopOrder[]> {
   return loadMergedOrders(shopId);
 }
 
+const ACTIVE_KITCHEN_ORDER_STATUSES: readonly OrderStatus[] = [
+  'new',
+  'preparing',
+];
+
+function sortActiveKitchenOrdersOldestFirst(orders: ShopOrder[]): ShopOrder[] {
+  return orders.sort((a, b) => {
+    const aMs = Date.parse(String(a.created_at || ''));
+    const bMs = Date.parse(String(b.created_at || ''));
+    const aValid = !Number.isNaN(aMs);
+    const bValid = !Number.isNaN(bMs);
+    if (aValid && bValid && aMs !== bMs) {
+      return aMs - bMs;
+    }
+    if (aValid !== bValid) {
+      return aValid ? -1 : 1;
+    }
+    if (a.status !== b.status) {
+      return a.status === 'new' ? -1 : 1;
+    }
+    const codeCompare = String(a.order_code || '').localeCompare(
+      String(b.order_code || '')
+    );
+    if (codeCompare !== 0) return codeCompare;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+}
+
+/**
+ * Loads all active kitchen orders (`new`, `preparing`) for a shop, sorted oldest-first.
+ * - For Supabase: filters to `shop_id = shopId` and `status IN ('new', 'preparing')`
+ *   at the database level BEFORE pagination/limits and paginates all matching active
+ *   rows using `.range()` so older active tickets never disappear behind 1000+ newer
+ *   completed/cancelled orders.
+ * - For local storage: loads all shop orders and filters to `new` and `preparing`.
+ */
+export async function dbGetShopActiveKitchenOrders(
+  shopId: string,
+  clientOverride?: SupabaseClient,
+  options?: PaginatedStatsFetchOptions
+): Promise<ShopOrder[]> {
+  const cleanShopId = (shopId ?? '').trim();
+  if (!cleanShopId) return [];
+
+  if (clientOverride !== undefined || isOrderDbConfigured()) {
+    const sb = clientOverride ?? getActiveDbClient();
+    const seenById = new Map<string, ShopOrder>();
+    const pageSize = Math.max(
+      1,
+      Math.floor(options?.pageSize ?? STATS_ORDER_PAGE_SIZE)
+    );
+    const maxPages = Math.max(
+      1,
+      Math.floor(options?.maxPages ?? STATS_ORDER_MAX_PAGES)
+    );
+
+    const probeQuery = sb.from('orders').select('*').eq('shop_id', cleanShopId);
+    const supportsInFilter =
+      typeof (
+        probeQuery as unknown as {
+          in?: (column: string, values: readonly string[]) => typeof probeQuery;
+        }
+      ).in === 'function';
+
+    const appendValidRow = (row: unknown) => {
+      const normalized = normalizeOrderRecord(row as Partial<ShopOrder>);
+      if (
+        normalized.shop_id === cleanShopId &&
+        (normalized.status === 'new' || normalized.status === 'preparing') &&
+        !seenById.has(normalized.id)
+      ) {
+        seenById.set(normalized.id, normalized);
+      }
+    };
+
+    if (supportsInFilter) {
+      for (let page = 0; page < maxPages; page++) {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+        const base = sb.from('orders').select('*').eq('shop_id', cleanShopId);
+        const inFn = (
+          base as unknown as {
+            in: (column: string, values: readonly string[]) => typeof base;
+          }
+        ).in;
+        let query = inFn
+          .call(base, 'status', ACTIVE_KITCHEN_ORDER_STATUSES)
+          .order('created_at', { ascending: true });
+
+        const rangeFn = (
+          query as unknown as {
+            range?: (start: number, end: number) => typeof query;
+          }
+        ).range;
+        const supportsRange = typeof rangeFn === 'function';
+        if (supportsRange) {
+          query = rangeFn.call(query, from, to);
+        }
+
+        const { data, error } = await query;
+        if (error || !Array.isArray(data)) {
+          throw new Error(error?.message || 'DB_READ_FAILED');
+        }
+
+        for (const row of data) {
+          appendValidRow(row);
+        }
+
+        if (data.length < pageSize) {
+          break;
+        }
+
+        if (!supportsRange) {
+          throw new Error(
+            'DB_KDS_PAGE_LIMIT_REACHED: Client does not support .range() pagination for a full active order page; refusing to return truncated KDS queue.'
+          );
+        }
+
+        if (page === maxPages - 1) {
+          throw new Error(
+            'DB_KDS_PAGE_LIMIT_REACHED: Active kitchen orders exceeded maximum pagination pages; refusing to return truncated KDS queue.'
+          );
+        }
+      }
+    } else {
+      for (const status of ACTIVE_KITCHEN_ORDER_STATUSES) {
+        for (let page = 0; page < maxPages; page++) {
+          const from = page * pageSize;
+          const to = from + pageSize - 1;
+          let query = sb
+            .from('orders')
+            .select('*')
+            .eq('shop_id', cleanShopId)
+            .eq('status', status)
+            .order('created_at', { ascending: true });
+
+          const rangeFn = (
+            query as unknown as {
+              range?: (start: number, end: number) => typeof query;
+            }
+          ).range;
+          const supportsRange = typeof rangeFn === 'function';
+          if (supportsRange) {
+            query = rangeFn.call(query, from, to);
+          }
+
+          const { data, error } = await query;
+          if (error || !Array.isArray(data)) {
+            throw new Error(error?.message || 'DB_READ_FAILED');
+          }
+
+          for (const row of data) {
+            appendValidRow(row);
+          }
+
+          if (data.length < pageSize) {
+            break;
+          }
+
+          if (!supportsRange) {
+            throw new Error(
+              'DB_KDS_PAGE_LIMIT_REACHED: Client does not support .range() pagination for a full active order page; refusing to return truncated KDS queue.'
+            );
+          }
+
+          if (page === maxPages - 1) {
+            throw new Error(
+              'DB_KDS_PAGE_LIMIT_REACHED: Active kitchen orders exceeded maximum pagination pages; refusing to return truncated KDS queue.'
+            );
+          }
+        }
+      }
+    }
+
+    return sortActiveKitchenOrdersOldestFirst(Array.from(seenById.values()));
+  }
+
+  const allShopOrders = await loadMergedOrders(cleanShopId);
+  return sortActiveKitchenOrdersOldestFirst(
+    allShopOrders.filter(
+      (order) =>
+        order.shop_id === cleanShopId &&
+        (order.status === 'new' || order.status === 'preparing')
+    )
+  );
+}
+
 export async function dbGetOrderById(
   orderId: string
 ): Promise<ShopOrder | null> {

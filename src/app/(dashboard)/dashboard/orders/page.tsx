@@ -1143,6 +1143,14 @@ export default function CounterOrdersPage() {
             </div>
 
             <Link
+              href="/dashboard/kitchen"
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-xs font-black text-amber-300 hover:bg-amber-500/25 transition"
+            >
+              <ChefHat className="h-3.5 w-3.5" />
+              <span>{t('nav.kitchen')}</span>
+            </Link>
+
+            <Link
               href="/dashboard/reports"
               className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
             >

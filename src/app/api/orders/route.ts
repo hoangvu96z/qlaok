@@ -3,6 +3,7 @@ import {
   dbComputeShopRevenueAndInventoryStats,
   dbCreateOrder,
   dbGetOrderById,
+  dbGetShopActiveKitchenOrders,
   dbGetShopOrders,
   dbGetTableBill,
   dbRecordOrderPrint,
@@ -60,8 +61,10 @@ export async function GET(req: Request) {
     const trackingToken =
       searchParams.get('trackingToken') ||
       req.headers.get('x-tracking-token');
-    const shopId = searchParams.get('shopId') || 'shop-fnb-001';
+    const rawShopId = (searchParams.get('shopId') || '').trim();
+    const shopId = rawShopId || 'shop-fnb-001';
     const action = searchParams.get('action');
+    const view = searchParams.get('view');
 
     if (orderId) {
       const order = await dbGetOrderById(orderId);
@@ -117,6 +120,33 @@ export async function GET(req: Request) {
         session_id: sessionId,
       });
       return NextResponse.json({ tableBill, membership: auth.membership });
+    }
+
+    // Scoped Kitchen Display System (KDS) read path: requires explicit shopId and 'orders.view',
+    // filters to active ('new', 'preparing') orders at the DB level before pagination/limits,
+    // and avoids unrelated catalog/stats/service-request queries.
+    if (
+      view === 'kds' ||
+      action === 'kds' ||
+      searchParams.get('kds') === '1'
+    ) {
+      if (!rawShopId) {
+        return NextResponse.json(
+          {
+            error: 'Thiếu mã cửa hàng (shopId).',
+            code: 'SHOP_ID_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+      const auth = await requireShopPermission(req, rawShopId, 'orders.view');
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const activeOrders = await dbGetShopActiveKitchenOrders(rawShopId);
+      return NextResponse.json({
+        orders: activeOrders,
+        membership: auth.membership,
+      });
     }
 
     // Listing orders for a shop requires 'orders.view' permission
