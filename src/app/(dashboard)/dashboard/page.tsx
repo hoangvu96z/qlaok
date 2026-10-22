@@ -377,8 +377,8 @@ export default function DashboardOverviewPage() {
                 <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
                   {setupChecklist.isAllCompleted
                     ? tx(
-                        'Đã hoàn tất thiết lập cửa hàng (5/5)',
-                        'Essential store setup complete (5/5)'
+                        'Đã hoàn tất thiết lập cửa hàng (6/6)',
+                        'Essential store setup complete (6/6)'
                       )
                     : tx(
                         'Checklist thiết lập quán lần đầu',
@@ -406,8 +406,8 @@ export default function DashboardOverviewPage() {
               <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
                 {setupChecklist.isAllCompleted
                   ? tx(
-                      'Thông tin liên hệ, VietQR, thực đơn, mã QR bàn và trạng thái công khai của quán đều đã sẵn sàng đón khách.',
-                      'Store contact info, VietQR payment, menu items, table QR codes, and live status are all configured.'
+                      'Thông tin liên hệ, giờ mở cửa, VietQR, thực đơn, mã QR bàn và trạng thái công khai của quán đều đã sẵn sàng đón khách.',
+                      'Store contact info, opening hours, VietQR payment, menu items, table QR codes, and live status are all configured.'
                     )
                   : tx(
                       'Hoàn thành các bước cơ bản dưới đây để khách quét QR tại bàn, gọi món và thanh toán trơn tru.',
@@ -431,7 +431,7 @@ export default function DashboardOverviewPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5">
           {setupChecklist.steps.map((step) => (
             <Link
               key={step.id}

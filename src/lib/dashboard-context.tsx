@@ -31,6 +31,7 @@ interface DashboardContextValue {
   /** True once memberships for the loaded shops are known. */
   membershipsLoaded: boolean;
   selectShop: (shopId: string) => void;
+  updateActiveShop: (updatedShop: Shop) => void;
   refreshDashboard: () => Promise<void>;
 }
 
@@ -52,6 +53,7 @@ const DashboardContext = createContext<DashboardContextValue>({
   error: null,
   membershipsLoaded: false,
   selectShop: () => {},
+  updateActiveShop: () => {},
   refreshDashboard: async () => {},
 });
 
@@ -212,12 +214,50 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     refreshDashboard();
   }, [refreshDashboard]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) {
+      return;
+    }
+    const bc = new BroadcastChannel('qlaok_realtime_sync');
+    bc.onmessage = (ev) => {
+      if (ev.data?.type === 'shop_updated') {
+        if (ev.data.shop && typeof ev.data.shop === 'object') {
+          const incoming = ev.data.shop as Shop;
+          if (incoming.id) {
+            setShops((prev) =>
+              prev.some((s) => s.id === incoming.id)
+                ? prev.map((s) =>
+                    s.id === incoming.id ? { ...s, ...incoming } : s
+                  )
+                : prev
+            );
+          }
+        }
+        void refreshDashboard();
+      }
+    };
+    return () => {
+      bc.close();
+    };
+  }, [refreshDashboard]);
+
   const selectShop = (shopId: string) => {
     setActiveShopId(shopId);
     if (typeof window !== 'undefined') {
       localStorage.setItem('qlaok_active_shop_id', shopId);
     }
   };
+
+  const updateActiveShop = useCallback((updatedShop: Shop) => {
+    if (!updatedShop?.id) return;
+    setShops((prev) =>
+      prev.some((s) => s.id === updatedShop.id)
+        ? prev.map((s) =>
+            s.id === updatedShop.id ? { ...s, ...updatedShop } : s
+          )
+        : prev
+    );
+  }, []);
 
   const activeShop =
     shops.find((s) => s.id === activeShopId) || shops[0] || null;
@@ -237,6 +277,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         error,
         membershipsLoaded,
         selectShop,
+        updateActiveShop,
         refreshDashboard,
       }}
     >

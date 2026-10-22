@@ -40,6 +40,11 @@ import {
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import {
+  applyOpeningHoursConfirmationToggle,
+  applyOpeningHoursScheduleChange,
+  buildOpeningHoursSettingsPatch,
+  createInitialOpeningHoursSettingsState,
+  hasConfirmedOpeningHours,
   normalizeShopSlugInput,
   requiresSlugChangeConfirmation,
 } from '@/lib/shop-setup-checklist';
@@ -105,7 +110,7 @@ const BACKGROUND_IMAGE_PRESETS = [
 ];
 
 export default function DashboardSettingsPage() {
-  const { activeShop, refreshDashboard } = useDashboard();
+  const { activeShop, updateActiveShop, refreshDashboard } = useDashboard();
   const { locale, t, tx } = useAppI18n();
 
   const [name, setName] = useState('');
@@ -149,6 +154,7 @@ export default function DashboardSettingsPage() {
   const [supportedLangs, setSupportedLangs] =
     useState<SupportedLocale[]>(ALL_LOCALES);
   const [openingHours, setOpeningHours] = useState<OpeningHours | null>(null);
+  const [openingHoursConfirmed, setOpeningHoursConfirmed] = useState(false);
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
 
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
@@ -232,7 +238,10 @@ export default function DashboardSettingsPage() {
         ? activeShop.supported_langs
         : ALL_LOCALES
     );
-    setOpeningHours(activeShop.opening_hours);
+    const initialHoursState =
+      createInitialOpeningHoursSettingsState(activeShop);
+    setOpeningHours(initialHoursState.openingHours);
+    setOpeningHoursConfirmed(initialHoursState.openingHoursConfirmed);
 
     // Fetch catalog items for the live phone preview
     fetch(`/api/catalog?shopId=${activeShop.id}`, {
@@ -383,7 +392,10 @@ export default function DashboardSettingsPage() {
           },
           theme_config: nextThemeConfig,
           supported_langs: supportedLangs,
-          opening_hours: openingHours,
+          ...buildOpeningHoursSettingsPatch({
+            openingHours,
+            openingHoursConfirmed,
+          }),
         }),
       });
       const data = await res.json();
@@ -393,11 +405,20 @@ export default function DashboardSettingsPage() {
         );
       }
 
+      if (data?.shop) {
+        updateActiveShop?.(data.shop);
+        setOpeningHoursConfirmed(hasConfirmedOpeningHours(data.shop));
+      }
+
       setSlug(normalizedSlug);
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('qlaok_realtime_sync');
-        bc.postMessage({ type: 'shop_updated', shopId: activeShop.id });
+        bc.postMessage({
+          type: 'shop_updated',
+          shopId: activeShop.id,
+          shop: data?.shop,
+        });
         bc.close();
       }
 
@@ -1568,18 +1589,87 @@ export default function DashboardSettingsPage() {
       </div>
 
       {/* 5. 7-Day Opening Hours */}
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
-        <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-          <Clock className="h-4 w-4 text-emerald-600" />
-          <span>
-            {tx('Giờ mở cửa', 'Opening hours')}
+      <div
+        id="opening-hours-settings"
+        className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <Clock className="h-4 w-4 text-emerald-600" />
+            <span>{tx('Giờ mở cửa', 'Opening hours')}</span>
+          </h2>
+          <span
+            data-testid="opening-hours-confirmation-badge"
+            className={`rounded-full px-3 py-1 text-[11px] font-black ${
+              openingHoursConfirmed
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {openingHoursConfirmed
+              ? tx('✓ Đã xác nhận giờ mở cửa', '✓ Opening hours confirmed')
+              : tx('Chưa xác nhận giờ mở cửa', 'Opening hours unconfirmed')}
           </span>
-        </h2>
+        </div>
 
         <WeeklyOpeningHoursPicker
           openingHours={openingHours}
-          onChange={(nextHours) => setOpeningHours(nextHours)}
+          onChange={(nextHours) => {
+            const nextState = applyOpeningHoursScheduleChange(
+              { openingHours, openingHoursConfirmed },
+              nextHours
+            );
+            setOpeningHours(nextState.openingHours);
+            setOpeningHoursConfirmed(nextState.openingHoursConfirmed);
+          }}
         />
+
+        <div
+          className={`rounded-2xl border p-3.5 transition-colors ${
+            openingHoursConfirmed
+              ? 'border-emerald-200 bg-emerald-50/70'
+              : 'border-amber-200 bg-amber-50/60'
+          }`}
+        >
+          <label
+            htmlFor="opening-hours-confirmed-checkbox"
+            className="flex min-h-[44px] cursor-pointer items-start sm:items-center gap-3"
+          >
+            <input
+              id="opening-hours-confirmed-checkbox"
+              name="opening_hours_confirmed"
+              type="checkbox"
+              data-testid="opening-hours-confirmed-checkbox"
+              checked={openingHoursConfirmed}
+              aria-describedby="opening-hours-confirmed-help"
+              onChange={(e) => {
+                const nextState = applyOpeningHoursConfirmationToggle(
+                  { openingHours, openingHoursConfirmed },
+                  e.target.checked
+                );
+                setOpeningHoursConfirmed(nextState.openingHoursConfirmed);
+              }}
+              className="mt-0.5 sm:mt-0 h-5 w-5 shrink-0 cursor-pointer rounded border-slate-300 accent-emerald-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
+            />
+            <div className="space-y-0.5">
+              <span className="block text-xs font-extrabold text-slate-900">
+                {tx(
+                  'Tôi đã kiểm tra và xác nhận giờ mở cửa này là chính xác.',
+                  'I checked that these opening hours are correct.'
+                )}
+              </span>
+              <span
+                id="opening-hours-confirmed-help"
+                className="block text-[11px] text-slate-600"
+              >
+                {tx(
+                  'Nếu bạn chỉnh sửa bất kỳ ngày hoặc khung giờ nào ở trên, dấu xác nhận sẽ tự bỏ để bạn kiểm tra lại trước khi bấm Lưu cài đặt.',
+                  'Changing any day, time, or open/closed toggle above clears this confirmation until you re-check it and click Save Settings.'
+                )}
+              </span>
+            </div>
+          </label>
+        </div>
       </div>
 
       {/* 6. Staff & roles (owner only; component renders nothing otherwise) */}

@@ -147,6 +147,7 @@ export interface Shop {
   telegram_chat_id?: string | null;
   wifi_info: WifiInfo;
   opening_hours: OpeningHours;
+  opening_hours_confirmed?: boolean;
   supported_langs: SupportedLocale[];
   currency: string;
   theme_config: ShopThemeConfig;

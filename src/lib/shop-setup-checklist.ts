@@ -1,8 +1,9 @@
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
-import type { Shop } from '@/types/qlaok';
+import type { OpeningHours, Shop } from '@/types/qlaok';
 
 export type ShopSetupChecklistStepId =
   | 'store_info'
+  | 'opening_hours'
   | 'payment_qr'
   | 'catalog_menu'
   | 'tables_qr'
@@ -105,6 +106,65 @@ export function hasConfiguredStoreInfo(
   return true;
 }
 
+export function hasConfirmedOpeningHours(
+  shop: Pick<Shop, 'opening_hours_confirmed'> | null | undefined
+): boolean {
+  return Boolean(shop && shop.opening_hours_confirmed === true);
+}
+
+export interface OpeningHoursSettingsState {
+  openingHours: OpeningHours | null;
+  openingHoursConfirmed: boolean;
+}
+
+export function createInitialOpeningHoursSettingsState(
+  shop:
+    | Pick<Shop, 'opening_hours' | 'opening_hours_confirmed'>
+    | null
+    | undefined
+): OpeningHoursSettingsState {
+  return {
+    openingHours: shop?.opening_hours ?? null,
+    openingHoursConfirmed: hasConfirmedOpeningHours(shop),
+  };
+}
+
+export function applyOpeningHoursScheduleChange(
+  _state: OpeningHoursSettingsState,
+  nextOpeningHours: OpeningHours
+): {
+  openingHours: OpeningHours;
+  openingHoursConfirmed: boolean;
+} {
+  return {
+    openingHours: nextOpeningHours,
+    openingHoursConfirmed: false,
+  };
+}
+
+export function applyOpeningHoursConfirmationToggle(
+  state: OpeningHoursSettingsState,
+  confirmed: boolean
+): OpeningHoursSettingsState {
+  return {
+    openingHours: state.openingHours,
+    openingHoursConfirmed: Boolean(confirmed),
+  };
+}
+
+export function buildOpeningHoursSettingsPatch(state: {
+  openingHours: OpeningHours;
+  openingHoursConfirmed: boolean;
+}): {
+  opening_hours: OpeningHours;
+  opening_hours_confirmed: boolean;
+} {
+  return {
+    opening_hours: state.openingHours,
+    opening_hours_confirmed: Boolean(state.openingHoursConfirmed),
+  };
+}
+
 export function evaluateShopSetupChecklist(input: {
   shop: Shop | null | undefined;
   totalCatalogItems?: number | null;
@@ -119,6 +179,7 @@ export function evaluateShopSetupChecklist(input: {
   const activeTables = Math.max(0, Number(input.activeTablesCount ?? 0));
 
   const storeInfoReady = hasConfiguredStoreInfo(shop);
+  const openingHoursReady = hasConfirmedOpeningHours(shop);
   const paymentQrReady = shop
     ? Boolean(getShopPaymentQrInfo(shop).isConfigured)
     : false;
@@ -139,6 +200,19 @@ export function evaluateShopSetupChecklist(input: {
         'Set your exact street address, contact phone, and guest Wi-Fi credentials.',
       ctaVi: 'Cài đặt quán',
       ctaEn: 'Store settings',
+    },
+    {
+      id: 'opening_hours',
+      completed: openingHoursReady,
+      href: '/dashboard/settings#opening-hours-settings',
+      titleVi: 'Giờ mở cửa hàng tuần',
+      titleEn: 'Weekly opening hours',
+      descVi:
+        'Kiểm tra khung giờ mở/đóng cửa từng ngày và tích xác nhận giờ mở cửa chính xác.',
+      descEn:
+        'Review daily opening and closing hours and confirm that the schedule is accurate.',
+      ctaVi: 'Cài giờ mở cửa',
+      ctaEn: 'Set opening hours',
     },
     {
       id: 'payment_qr',

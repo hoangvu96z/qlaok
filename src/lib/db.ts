@@ -362,6 +362,7 @@ function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
 
   return {
     ...rawShop,
+    opening_hours_confirmed: Boolean(rawShop.opening_hours_confirmed === true),
     supported_langs: nextLangs,
     tagline_i18n: {
       ...fallbackTagline,
@@ -713,6 +714,7 @@ export async function dbCreateShop(
     id: `shop-${Date.now()}`,
     owner_id: finalOwnerId,
     slug,
+    opening_hours_confirmed: Boolean(newShop.opening_hours_confirmed === true),
   };
 
   const { data, error } = await sb
@@ -742,6 +744,7 @@ const ALLOWED_SHOP_PATCH_FIELDS: Array<keyof Shop> = [
   'telegram_chat_id',
   'wifi_info',
   'opening_hours',
+  'opening_hours_confirmed',
   'supported_langs',
   'currency',
   'theme_config',
@@ -785,7 +788,11 @@ export async function dbUpdateShop(
     .single();
 
   if (error) throw new Error(error.message);
-  return data as Shop;
+  const updated = data as Shop;
+  return {
+    ...updated,
+    opening_hours_confirmed: Boolean(updated.opening_hours_confirmed === true),
+  };
 }
 
 // ================= CATALOG HELPERS =================

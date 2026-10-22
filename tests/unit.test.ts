@@ -91,7 +91,12 @@ import {
   STOREFRONT_MENU_STALE_REFRESH_MS,
 } from '@/lib/table-helpers';
 import {
+  applyOpeningHoursConfirmationToggle,
+  applyOpeningHoursScheduleChange,
+  buildOpeningHoursSettingsPatch,
+  createInitialOpeningHoursSettingsState,
   evaluateShopSetupChecklist,
+  hasConfirmedOpeningHours,
   hasConfiguredStoreInfo,
   normalizeShopSlugInput,
   requiresSlugChangeConfirmation,
@@ -3100,7 +3105,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     assert.equal(updatedPassword, 'strongNewPassword!');
   });
 
-  test('R.3 evaluateShopSetupChecklist derives completion purely from persisted store, payment, catalog, table, and publish state', () => {
+  test('R.3 evaluateShopSetupChecklist derives 6/6 completion purely from persisted store, opening_hours_confirmed, payment, catalog, table, and publish state', () => {
     const draftShop: Shop = {
       ...SEED_SHOPS[0],
       id: 'shop-draft-setup-test',
@@ -3114,8 +3119,24 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       theme_config: { primaryColor: '#10b981', layout: 'list' },
       is_published: false,
     };
+    delete (draftShop as { opening_hours_confirmed?: boolean })
+      .opening_hours_confirmed;
 
     assert.equal(hasConfiguredStoreInfo(draftShop), false);
+    assert.equal(
+      hasConfirmedOpeningHours(draftShop),
+      false,
+      'Generic onboarding default opening_hours without explicit owner confirmation must be false'
+    );
+    assert.equal(
+      hasConfirmedOpeningHours({ ...draftShop, opening_hours_confirmed: false }),
+      false
+    );
+    assert.equal(
+      hasConfirmedOpeningHours({ ...draftShop, opening_hours_confirmed: true }),
+      true
+    );
+
     const initialChecklist = evaluateShopSetupChecklist({
       shop: draftShop,
       totalCatalogItems: 0,
@@ -3123,14 +3144,31 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       activeTablesCount: 0,
     });
     assert.equal(initialChecklist.completedCount, 0);
-    assert.equal(initialChecklist.totalCount, 5);
+    assert.equal(initialChecklist.totalCount, 6);
     assert.equal(initialChecklist.isAllCompleted, false);
 
-    const readyShop: Shop = {
+    const openingHoursStep = initialChecklist.steps.find(
+      (s) => s.id === 'opening_hours'
+    );
+    assert.ok(openingHoursStep, 'Checklist must include opening_hours step');
+    assert.equal(openingHoursStep.completed, false);
+    assert.equal(
+      openingHoursStep.href,
+      '/dashboard/settings#opening-hours-settings'
+    );
+    assert.ok(openingHoursStep.titleVi.length > 0);
+    assert.ok(openingHoursStep.titleEn.length > 0);
+    assert.ok(openingHoursStep.descVi.length > 0);
+    assert.ok(openingHoursStep.descEn.length > 0);
+    assert.ok(openingHoursStep.ctaVi.length > 0);
+    assert.ok(openingHoursStep.ctaEn.length > 0);
+
+    const readyWithoutConfirmedHours: Shop = {
       ...draftShop,
       address: '88 Trần Phú, Hải Châu',
       phone_contact: '0912345678',
       wifi_info: { ssid: 'QuanMoi_5G', password: 'mypassword' },
+      opening_hours_confirmed: false,
       theme_config: {
         primaryColor: '#10b981',
         layout: 'list',
@@ -3145,15 +3183,383 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       is_published: true,
     };
 
+    const unconfirmedHoursChecklist = evaluateShopSetupChecklist({
+      shop: readyWithoutConfirmedHours,
+      totalCatalogItems: 5,
+      availableCatalogItems: 5,
+      activeTablesCount: 6,
+    });
+    assert.equal(unconfirmedHoursChecklist.completedCount, 5);
+    assert.equal(unconfirmedHoursChecklist.totalCount, 6);
+    assert.equal(unconfirmedHoursChecklist.progressPercent, 83);
+    assert.equal(unconfirmedHoursChecklist.isAllCompleted, false);
+    assert.equal(
+      unconfirmedHoursChecklist.steps.find((s) => s.id === 'opening_hours')
+        ?.completed,
+      false
+    );
+
+    const readyShop: Shop = {
+      ...readyWithoutConfirmedHours,
+      opening_hours_confirmed: true,
+    };
+
     const fullChecklist = evaluateShopSetupChecklist({
       shop: readyShop,
       totalCatalogItems: 5,
       availableCatalogItems: 5,
       activeTablesCount: 6,
     });
-    assert.equal(fullChecklist.completedCount, 5);
+    assert.equal(fullChecklist.completedCount, 6);
+    assert.equal(fullChecklist.totalCount, 6);
     assert.equal(fullChecklist.progressPercent, 100);
     assert.equal(fullChecklist.isAllCompleted, true);
+    assert.equal(
+      fullChecklist.steps.find((s) => s.id === 'opening_hours')?.completed,
+      true
+    );
+  });
+
+  test('R.3b opening hours settings state loads from persisted flag, clears confirmation on any day/time/closed edit, and persists explicit checkbox value on save', () => {
+    const baseShop: Shop = {
+      ...SEED_SHOPS[0],
+      id: 'shop-hours-state-test',
+      opening_hours_confirmed: false,
+    };
+
+    // 1. Merely loading settings and saving unrelated fields without checking box keeps opening_hours_confirmed=false
+    const loadedUnconfirmed = createInitialOpeningHoursSettingsState(baseShop);
+    assert.equal(loadedUnconfirmed.openingHoursConfirmed, false);
+    assert.ok(loadedUnconfirmed.openingHours);
+    const saveWithoutCheck = buildOpeningHoursSettingsPatch({
+      openingHours: loadedUnconfirmed.openingHours!,
+      openingHoursConfirmed: loadedUnconfirmed.openingHoursConfirmed,
+    });
+    assert.equal(saveWithoutCheck.opening_hours_confirmed, false);
+
+    // 2. Owner checks confirmation checkbox and saves -> persists opening_hours_confirmed=true
+    const afterCheck = applyOpeningHoursConfirmationToggle(
+      loadedUnconfirmed,
+      true
+    );
+    assert.equal(afterCheck.openingHoursConfirmed, true);
+    const saveAfterCheck = buildOpeningHoursSettingsPatch({
+      openingHours: afterCheck.openingHours!,
+      openingHoursConfirmed: afterCheck.openingHoursConfirmed,
+    });
+    assert.equal(saveAfterCheck.opening_hours_confirmed, true);
+
+    // 3. Loading a previously confirmed shop starts with openingHoursConfirmed=true,
+    //    but changing any day/time/closed state clears confirmation immediately
+    const loadedConfirmed = createInitialOpeningHoursSettingsState({
+      ...baseShop,
+      opening_hours_confirmed: true,
+    });
+    assert.equal(loadedConfirmed.openingHoursConfirmed, true);
+
+    const editedTimeState = applyOpeningHoursScheduleChange(loadedConfirmed, {
+      ...loadedConfirmed.openingHours!,
+      mon: {
+        ...loadedConfirmed.openingHours!.mon,
+        open: '07:30',
+      },
+    });
+    assert.equal(
+      editedTimeState.openingHoursConfirmed,
+      false,
+      'Changing opening/closing time must immediately clear confirmation'
+    );
+    assert.equal(editedTimeState.openingHours.mon.open, '07:30');
+
+    // Re-check, then toggle Sunday closed state -> must also clear confirmation immediately
+    const rechecked = applyOpeningHoursConfirmationToggle(
+      editedTimeState,
+      true
+    );
+    assert.equal(rechecked.openingHoursConfirmed, true);
+    const editedClosedState = applyOpeningHoursScheduleChange(rechecked, {
+      ...rechecked.openingHours!,
+      sun: {
+        ...rechecked.openingHours!.sun,
+        closed: true,
+      },
+    });
+    assert.equal(
+      editedClosedState.openingHoursConfirmed,
+      false,
+      'Toggling a day open/closed must immediately clear confirmation'
+    );
+
+    const saveUnconfirmedAfterEdit = buildOpeningHoursSettingsPatch(
+      editedClosedState
+    );
+    assert.equal(saveUnconfirmedAfterEdit.opening_hours_confirmed, false);
+    assert.equal(saveUnconfirmedAfterEdit.opening_hours.sun.closed, true);
+
+    const confirmedAfterEdit = applyOpeningHoursConfirmationToggle(
+      editedClosedState,
+      true
+    );
+    const saveConfirmedAfterEdit = buildOpeningHoursSettingsPatch({
+      openingHours: confirmedAfterEdit.openingHours!,
+      openingHoursConfirmed: confirmedAfterEdit.openingHoursConfirmed,
+    });
+    assert.equal(saveConfirmedAfterEdit.opening_hours_confirmed, true);
+    assert.equal(saveConfirmedAfterEdit.opening_hours.mon.open, '07:30');
+    assert.equal(saveConfirmedAfterEdit.opening_hours.sun.closed, true);
+  });
+
+  test('R.3c PATCH /api/shops enforces settings.manage permission for opening_hours_confirmed and preserves narrow-patch state', async () => {
+    const shopId = 'shop-fnb-001';
+    const ownerToken = issueSessionToken({
+      id: SEED_PROFILE.id,
+      email: SEED_PROFILE.email,
+      role: 'owner',
+    });
+    const staffUserId = 'staff-hours-patch-test';
+    const strangerToken = issueSessionToken({
+      id: 'stranger-hours-patch-test',
+      email: 'stranger@qlaok.vn',
+      role: 'owner',
+    });
+
+    await dbUpsertShopMembership({
+      shop_id: shopId,
+      user_id: staffUserId,
+      email: 'staff.hours@qlaok.vn',
+      full_name: 'Nhân viên Order',
+      role: 'staff',
+    });
+    const staffToken = issueSessionToken({
+      id: staffUserId,
+      email: 'staff.hours@qlaok.vn',
+      role: 'owner',
+    });
+
+    let storedShop: Shop = {
+      ...SEED_SHOPS[0],
+      id: shopId,
+      opening_hours_confirmed: false,
+      is_published: false,
+    };
+    const recordedUpdates: Array<Record<string, unknown>> = [];
+
+    const mockSupabase = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select(_cols?: string) {
+              return {
+                limit() {
+                  return Promise.resolve({
+                    data: [{ id: storedShop.id }],
+                    error: null,
+                  });
+                },
+                eq(col: string, val: unknown) {
+                  return {
+                    single: async () => {
+                      if (col === 'id' && val === storedShop.id) {
+                        return { data: { ...storedShop }, error: null };
+                      }
+                      return { data: null, error: { message: 'Not found' } };
+                    },
+                    maybeSingle: async () => {
+                      if (col === 'id' && val === storedShop.id) {
+                        return { data: { ...storedShop }, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                    neq() {
+                      return {
+                        maybeSingle: async () => ({ data: null, error: null }),
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            update(patchPayload: Record<string, unknown>) {
+              recordedUpdates.push(patchPayload);
+              return {
+                eq(col: string, val: unknown) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          if (col !== 'id' || val !== storedShop.id) {
+                            return {
+                              data: null,
+                              error: { message: 'Shop not found' },
+                            };
+                          }
+                          storedShop = {
+                            ...storedShop,
+                            ...(patchPayload as Partial<Shop>),
+                          };
+                          return { data: { ...storedShop }, error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        throw new Error(`Unexpected table in R.3c mock: ${table}`);
+      },
+    };
+
+    const { setSupabaseDbClientForTests } = await import('@/lib/db');
+    setSupabaseDbClientForTests(mockSupabase);
+
+    try {
+      // 1. Unauthenticated request is rejected with 401
+      const unauthRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: shopId,
+            opening_hours_confirmed: true,
+          }),
+        })
+      );
+      assert.equal(unauthRes.status, 401);
+      assert.equal(recordedUpdates.length, 0);
+
+      // 2. Non-member / other tenant owner is rejected with 403
+      const strangerRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${strangerToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            opening_hours_confirmed: true,
+          }),
+        })
+      );
+      assert.equal(strangerRes.status, 403);
+      assert.equal(recordedUpdates.length, 0);
+
+      // 3. Staff without settings.manage cannot confirm opening hours -> 403
+      const staffRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${staffToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            opening_hours_confirmed: true,
+          }),
+        })
+      );
+      assert.equal(staffRes.status, 403);
+      assert.equal(recordedUpdates.length, 0);
+      assert.equal(storedShop.opening_hours_confirmed, false);
+
+      // 4. Non-boolean opening_hours_confirmed is rejected with 400
+      const invalidTypeRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            opening_hours_confirmed: 'yes',
+          }),
+        })
+      );
+      assert.equal(invalidTypeRes.status, 400);
+      assert.equal(recordedUpdates.length, 0);
+
+      // 5. Narrow patch of unrelated field (e.g. address) while unconfirmed does NOT set opening_hours_confirmed=true
+      const narrowUnconfirmedRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            address: '100 Bạch Đằng, Hải Châu',
+          }),
+        })
+      );
+      assert.equal(narrowUnconfirmedRes.status, 200);
+      const narrowUnconfirmedBody = await narrowUnconfirmedRes.json();
+      assert.equal(narrowUnconfirmedBody.shop.opening_hours_confirmed, false);
+      assert.equal(
+        'opening_hours_confirmed' in recordedUpdates[0],
+        false,
+        'Narrow patch omitting opening_hours_confirmed must not write opening_hours_confirmed'
+      );
+
+      // 6. Owner saves opening_hours together with opening_hours_confirmed: true -> 200 and persists true
+      const updatedSchedule = {
+        ...storedShop.opening_hours,
+        mon: { open: '07:00', close: '21:30', closed: false },
+      };
+      const confirmRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            opening_hours: updatedSchedule,
+            opening_hours_confirmed: true,
+          }),
+        })
+      );
+      assert.equal(confirmRes.status, 200);
+      const confirmBody = await confirmRes.json();
+      assert.equal(confirmBody.shop.opening_hours_confirmed, true);
+      assert.equal(confirmBody.shop.opening_hours.mon.open, '07:00');
+      assert.equal(storedShop.opening_hours_confirmed, true);
+
+      // 7. Subsequent narrow patch (e.g. toggling is_published in header) preserves opening_hours_confirmed=true
+      const narrowPublishRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            is_published: true,
+          }),
+        })
+      );
+      assert.equal(narrowPublishRes.status, 200);
+      const narrowPublishBody = await narrowPublishRes.json();
+      assert.equal(narrowPublishBody.shop.is_published, true);
+      assert.equal(
+        narrowPublishBody.shop.opening_hours_confirmed,
+        true,
+        'Narrow patch must preserve previously confirmed opening_hours_confirmed=true'
+      );
+      assert.equal(
+        'opening_hours_confirmed' in recordedUpdates[2],
+        false,
+        'Narrow publish patch must not overwrite opening_hours_confirmed'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+      await dbDeleteShopMembership(shopId, staffUserId);
+    }
   });
 
   test('R.4 requiresSlugChangeConfirmation requires confirmation only when normalized slug actually changes', () => {

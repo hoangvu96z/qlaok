@@ -1,6 +1,6 @@
 # Qlaok — Quét Là OK
 
-Cập nhật theo workspace ngày **22/10/2026**. Nền tảng menu/trang cửa hàng qua QR và mPOS cho F&B, dịch vụ và bán lẻ; gồm web khách hàng, dashboard chủ quán/thu ngân, Super Admin và ứng dụng Expo.
+Cập nhật theo workspace ngày **23/10/2026**. Nền tảng menu/trang cửa hàng qua QR và mPOS cho F&B, dịch vụ và bán lẻ; gồm web khách hàng, dashboard chủ quán/thu ngân, Super Admin và ứng dụng Expo.
 
 ## Bắt đầu cho coding agent
 
@@ -13,7 +13,7 @@ Nhận diện Qlaok dùng logo **Q + menu** thống nhất trên web/PWA và mob
 Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào nhu cầu chủ quán và thông tin gói thực tế. Xem [review nội dung homepage](docs/HOMEPAGE_COPY_REVIEW.md).
 
 - QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn, theo dõi bằng token riêng và 2 nút hỗ trợ nhanh tại bàn đã xác thực QR (**Gọi phục vụ** / **Xin hóa đơn**).
-- Dashboard: tổng quan, đơn hàng/POS, màn hình bếp (KDS `/dashboard/kitchen`), catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing. Onboarding (`/onboarding`) giữ lại quán nháp đã lưu khi bước nhập thực đơn đầu tiên gặp lỗi và dùng ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để thử nhập lại danh mục/món đầu tiên an toàn mà không tạo trùng quán hay món.
+- Dashboard: tổng quan (kèm checklist thiết lập quán lần đầu 6/6 bước: thông tin quán/Wi-Fi, giờ mở cửa có tích xác nhận tường minh `opening_hours_confirmed` tại `/dashboard/settings#opening-hours-settings`, VietQR thanh toán, thực đơn, bàn & QR, công khai cửa hàng), đơn hàng/POS, màn hình bếp (KDS `/dashboard/kitchen`), catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing. Onboarding (`/onboarding`) giữ lại quán nháp đã lưu khi bước nhập thực đơn đầu tiên gặp lỗi và dùng ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để thử nhập lại danh mục/món đầu tiên an toàn mà không tạo trùng quán hay món.
 - mPOS & KDS: tạo/sửa đơn, màn hình bếp KDS (`/dashboard/kitchen` lọc đơn đang hoạt động `new/preparing` ưu tiên đơn cũ nhất trước, cảnh báo quá 15 phút và thao tác chạm `new → preparing → completed` chỉ bật cho thành viên có `orders.fulfill`), phục vụ, thu/hoàn tiền thủ công hoặc đối soát tự động VietQR cho đơn hàng khách qua SePay (`/api/webhooks/sepay/[shopId]`, tách biệt hoàn toàn với nâng cấp gói SaaS `/api/webhooks/payment`), giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in, nhận chuông/thông báo và tiếp nhận/hoàn tất yêu cầu phục vụ từ QR bàn (`pending → acknowledged → resolved`). Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` và yêu cầu xin hóa đơn độc lập hoàn toàn với payment `unpaid/paid/refunded`. Xem [hướng dẫn đối soát SePay](docs/SEPAY_WEBHOOK_SETUP.md).
 - Quản lý bàn trên web tại `/dashboard/qr-studio`: tạo/sửa tên, mã bàn, khu vực, sức chứa, bật/tắt và lưu trữ; hỗ trợ sơ đồ mặt bằng (floor plan) với chế độ xem danh sách (list) và sơ đồ trực quan (map), bộ lọc trạng thái/khu vực, làm mới, chủ quán/quản trị kéo-thả hoặc dùng phím mũi tên di chuyển vị trí bàn (bước nhảy 2% mỗi lần bấm) với cập nhật lạc quan (rollback khi lỗi), canvas bảo toàn giới hạn mặc định `CANVAS_BOUNDS` (x 7/93, y 9/91) khi bề mặt đạt tối thiểu 1200x680px và tự co vào an toàn theo lề 80px ngang, 64px dọc trên các kích thước khác để không khuất thẻ bàn; mỗi bàn có QR riêng tự chọn bàn khi mở menu. Báo cáo có tab **Theo bàn**; đơn cũ giữ tên bàn lịch sử và được phân biệt với bàn quản lý/Mang về. Xem [hướng dẫn bàn](docs/TABLE_MANAGEMENT.md).
 - Membership theo shop: `owner`, `cashier`, `staff`, kiểm quyền ở API. Super Admin tại `/admin` dùng kiểm tra quyền server.
@@ -88,6 +88,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 010_shop_order_stats_summary.sql
 011_sepay_order_reconciliation.sql
 012_table_floor_plan.sql
+013_opening_hours_confirmed.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.

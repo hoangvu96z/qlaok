@@ -1,6 +1,6 @@
 # Kiến trúc Qlaok
 
-Đối chiếu source trong workspace ngày **22/10/2026** qua CodeGraph. Không khẳng định trạng thái production. Bắt đầu với [README](README.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md).
+Đối chiếu source trong workspace ngày **23/10/2026** qua CodeGraph. Không khẳng định trạng thái production. Bắt đầu với [README](README.md) và [quy trình CodeGraph bắt buộc](docs/CODEGRAPH_WORKFLOW.md).
 
 ## Các ứng dụng và công nghệ
 
@@ -76,6 +76,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | `src/lib/shop-permissions.ts` | Membership và quyền theo shop; không dùng local để khôi phục quyền đã revoke |
 | `src/lib/auth-session.ts`, `auth-credentials.ts`, `auth-recovery.ts` | Phiên web/legacy credentials, khởi tạo admin khi được cấu hình, chuẩn hóa khôi phục mật khẩu/OTP đồng bộ với `mobile/src/lib/auth-recovery.ts` |
 | `src/lib/onboarding-flow.ts` | Tạo quán nháp và bulk import danh mục/món đầu tiên; giữ lại `draftShop` đã lưu và dùng ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để retry an toàn sau lỗi một phần |
+| `src/lib/shop-setup-checklist.ts` | Đánh giá checklist 6 bước thiết lập quán lần đầu trên `/dashboard` (gồm bước `opening_hours` trỏ tới `/dashboard/settings#opening-hours-settings`, chỉ hoàn tất khi chủ quán tích xác nhận tường minh `opening_hours_confirmed = true` và lưu; tự hủy xác nhận khi chỉnh bất kỳ ngày/giờ/trạng thái mở-nghỉ nào) |
 | `src/lib/dashboard-context.tsx` | Session, shop đang chọn và membership phía dashboard |
 | `src/lib/order-events.ts` | Broker một upstream privileged subscription cho SSE đã được cấp quyền |
 | `src/lib/order-live-sync.ts` | Fetch SSE, refresh, debounce, fallback và lifecycle trên web |
@@ -127,7 +128,7 @@ Chi tiết: [I18N_NOTES](I18N_NOTES.md). Gói Free/Basic/Premium hiện có maxL
 
 ## Schema và rollout
 
-Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`; 010 shop_order_stats_summary thêm index tổng hợp và RPC `public.get_shop_order_stats_summary` (chỉ server thực thi) tính doanh thu/số lượng đơn toàn lịch sử và cửa sổ 7 ngày theo giờ Việt Nam (`UTC+7`); 011 sepay_order_reconciliation thêm `public.shop_sepay_configs` (lưu secret mã hóa AES-256-GCM với RLS server-only), trigger chặn ghi secret SePay vào `shops.theme_config`, bảng sổ sự kiện idempotent `public.sepay_webhook_events` và RPC nguyên tử `public.reconcile_sepay_order_payment_atomic`; 012 table_floor_plan thêm cột tọa độ phần trăm nguyên `layout_x`, `layout_y` (nullable, CHECK trong khoảng [0, 100]) vào `public.shop_tables` và index `idx_orders_shop_table_floor_status` trên `public.orders (shop_id, table_id, status, payment_status)` cho đơn chưa hủy.
+Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`; 010 shop_order_stats_summary thêm index tổng hợp và RPC `public.get_shop_order_stats_summary` (chỉ server thực thi) tính doanh thu/số lượng đơn toàn lịch sử và cửa sổ 7 ngày theo giờ Việt Nam (`UTC+7`); 011 sepay_order_reconciliation thêm `public.shop_sepay_configs` (lưu secret mã hóa AES-256-GCM với RLS server-only), trigger chặn ghi secret SePay vào `shops.theme_config`, bảng sổ sự kiện idempotent `public.sepay_webhook_events` và RPC nguyên tử `public.reconcile_sepay_order_payment_atomic`; 012 table_floor_plan thêm cột tọa độ phần trăm nguyên `layout_x`, `layout_y` (nullable, CHECK trong khoảng [0, 100]) vào `public.shop_tables` và index `idx_orders_shop_table_floor_status` trên `public.orders (shop_id, table_id, status, payment_status)` cho đơn chưa hủy; 013 opening_hours_confirmed thêm cột boolean `opening_hours_confirmed` (`NOT NULL DEFAULT FALSE`) vào `public.shops` để lưu xác nhận giờ mở cửa của chủ quán.
 
 Đọc SQL trực tiếp vì SQL không nằm trong graph hiện tại. Chạy `test:sql` trên PGlite để kiểm migration/RLS mà không sửa DB thật. Chuyển từ legacy local orders cần backup/đối chiếu dữ liệu; archive bank-ref không tự xác nhận giao dịch đúng/sai.
 

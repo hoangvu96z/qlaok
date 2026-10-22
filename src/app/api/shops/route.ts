@@ -412,6 +412,16 @@ export async function PATCH(req: Request) {
     );
     if (auth.errorResponse) return auth.errorResponse;
 
+    if (
+      patch.opening_hours_confirmed !== undefined &&
+      typeof patch.opening_hours_confirmed !== 'boolean'
+    ) {
+      return NextResponse.json(
+        { error: 'opening_hours_confirmed phải là kiểu boolean' },
+        { status: 400 }
+      );
+    }
+
     // Safely merge theme_config so partial updates do not drop imageUrl, ctaText, or paymentQr
     if (incomingTheme) {
       patch.theme_config = {

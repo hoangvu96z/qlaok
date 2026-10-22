@@ -71,6 +71,7 @@ export const SEED_SHOPS: Shop[] = [
       password: 'phoungon123',
     },
     opening_hours: DEFAULT_HOURS,
+    opening_hours_confirmed: false,
     supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
     currency: 'VND',
     theme_config: {
@@ -141,6 +142,7 @@ export const SEED_SHOPS: Shop[] = [
       password: 'relax2026',
     },
     opening_hours: DEFAULT_HOURS,
+    opening_hours_confirmed: false,
     supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
     currency: 'VND',
     theme_config: {
@@ -199,6 +201,7 @@ export const SEED_SHOPS: Shop[] = [
       password: 'vietnam2026',
     },
     opening_hours: DEFAULT_HOURS,
+    opening_hours_confirmed: false,
     supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
     currency: 'VND',
     theme_config: {

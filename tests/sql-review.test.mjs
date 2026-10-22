@@ -408,5 +408,53 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     const collideOrders = (await db.query("SELECT id, payment_status FROM orders WHERE id IN ('ord-collide-a', 'ord-collide-b')")).rows;
     assert.equal(collideOrders.every((r) => r.payment_status === 'unpaid'), true);
 
+    // Verify 013_opening_hours_confirmed.sql: NOT NULL DEFAULT FALSE, existing shops default to false, idempotent re-run
+    await db.exec('RESET ROLE');
+    const colMeta = (
+      await db.query(
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'shops' AND column_name = 'opening_hours_confirmed'"
+      )
+    ).rows[0];
+    assert.ok(colMeta, 'shops.opening_hours_confirmed column must exist');
+    assert.equal(colMeta.data_type, 'boolean');
+    assert.equal(colMeta.is_nullable, 'NO');
+    assert.match(String(colMeta.column_default), /false/i);
+
+    const existingShopHoursFlags = (
+      await db.query(
+        "SELECT id, opening_hours_confirmed FROM shops WHERE id IN ('sql-shop', 'sql-pub-shop') ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(existingShopHoursFlags, [
+      { id: 'sql-pub-shop', opening_hours_confirmed: false },
+      { id: 'sql-shop', opening_hours_confirmed: false },
+    ]);
+
+    await db.query(
+      "UPDATE shops SET opening_hours_confirmed = TRUE WHERE id = 'sql-shop'"
+    );
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/013_opening_hours_confirmed.sql',
+        'utf8'
+      )
+    );
+    const afterReapply = (
+      await db.query(
+        "SELECT opening_hours_confirmed FROM shops WHERE id = 'sql-shop'"
+      )
+    ).rows[0];
+    assert.equal(
+      afterReapply.opening_hours_confirmed,
+      true,
+      'Re-applying migration 013 must be idempotent and preserve confirmed shops'
+    );
+    await assert.rejects(
+      db.query(
+        "UPDATE shops SET opening_hours_confirmed = NULL WHERE id = 'sql-shop'"
+      ),
+      /null value in column "opening_hours_confirmed"|not-null/i
+    );
+
   } finally { await db.close(); }
 });
