@@ -6,7 +6,13 @@ import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { dbCreateOrder, dbGetOrderById, dbGetTableBill, dbUpdateOrderStatus, setMposDbClientForTests } from '@/lib/mpos-store';
 import { setSupabaseDbClientForTests } from '@/lib/db';
-import { buildTableMenuUrl, resolveTableSelection, summarizeOrdersByTable } from '@/lib/table-helpers';
+import {
+  buildTableMenuUrl,
+  createScopedTableQrVerification,
+  resolveStorefrontMenuTableState,
+  resolveTableSelection,
+  summarizeOrdersByTable,
+} from '@/lib/table-helpers';
 import type { ShopOrder, ShopTable } from '@/types/qlaok';
 import {
   buildCanonicalTableQrPayload,
@@ -17,7 +23,8 @@ import {
   signTableQr,
   verifyTableQrSignature,
 } from '@/lib/shop-tables';
-import { POST as postOrders } from '@/app/api/orders/route';
+import { PATCH as patchOrders, POST as postOrders } from '@/app/api/orders/route';
+import { GET as getShops } from '@/app/api/shops/route';
 import { GET as getTables, POST as postTables } from '@/app/api/tables/route';
 import { issueSessionToken } from '@/lib/server-auth';
 import { localizeGuestOrderError } from '@/lib/i18n-helper';
@@ -201,7 +208,7 @@ test('table RLS limits mutations to each shop owner and public reads to active p
   } finally { await db.close(); }
 });
 
-test('table QR HMAC-SHA256 signing secures table QR orders against tableId tampering while preserving door QR manual choice', async () => {
+test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATCH against spoofing while preserving takeaway and staff POS', async () => {
   const prevSecret = process.env.SESSION_SECRET;
   process.env.SESSION_SECRET = 'test-session-secret-for-table-qr-hmac-2026';
   try {
@@ -462,8 +469,8 @@ test('table QR HMAC-SHA256 signing secures table QR orders against tableId tampe
     assert.equal(crossShopSigOnLocalTableRes.status, 400);
     assert.equal(crossShopSigData.code, 'INVALID_TABLE_QR_SIGNATURE');
 
-    // 7. Door QR manual table choice & takeaway remain unchanged (no qr_table_mode / no table_qr_sig)
-    const doorTableRes = await postOrders(
+    // 7. Anonymous table-bound POST /api/orders without table_qr_sig is rejected even when qr_table_mode is omitted
+    const unsignedDoorTableRes = await postOrders(
       new Request('http://localhost/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -476,13 +483,50 @@ test('table QR HMAC-SHA256 signing secures table QR orders against tableId tampe
         }),
       })
     );
-    const doorTableData = (await doorTableRes.json()) as {
-      order?: ShopOrder;
+    const unsignedDoorTableData = (await unsignedDoorTableRes.json()) as {
       error?: string;
+      code?: string;
     };
-    assert.equal(doorTableRes.status, 201, doorTableData.error);
-    assert.equal(doorTableData.order?.table_id, table2Id);
+    assert.equal(unsignedDoorTableRes.status, 400);
+    assert.equal(unsignedDoorTableData.code, 'MISSING_TABLE_QR_SIGNATURE');
 
+    const unsignedTableCodeRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_code: 'T02',
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const unsignedTableCodeData = (await unsignedTableCodeRes.json()) as {
+      code?: string;
+    };
+    assert.equal(unsignedTableCodeRes.status, 400);
+    assert.equal(unsignedTableCodeData.code, 'MISSING_TABLE_QR_SIGNATURE');
+
+    const unsignedTableLabelRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_label: 'Bàn 02',
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const unsignedTableLabelData = (await unsignedTableLabelRes.json()) as {
+      code?: string;
+    };
+    assert.equal(unsignedTableLabelRes.status, 400);
+    assert.equal(unsignedTableLabelData.code, 'MISSING_TABLE_QR_SIGNATURE');
+
+    // 8. Legitimate anonymous takeaway order (door QR / generic menu) succeeds without table_qr_sig
     const doorTakeawayRes = await postOrders(
       new Request('http://localhost/api/orders', {
         method: 'POST',
@@ -503,6 +547,326 @@ test('table QR HMAC-SHA256 signing secures table QR orders against tableId tampe
     assert.equal(doorTakeawayRes.status, 201, doorTakeawayData.error);
     assert.equal(doorTakeawayData.order?.table_id, null);
     assert.equal(doorTakeawayData.order?.table_label, 'Mang về');
+
+    // 9. Authenticated POS / counter order for a managed table succeeds without table_qr_sig
+    const staffPosRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table2Id,
+          source: 'counter_pos',
+          items: sampleItems,
+        }),
+      })
+    );
+    const staffPosData = (await staffPosRes.json()) as {
+      order?: ShopOrder;
+      error?: string;
+    };
+    assert.equal(staffPosRes.status, 201, staffPosData.error);
+    assert.equal(staffPosData.order?.table_id, table2Id);
+
+    // 10. Unsigned or tampered tableId cannot lock the storefront menu; GET /api/shops verifies sig
+    const activeTable1 = publicTables.find((t) => t.id === table1Id)!;
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: null,
+        requireSig: true,
+      }).table,
+      null,
+      'unsigned tableId must not resolve to a locked table when signature is required'
+    );
+    assert.ok(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: null,
+        requireSig: true,
+      }).error
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: false,
+      }).table,
+      null,
+      'tampered sig must not resolve to a locked table'
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: null,
+      }).table,
+      null,
+      'non-empty tampered sig with sigVerified null must not resolve tableId'
+    );
+    assert.ok(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: null,
+      }).error
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: undefined,
+      }).table,
+      null,
+      'non-empty tampered sig with sigVerified undefined must not resolve tableId'
+    );
+    assert.ok(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: undefined,
+      }).error
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        table: activeTable1.table_code,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: null,
+      }).table,
+      null,
+      'legacy ?table= with non-empty tampered sig and sigVerified null must not select a table'
+    );
+    assert.ok(
+      resolveTableSelection([activeTable1], {
+        table: activeTable1.table_code,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: null,
+      }).error
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        table: activeTable1.name,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: undefined,
+      }).table,
+      null,
+      'legacy ?table= with non-empty tampered sig and sigVerified undefined must not select a table'
+    );
+    assert.ok(
+      resolveTableSelection([activeTable1], {
+        table: activeTable1.name,
+        sig: sig2,
+        requireSig: true,
+        sigVerified: undefined,
+      }).error
+    );
+    assert.equal(
+      resolveTableSelection([activeTable1], {
+        tableId: table1Id,
+        sig: sig1,
+        requireSig: true,
+        sigVerified: true,
+      }).table?.id,
+      table1Id,
+      'verified signed QR resolves to the locked table'
+    );
+
+    const shopVerifiedRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?slug=pho-hoi-an&tableId=${table1Id}&sig=${sig1}`
+      )
+    );
+    const shopVerifiedData = (await shopVerifiedRes.json()) as {
+      tableQrVerified?: boolean;
+    };
+    assert.equal(shopVerifiedData.tableQrVerified, true);
+
+    const shopTamperedRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?slug=pho-hoi-an&tableId=${table1Id}&sig=${sig2}`
+      )
+    );
+    const shopTamperedData = (await shopTamperedRes.json()) as {
+      tableQrVerified?: boolean;
+    };
+    assert.equal(shopTamperedData.tableQrVerified, false);
+
+    // 10b. Scoped verification state prevents a verified table1Id+sig1 result from locking table2Id on same-slug query changes
+    const scopedVerifiedTable1 = createScopedTableQrVerification({
+      shopSlug: 'pho-hoi-an',
+      shopId,
+      tableId: table1Id,
+      sig: sig1,
+      tableQrVerified: shopVerifiedData.tableQrVerified,
+      activeSlug: 'pho-hoi-an',
+      activeTableId: table1Id,
+      activeSig: sig1,
+    });
+    assert.equal(
+      resolveStorefrontMenuTableState({
+        shopSlug: 'pho-hoi-an',
+        shopId,
+        tables: publicTables,
+        qrTableIdParam: table1Id,
+        qrTableSigParam: sig1,
+        verification: scopedVerifiedTable1,
+      }).lockedTable?.id,
+      table1Id
+    );
+    const staleOnTable2Query = resolveStorefrontMenuTableState({
+      shopSlug: 'pho-hoi-an',
+      shopId,
+      tables: publicTables,
+      qrTableIdParam: table2Id,
+      qrTableSigParam: sig2,
+      verification: scopedVerifiedTable1,
+    });
+    assert.equal(
+      staleOnTable2Query.lockedTable,
+      null,
+      'stale table1Id+sig1 verification must not lock table2Id when searchParams changes on the same slug'
+    );
+    assert.equal(staleOnTable2Query.tableQrVerified, null);
+
+    // 11. Guest PATCH /api/orders must preserve table identity or require valid signed QR proof for table changes
+    const createdGuestOrder = validData.order!;
+    assert.ok(createdGuestOrder.tracking_token);
+
+    // 11a. Guest PATCH updating items/note while preserving existing table identity succeeds
+    const guestPreserveTableRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: createdGuestOrder.id,
+          tracking_token: createdGuestOrder.tracking_token,
+          customer_note: 'Ít hành',
+          items: sampleItems,
+        }),
+      })
+    );
+    const guestPreserveTableData = (await guestPreserveTableRes.json()) as {
+      order?: ShopOrder;
+      error?: string;
+    };
+    assert.equal(guestPreserveTableRes.status, 200, guestPreserveTableData.error);
+    assert.equal(guestPreserveTableData.order?.table_id, table1Id);
+
+    // 11b. Guest PATCH changing table_id without table_qr_sig is rejected
+    const guestUnsignedTableChangeRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: createdGuestOrder.id,
+          tracking_token: createdGuestOrder.tracking_token,
+          table_id: table2Id,
+        }),
+      })
+    );
+    const guestUnsignedTableChangeData =
+      (await guestUnsignedTableChangeRes.json()) as { code?: string };
+    assert.equal(guestUnsignedTableChangeRes.status, 400);
+    assert.equal(
+      guestUnsignedTableChangeData.code,
+      'MISSING_TABLE_QR_SIGNATURE'
+    );
+
+    // 11c. Guest PATCH changing table_id with wrong/tampered signature is rejected
+    const guestTamperedTableChangeRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: createdGuestOrder.id,
+          tracking_token: createdGuestOrder.tracking_token,
+          table_id: table2Id,
+          table_qr_sig: sig1,
+        }),
+      })
+    );
+    const guestTamperedTableChangeData =
+      (await guestTamperedTableChangeRes.json()) as { code?: string };
+    assert.equal(guestTamperedTableChangeRes.status, 400);
+    assert.equal(
+      guestTamperedTableChangeData.code,
+      'INVALID_TABLE_QR_SIGNATURE'
+    );
+
+    // 11d. Guest PATCH attempting to strip table_id or spoof table_label on a table-bound order is rejected
+    const guestStripTableRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: createdGuestOrder.id,
+          tracking_token: createdGuestOrder.tracking_token,
+          table_id: null,
+          table_label: 'Mang về',
+        }),
+      })
+    );
+    const guestStripTableData = (await guestStripTableRes.json()) as {
+      code?: string;
+    };
+    assert.equal(guestStripTableRes.status, 400);
+    assert.equal(guestStripTableData.code, 'MISSING_TABLE_QR_SIGNATURE');
+
+    // 11e. Guest PATCH on takeaway order attempting to attach a table without signature is rejected
+    const takeawayOrder = doorTakeawayData.order!;
+    const takeawaySpoofTableRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: takeawayOrder.id,
+          tracking_token: takeawayOrder.tracking_token,
+          table_label: 'Bàn 02',
+        }),
+      })
+    );
+    const takeawaySpoofTableData = (await takeawaySpoofTableRes.json()) as {
+      code?: string;
+    };
+    assert.equal(takeawaySpoofTableRes.status, 400);
+    assert.equal(takeawaySpoofTableData.code, 'MISSING_TABLE_QR_SIGNATURE');
+
+    // 11f. Guest PATCH changing table_id with a valid signature for the target table succeeds
+    const guestSignedTableChangeRes = await patchOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: createdGuestOrder.id,
+          tracking_token: createdGuestOrder.tracking_token,
+          table_id: table2Id,
+          table_qr_sig: sig2,
+        }),
+      })
+    );
+    const guestSignedTableChangeData =
+      (await guestSignedTableChangeRes.json()) as {
+        order?: ShopOrder;
+        error?: string;
+      };
+    assert.equal(
+      guestSignedTableChangeRes.status,
+      200,
+      guestSignedTableChangeData.error
+    );
+    assert.equal(guestSignedTableChangeData.order?.table_id, table2Id);
+    assert.equal(guestSignedTableChangeData.order?.table_label, 'Bàn 02');
   } finally {
     if (prevSecret === undefined) {
       delete process.env.SESSION_SECRET;

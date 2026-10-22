@@ -8,7 +8,6 @@ import {
   Search,
   X,
   Gift,
-  Utensils,
   ShoppingBag,
   AlertTriangle,
   RefreshCw,
@@ -37,9 +36,14 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import {
+  buildStorefrontTableQueryKey,
+  buildTableQrVerificationKey,
+  createScopedTableQrVerification,
   filterSelectableTables,
-  isTakeawayTableLabel,
-  resolveTableSelection,
+  resolveScopedTableQrVerification,
+  resolveStorefrontMenuTableState,
+  type ScopedTableQrVerification,
+  type StorefrontTableChoice,
 } from '@/lib/table-helpers';
 import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
@@ -56,13 +60,6 @@ import {
   StorefrontPromoBanner,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
-
-interface UserTableChoice {
-  shopSlug: string;
-  tableId: string | null;
-  tableLabel: string;
-  isTakeaway: boolean;
-}
 
 /** Persisted guest active order (per shop) so tracker / edit / VietQR survive reloads. */
 interface StoredGuestOrder {
@@ -160,6 +157,8 @@ export default function StorefrontMenuPage() {
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [tables, setTables] = useState<ShopTable[]>([]);
   const [tablesLoadError, setTablesLoadError] = useState<string | null>(null);
+  const [tableQrVerification, setTableQrVerification] =
+    useState<ScopedTableQrVerification | null>(null);
   const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(
     DEFAULT_STOREFRONT_LOCALES
   );
@@ -179,7 +178,7 @@ export default function StorefrontMenuPage() {
   const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [userTableChoice, setUserTableChoice] =
-    useState<UserTableChoice | null>(null);
+    useState<StorefrontTableChoice | null>(null);
   const [loading, setLoading] = useState(true);
   // Minute ticker so the opening-hours banner flips without a reload
   const [clockTick, setClockTick] = useState(() => Date.now());
@@ -188,15 +187,51 @@ export default function StorefrontMenuPage() {
     return () => clearInterval(timer);
   }, []);
 
+  const currentVerificationKey = useMemo(
+    () =>
+      buildTableQrVerificationKey({
+        shopSlug: slug,
+        tableId: qrTableIdParam,
+        sig: qrTableSigParam,
+      }),
+    [slug, qrTableIdParam, qrTableSigParam]
+  );
+  const currentTableQueryKey = useMemo(
+    () =>
+      buildStorefrontTableQueryKey({
+        shopSlug: slug,
+        tableId: qrTableIdParam,
+        sig: qrTableSigParam,
+        table: qrTableParam,
+      }),
+    [slug, qrTableIdParam, qrTableSigParam, qrTableParam]
+  );
+
   const activeSlugRef = useRef(slug);
+  const activeTableIdRef = useRef(qrTableIdParam);
+  const activeTableSigRef = useRef(qrTableSigParam);
+  const activeVerificationKeyRef = useRef(currentVerificationKey);
+  activeSlugRef.current = slug;
+  activeTableIdRef.current = qrTableIdParam;
+  activeTableSigRef.current = qrTableSigParam;
+  activeVerificationKeyRef.current = currentVerificationKey;
+
+  const previousSlugRef = useRef(slug);
+  const previousTableQueryKeyRef = useRef(currentTableQueryKey);
   const restoredOrderShopRef = useRef<string | null>(null);
   const requestSeqRef = useRef(0);
   const initializedSlugRef = useRef<string | null>(null);
 
-  // Reset shop-scoped cart/order/selection state when navigating to a different shop slug
+  // Reset shop-scoped cart/order/selection state when navigating to a different shop slug,
+  // and clear stale table QR verification / manual choice when table query params change on the same slug.
   useEffect(() => {
-    if (activeSlugRef.current !== slug) {
-      activeSlugRef.current = slug;
+    const slugChanged = previousSlugRef.current !== slug;
+    const tableQueryChanged =
+      previousTableQueryKeyRef.current !== currentTableQueryKey;
+
+    if (slugChanged) {
+      previousSlugRef.current = slug;
+      previousTableQueryKeyRef.current = currentTableQueryKey;
       setCart([]);
       setLastOrder(null);
       setEditingOrder(null);
@@ -205,23 +240,56 @@ export default function StorefrontMenuPage() {
       setSearchQuery('');
       setTables([]);
       setTablesLoadError(null);
+      setTableQrVerification(null);
       setLoading(true);
+      return;
     }
-  }, [slug]);
+
+    if (tableQueryChanged) {
+      previousTableQueryKeyRef.current = currentTableQueryKey;
+      setUserTableChoice(null);
+      setTableQrVerification((prev) => {
+        if (!prev) return null;
+        const stillMatches =
+          resolveScopedTableQrVerification(prev, {
+            shopSlug: slug,
+            shopId: shop?.id,
+            tableId: qrTableIdParam,
+            sig: qrTableSigParam,
+          }) !== null;
+        return stillMatches ? prev : null;
+      });
+    }
+  }, [slug, currentTableQueryKey, qrTableIdParam, qrTableSigParam, shop?.id]);
 
   const fetchCatalogData = useCallback(
     async (isInitial = false) => {
       const currentSlug = slug;
+      const requestedTableId = (qrTableIdParam ?? '').trim();
+      const requestedTableSig = (qrTableSigParam ?? '').trim();
+      const requestedVerificationKey = buildTableQrVerificationKey({
+        shopSlug: currentSlug,
+        tableId: requestedTableId,
+        sig: requestedTableSig,
+      });
       const seq = ++requestSeqRef.current;
+      const isStaleRequest = () =>
+        activeSlugRef.current !== currentSlug ||
+        activeVerificationKeyRef.current !== requestedVerificationKey ||
+        seq !== requestSeqRef.current;
 
       try {
-        const res = await fetch(
-          `/api/shops?slug=${encodeURIComponent(currentSlug)}`,
-          {
-            cache: 'no-store',
+        const shopUrlParams = new URLSearchParams({ slug: currentSlug });
+        if (requestedTableId) {
+          shopUrlParams.set('tableId', requestedTableId);
+          if (requestedTableSig) {
+            shopUrlParams.set('sig', requestedTableSig);
           }
-        );
-        if (activeSlugRef.current !== currentSlug || seq !== requestSeqRef.current) {
+        }
+        const res = await fetch(`/api/shops?${shopUrlParams.toString()}`, {
+          cache: 'no-store',
+        });
+        if (isStaleRequest()) {
           return;
         }
         if (!res.ok) {
@@ -229,7 +297,7 @@ export default function StorefrontMenuPage() {
           return;
         }
         const data = await res.json();
-        if (activeSlugRef.current !== currentSlug || seq !== requestSeqRef.current) {
+        if (isStaleRequest()) {
           return;
         }
 
@@ -270,7 +338,7 @@ export default function StorefrontMenuPage() {
           }
         }
 
-        if (activeSlugRef.current !== currentSlug) {
+        if (isStaleRequest()) {
           return;
         }
 
@@ -286,6 +354,21 @@ export default function StorefrontMenuPage() {
         setCategories(data.categories || []);
         setItems(data.items || []);
         setTables(activeOnlyTables);
+        setTableQrVerification(
+          createScopedTableQrVerification({
+            shopSlug: currentSlug,
+            shopId: loadedShop.id,
+            tableId: requestedTableId,
+            sig: requestedTableSig,
+            tableQrVerified:
+              typeof data.tableQrVerified === 'boolean'
+                ? data.tableQrVerified
+                : null,
+            activeSlug: activeSlugRef.current,
+            activeTableId: activeTableIdRef.current,
+            activeSig: activeTableSigRef.current,
+          })
+        );
         setAllowedLangs(planLangs);
 
         if (isInitial || initializedSlugRef.current !== currentSlug) {
@@ -323,7 +406,7 @@ export default function StorefrontMenuPage() {
         }
       }
     },
-    [slug, langParam, isTableQrEntry]
+    [slug, langParam, isTableQrEntry, qrTableIdParam, qrTableSigParam]
   );
 
   useEffect(() => {
@@ -347,106 +430,47 @@ export default function StorefrontMenuPage() {
     };
   }, [fetchCatalogData]);
 
+  const currentShopId =
+    shop &&
+    (!shop.slug || shop.slug.trim().toLowerCase() === slug.trim().toLowerCase())
+      ? shop.id
+      : null;
+
   // Active tables sorted for display
   const activeTables = useMemo(() => {
-    if (!shop) return [];
-    return filterSelectableTables(tables, shop.id);
-  }, [tables, shop]);
+    if (!currentShopId) return [];
+    return filterSelectableTables(tables, currentShopId);
+  }, [tables, currentShopId]);
 
-  // Table lock: a valid, active ?tableId= from the table QR pins the order to that table.
-  // Invalid / paused / foreign tableIds fall back to the chooser + warning banner.
-  const lockedTable = useMemo<ShopTable | null>(() => {
-    if (!qrTableIdParam || !shop) return null;
-    const resolved = resolveTableSelection(
+  // Resolve QR table parameters (?tableId=...&sig=... or ?table=...) and table lock
+  // scoped to the exact current shop/slug + tableId + sig so stale or in-flight responses never lock a table.
+  const tableState = useMemo(
+    () =>
+      resolveStorefrontMenuTableState({
+        shopSlug: slug,
+        shopId: currentShopId,
+        tables: activeTables,
+        qrTableIdParam,
+        qrTableSigParam,
+        qrTableParam,
+        verification: tableQrVerification,
+        userTableChoice,
+        locale,
+      }),
+    [
+      slug,
+      currentShopId,
       activeTables,
-      { tableId: qrTableIdParam },
-      locale
-    );
-    return resolved.table && !resolved.error ? resolved.table : null;
-  }, [qrTableIdParam, shop, activeTables, locale]);
+      qrTableIdParam,
+      qrTableSigParam,
+      qrTableParam,
+      tableQrVerification,
+      userTableChoice,
+      locale,
+    ]
+  );
 
-  // Resolve QR table parameters (?tableId=... or ?table=...) against activeTables
-  const tableState = useMemo(() => {
-    // 0. Locked QR table always wins (no switching)
-    if (lockedTable) {
-      return {
-        selectedTable: lockedTable as ShopTable | null,
-        selectedTableId: lockedTable.id as string | null,
-        isTakeawaySelected: false,
-        error: null as string | null,
-      };
-    }
-
-    // 1. User explicitly chose a table or takeaway in this shop session
-    if (userTableChoice && userTableChoice.shopSlug === slug) {
-      if (userTableChoice.isTakeaway) {
-        return {
-          selectedTable: null as ShopTable | null,
-          selectedTableId: null as string | null,
-          isTakeawaySelected: true,
-          error: null as string | null,
-        };
-      }
-      if (userTableChoice.tableId) {
-        const check = resolveTableSelection(
-          activeTables,
-          {
-            tableId: userTableChoice.tableId,
-          },
-          locale
-        );
-        if (check.table) {
-          return {
-            selectedTable: check.table,
-            selectedTableId: check.table.id,
-            isTakeawaySelected: false,
-            error: null,
-          };
-        }
-        return {
-          selectedTable: null,
-          selectedTableId: null,
-          isTakeawaySelected: false,
-          error: check.error,
-        };
-      }
-    }
-
-    // 2. Legacy ?table=Mang về / takeaway URL parameter (when no tableId)
-    if (!qrTableIdParam && qrTableParam && isTakeawayTableLabel(qrTableParam)) {
-      return {
-        selectedTable: null,
-        selectedTableId: null,
-        isTakeawaySelected: true,
-        error: null,
-      };
-    }
-
-    // 3. Resolve QR ?tableId= or ?table= via pure resolveTableSelection helper
-    const resolved = resolveTableSelection(
-      activeTables,
-      {
-        tableId: qrTableIdParam,
-        table: qrTableParam,
-      },
-      locale
-    );
-
-    return {
-      selectedTable: resolved.table,
-      selectedTableId: resolved.table?.id ?? null,
-      isTakeawaySelected: false,
-      error: resolved.error,
-    };
-  }, [
-    lockedTable,
-    userTableChoice,
-    slug,
-    activeTables,
-    qrTableIdParam,
-    qrTableParam,
-    locale,
-  ]);
+  const lockedTable = tableState.lockedTable;
 
   const localizedTablesLoadError = useMemo(
     () => localizeStorefrontTableError(tablesLoadError, locale),
@@ -461,12 +485,13 @@ export default function StorefrontMenuPage() {
     }) => {
       setUserTableChoice({
         shopSlug: slug,
+        tableQueryKey: currentTableQueryKey,
         tableId: selection.tableId,
         tableLabel: selection.tableLabel,
         isTakeaway: selection.isTakeaway,
       });
     },
-    [slug]
+    [slug, currentTableQueryKey]
   );
 
   // Restore a persisted guest order (per shop) after reload so tracker/edit/VietQR survive
@@ -848,34 +873,6 @@ export default function StorefrontMenuPage() {
             <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
               {labels.tableSelectorLabel}
             </span>
-            {activeTables.map((tb) => {
-              const active =
-                !tableState.isTakeawaySelected &&
-                tableState.selectedTableId === tb.id;
-              return (
-                <button
-                  key={tb.id}
-                  type="button"
-                  aria-pressed={active}
-                  data-testid={`menu-table-chip-${tb.id}`}
-                  onClick={() =>
-                    handleSelectTableChoice({
-                      tableId: tb.id,
-                      tableLabel: tb.name,
-                      isTakeaway: false,
-                    })
-                  }
-                  className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
-                    active
-                      ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                      : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <Utensils className="h-3 w-3" />
-                  <span>{tb.name}</span>
-                </button>
-              );
-            })}
             <button
               type="button"
               aria-pressed={tableState.isTakeawaySelected}
@@ -896,6 +893,12 @@ export default function StorefrontMenuPage() {
               <ShoppingBag className="h-3 w-3" />
               <span>{formatTableLabel('Mang về', locale)}</span>
             </button>
+            <span
+              data-testid="menu-rescan-table-qr-hint"
+              className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400"
+            >
+              {guestLabels.rescanTableQrHint}
+            </span>
           </div>
         )}
 
@@ -987,26 +990,12 @@ export default function StorefrontMenuPage() {
               <p className="text-xs font-medium leading-relaxed">
                 {tableState.error}
               </p>
+              <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+                {guestLabels.rescanTableQrHint}
+              </p>
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5 pt-1">
-            {activeTables.map((tb) => (
-              <button
-                key={tb.id}
-                type="button"
-                onClick={() =>
-                  handleSelectTableChoice({
-                    tableId: tb.id,
-                    tableLabel: tb.name,
-                    isTakeaway: false,
-                  })
-                }
-                className="inline-flex items-center gap-1 rounded-xl border border-amber-400 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-900 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-slate-900 dark:text-white dark:hover:bg-slate-800"
-              >
-                <Utensils className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                <span>{tb.name}</span>
-              </button>
-            ))}
             <button
               type="button"
               onClick={() =>
@@ -1247,8 +1236,10 @@ export default function StorefrontMenuPage() {
         cart={cart}
         tables={activeTables}
         lockedTable={lockedTable}
-        tableQrSignature={qrTableSigParam}
-        isTableQrEntry={Boolean(qrTableIdParam)}
+        tableQrSignature={
+          tableState.tableQrVerified === true ? qrTableSigParam : null
+        }
+        isTableQrEntry={Boolean(lockedTable)}
         isShopClosed={isShopClosed}
         selectedTableId={tableState.selectedTableId}
         isTakeawaySelected={tableState.isTakeawaySelected}

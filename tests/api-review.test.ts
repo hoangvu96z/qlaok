@@ -145,6 +145,7 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   const orderCreateRes = await ordersPost(request('/api/orders', null, {
     shop_id: 'shop-fnb-001',
     table_id: vipTable.id,
+    table_qr_sig: vipTable.qr_sig,
     table_label: 'Spoofed Label',
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
   }, 'POST'));
@@ -205,6 +206,7 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   const archivedOrderRes = await ordersPost(request('/api/orders', null, {
     shop_id: 'shop-fnb-001',
     table_id: vipTable.id,
+    table_qr_sig: vipTable.qr_sig,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
   }, 'POST'));
   assert.equal(archivedOrderRes.status, 400);
@@ -219,6 +221,7 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   const secondOrderRes = await ordersPost(request('/api/orders', null, {
     shop_id: 'shop-fnb-001',
     table_id: reusedTable.id,
+    table_qr_sig: reusedTable.qr_sig,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
   }, 'POST'));
   assert.equal(secondOrderRes.status, 201);

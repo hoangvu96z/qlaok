@@ -22,6 +22,7 @@ import {
   requireShopPermission,
 } from '@/lib/server-auth';
 import { hasShopPermission } from '@/lib/shop-permissions';
+import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import type {
   OrderLineItem,
   OrderPaymentStatus,
@@ -459,6 +460,14 @@ export async function POST(req: Request) {
       }
     }
 
+    const rawTableId = table_id !== undefined ? table_id : tableId;
+    const rawTableCode = table_code !== undefined ? table_code : tableCode;
+    const rawTableLabel =
+      typeof body.table_label === 'string'
+        ? body.table_label
+        : typeof body.tableLabel === 'string'
+          ? body.tableLabel
+          : undefined;
     const resolvedTableQrSig =
       table_qr_sig !== undefined
         ? table_qr_sig
@@ -467,12 +476,22 @@ export async function POST(req: Request) {
           : sig !== undefined
             ? sig
             : req.headers.get('x-table-qr-sig') ?? undefined;
-    const requireTableQrSig = Boolean(qr_table_mode || qrTableMode);
+    const isAnonymousTakeaway =
+      !hasCreatePerm &&
+      !qr_table_mode &&
+      !qrTableMode &&
+      !(resolvedTableQrSig && String(resolvedTableQrSig).trim()) &&
+      !(rawTableId && String(rawTableId).trim()) &&
+      !(rawTableCode && String(rawTableCode).trim()) &&
+      Boolean(rawTableLabel && isTakeawayTableLabel(rawTableLabel));
+    const requireTableQrSig =
+      Boolean(qr_table_mode || qrTableMode) ||
+      (!hasCreatePerm && !isAnonymousTakeaway);
 
     const order = await dbCreateOrder({
       shop_id,
-      table_id: table_id !== undefined ? table_id : tableId,
-      table_code: table_code !== undefined ? table_code : tableCode,
+      table_id: rawTableId,
+      table_code: rawTableCode,
       table_label,
       table_qr_sig: resolvedTableQrSig,
       require_table_qr_sig: requireTableQrSig,
@@ -567,6 +586,9 @@ export async function PATCH(req: Request) {
       table_code,
       tableCode,
       table_label,
+      table_qr_sig,
+      tableQrSig,
+      sig,
       customer_note,
       items,
       discount_amount,
@@ -587,6 +609,9 @@ export async function PATCH(req: Request) {
       table_code?: string | null;
       tableCode?: string | null;
       table_label?: string;
+      table_qr_sig?: string | null;
+      tableQrSig?: string | null;
+      sig?: string | null;
       customer_note?: string;
       items?: OrderLineItem[];
       discount_amount?: number;
@@ -594,6 +619,14 @@ export async function PATCH(req: Request) {
 
     const resolvedTableId = table_id !== undefined ? table_id : tableId;
     const resolvedTableCode = table_code !== undefined ? table_code : tableCode;
+    const resolvedTableQrSig =
+      table_qr_sig !== undefined
+        ? table_qr_sig
+        : tableQrSig !== undefined
+          ? tableQrSig
+          : sig !== undefined
+            ? sig
+            : req.headers.get('x-table-qr-sig') ?? undefined;
 
     const resolvedOrderId = orderId || order_id;
     if (!resolvedOrderId) {
@@ -671,6 +704,8 @@ export async function PATCH(req: Request) {
         table_id: resolvedTableId,
         table_code: resolvedTableCode,
         table_label,
+        table_qr_sig: resolvedTableQrSig,
+        require_table_qr_sig: true,
         customer_note,
         items,
         canApplyDiscount: false,

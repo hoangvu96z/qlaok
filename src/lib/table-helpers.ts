@@ -9,6 +9,8 @@ import { UI_LABELS } from '@/lib/i18n-helper';
 const TAKEAWAY_LABELS = new Set([
   'mang về',
   'mang ve',
+  'mang đi',
+  'mang di',
   'takeaway',
   'take away',
   'take-away',
@@ -17,6 +19,13 @@ const TAKEAWAY_LABELS = new Set([
   'counter',
   'quầy',
   'quay',
+  '포장',
+  'お持ち帰り',
+  '外带',
+  '打包',
+  'para llevar',
+  'asporto',
+  'навынос',
 ]);
 
 export function isTakeawayTableLabel(label?: string | null): boolean {
@@ -71,13 +80,168 @@ export function filterSelectableTables(
     });
 }
 
+export interface ScopedTableQrVerification {
+  shopSlug?: string | null;
+  shopId?: string | null;
+  tableId: string;
+  sig: string;
+  verified: boolean;
+}
+
+export interface StorefrontTableChoice {
+  shopSlug: string;
+  tableQueryKey?: string;
+  tableId: string | null;
+  tableLabel: string;
+  isTakeaway: boolean;
+}
+
+export function buildTableQrVerificationKey(input: {
+  shopSlug?: string | null;
+  tableId?: string | null;
+  sig?: string | null;
+}): string {
+  return [
+    (input.shopSlug ?? '').trim().toLowerCase(),
+    (input.tableId ?? '').trim(),
+    (input.sig ?? '').trim(),
+  ].join('\0');
+}
+
+export function buildStorefrontTableQueryKey(input: {
+  shopSlug?: string | null;
+  tableId?: string | null;
+  sig?: string | null;
+  table?: string | null;
+}): string {
+  return [
+    (input.shopSlug ?? '').trim().toLowerCase(),
+    (input.tableId ?? '').trim(),
+    (input.sig ?? '').trim(),
+    (input.table ?? '').trim(),
+  ].join('\0');
+}
+
+export function resolveScopedTableQrVerification(
+  verification: ScopedTableQrVerification | boolean | null | undefined,
+  current: {
+    shopSlug?: string | null;
+    shopId?: string | null;
+    tableId?: string | null;
+    sig?: string | null;
+  }
+): boolean | null {
+  const cleanTableId = (current.tableId ?? '').trim();
+  const cleanSig = (current.sig ?? '').trim();
+  if (!cleanTableId) {
+    return null;
+  }
+  if (!cleanSig) {
+    return false;
+  }
+  if (typeof verification === 'boolean') {
+    return verification;
+  }
+  if (!verification || typeof verification !== 'object') {
+    return null;
+  }
+  const verifiedTableId = (verification.tableId ?? '').trim();
+  const verifiedSig = (verification.sig ?? '').trim();
+  if (!verifiedTableId || !verifiedSig) {
+    return null;
+  }
+  if (verifiedTableId !== cleanTableId || verifiedSig !== cleanSig) {
+    return null;
+  }
+  const currentSlug = (current.shopSlug ?? '').trim().toLowerCase();
+  const verifiedSlug = (verification.shopSlug ?? '').trim().toLowerCase();
+  if (
+    (current.shopSlug !== undefined || verifiedSlug) &&
+    verifiedSlug !== currentSlug
+  ) {
+    return null;
+  }
+  const currentShopId = (current.shopId ?? '').trim();
+  const verifiedShopId = (verification.shopId ?? '').trim();
+  if (
+    (current.shopId !== undefined || verifiedShopId) &&
+    verifiedShopId !== currentShopId
+  ) {
+    return null;
+  }
+  return Boolean(verification.verified);
+}
+
+export function createScopedTableQrVerification(input: {
+  shopSlug: string;
+  shopId?: string | null;
+  tableId?: string | null;
+  sig?: string | null;
+  tableQrVerified?: boolean | null;
+  activeSlug?: string | null;
+  activeTableId?: string | null;
+  activeSig?: string | null;
+}): ScopedTableQrVerification | null {
+  const cleanSlug = (input.shopSlug ?? '').trim();
+  const cleanShopId = (input.shopId ?? '').trim();
+  const cleanTableId = (input.tableId ?? '').trim();
+  const cleanSig = (input.sig ?? '').trim();
+
+  if (!cleanSlug || !cleanTableId) {
+    return null;
+  }
+
+  if (
+    input.activeSlug !== undefined &&
+    (input.activeSlug ?? '').trim().toLowerCase() !== cleanSlug.toLowerCase()
+  ) {
+    return null;
+  }
+  if (
+    input.activeTableId !== undefined &&
+    (input.activeTableId ?? '').trim() !== cleanTableId
+  ) {
+    return null;
+  }
+  if (
+    input.activeSig !== undefined &&
+    (input.activeSig ?? '').trim() !== cleanSig
+  ) {
+    return null;
+  }
+
+  return {
+    shopSlug: cleanSlug,
+    shopId: cleanShopId || null,
+    tableId: cleanTableId,
+    sig: cleanSig,
+    verified:
+      Boolean(cleanSig) && typeof input.tableQrVerified === 'boolean'
+        ? input.tableQrVerified
+        : false,
+  };
+}
+
 export function resolveTableSelection(
   tables: ShopTable[],
-  input: { tableId?: string | null; table?: string | null },
+  input: {
+    shopSlug?: string | null;
+    shopId?: string | null;
+    tableId?: string | null;
+    table?: string | null;
+    sig?: string | null;
+    requireSig?: boolean;
+    sigVerified?: boolean | ScopedTableQrVerification | null;
+  },
   locale: SupportedLocale = 'vi'
 ): { table: ShopTable | null; error: string | null } {
   const rawTableId = (input?.tableId ?? '').trim();
   const rawTable = (input?.table ?? '').trim();
+  const cleanSig = (input?.sig ?? '').trim();
+  const mustCheckSig =
+    Boolean(input?.requireSig) ||
+    input?.sig !== undefined ||
+    input?.sigVerified !== undefined;
 
   if (!rawTableId && !rawTable) {
     return { table: null, error: null };
@@ -106,6 +270,32 @@ export function resolveTableSelection(
       };
     }
 
+    const effectiveSigVerified =
+      typeof input?.sigVerified === 'object' && input?.sigVerified !== null
+        ? resolveScopedTableQrVerification(input.sigVerified, {
+            shopSlug: input.shopSlug,
+            shopId:
+              input.shopId !== undefined
+                ? input.shopId
+                : input.sigVerified.shopId !== undefined
+                  ? exactOrCaseMatch.shop_id
+                  : undefined,
+            tableId: rawTableId,
+            sig: cleanSig,
+          }) === true &&
+          exactOrCaseMatch.id.trim().toLowerCase() ===
+            (input.sigVerified.tableId ?? '').trim().toLowerCase() &&
+          (!input.sigVerified.shopId ||
+            input.sigVerified.shopId.trim() === exactOrCaseMatch.shop_id.trim())
+        : input?.sigVerified === true;
+
+    if (mustCheckSig && (!cleanSig || !effectiveSigVerified)) {
+      return {
+        table: null,
+        error: labels.tableQrInvalidError,
+      };
+    }
+
     return { table: exactOrCaseMatch, error: null };
   }
 
@@ -121,6 +311,29 @@ export function resolveTableSelection(
   );
 
   if (activeMatch) {
+    const effectiveLegacySigVerified =
+      typeof input?.sigVerified === 'object' && input?.sigVerified !== null
+        ? resolveScopedTableQrVerification(input.sigVerified, {
+            shopSlug: input.shopSlug,
+            shopId:
+              input.shopId !== undefined
+                ? input.shopId
+                : input.sigVerified.shopId !== undefined
+                  ? activeMatch.shop_id
+                  : undefined,
+            tableId: activeMatch.id,
+            sig: cleanSig,
+          }) === true &&
+          (!input.sigVerified.shopId ||
+            input.sigVerified.shopId.trim() === activeMatch.shop_id.trim())
+        : input?.sigVerified === true;
+
+    if (mustCheckSig && (!cleanSig || !effectiveLegacySigVerified)) {
+      return {
+        table: null,
+        error: labels.tableQrInvalidError,
+      };
+    }
     return { table: activeMatch, error: null };
   }
 
@@ -141,6 +354,139 @@ export function resolveTableSelection(
   return {
     table: null,
     error: labels.tableNotFoundError(rawTable),
+  };
+}
+
+export function resolveStorefrontMenuTableState(input: {
+  shopSlug: string;
+  shopId?: string | null;
+  tables: ShopTable[];
+  qrTableIdParam?: string | null;
+  qrTableSigParam?: string | null;
+  qrTableParam?: string | null;
+  verification?: ScopedTableQrVerification | boolean | null;
+  userTableChoice?: StorefrontTableChoice | null;
+  locale?: SupportedLocale;
+}): {
+  tableQrVerified: boolean | null;
+  lockedTable: ShopTable | null;
+  selectedTable: ShopTable | null;
+  selectedTableId: string | null;
+  isTakeawaySelected: boolean;
+  error: string | null;
+} {
+  const locale = input.locale || 'vi';
+  const cleanSlug = (input.shopSlug ?? '').trim();
+  const cleanShopId = (input.shopId ?? '').trim();
+  const cleanTableId = (input.qrTableIdParam ?? '').trim();
+  const cleanSig = (input.qrTableSigParam ?? '').trim();
+  const cleanTableParam = (input.qrTableParam ?? '').trim();
+
+  const activeTables = cleanShopId
+    ? filterSelectableTables(input.tables, cleanShopId)
+    : [];
+
+  const tableQrVerified = cleanShopId
+    ? resolveScopedTableQrVerification(input.verification, {
+        shopSlug: cleanSlug,
+        shopId: cleanShopId,
+        tableId: cleanTableId,
+        sig: cleanSig,
+      })
+    : cleanTableId && !cleanSig
+      ? false
+      : null;
+
+  let lockedTable: ShopTable | null = null;
+  if (cleanTableId && cleanSig && cleanShopId && tableQrVerified === true) {
+    const resolvedLock = resolveTableSelection(
+      activeTables,
+      {
+        shopSlug: cleanSlug,
+        shopId: cleanShopId,
+        tableId: cleanTableId,
+        sig: cleanSig,
+        requireSig: true,
+        sigVerified: input.verification,
+      },
+      locale
+    );
+    if (resolvedLock.table && !resolvedLock.error) {
+      lockedTable = resolvedLock.table;
+    }
+  }
+
+  // 0. Locked signed QR table always wins (no switching)
+  if (lockedTable) {
+    return {
+      tableQrVerified,
+      lockedTable,
+      selectedTable: lockedTable,
+      selectedTableId: lockedTable.id,
+      isTakeawaySelected: false,
+      error: null,
+    };
+  }
+
+  // 1. User explicitly chose takeaway in this shop session (for the current QR query)
+  const currentQueryKey = buildStorefrontTableQueryKey({
+    shopSlug: cleanSlug,
+    tableId: cleanTableId,
+    sig: cleanSig,
+    table: cleanTableParam,
+  });
+  if (
+    input.userTableChoice &&
+    input.userTableChoice.shopSlug.trim().toLowerCase() ===
+      cleanSlug.toLowerCase() &&
+    (!input.userTableChoice.tableQueryKey ||
+      input.userTableChoice.tableQueryKey === currentQueryKey) &&
+    input.userTableChoice.isTakeaway
+  ) {
+    return {
+      tableQrVerified,
+      lockedTable: null,
+      selectedTable: null,
+      selectedTableId: null,
+      isTakeawaySelected: true,
+      error: null,
+    };
+  }
+
+  // 2. Legacy ?table=Mang về / takeaway URL parameter (when no tableId)
+  if (!cleanTableId && cleanTableParam && isTakeawayTableLabel(cleanTableParam)) {
+    return {
+      tableQrVerified,
+      lockedTable: null,
+      selectedTable: null,
+      selectedTableId: null,
+      isTakeawaySelected: true,
+      error: null,
+    };
+  }
+
+  // 3. Resolve QR ?tableId= or ?table= with signature enforcement via resolveTableSelection helper
+  const resolved = resolveTableSelection(
+    activeTables,
+    {
+      shopSlug: cleanSlug,
+      shopId: cleanShopId || undefined,
+      tableId: cleanTableId,
+      table: cleanTableParam,
+      sig: cleanSig,
+      requireSig: true,
+      sigVerified: tableQrVerified,
+    },
+    locale
+  );
+
+  return {
+    tableQrVerified,
+    lockedTable: null,
+    selectedTable: resolved.table,
+    selectedTableId: resolved.table?.id ?? null,
+    isTakeawaySelected: false,
+    error: resolved.error,
   };
 }
 

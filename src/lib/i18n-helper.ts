@@ -1247,6 +1247,7 @@ export interface GuestOrderLabelSet {
   shopClosedSubmitDisabled: string;
   tableLockedTitle: string;
   tableLockedHint: string;
+  rescanTableQrHint: string;
   errorShopClosed: string;
   errorItemUnavailable: string;
   errorInsufficientStock: string;
@@ -1278,6 +1279,8 @@ const GUEST_ORDER_LABELS_EN: GuestOrderLabelSet = {
   shopClosedSubmitDisabled: 'Ordering is unavailable while the shop is closed',
   tableLockedTitle: 'Your table',
   tableLockedHint: 'Assigned from the table QR code',
+  rescanTableQrHint:
+    'Scan the QR code at your table to order for dine-in, or select Takeaway.',
   errorShopClosed:
     'The shop is closed right now and cannot accept orders. Please come back during opening hours.',
   errorItemUnavailable:
@@ -1328,6 +1331,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: 'Quán đang đóng cửa — tạm chưa nhận đơn',
     tableLockedTitle: 'Bàn của bạn',
     tableLockedHint: 'Đã xác định theo mã QR tại bàn',
+    rescanTableQrHint:
+      'Quét mã QR tại bàn để gọi món tại bàn, hoặc chọn Mang về.',
     errorShopClosed:
       'Quán hiện đang đóng cửa, chưa thể nhận đơn. Vui lòng quay lại trong giờ mở cửa.',
     errorItemUnavailable:
@@ -1367,6 +1372,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: '영업 종료 중에는 주문할 수 없습니다',
     tableLockedTitle: '내 테이블',
     tableLockedHint: '테이블 QR 코드로 지정됨',
+    rescanTableQrHint:
+      '매장 식사는 테이블의 QR 코드를 스캔하거나 포장을 선택해 주세요.',
     errorShopClosed: '현재 영업 종료로 주문을 받을 수 없습니다. 영업시간에 다시 이용해 주세요.',
     errorItemUnavailable: '품절된 메뉴가 있습니다. 해당 메뉴를 삭제한 후 다시 시도해 주세요.',
     errorInsufficientStock: '재고가 부족한 메뉴가 있습니다. 수량을 줄인 후 다시 시도해 주세요.',
@@ -1395,6 +1402,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: '営業時間外のため注文できません',
     tableLockedTitle: 'あなたのテーブル',
     tableLockedHint: 'テーブルのQRコードで指定済み',
+    rescanTableQrHint:
+      '店内飲食はテーブルのQRコードをスキャンするか、お持ち帰りを選択してください。',
     errorShopClosed: '現在営業時間外のため注文を受け付けられません。営業時間内に再度お試しください。',
     errorItemUnavailable: '品切れの商品があります。削除してから再度お試しください。',
     errorInsufficientStock: '在庫が不足している商品があります。数量を減らして再度お試しください。',
@@ -1423,6 +1432,7 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: '打烊期间无法下单',
     tableLockedTitle: '您的桌号',
     tableLockedHint: '已根据桌上二维码确定',
+    rescanTableQrHint: '堂食请扫描桌上的二维码，或选择外带。',
     errorShopClosed: '本店目前已打烊，暂不接单。请在营业时间内再来。',
     errorItemUnavailable: '部分菜品已售罄，请移除后重试。',
     errorInsufficientStock: '部分菜品库存不足，请减少数量后重试。',
@@ -1451,6 +1461,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: 'No se aceptan pedidos mientras el local está cerrado',
     tableLockedTitle: 'Tu mesa',
     tableLockedHint: 'Asignada por el código QR de la mesa',
+    rescanTableQrHint:
+      'Escanea el código QR en tu mesa para comer aquí, o selecciona Para llevar.',
     errorShopClosed: 'El local está cerrado y no puede aceptar pedidos. Vuelve en horario de apertura.',
     errorItemUnavailable: 'Algún producto ya no está disponible. Elimínalo e inténtalo de nuevo.',
     errorInsufficientStock: 'No hay suficiente stock de algunos productos. Reduce la cantidad e inténtalo de nuevo.',
@@ -1479,6 +1491,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: 'Ordini non disponibili a locale chiuso',
     tableLockedTitle: 'Il tuo tavolo',
     tableLockedHint: 'Assegnato dal QR code del tavolo',
+    rescanTableQrHint:
+      'Scansiona il codice QR al tuo tavolo per consumare al tavolo, oppure seleziona Asporto.',
     errorShopClosed: 'Il locale è chiuso e non può accettare ordini. Torna durante l\'orario di apertura.',
     errorItemUnavailable: 'Alcuni prodotti non sono più disponibili. Rimuovili e riprova.',
     errorInsufficientStock: 'Scorte insufficienti per alcuni prodotti. Riduci la quantità e riprova.',
@@ -1507,6 +1521,8 @@ export const GUEST_ORDER_LABELS: Record<
     shopClosedSubmitDisabled: 'Заказы недоступны, пока заведение закрыто',
     tableLockedTitle: 'Ваш стол',
     tableLockedHint: 'Определён по QR-коду стола',
+    rescanTableQrHint:
+      'Отсканируйте QR-код на вашем столе для заказа в зале или выберите «Навынос».',
     errorShopClosed: 'Заведение закрыто и не принимает заказы. Пожалуйста, вернитесь в рабочее время.',
     errorItemUnavailable: 'Некоторые блюда закончились. Удалите их и попробуйте снова.',
     errorInsufficientStock: 'Недостаточно остатка для некоторых блюд. Уменьшите количество и попробуйте снова.',

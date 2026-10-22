@@ -19,7 +19,6 @@ import {
   ShoppingBag,
   Edit3,
   AlertTriangle,
-  Utensils,
   RefreshCw,
   Lock,
   XCircle,
@@ -348,18 +347,6 @@ export function ShowToStaffModal({
     return activeTables.find((t) => t.id === localTableId) || null;
   }, [activeTables, localTableId]);
 
-  const handleChooseManagedTable = (table: ShopTable) => {
-    setLocalTableId(table.id);
-    setLocalTakeaway(false);
-    setHasEditedOrderTable(true);
-    setSubmitError('');
-    onSelectTable?.({
-      tableId: table.id,
-      tableLabel: table.name,
-      isTakeaway: false,
-    });
-  };
-
   const handleChooseTakeaway = () => {
     setLocalTableId(null);
     setLocalTakeaway(true);
@@ -378,8 +365,10 @@ export function ShowToStaffModal({
       editingOrder.payment_status === 'unpaid'
   );
 
-  // QR-locked table: chooser hidden, guest cannot switch tables
-  const isTableLocked = Boolean(lockedTable);
+  // QR-locked table: chooser hidden, guest cannot switch tables (requires a signed table QR)
+  const isTableLocked = Boolean(
+    lockedTable && (tableQrSignature ?? '').trim()
+  );
   // New orders are blocked while the shop is closed (edits/cancel of a pending order stay allowed)
   const isSubmitBlockedByHours = isShopClosed && !isEditingExisting;
 
@@ -388,7 +377,7 @@ export function ShowToStaffModal({
     if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
       return formatTableLabel(editingOrder.table_label, locale);
     }
-    if (lockedTable) {
+    if (isTableLocked && lockedTable) {
       return lockedTable.name;
     }
     if (selectedActiveTable) {
@@ -405,6 +394,7 @@ export function ShowToStaffModal({
     isEditingExisting,
     editingOrder,
     hasEditedOrderTable,
+    isTableLocked,
     lockedTable,
     selectedActiveTable,
     localTakeaway,
@@ -419,7 +409,10 @@ export function ShowToStaffModal({
     if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
       return true;
     }
-    if (lockedTable || selectedActiveTable || localTakeaway) {
+    if (isTableLocked || localTakeaway) {
+      return true;
+    }
+    if (selectedActiveTable && Boolean((tableQrSignature ?? '').trim())) {
       return true;
     }
     if (tables === undefined && !tableResolutionError && !tablesLoadError) {
@@ -430,8 +423,9 @@ export function ShowToStaffModal({
     isEditingExisting,
     editingOrder,
     hasEditedOrderTable,
-    lockedTable,
+    isTableLocked,
     selectedActiveTable,
+    tableQrSignature,
     localTakeaway,
     tables,
     tableResolutionError,
@@ -580,23 +574,37 @@ export function ShowToStaffModal({
         };
       });
 
-      const effectiveTable = lockedTable || selectedActiveTable;
+      const effectiveTable = isTableLocked
+        ? lockedTable
+        : selectedActiveTable && Boolean((tableQrSignature ?? '').trim())
+          ? selectedActiveTable
+          : null;
       const resolvedNewTableId = effectiveTable ? effectiveTable.id : null;
       const resolvedNewTableLabel = effectiveTable
         ? effectiveTable.name
         : localTakeaway
           ? 'Mang về'
           : initialTableLabel.trim() || 'Mang về';
+      const shouldSendEditedTable =
+        hasEditedOrderTable ||
+        Boolean(
+          isTableLocked &&
+            lockedTable &&
+            lockedTable.id !== (editingOrder?.table_id ?? null)
+        );
 
       const requestBody =
         isEditingExisting && editingOrder
           ? {
               order_id: editingOrder.id,
               tracking_token: editingOrder.tracking_token,
-              ...(hasEditedOrderTable
+              ...(shouldSendEditedTable
                 ? {
                     table_id: resolvedNewTableId,
                     table_label: resolvedNewTableLabel,
+                    ...(tableQrSignature
+                      ? { table_qr_sig: tableQrSignature.trim() }
+                      : {}),
                   }
                 : {}),
               customer_note:
@@ -607,7 +615,7 @@ export function ShowToStaffModal({
               shop_id: shop.id,
               table_id: resolvedNewTableId,
               table_label: resolvedNewTableLabel,
-              ...(lockedTable || isTableQrEntry
+              ...(resolvedNewTableId || isTableLocked || isTableQrEntry
                 ? {
                     qr_table_mode: true,
                     table_qr_sig: (tableQrSignature ?? '').trim(),
@@ -1221,70 +1229,40 @@ export function ShowToStaffModal({
                         </p>
                       ) : (
                         <>
-                          <div className="flex flex-wrap gap-1.5">
-                            {activeTables.map((tb) => {
-                              const isSelected =
-                                (!isEditingExisting || hasEditedOrderTable) &&
-                                !localTakeaway &&
-                                selectedActiveTable?.id === tb.id;
-                              return (
-                                <button
-                                  key={tb.id}
-                                  type="button"
-                                  aria-pressed={isSelected}
-                                  data-testid={`modal-table-chip-${tb.id}`}
-                                  onClick={() => handleChooseManagedTable(tb)}
-                                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                                    isSelected
-                                      ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                                      : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-                                  }`}
-                                >
-                                  <Utensils className="h-3.5 w-3.5 shrink-0" />
-                                  <span>{tb.name}</span>
-                                  {tb.section ? (
-                                    <span
-                                      className={`text-[10px] font-semibold ${
-                                        isSelected
-                                          ? 'text-emerald-100 dark:text-slate-900'
-                                          : 'text-slate-500 dark:text-slate-400'
-                                      }`}
-                                    >
-                                      ({tb.section})
-                                    </span>
-                                  ) : null}
-                                </button>
-                              );
-                            })}
+                          {!(isEditingExisting && editingOrder?.table_id) && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {/* Takeaway Option */}
+                              <button
+                                type="button"
+                                aria-pressed={
+                                  (!isEditingExisting || hasEditedOrderTable) &&
+                                  localTakeaway
+                                }
+                                data-testid="modal-table-chip-takeaway"
+                                onClick={handleChooseTakeaway}
+                                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                                  (!isEditingExisting || hasEditedOrderTable) &&
+                                  localTakeaway
+                                    ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                                    : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                                }`}
+                              >
+                                <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
+                                <span>{formatTableLabel('Mang về', locale)}</span>
+                              </button>
+                            </div>
+                          )}
 
-                            {/* Takeaway Option */}
-                            <button
-                              type="button"
-                              aria-pressed={
-                                (!isEditingExisting || hasEditedOrderTable) &&
-                                localTakeaway
-                              }
-                              data-testid="modal-table-chip-takeaway"
-                              onClick={handleChooseTakeaway}
-                              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                                (!isEditingExisting || hasEditedOrderTable) &&
-                                localTakeaway
-                                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                                  : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-                              }`}
-                            >
-                              <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
-                              <span>{formatTableLabel('Mang về', locale)}</span>
-                            </button>
-                          </div>
-
-                          {tables !== undefined &&
+                          <p
+                            data-testid="modal-rescan-table-qr-hint"
+                            className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400"
+                          >
+                            {tables !== undefined &&
                             activeTables.length === 0 &&
-                            !tablesLoadError && (
-                              <p className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                                {labels.noActiveTablesTakeawayHint}
-                              </p>
-                            )}
+                            !tablesLoadError
+                              ? labels.noActiveTablesTakeawayHint
+                              : guestLabels.rescanTableQrHint}
+                          </p>
                         </>
                       )}
                     </div>

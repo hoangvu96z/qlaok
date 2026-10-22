@@ -28,7 +28,7 @@ import {
 import { SEED_ITEMS, SEED_SHOPS } from './seed-data';
 import { dbGetShopTables, dbResolveOrderTableIdentity } from './shop-tables';
 import { isSupabaseConfigured } from './supabase/client';
-import { summarizeOrdersByTable } from './table-helpers';
+import { isTakeawayTableLabel, summarizeOrdersByTable } from './table-helpers';
 
 export {
   computeSharedOrderQuote,
@@ -1675,6 +1675,8 @@ export async function dbUpdateOrderStatus(
     table_id?: string | null;
     table_code?: string | null;
     table_label?: string;
+    table_qr_sig?: string | null;
+    require_table_qr_sig?: boolean;
     customer_note?: string;
     items?: OrderLineItem[];
     discount_amount?: number;
@@ -1767,10 +1769,18 @@ export async function dbUpdateOrderStatus(
       const requestedTableId = (patch.table_id ?? '').trim();
       if (!requestedTableId) {
         const requestedLabel = (patch.table_label ?? '').trim();
+        if (patch.require_table_qr_sig && existing.table_id) {
+          throw new Error(
+            'MISSING_TABLE_QR_SIGNATURE: Không thể thay đổi hoặc gỡ bàn của đơn hàng khi thiếu mã xác thực QR bàn.'
+          );
+        }
         if (requestedLabel) {
           const resolved = await dbResolveOrderTableIdentity({
             shop_id: existing.shop_id,
             table_label: requestedLabel,
+            table_qr_sig: patch.table_qr_sig,
+            require_table_qr_sig:
+              Boolean(patch.require_table_qr_sig) && !isTakeawayTableLabel(requestedLabel),
             dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
           });
           nextTableId = resolved.table_id;
@@ -1779,19 +1789,29 @@ export async function dbUpdateOrderStatus(
           nextTableId = null;
           nextTableLabel = existing.table_id ? 'Mang về' : existing.table_label || 'Mang về';
         }
-      } else if (requestedTableId !== (existing.table_id || '')) {
+      } else if (
+        requestedTableId !== (existing.table_id || '') ||
+        (patch.table_qr_sig !== undefined && patch.table_qr_sig !== null)
+      ) {
         const resolved = await dbResolveOrderTableIdentity({
           shop_id: existing.shop_id,
           table_id: requestedTableId,
+          table_qr_sig: patch.table_qr_sig,
+          require_table_qr_sig: patch.require_table_qr_sig,
           dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
         });
         nextTableId = resolved.table_id;
-        nextTableLabel = resolved.table_label;
+        nextTableLabel =
+          resolved.table_id && existing.table_id && resolved.table_id === existing.table_id
+            ? existing.table_label
+            : resolved.table_label;
       }
     } else if (isChangingTableCode) {
       const resolved = await dbResolveOrderTableIdentity({
         shop_id: existing.shop_id,
         table_code: patch.table_code,
+        table_qr_sig: patch.table_qr_sig,
+        require_table_qr_sig: patch.require_table_qr_sig,
         dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
       });
       nextTableId = resolved.table_id;
@@ -1800,9 +1820,19 @@ export async function dbUpdateOrderStatus(
           ? existing.table_label
           : resolved.table_label;
     } else if (isChangingTableLabel) {
+      const requestedLabel = (patch.table_label ?? '').trim();
+      if (patch.require_table_qr_sig && existing.table_id) {
+        throw new Error(
+          'MISSING_TABLE_QR_SIGNATURE: Không thể thay đổi bàn của đơn hàng khi thiếu mã xác thực QR bàn.'
+        );
+      }
       const resolved = await dbResolveOrderTableIdentity({
         shop_id: existing.shop_id,
         table_label: patch.table_label,
+        table_qr_sig: patch.table_qr_sig,
+        require_table_qr_sig:
+          Boolean(patch.require_table_qr_sig) &&
+          !(existing.table_id === null && isTakeawayTableLabel(requestedLabel)),
         dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
       });
       nextTableId = resolved.table_id;

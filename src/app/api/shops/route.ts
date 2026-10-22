@@ -20,6 +20,7 @@ import {
   dbUpsertShopMembership,
   hasShopPermission,
 } from '@/lib/shop-permissions';
+import { verifyTableQrSignature } from '@/lib/shop-tables';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -74,6 +75,15 @@ export async function GET(req: Request) {
     const bundle = await dbGetStorefrontBundle(slug, { allowUnpublished });
     if (!bundle) {
       return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
+    }
+    const tableIdParam = (searchParams.get('tableId') ?? '').trim();
+    if (tableIdParam) {
+      const tableQrVerified = verifyTableQrSignature({
+        shop_id: bundle.shop.id,
+        table_id: tableIdParam,
+        signature: searchParams.get('sig'),
+      });
+      return NextResponse.json({ ...bundle, tableQrVerified });
     }
     return NextResponse.json(bundle);
   }

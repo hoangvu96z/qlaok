@@ -20,6 +20,7 @@ import {
   dbDeleteShopMembership,
   dbUpsertShopMembership,
 } from '../src/lib/shop-permissions';
+import { signTableQr } from '../src/lib/shop-tables';
 
 const SHOP_A = 'shop-fnb-001'; // owner-demo-001
 const SHOP_B = 'shop-service-002'; // owner-demo-001
@@ -291,6 +292,8 @@ test('Guest QR order creation sends localized push only to target shop owner & o
     const idempotencyKey = `qr-push-idemp-${Date.now()}`;
     const orderBody = {
       shop_id: SHOP_A,
+      table_id: 'tbl-fnb-01',
+      table_qr_sig: signTableQr(SHOP_A, 'tbl-fnb-01'),
       table_label: 'Bàn 01',
       source: 'qr_table',
       idempotency_key: idempotencyKey,
@@ -429,6 +432,8 @@ test('Push provider HTTP error or network rejection does not turn a created gues
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           shop_id: SHOP_A,
+          table_id: 'tbl-fnb-02',
+          table_qr_sig: signTableQr(SHOP_A, 'tbl-fnb-02'),
           table_label: 'Bàn 02',
           source: 'qr_table',
           items: [

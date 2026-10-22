@@ -592,7 +592,9 @@ export async function dbResolveOrderTableIdentity(params: {
 
   if (mustVerifySig && !rawTableId) {
     throw new Error(
-      'MISSING_TABLE_QR_SIGNATURE: Mã xác thực QR bàn bị thiếu hoặc không hợp lệ.'
+      cleanSig
+        ? 'INVALID_TABLE_QR_SIGNATURE: Mã QR bàn không hợp lệ hoặc thiếu định danh bàn. Vui lòng quét lại mã QR tại bàn.'
+        : 'MISSING_TABLE_QR_SIGNATURE: Mã xác thực QR bàn bị thiếu hoặc không hợp lệ.'
     );
   }
 
