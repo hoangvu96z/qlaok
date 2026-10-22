@@ -543,6 +543,12 @@ const ORDER_AUDIT_LOG_FILE = path.join(
   'order-audit.log.jsonl'
 );
 
+let testOrderAuditLogFileOverride: string | null = null;
+
+export function setOrderAuditLogFileForTests(path: string | null): void {
+  testOrderAuditLogFileOverride = path;
+}
+
 export function recordOrderAuditLog(entry: {
   shopId: string;
   orderId: string;
@@ -554,7 +560,8 @@ export function recordOrderAuditLog(entry: {
   details?: Record<string, unknown>;
 }): void {
   try {
-    const dir = path.dirname(ORDER_AUDIT_LOG_FILE);
+    const targetFile = testOrderAuditLogFileOverride || ORDER_AUDIT_LOG_FILE;
+    const dir = path.dirname(targetFile);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -563,7 +570,7 @@ export function recordOrderAuditLog(entry: {
       ...entry,
     };
     fs.appendFileSync(
-      ORDER_AUDIT_LOG_FILE,
+      targetFile,
       `${JSON.stringify(payload)}\n`,
       'utf8'
     );

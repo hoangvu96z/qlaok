@@ -64,6 +64,7 @@ import { computeSharedOrderQuote } from '@/lib/order-pricing';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
   issueSessionToken,
+  setOrderAuditLogFileForTests,
   verifySessionToken,
 } from '@/lib/server-auth';
 import {
@@ -2187,6 +2188,266 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
     assert.equal(lateCustomerEditRes.status, 409);
 
     await dbUpdateOrderStatus(created.id, { status: 'cancelled' });
+  });
+
+  test('9.7b Customer tracking_token allows guest self-cancellation while new+unpaid, restores stock exactly once, logs customer_cancel_order, and rejects invalid token and post-cancellation edits', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'order-audit-test-'));
+    const tempAuditLogFile = path.join(tempDir, 'order-audit.log.jsonl');
+    setOrderAuditLogFileForTests(tempAuditLogFile);
+
+    const testItemId = 'item-fnb-1';
+    const initialStockEnriched = enrichItemsWithInventory(
+      SEED_ITEMS.filter((i) => i.id === testItemId)
+    )[0];
+    const originalStockQuantity = initialStockEnriched?.stock_quantity;
+    const originalSoldCount = initialStockEnriched?.sold_count;
+
+    let created: Awaited<ReturnType<typeof dbCreateOrder>> | null = null;
+    let preparingOrder: Awaited<ReturnType<typeof dbCreateOrder>> | null = null;
+    let paidOrder: Awaited<ReturnType<typeof dbCreateOrder>> | null = null;
+
+    try {
+      await setItemStockMetadata(testItemId, 10, 0);
+
+      created = await dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Test Guest Cancel',
+        items: [
+          {
+            item_id: testItemId,
+            name_vi: 'Phở Bò Tái Nạm',
+            quantity: 2,
+            unit_price: 55000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      });
+
+      assert.ok(created.tracking_token, 'Guest order must generate a tracking token');
+      assert.equal(created.status, 'new');
+      assert.equal(created.payment_status, 'unpaid');
+
+      // 1. Stock deducted on creation: 10 - 2 = 8
+      let enriched = enrichItemsWithInventory(
+        SEED_ITEMS.filter((i) => i.id === testItemId)
+      );
+      assert.equal(enriched[0].stock_quantity, 8, 'Stock must deduct 2 on creation');
+
+      // 2. Reject cancellation with wrong/invalid tracking token (403 INVALID_TRACKING_TOKEN)
+      const wrongTokenRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: created.id,
+            trackingToken: 'forged-invalid-token-999',
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(wrongTokenRes.status, 403);
+      const wrongTokenJson = await wrongTokenRes.json();
+      assert.equal(wrongTokenJson.code, 'INVALID_TRACKING_TOKEN');
+
+      // 3. Reject cancellation when missing tracking token entirely as anonymous guest (401)
+      const noTokenRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: created.id,
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(noTokenRes.status, 401);
+
+      // Verify state and stock are unchanged after rejected attempts
+      let currentOrder = await dbGetOrderById(created.id);
+      assert.equal(currentOrder?.status, 'new');
+      enriched = enrichItemsWithInventory(
+        SEED_ITEMS.filter((i) => i.id === testItemId)
+      );
+      assert.equal(enriched[0].stock_quantity, 8);
+
+      // 4. Valid guest cancellation with correct tracking token succeeds while new + unpaid (200)
+      const cancelRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: created.id,
+            trackingToken: created.tracking_token,
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(cancelRes.status, 200);
+      const cancelJson = await cancelRes.json();
+      assert.equal(cancelJson.order.status, 'cancelled');
+
+      // 5. Final order status in database is cancelled
+      currentOrder = await dbGetOrderById(created.id);
+      assert.equal(currentOrder?.status, 'cancelled');
+
+      // 6. Stock is restored exactly once (8 -> 10)
+      enriched = enrichItemsWithInventory(
+        SEED_ITEMS.filter((i) => i.id === testItemId)
+      );
+      assert.equal(
+        enriched[0].stock_quantity,
+        10,
+        'Stock must be restored to 10 after cancellation'
+      );
+
+      // 7. customer_cancel_order audit entry is recorded
+      assert.ok(fs.existsSync(tempAuditLogFile), 'Audit log file must exist in temp directory');
+      const auditAfter = fs.readFileSync(tempAuditLogFile, 'utf8');
+      const newAuditLines = auditAfter
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const cancelAudit = newAuditLines.find(
+        (entry) =>
+          entry.orderId === created!.id && entry.action === 'customer_cancel_order'
+      );
+      assert.ok(cancelAudit, 'Must record customer_cancel_order audit entry');
+      assert.equal(cancelAudit.actorId, 'customer_tracking');
+      assert.equal(cancelAudit.actorRole, 'customer');
+
+      // 8. Edit after cancellation is rejected (409 ORDER_ALREADY_ACCEPTED)
+      const postCancelEditRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: created.id,
+            trackingToken: created.tracking_token,
+            customer_note: 'Muốn đổi món sau khi đã hủy',
+          }),
+        })
+      );
+      assert.equal(postCancelEditRes.status, 409);
+      const postCancelEditJson = await postCancelEditRes.json();
+      assert.equal(postCancelEditJson.code, 'ORDER_ALREADY_ACCEPTED');
+
+      // 9. Repeated cancel on already-cancelled order is also rejected (409) and does NOT restock again
+      const repeatCancelRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: created.id,
+            trackingToken: created.tracking_token,
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(repeatCancelRes.status, 409);
+      enriched = enrichItemsWithInventory(
+        SEED_ITEMS.filter((i) => i.id === testItemId)
+      );
+      assert.equal(
+        enriched[0].stock_quantity,
+        10,
+        'Stock must remain 10 (not restored more than once)'
+      );
+
+      // 10. Also assert that if an order were already preparing or paid, guest cancellation would be rejected (409)
+      preparingOrder = await dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Bếp Đang Làm',
+        items: [
+          {
+            item_id: testItemId,
+            name_vi: 'Phở Bò Tái Nạm',
+            quantity: 1,
+            unit_price: 55000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      });
+      await dbUpdateOrderStatus(preparingOrder.id, { status: 'preparing' });
+      const cancelPreparingRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: preparingOrder.id,
+            trackingToken: preparingOrder.tracking_token,
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(cancelPreparingRes.status, 409);
+      const cancelPreparingJson = await cancelPreparingRes.json();
+      assert.equal(cancelPreparingJson.code, 'ORDER_ALREADY_ACCEPTED');
+      await dbUpdateOrderStatus(preparingOrder.id, { status: 'cancelled' });
+
+      paidOrder = await dbCreateOrder({
+        shop_id: 'shop-fnb-001',
+        table_label: 'Bàn Đã Thu Tiền',
+        items: [
+          {
+            item_id: testItemId,
+            name_vi: 'Phở Bò Tái Nạm',
+            quantity: 1,
+            unit_price: 55000,
+            extra_price: 0,
+            selected_choices: [],
+          },
+        ],
+      });
+      await dbUpdateOrderStatus(paidOrder.id, { payment_status: 'paid' });
+      const cancelPaidRes = await ordersPatch(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: paidOrder.id,
+            trackingToken: paidOrder.tracking_token,
+            status: 'cancelled',
+          }),
+        })
+      );
+      assert.equal(cancelPaidRes.status, 409);
+      const cancelPaidJson = await cancelPaidRes.json();
+      assert.equal(cancelPaidJson.code, 'ORDER_ALREADY_ACCEPTED');
+      await dbUpdateOrderStatus(paidOrder.id, { status: 'cancelled' });
+    } finally {
+      try {
+        try {
+          if (created?.id) {
+            await dbUpdateOrderStatus(created.id, { status: 'cancelled' }).catch(() => {});
+          }
+          if (preparingOrder?.id) {
+            await dbUpdateOrderStatus(preparingOrder.id, { status: 'cancelled' }).catch(() => {});
+          }
+          if (paidOrder?.id) {
+            await dbUpdateOrderStatus(paidOrder.id, { status: 'cancelled' }).catch(() => {});
+          }
+        } finally {
+          await setItemStockMetadata(testItemId, originalStockQuantity, originalSoldCount);
+        }
+      } finally {
+        try {
+          setOrderAuditLogFileForTests(null);
+        } finally {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          } catch {
+            // ignore fs cleanup error
+          }
+        }
+      }
+    }
   });
 
   test('9.8 Unconfigured bank QR returns isConfigured=false and empty qrImageUrl (no fake demo account 0905123456), and print counters increment per ticket type', async () => {
