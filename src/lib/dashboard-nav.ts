@@ -123,3 +123,26 @@ export function getFallbackDashboardHref(
   ];
   return order.find((href) => canAccessDashboardHref(href, membership)) || null;
 }
+
+/**
+ * Route-ownership helper for order live sync.
+ * CounterOrdersPage (/dashboard/orders) owns its own SSE, fetch, and chime/notification alerts.
+ * DashboardShell should suspend background sync when on /dashboard/orders or nested orders routes.
+ */
+export function isOrdersDashboardRoute(
+  pathname: string | null | undefined
+): boolean {
+  if (!pathname) return false;
+  const clean = pathname.split('?')[0].split('#')[0].replace(/\/+$/, '') || '/';
+  return clean === '/dashboard/orders' || clean.startsWith('/dashboard/orders/');
+}
+
+/**
+ * Returns true if DashboardShell should run background order live sync.
+ * Suspends on /dashboard/orders and nested paths to avoid duplicate SSE streams and refreshes.
+ */
+export function shouldDashboardShellSyncOrders(
+  pathname: string | null | undefined
+): boolean {
+  return !isOrdersDashboardRoute(pathname);
+}

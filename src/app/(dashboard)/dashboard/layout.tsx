@@ -54,8 +54,10 @@ import {
   canAccessDashboardHref,
   getFallbackDashboardHref,
   getNavRequirementForPath,
+  isOrdersDashboardRoute,
   isShopOwnerMembership,
   membershipHasPermission,
+  shouldDashboardShellSyncOrders,
 } from '@/lib/dashboard-nav';
 import { formatCurrency } from '@/lib/i18n-helper';
 import {
@@ -212,9 +214,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       itemsSummary?: string;
     }) => {
       const currentShop = activeShopRef.current;
-      const onOrdersRoute =
-        pathnameRef.current === '/dashboard/orders' ||
-        Boolean(pathnameRef.current?.startsWith('/dashboard/orders/'));
+      const onOrdersRoute = isOrdersDashboardRoute(pathnameRef.current);
 
       if (!onOrdersRoute) {
         playOrderAlertChime(
@@ -222,15 +222,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           orderInfo.tableLabel,
           orderInfo.orderCode
         );
-      }
 
-      setLiveToastOrder({
-        orderCode: orderInfo.orderCode,
-        tableLabel: orderInfo.tableLabel,
-        totalAmount: orderInfo.totalAmount,
-      });
+        setLiveToastOrder({
+          orderCode: orderInfo.orderCode,
+          tableLabel: orderInfo.tableLabel,
+          totalAmount: orderInfo.totalAmount,
+        });
 
-      if (!onOrdersRoute) {
         sendBrowserOrderNotification({
           orderCode: orderInfo.orderCode,
           tableLabel: orderInfo.tableLabel,
@@ -253,7 +251,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const checkLiveOrders = useCallback(
     async function refresh(): Promise<void> {
       const shopId = activeShopRef.current?.id;
-      if (!shopId || disposedRef.current) return;
+      if (
+        !shopId ||
+        disposedRef.current ||
+        isOrdersDashboardRoute(pathnameRef.current)
+      ) {
+        return;
+      }
       if (inFlightRef.current?.scope === scopeRef.current) {
         inFlightRef.current.again = true;
         return;
@@ -266,11 +270,20 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           `/api/orders?shopId=${encodeURIComponent(shopId)}`,
           { cache: 'no-store', headers: getAuthHeaders() }
         );
-        if (disposedRef.current || scopeRef.current !== scope || !res.ok) {
+        if (
+          disposedRef.current ||
+          scopeRef.current !== scope ||
+          isOrdersDashboardRoute(pathnameRef.current) ||
+          !res.ok
+        ) {
           return;
         }
         const data = await res.json();
-        if (disposedRef.current || scopeRef.current !== scope) {
+        if (
+          disposedRef.current ||
+          scopeRef.current !== scope ||
+          isOrdersDashboardRoute(pathnameRef.current)
+        ) {
           return;
         }
         const orders: ShopOrder[] = data.orders || [];
@@ -315,9 +328,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               itemsSummary,
             });
           } else if (brandNewServiceReq) {
-            const onOrdersRoute =
-              pathnameRef.current === '/dashboard/orders' ||
-              Boolean(pathnameRef.current?.startsWith('/dashboard/orders/'));
+            const onOrdersRoute = isOrdersDashboardRoute(pathnameRef.current);
             if (!onOrdersRoute) {
               playOrderAlertChime(
                 undefined,
@@ -350,6 +361,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         if (
           !disposedRef.current &&
           scopeRef.current === scope &&
+          !isOrdersDashboardRoute(pathnameRef.current) &&
           request.again
         ) {
           queueMicrotask(() => {
@@ -361,7 +373,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     [triggerOrderAlertAndNotifications]
   );
 
+  const shouldSyncOrders = shouldDashboardShellSyncOrders(pathname);
+
   useEffect(() => {
+    if (!shouldSyncOrders) {
+      setLiveToastOrder(null);
+      return;
+    }
+
     firstCheckRef.current = true;
     knownNewIdsRef.current = new Set();
     knownServiceReqIdsRef.current = new Set();
@@ -379,6 +398,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = (ev) => {
         if (ev.data?.shopId !== shopId) return;
+        if (isOrdersDashboardRoute(pathnameRef.current)) return;
         // Guest storefront sends 'order_created'; keep legacy
         // 'new_order_submitted' for compatibility.
         if (
@@ -415,12 +435,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     return () => {
       if (bc) bc.close();
       stopSync();
+      scopeRef.current = { shopId };
     };
-  }, [activeShop?.id, checkLiveOrders, triggerOrderAlertAndNotifications]);
+  }, [
+    activeShop?.id,
+    shouldSyncOrders,
+    checkLiveOrders,
+    triggerOrderAlertAndNotifications,
+  ]);
 
   // Repeat reminder chime every 10s when on non-orders dashboard pages if there are unaccepted 'new' orders
   useEffect(() => {
-    if (pathname === '/dashboard/orders' || newOrdersCount === 0) return;
+    if (isOrdersDashboardRoute(pathname) || newOrdersCount === 0) return;
     const reminderInterval = setInterval(() => {
       const currentSettings = loadOrderChimeSettings();
       if (currentSettings.enabled && currentSettings.remindUntilAccepted) {
