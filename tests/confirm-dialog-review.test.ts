@@ -25,6 +25,10 @@ test('orders page guards destructive actions and handles expired sessions', () =
   assert.match(src, /\/login\?next=\/dashboard\/orders/);
   assert.match(src, /hasPermission\('orders\.cancel_unpaid'\)/);
   assert.match(src, /hasPermission\('orders\.edit_items'\)/);
+  assert.match(
+    src,
+    /const requestCancelOrder = async[\s\S]*?reason:\s*\{[^}]*label:\s*tx\('Lý do hủy',\s*'Cancellation reason'\)[^}]*required:\s*true[^}]*\}[\s\S]*?const requestRefundOrder/
+  );
   assert.match(src, /cancelled_reason: result\.reason/);
   assert.match(src, /refund_reason: result\.reason/);
 });

@@ -35,6 +35,24 @@ for (const [name, re] of checks) {
   console.log(`PASS: ${name}`);
 }
 
+const filledHtml = renderToStaticMarkup(
+  React.createElement(ConfirmDialog, {
+    open: true,
+    variant: 'danger',
+    title: 'Hủy đơn #A1?',
+    reason: { label: 'Lý do hủy', required: true, defaultValue: 'Khách đổi ý' },
+    checkbox: { label: 'Hoàn lại tồn kho các món', defaultChecked: true },
+    onConfirm: noop,
+    onCancel: noop,
+  })
+);
+const submitMatch = filledHtml.match(/<button[^>]*type="submit"[^>]*>/);
+if (!submitMatch || /\sdisabled(?:=|\s|>)/.test(submitMatch[0])) {
+  console.error(`FAIL: confirm enabled when valid reason entered\n${filledHtml}`);
+  process.exit(1);
+}
+console.log('PASS: confirm enabled when valid reason entered');
+
 const closed = renderToStaticMarkup(
   React.createElement(ConfirmDialog, { open: false, title: 'X', onConfirm: noop, onCancel: noop })
 );

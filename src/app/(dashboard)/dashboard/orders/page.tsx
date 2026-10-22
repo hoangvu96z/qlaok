@@ -595,6 +595,7 @@ export default function CounterOrdersPage() {
           'VD: Khách đổi ý, hết món...',
           'e.g. Guest changed mind, item sold out...'
         ),
+        required: true,
       },
       checkbox: restockApplicable
         ? {
