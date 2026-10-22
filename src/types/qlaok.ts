@@ -296,6 +296,26 @@ export interface TableOrderStats {
 
 export type TableOrderStatsRow = TableOrderStats;
 
+export type ServiceRequestType = 'call_staff' | 'request_bill';
+export type ServiceRequestStatus = 'pending' | 'acknowledged' | 'resolved';
+
+export interface TableServiceRequest {
+  id: string;
+  shop_id: string;
+  table_id: string;
+  table_code: string;
+  table_label: string;
+  request_type: ServiceRequestType;
+  status: ServiceRequestStatus;
+  visitor_lang: SupportedLocale;
+  acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ShopOrder {
   id: string;
   order_code: string;

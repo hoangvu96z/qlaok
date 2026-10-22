@@ -18,6 +18,7 @@ import {
   CartSelection,
   CatalogItem,
   Category,
+  ServiceRequestType,
   Shop,
   ShopOrder,
   ShopTable,
@@ -30,6 +31,7 @@ import {
   formatCurrency,
   formatTableLabel,
   getGuestOrderLabels,
+  getTableServiceRequestLabels,
   localizeStorefrontTableError,
   normalizeShopSupportedLangs,
   tField,
@@ -38,6 +40,7 @@ import {
 import {
   buildStorefrontTableQueryKey,
   buildTableQrVerificationKey,
+  canUseStorefrontTableServiceActions,
   createScopedTableQrVerification,
   filterSelectableTables,
   resolveScopedTableQrVerification,
@@ -179,6 +182,13 @@ export default function StorefrontMenuPage() {
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [userTableChoice, setUserTableChoice] =
     useState<StorefrontTableChoice | null>(null);
+  const [submittingServiceRequest, setSubmittingServiceRequest] =
+    useState<ServiceRequestType | null>(null);
+  const [serviceRequestFeedback, setServiceRequestFeedback] = useState<{
+    kind: 'sent' | 'deduplicated' | 'error';
+    requestType: ServiceRequestType;
+    tableLabel: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   // Minute ticker so the opening-hours banner flips without a reload
   const [clockTick, setClockTick] = useState(() => Date.now());
@@ -236,6 +246,7 @@ export default function StorefrontMenuPage() {
       setLastOrder(null);
       setEditingOrder(null);
       setUserTableChoice(null);
+      setServiceRequestFeedback(null);
       setSelectedCategoryId('all');
       setSearchQuery('');
       setTables([]);
@@ -248,6 +259,7 @@ export default function StorefrontMenuPage() {
     if (tableQueryChanged) {
       previousTableQueryKeyRef.current = currentTableQueryKey;
       setUserTableChoice(null);
+      setServiceRequestFeedback(null);
       setTableQrVerification((prev) => {
         if (!prev) return null;
         const stillMatches =
@@ -749,10 +761,82 @@ export default function StorefrontMenuPage() {
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
   const bgProps = getStorefrontBackgroundProps(shop);
   const guestLabels = getGuestOrderLabels(locale);
+  const serviceReqLabels = getTableServiceRequestLabels(locale);
   const openStatus = checkShopOpenStatus(shop.opening_hours, {
     now: new Date(clockTick),
   });
   const isShopClosed = !openStatus.isOpen;
+  const canUseTableServiceActions = canUseStorefrontTableServiceActions({
+    lockedTable,
+    tableQrVerified: tableState.tableQrVerified,
+    isTakeawaySelected: tableState.isTakeawaySelected,
+    error: tableState.error,
+    qrTableSigParam,
+  });
+
+  const handleSubmitServiceRequest = async (requestType: ServiceRequestType) => {
+    if (
+      !canUseTableServiceActions ||
+      !lockedTable ||
+      !shop?.id ||
+      !qrTableSigParam ||
+      submittingServiceRequest
+    ) {
+      return;
+    }
+
+    setSubmittingServiceRequest(requestType);
+    try {
+      const res = await fetch('/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shop.id,
+          table_id: lockedTable.id,
+          table_qr_sig: qrTableSigParam.trim(),
+          request_type: requestType,
+          visitor_lang: locale,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.serviceRequest) {
+        setServiceRequestFeedback({
+          kind: 'error',
+          requestType,
+          tableLabel: lockedTable.name,
+        });
+        return;
+      }
+
+      setServiceRequestFeedback({
+        kind: data.deduplicated ? 'deduplicated' : 'sent',
+        requestType,
+        tableLabel: data.serviceRequest.table_label || lockedTable.name,
+      });
+
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        try {
+          const bc = new BroadcastChannel('qlaok_realtime_sync');
+          bc.postMessage({
+            type: 'service_request_created',
+            shopId: shop.id,
+            serviceRequestId: data.serviceRequest.id,
+          });
+          bc.close();
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      setServiceRequestFeedback({
+        kind: 'error',
+        requestType,
+        tableLabel: lockedTable.name,
+      });
+    } finally {
+      setSubmittingServiceRequest(null);
+    }
+  };
   const hasActivePopup = Boolean(
     shop.theme_config?.welcomePopup?.enabled &&
       shop.theme_config?.welcomePopup?.title?.trim()
@@ -849,21 +933,94 @@ export default function StorefrontMenuPage() {
         {lockedTable ? (
           <div
             data-testid="menu-table-locked-bar"
-            className="flex items-center gap-1.5 px-3.5 pb-2"
+            className="px-3.5 pb-2 space-y-1.5"
           >
-            <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
-              {labels.tableSelectorLabel}
-            </span>
-            <span
-              data-testid="menu-table-locked-chip"
-              className="inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950"
-            >
-              <Lock className="h-3 w-3" />
-              <span>{lockedTable.name}</span>
-            </span>
-            <span className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400">
-              {guestLabels.tableLockedHint}
-            </span>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+                  {labels.tableSelectorLabel}
+                </span>
+                <span
+                  data-testid="menu-table-locked-chip"
+                  className="inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950"
+                >
+                  <Lock className="h-3 w-3" />
+                  <span>{lockedTable.name}</span>
+                </span>
+                <span className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                  {guestLabels.tableLockedHint}
+                </span>
+              </div>
+
+              {canUseTableServiceActions && (
+                <div
+                  data-testid="menu-table-service-actions"
+                  className="flex items-center gap-1.5 shrink-0"
+                >
+                  <button
+                    type="button"
+                    data-testid="menu-service-request-call-staff"
+                    disabled={submittingServiceRequest !== null}
+                    onClick={() => handleSubmitServiceRequest('call_staff')}
+                    className="inline-flex items-center gap-1 rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-extrabold text-amber-900 shadow-2xs transition hover:bg-amber-100 disabled:opacity-60 dark:border-amber-500/40 dark:bg-amber-950/60 dark:text-amber-200 dark:hover:bg-amber-900/60"
+                  >
+                    <span>
+                      {submittingServiceRequest === 'call_staff'
+                        ? serviceReqLabels.sending
+                        : serviceReqLabels.callStaffBtn}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="menu-service-request-request-bill"
+                    disabled={submittingServiceRequest !== null}
+                    onClick={() => handleSubmitServiceRequest('request_bill')}
+                    className="inline-flex items-center gap-1 rounded-xl border border-indigo-300 bg-indigo-50 px-2.5 py-1 text-[11px] font-extrabold text-indigo-900 shadow-2xs transition hover:bg-indigo-100 disabled:opacity-60 dark:border-indigo-500/40 dark:bg-indigo-950/60 dark:text-indigo-200 dark:hover:bg-indigo-900/60"
+                  >
+                    <span>
+                      {submittingServiceRequest === 'request_bill'
+                        ? serviceReqLabels.sending
+                        : serviceReqLabels.requestBillBtn}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {canUseTableServiceActions && serviceRequestFeedback && (
+              <div
+                role="status"
+                data-testid="menu-service-request-feedback"
+                className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-1.5 text-[11px] font-bold ${
+                  serviceRequestFeedback.kind === 'error'
+                    ? 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-500/40 dark:bg-rose-950/60 dark:text-rose-200'
+                    : 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/60 dark:text-emerald-200'
+                }`}
+              >
+                <span>
+                  {serviceRequestFeedback.kind === 'error'
+                    ? serviceReqLabels.requestError
+                    : serviceRequestFeedback.kind === 'deduplicated'
+                      ? serviceReqLabels.alreadyRequestedNotice(
+                          serviceRequestFeedback.tableLabel
+                        )
+                      : serviceRequestFeedback.requestType === 'request_bill'
+                        ? serviceReqLabels.requestBillSentToast(
+                            serviceRequestFeedback.tableLabel
+                          )
+                        : serviceReqLabels.callStaffSentToast(
+                            serviceRequestFeedback.tableLabel
+                          )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setServiceRequestFeedback(null)}
+                  className="shrink-0 rounded-lg p-0.5 text-current opacity-70 hover:opacity-100"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div

@@ -16,6 +16,7 @@ import {
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
 import { sendNewGuestOrderPushNotifications } from '@/lib/push-notifications';
+import { dbGetShopServiceRequests } from '@/lib/service-requests';
 import {
   getRequestShopMembership,
   recordOrderAuditLog,
@@ -122,7 +123,10 @@ export async function GET(req: Request) {
     const auth = await requireShopPermission(req, shopId, 'orders.view');
     if (auth.errorResponse) return auth.errorResponse;
 
-    const orders = await dbGetShopOrders(shopId);
+    const [orders, serviceRequests] = await Promise.all([
+      dbGetShopOrders(shopId),
+      dbGetShopServiceRequests(shopId).catch(() => []),
+    ]);
     let catalogItems: Awaited<ReturnType<typeof dbGetShopCatalog>>['items'] = [];
     try {
       const catalog = await dbGetShopCatalog(shopId);
@@ -172,6 +176,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       orders: visibleOrders,
+      serviceRequests,
       stats,
       items: catalogItems,
       membership: auth.membership,

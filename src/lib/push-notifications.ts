@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ShopOrder } from '@/types/qlaok';
+import type {
+  ServiceRequestType,
+  ShopOrder,
+  TableServiceRequest,
+} from '@/types/qlaok';
 import { getSupabaseDbClient } from './db';
 import { SEED_SHOPS } from './seed-data';
 import { dbGetShopMemberships, hasShopPermission } from './shop-permissions';
@@ -793,6 +797,302 @@ export async function sendNewGuestOrderPushNotifications(params: {
     } finally {
       inFlightNotificationKeys.delete(orderKey);
       if (idempKey) inFlightNotificationKeys.delete(idempKey);
+    }
+  } catch (err) {
+    return {
+      sent: 0,
+      skipped: false,
+      reason: err instanceof Error ? err.message : 'push_dispatch_failed',
+      recipientsCount: 0,
+      tokensCount: 0,
+    };
+  }
+}
+
+export interface ServiceRequestExpoPushMessagePayload {
+  to: string;
+  title: string;
+  body: string;
+  sound: 'default';
+  priority: 'high';
+  channelId: string;
+  data: {
+    type: 'table_service_request';
+    shopId: string;
+    serviceRequestId: string;
+    tableId: string;
+    tableLabel: string;
+    requestType: ServiceRequestType;
+    tab: 'orders';
+  };
+}
+
+export function buildLocalizedServiceRequestPushMessage(params: {
+  expoPushToken: string;
+  locale: MobilePushLocale;
+  shopId: string;
+  serviceRequestId: string;
+  tableId: string;
+  tableLabel: string;
+  requestType: ServiceRequestType;
+}): ServiceRequestExpoPushMessagePayload {
+  const tableLabel =
+    (params.tableLabel || '').trim() ||
+    (params.locale === 'en' ? 'Guest table' : 'Bàn khách');
+  const isBill = params.requestType === 'request_bill';
+
+  const title =
+    params.locale === 'en'
+      ? isBill
+        ? `Bill request • ${tableLabel}`
+        : `Guest calling staff • ${tableLabel}`
+      : isBill
+        ? `Khách xin hóa đơn • ${tableLabel}`
+        : `Khách gọi phục vụ • ${tableLabel}`;
+
+  const body =
+    params.locale === 'en'
+      ? isBill
+        ? `${tableLabel} requested the bill / payment assistance.`
+        : `${tableLabel} is calling staff to the table.`
+      : isBill
+        ? `${tableLabel} yêu cầu kiểm tra hóa đơn / thanh toán.`
+        : `${tableLabel} đang gọi nhân viên hỗ trợ tại bàn.`;
+
+  return {
+    to: params.expoPushToken,
+    title,
+    body,
+    sound: 'default',
+    priority: 'high',
+    channelId: ANDROID_ORDERS_CHANNEL_ID,
+    data: {
+      type: 'table_service_request',
+      shopId: params.shopId,
+      serviceRequestId: params.serviceRequestId,
+      tableId: params.tableId,
+      tableLabel,
+      requestType: params.requestType,
+      tab: 'orders',
+    },
+  };
+}
+
+export async function sendServiceRequestPushNotifications(params: {
+  serviceRequest: TableServiceRequest;
+  isDeduplicated?: boolean;
+}): Promise<NewOrderPushDispatchResult> {
+  try {
+    const { serviceRequest, isDeduplicated } = params;
+    if (
+      !serviceRequest ||
+      !serviceRequest.id ||
+      !serviceRequest.shop_id ||
+      !serviceRequest.table_id
+    ) {
+      return {
+        sent: 0,
+        skipped: true,
+        reason: 'invalid_service_request',
+        recipientsCount: 0,
+        tokensCount: 0,
+      };
+    }
+
+    const reqKey = `service_req:${serviceRequest.shop_id}:${serviceRequest.id}`;
+
+    if (isDeduplicated) {
+      rememberNotificationKey(reqKey);
+      return {
+        sent: 0,
+        skipped: true,
+        reason: 'duplicate_or_replay',
+        recipientsCount: 0,
+        tokensCount: 0,
+      };
+    }
+
+    if (
+      dispatchedNotificationKeys.has(reqKey) ||
+      inFlightNotificationKeys.has(reqKey)
+    ) {
+      return {
+        sent: 0,
+        skipped: true,
+        reason: 'duplicate_or_replay',
+        recipientsCount: 0,
+        tokensCount: 0,
+      };
+    }
+
+    inFlightNotificationKeys.add(reqKey);
+
+    try {
+      const [authorizedUsers, shopTokens] = await Promise.all([
+        resolveAuthorizedOrderNotificationUserIds(serviceRequest.shop_id),
+        dbGetShopActivePushTokens(serviceRequest.shop_id),
+      ]);
+
+      if (authorizedUsers.size === 0 || shopTokens.length === 0) {
+        return {
+          sent: 0,
+          skipped: true,
+          reason: 'no_recipients_or_tokens',
+          recipientsCount: authorizedUsers.size,
+          tokensCount: 0,
+        };
+      }
+
+      const uniqueTokenMap = new Map<string, MobilePushTokenRecord>();
+      const recipientUserIds = new Set<string>();
+      for (const record of shopTokens) {
+        if (record.shop_id !== serviceRequest.shop_id || !record.is_active) {
+          continue;
+        }
+        if (!authorizedUsers.has(record.user_id)) continue;
+        if (!isValidExpoPushToken(record.expo_push_token)) continue;
+        recipientUserIds.add(record.user_id);
+        uniqueTokenMap.set(record.expo_push_token, record);
+      }
+
+      const targetTokens = Array.from(uniqueTokenMap.values());
+      if (targetTokens.length === 0) {
+        return {
+          sent: 0,
+          skipped: true,
+          reason: 'no_authorized_tokens',
+          recipientsCount: recipientUserIds.size,
+          tokensCount: 0,
+        };
+      }
+
+      const messages = targetTokens.map((t) =>
+        buildLocalizedServiceRequestPushMessage({
+          expoPushToken: t.expo_push_token,
+          locale: t.locale,
+          shopId: serviceRequest.shop_id,
+          serviceRequestId: serviceRequest.id,
+          tableId: serviceRequest.table_id,
+          tableLabel: serviceRequest.table_label,
+          requestType: serviceRequest.request_type,
+        })
+      );
+
+      const fetchFn = testPushFetchOverride || globalThis.fetch;
+      if (typeof fetchFn !== 'function') {
+        return {
+          sent: 0,
+          skipped: true,
+          reason: 'fetch_unavailable',
+          recipientsCount: recipientUserIds.size,
+          tokensCount: messages.length,
+        };
+      }
+
+      if (IS_NODE_TEST_PROCESS && !testPushFetchOverride) {
+        return {
+          sent: 0,
+          skipped: true,
+          reason: 'test_mode_external_push_disabled',
+          recipientsCount: recipientUserIds.size,
+          tokensCount: messages.length,
+        };
+      }
+
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      };
+      const expoAccessToken = process.env.EXPO_ACCESS_TOKEN?.trim();
+      if (expoAccessToken) {
+        headers.Authorization = `Bearer ${expoAccessToken}`;
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetchFn(EXPO_PUSH_ENDPOINT, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(messages),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          return {
+            sent: 0,
+            skipped: false,
+            reason: `provider_http_${response.status}`,
+            recipientsCount: recipientUserIds.size,
+            tokensCount: messages.length,
+          };
+        }
+
+        const resultJson = (await response.json().catch(() => null)) as {
+          data?: Array<{
+            status?: string;
+            message?: string;
+            details?: { error?: string };
+          }>;
+        } | null;
+
+        if (!resultJson || !Array.isArray(resultJson.data)) {
+          return {
+            sent: 0,
+            skipped: false,
+            reason: 'provider_invalid_response',
+            recipientsCount: recipientUserIds.size,
+            tokensCount: messages.length,
+          };
+        }
+
+        let sentCount = 0;
+        let errorCount = 0;
+        for (let i = 0; i < targetTokens.length; i++) {
+          const ticket = resultJson.data[i];
+          const target = targetTokens[i];
+          if (ticket?.status === 'ok') {
+            sentCount += 1;
+            continue;
+          }
+          errorCount += 1;
+          if (
+            ticket?.status === 'error' &&
+            ticket?.details?.error === 'DeviceNotRegistered' &&
+            target
+          ) {
+            await dbDeleteMobilePushTokens({
+              user_id: target.user_id,
+              shop_id: target.shop_id,
+              expo_push_token: target.expo_push_token,
+            }).catch(() => {});
+          }
+        }
+
+        if (sentCount > 0) {
+          rememberNotificationKey(reqKey);
+        }
+
+        return {
+          sent: sentCount,
+          skipped: false,
+          ...(errorCount > 0
+            ? {
+                reason:
+                  sentCount === 0
+                    ? 'provider_ticket_error'
+                    : 'partial_ticket_error',
+              }
+            : {}),
+          recipientsCount: recipientUserIds.size,
+          tokensCount: messages.length,
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } finally {
+      inFlightNotificationKeys.delete(reqKey);
     }
   } catch (err) {
     return {

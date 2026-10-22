@@ -48,7 +48,7 @@ import {
   AppTranslationKey,
   formatNotificationToggleLabel,
 } from '@/lib/app-i18n';
-import { ShopOrder } from '@/types/qlaok';
+import { ShopOrder, TableServiceRequest } from '@/types/qlaok';
 import {
   canAccessDashboardHref,
   getFallbackDashboardHref,
@@ -64,6 +64,7 @@ import {
   playOrderAlertChime,
   requestBrowserNotificationPermission,
   sendBrowserOrderNotification,
+  sendBrowserServiceRequestNotification,
 } from '@/lib/order-chime';
 
 const NAV_ITEMS: Array<{
@@ -167,6 +168,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const inFlightRef = useRef<{ scope: object; again: boolean } | null>(null);
   const disposedRef = useRef(false);
   const knownNewIdsRef = useRef<Set<string>>(new Set());
+  const knownServiceReqIdsRef = useRef<Set<string>>(new Set());
   const firstCheckRef = useRef(true);
 
   useEffect(() => {
@@ -266,15 +268,28 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           return;
         }
         const orders: ShopOrder[] = data.orders || [];
+        const serviceRequests: TableServiceRequest[] = Array.isArray(
+          data.serviceRequests
+        )
+          ? data.serviceRequests
+          : [];
         const newList = orders.filter((o) => o.status === 'new');
-        setNewOrdersCount(newList.length);
+        const pendingServiceReqs = serviceRequests.filter(
+          (r) => r.status === 'pending'
+        );
+        setNewOrdersCount(newList.length + pendingServiceReqs.length);
         if (newList[0]?.table_label) {
           setLatestNewTableLabel(newList[0].table_label);
+        } else if (pendingServiceReqs[0]?.table_label) {
+          setLatestNewTableLabel(pendingServiceReqs[0].table_label);
         }
 
         if (!firstCheckRef.current) {
           const brandNew = newList.find(
             (o) => !knownNewIdsRef.current.has(o.id)
+          );
+          const brandNewServiceReq = pendingServiceReqs.find(
+            (r) => !knownServiceReqIdsRef.current.has(r.id)
           );
           if (brandNew) {
             const itemsSummary = (brandNew.items || [])
@@ -293,10 +308,32 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               totalAmount: brandNew.total_amount,
               itemsSummary,
             });
+          } else if (brandNewServiceReq) {
+            const onOrdersRoute =
+              pathnameRef.current === '/dashboard/orders' ||
+              Boolean(pathnameRef.current?.startsWith('/dashboard/orders/'));
+            if (!onOrdersRoute) {
+              playOrderAlertChime(
+                undefined,
+                brandNewServiceReq.table_label
+              );
+              sendBrowserServiceRequestNotification({
+                requestId: brandNewServiceReq.id,
+                tableLabel: brandNewServiceReq.table_label,
+                requestType: brandNewServiceReq.request_type,
+                shopName: activeShopRef.current?.name,
+                onClickNavigate: () => {
+                  routerRef.current.push('/dashboard/orders');
+                },
+              });
+            }
           }
         }
 
         knownNewIdsRef.current = new Set(newList.map((o) => o.id));
+        knownServiceReqIdsRef.current = new Set(
+          pendingServiceReqs.map((r) => r.id)
+        );
         firstCheckRef.current = false;
       } catch {
         // ignore
@@ -321,6 +358,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     firstCheckRef.current = true;
     knownNewIdsRef.current = new Set();
+    knownServiceReqIdsRef.current = new Set();
     setNewOrdersCount(0);
     setLiveToastOrder(null);
     setLatestNewTableLabel(translateRef.current('Bàn khách', 'Guest table'));

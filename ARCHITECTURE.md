@@ -48,7 +48,7 @@ flowchart TD
 
 Các đường `/posts`, `/settings` trong bảng là hậu tố của `/dashboard`, không phải route root.
 
-API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/push-tokens`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
+API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/service-requests`, `/push-tokens`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
 
 `/api/ai/translate` và `/api/ai/ocr-menu` yêu cầu phiên đăng nhập (`requireAuthenticatedUser`) và giới hạn tần suất in-memory theo user (translate 30 req/10 phút, OCR 10 req/10 phút → 429). OCR thật (không phải `useDemo`) chỉ cho gói có `allowAiOcr` (Premium) hoặc Super Admin, trả `403 PLAN_FEATURE_LOCKED`. `/api/webhooks/payment` không có secret mặc định: thiếu `PAYMENT_WEBHOOK_SECRET` thì mọi webhook từ nhà cung cấp bị từ chối (503); `action=create_order` yêu cầu chủ quán/profile owner hoặc Super Admin đã xác thực (thu ngân/nhân viên bị từ chối 403, chỉ Super Admin được chỉ định `ownerId` khác).
 
@@ -64,6 +64,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, analytics, billing và seed |
 | `src/lib/mpos-store.ts` | Orders, stock, giá canonical, transition, bill theo bàn/session và bộ đếm in |
 | `src/lib/shop-tables.ts` | Store bàn, kiểm tra bàn cùng quán/đang hoạt động, owner mutation và public DTO |
+| `src/lib/service-requests.ts` | Yêu cầu phục vụ tại bàn (`call_staff`, `request_bill`) xác thực chữ ký QR bàn, chống spam lặp theo bàn/loại và chuyển trạng thái `pending → acknowledged → resolved` |
 | `src/lib/table-helpers.ts` | Helper client-safe: URL QR, resolve lựa chọn, lọc bàn và thống kê theo ID |
 | `src/lib/order-pricing.ts` | Công thức pricing dùng chung; không nhận tổng client làm nguồn quyết định |
 | `src/lib/server-auth.ts` | Kiểm phiên HMAC hoặc Supabase JWT, auth guards, kiểm quyền shop và admin |
@@ -118,7 +119,7 @@ Chi tiết: [I18N_NOTES](I18N_NOTES.md). Gói Free/Basic/Premium hiện có maxL
 
 ## Schema và rollout
 
-Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only.
+Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`.
 
 Đọc SQL trực tiếp vì SQL không nằm trong graph hiện tại. Chạy `test:sql` trên PGlite để kiểm migration/RLS mà không sửa DB thật. Chuyển từ legacy local orders cần backup/đối chiếu dữ liệu; archive bank-ref không tự xác nhận giao dịch đúng/sai.
 

@@ -12,6 +12,7 @@ export type OrderSseEvent =
   | { type: 'change'; orderId?: string; shopId?: string };
 
 export interface PostgresOrderChangePayload {
+  table?: string;
   eventType?: 'INSERT' | 'UPDATE' | 'DELETE' | string;
   new?: Record<string, unknown> | null;
   old?: Record<string, unknown> | null;
@@ -20,7 +21,11 @@ export interface PostgresOrderChangePayload {
 export interface RealtimeChannelLike {
   on(
     type: 'postgres_changes',
-    filter: { event: '*'; schema: 'public'; table: 'orders' },
+    filter: {
+      event: '*';
+      schema: 'public';
+      table: 'orders' | 'table_service_requests';
+    },
     callback: (payload: PostgresOrderChangePayload) => void
   ): this;
   subscribe(callback?: (status: string, err?: Error) => void): this;
@@ -324,14 +329,21 @@ export class OrderEventsBroker {
     this.activeUpstreamChannels += 1;
     this.totalUpstreamSubscribes += 1;
 
+    const onPostgresChange = (payload: PostgresOrderChangePayload) => {
+      if (this.upstreamChannel !== channel) return;
+      this.handlePostgresChange(payload);
+    };
+
     channel
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'orders' },
-        (payload) => {
-          if (this.upstreamChannel !== channel) return;
-          this.handlePostgresChange(payload);
-        }
+        onPostgresChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'table_service_requests' },
+        onPostgresChange
       )
       .subscribe((status) => {
         if (this.upstreamChannel !== channel) return;
@@ -439,11 +451,46 @@ export class OrderEventsBroker {
     }
   }
 
+  public notifyShopChange(shopId: string): void {
+    const cleanShopId = pickNonEmptyString(shopId);
+    if (!cleanShopId) return;
+    const shopSet = this.shopSubscribers.get(cleanShopId);
+    if (!shopSet || shopSet.size === 0) return;
+
+    const minimalEvent: OrderSseEvent = {
+      type: 'change',
+      shopId: cleanShopId,
+    };
+
+    for (const sub of shopSet) {
+      try {
+        sub.onEvent(minimalEvent);
+      } catch {
+        // ignore individual stream failure
+      }
+    }
+  }
+
   private handlePostgresChange(payload: PostgresOrderChangePayload): void {
     const nextRow =
       payload?.new && typeof payload.new === 'object' ? payload.new : null;
     const oldRow =
       payload?.old && typeof payload.old === 'object' ? payload.old : null;
+
+    const isServiceRequestRow =
+      payload?.table === 'table_service_requests' ||
+      pickNonEmptyString(nextRow?.request_type) !== undefined ||
+      pickNonEmptyString(oldRow?.request_type) !== undefined;
+
+    if (isServiceRequestRow) {
+      const serviceShopId =
+        pickNonEmptyString(nextRow?.shop_id) ??
+        pickNonEmptyString(oldRow?.shop_id);
+      if (serviceShopId) {
+        this.notifyShopChange(serviceShopId);
+      }
+      return;
+    }
 
     const orderId =
       pickNonEmptyString(nextRow?.id) ?? pickNonEmptyString(oldRow?.id);

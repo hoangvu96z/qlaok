@@ -186,5 +186,66 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       /permission denied/i
     );
 
+    // Verify 009_table_service_requests.sql: publication, RLS, server-only mutations, and status transition triggers
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false);");
+    await db.exec(fs.readFileSync('supabase/migrations/009_table_service_requests.sql', 'utf8'));
+    assert.equal(
+      (await db.query("SELECT * FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='table_service_requests'")).rows.length,
+      1,
+      'table_service_requests publication membership is idempotent'
+    );
+
+    await db.exec('SET ROLE service_role');
+    await db.query(`INSERT INTO table_service_requests (id, shop_id, table_id, table_code, table_label, request_type, status, visitor_lang)
+      VALUES ('srv-sql-1', 'sql-shop', 'sql-tbl-reused', 'SPOOF', 'Spoofed Label', 'request_bill', 'pending', 'vi')`);
+    const createdSrv = (await db.query("SELECT * FROM table_service_requests WHERE id='srv-sql-1'")).rows[0];
+    assert.equal(createdSrv.table_code, 'T01-NEW', 'trigger snaps canonical table_code from shop_tables');
+    assert.equal(createdSrv.table_label, 'Bàn 01', 'trigger snaps canonical table_label from shop_tables');
+
+    // Reject inactive table and cross-shop table in trigger
+    await assert.rejects(
+      db.query(`INSERT INTO table_service_requests (id, shop_id, table_id, table_code, table_label, request_type)
+        VALUES ('srv-inactive', 'sql-shop', 'sql-tbl-inactive', 'T02', 'Bàn 02', 'call_staff')`),
+      /INACTIVE_SHOP_TABLE/i
+    );
+    await assert.rejects(
+      db.query(`INSERT INTO table_service_requests (id, shop_id, table_id, table_code, table_label, request_type)
+        VALUES ('srv-cross-shop', 'sql-pub-shop', 'sql-tbl-reused', 'T01-NEW', 'Bàn 01', 'call_staff')`),
+      /INVALID_TABLE_SHOP/i
+    );
+
+    // Authenticated staff with orders.view can SELECT their shop's service requests, but cannot INSERT/UPDATE directly or execute create_table_service_request_atomic
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${staff}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`);
+    const staffVisibleSrv = (await db.query("SELECT id, status FROM table_service_requests WHERE shop_id='sql-shop'")).rows;
+    assert.equal(staffVisibleSrv.length, 1);
+    await assert.rejects(
+      db.query("UPDATE table_service_requests SET status='acknowledged' WHERE id='srv-sql-1'"),
+      /permission denied|Direct client mutations/i
+    );
+    await assert.rejects(
+      db.query(`SELECT public.create_table_service_request_atomic('{"id":"srv-client-rpc","shop_id":"sql-shop","table_id":"sql-tbl-reused","request_type":"call_staff"}'::jsonb, 60000)`),
+      /permission denied|Direct client execution/i
+    );
+
+    // Valid status transitions via service_role, atomic RPC deduplication, and rejection of backward transitions
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role");
+    const rpcFirst = (await db.query(`SELECT public.create_table_service_request_atomic('{"id":"srv-rpc-1","shop_id":"sql-shop","table_id":"sql-tbl-reused","request_type":"call_staff","visitor_lang":"vi"}'::jsonb, 60000) AS res`)).rows[0].res;
+    assert.equal(rpcFirst.deduplicated, false);
+    assert.equal(rpcFirst.service_request.id, 'srv-rpc-1');
+    assert.equal(rpcFirst.service_request.table_label, 'Bàn 01');
+    const rpcDup = (await db.query(`SELECT public.create_table_service_request_atomic('{"id":"srv-rpc-2","shop_id":"sql-shop","table_id":"sql-tbl-reused","request_type":"call_staff","visitor_lang":"vi"}'::jsonb, 60000) AS res`)).rows[0].res;
+    assert.equal(rpcDup.deduplicated, true);
+    assert.equal(rpcDup.service_request.id, 'srv-rpc-1');
+    await db.query(`UPDATE table_service_requests SET status='acknowledged', acknowledged_by='${staff}' WHERE id='srv-sql-1'`);
+    await assert.rejects(
+      db.query("UPDATE table_service_requests SET status='pending' WHERE id='srv-sql-1'"),
+      /INVALID_SERVICE_REQUEST_TRANSITION/i
+    );
+    await db.query(`UPDATE table_service_requests SET status='resolved', resolved_by='${owner}' WHERE id='srv-sql-1'`);
+    await assert.rejects(
+      db.query("UPDATE table_service_requests SET status='acknowledged' WHERE id='srv-sql-1'"),
+      /INVALID_SERVICE_REQUEST_TRANSITION/i
+    );
+
   } finally { await db.close(); }
 });

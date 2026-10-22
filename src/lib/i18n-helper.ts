@@ -1747,3 +1747,130 @@ export const QUICK_TAGS_BY_VERTICAL: Record<
     },
   ],
 };
+
+export interface TableServiceRequestLabelSet {
+  barTitle: string;
+  callStaffBtn: string;
+  requestBillBtn: string;
+  sending: string;
+  callStaffSentToast: (tableLabel: string) => string;
+  requestBillSentToast: (tableLabel: string) => string;
+  alreadyRequestedNotice: (tableLabel: string) => string;
+  requestError: string;
+}
+
+export const TABLE_SERVICE_REQUEST_LABELS: Record<
+  SupportedLocale,
+  TableServiceRequestLabelSet
+> = {
+  vi: {
+    barTitle: 'Hỗ trợ tại bàn',
+    callStaffBtn: '🔔 Gọi phục vụ',
+    requestBillBtn: '🧾 Xin hóa đơn',
+    sending: 'Đang gửi...',
+    callStaffSentToast: (tableLabel) =>
+      `Đã gọi nhân viên hỗ trợ tại ${tableLabel}. Vui lòng đợi trong giây lát!`,
+    requestBillSentToast: (tableLabel) =>
+      `Đã gửi yêu cầu xin hóa đơn / thanh toán cho ${tableLabel}. Nhân viên sẽ mang hóa đơn tới ngay!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `Yêu cầu của ${tableLabel} đã được ghi nhận và đang được nhân viên xử lý.`,
+    requestError: 'Không thể gửi yêu cầu hỗ trợ. Vui lòng thử lại.',
+  },
+  en: {
+    barTitle: 'Table assistance',
+    callStaffBtn: '🔔 Call staff',
+    requestBillBtn: '🧾 Request bill',
+    sending: 'Sending...',
+    callStaffSentToast: (tableLabel) =>
+      `Staff has been notified for ${tableLabel}. Someone will be with you shortly!`,
+    requestBillSentToast: (tableLabel) =>
+      `Bill request sent for ${tableLabel}. Staff will bring your bill shortly!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `Your request for ${tableLabel} is already active and being handled by staff.`,
+    requestError: 'Unable to send service request. Please try again.',
+  },
+  ko: {
+    barTitle: '테이블 빠른 요청',
+    callStaffBtn: '🔔 직원 호출',
+    requestBillBtn: '🧾 계산서 요청',
+    sending: '전송 중...',
+    callStaffSentToast: (tableLabel) =>
+      `${tableLabel} 직원 호출이 접수되었습니다. 잠시만 기다려 주세요!`,
+    requestBillSentToast: (tableLabel) =>
+      `${tableLabel} 계산서/결제 요청이 전송되었습니다. 직원이 곧 안내해 드립니다!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `${tableLabel}의 요청이 이미 접수되어 직원이 확인 중입니다.`,
+    requestError: '요청을 전송할 수 없습니다. 다시 시도해 주세요.',
+  },
+  ja: {
+    barTitle: 'テーブルサポート',
+    callStaffBtn: '🔔 スタッフを呼ぶ',
+    requestBillBtn: '🧾 お会計・伝票',
+    sending: '送信中...',
+    callStaffSentToast: (tableLabel) =>
+      `${tableLabel}へスタッフ呼び出しを送信しました。少々お待ちください。`,
+    requestBillSentToast: (tableLabel) =>
+      `${tableLabel}のお会計リクエストを送信しました。スタッフが伺います。`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `${tableLabel}のリクエストは既に受付済みで、スタッフが対応中です。`,
+    requestError: 'リクエストを送信できませんでした。もう一度お試しください。',
+  },
+  zh: {
+    barTitle: '桌台快捷服务',
+    callStaffBtn: '🔔 呼叫服务员',
+    requestBillBtn: '🧾 买单 / 账单',
+    sending: '发送中...',
+    callStaffSentToast: (tableLabel) =>
+      `已为您呼叫服务员至 ${tableLabel}，请稍候！`,
+    requestBillSentToast: (tableLabel) =>
+      `已发送 ${tableLabel} 的结账/账单请求，服务员将尽快为您处理！`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `${tableLabel} 的服务请求已收到，服务员正在处理中。`,
+    requestError: '无法发送服务请求，请重试。',
+  },
+  es: {
+    barTitle: 'Asistencia en mesa',
+    callStaffBtn: '🔔 Llamar personal',
+    requestBillBtn: '🧾 Pedir la cuenta',
+    sending: 'Enviando...',
+    callStaffSentToast: (tableLabel) =>
+      `Personal avisado para ${tableLabel}. ¡Enseguida le atenderemos!`,
+    requestBillSentToast: (tableLabel) =>
+      `Solicitud de cuenta enviada para ${tableLabel}. ¡El personal se acercará pronto!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `Su solicitud para ${tableLabel} ya fue recibida y está siendo atendida.`,
+    requestError: 'No se pudo enviar la solicitud. Inténtelo de nuevo.',
+  },
+  it: {
+    barTitle: 'Assistenza al tavolo',
+    callStaffBtn: '🔔 Chiama staff',
+    requestBillBtn: '🧾 Chiedi il conto',
+    sending: 'Invio...',
+    callStaffSentToast: (tableLabel) =>
+      `Personale avvisato per ${tableLabel}. Arriviamo subito!`,
+    requestBillSentToast: (tableLabel) =>
+      `Richiesta conto inviata per ${tableLabel}. Il personale arriverà a breve!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `La richiesta per ${tableLabel} è già stata ricevuta ed è in gestione.`,
+    requestError: 'Impossibile inviare la richiesta. Riprova.',
+  },
+  ru: {
+    barTitle: 'Помощь за столиком',
+    callStaffBtn: '🔔 Позвать персонал',
+    requestBillBtn: '🧾 Попросить счёт',
+    sending: 'Отправка...',
+    callStaffSentToast: (tableLabel) =>
+      `Персонал вызван к столику ${tableLabel}. Пожалуйста, подождите!`,
+    requestBillSentToast: (tableLabel) =>
+      `Запрос счёта для ${tableLabel} отправлен. Сотрудник скоро подойдёт!`,
+    alreadyRequestedNotice: (tableLabel) =>
+      `Ваш запрос для ${tableLabel} уже принят и обрабатывается персоналом.`,
+    requestError: 'Не удалось отправить запрос. Попробуйте снова.',
+  },
+};
+
+export function getTableServiceRequestLabels(
+  locale: SupportedLocale
+): TableServiceRequestLabelSet {
+  return TABLE_SERVICE_REQUEST_LABELS[locale] || TABLE_SERVICE_REQUEST_LABELS.vi;
+}

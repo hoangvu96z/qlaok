@@ -12,9 +12,9 @@ Nhận diện Qlaok dùng logo **Q + menu** thống nhất trên web/PWA và mob
 
 Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào nhu cầu chủ quán và thông tin gói thực tế. Xem [review nội dung homepage](docs/HOMEPAGE_COPY_REVIEW.md).
 
-- QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn và theo dõi bằng token riêng.
+- QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn, theo dõi bằng token riêng và 2 nút hỗ trợ nhanh tại bàn đã xác thực QR (**Gọi phục vụ** / **Xin hóa đơn**).
 - Dashboard: tổng quan, đơn hàng/POS, catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing.
-- mPOS: tạo/sửa đơn, phục vụ, thu/hoàn tiền, giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in. Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` độc lập payment `unpaid/paid/refunded`.
+- mPOS: tạo/sửa đơn, phục vụ, thu/hoàn tiền, giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in, nhận chuông/thông báo và tiếp nhận/hoàn tất yêu cầu phục vụ từ QR bàn (`pending → acknowledged → resolved`). Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` và yêu cầu xin hóa đơn độc lập hoàn toàn với payment `unpaid/paid/refunded`.
 - Quản lý bàn trên web tại `/dashboard/qr-studio`: tạo/sửa tên, mã bàn, khu vực, sức chứa, bật/tắt và lưu trữ; mỗi bàn có QR riêng tự chọn bàn khi mở menu. Báo cáo có tab **Theo bàn**; đơn cũ giữ tên bàn lịch sử và được phân biệt với bàn quản lý/Mang về. Xem [hướng dẫn bàn](docs/TABLE_MANAGEMENT.md).
 - Membership theo shop: `owner`, `cashier`, `staff`, kiểm quyền ở API. Super Admin tại `/admin` dùng kiểm tra quyền server.
 - Storefront hỗ trợ **8 ngôn ngữ**: `vi/en/ko/ja/zh/es/it/ru`, giới hạn theo gói và cấu hình quán. Giao diện quản trị, marketing, auth và mobile hỗ trợ **VI/EN**, mặc định VI; đây là hai miền ngôn ngữ riêng.
@@ -83,6 +83,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 006_orders_realtime_publication.sql
 007_shop_tables.sql
 008_mobile_push_tokens.sql
+009_table_service_requests.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.

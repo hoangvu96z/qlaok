@@ -8,7 +8,7 @@
   - Subscribing directly from the browser with the public anon/publishable key would either fail under RLS (`003_security_rls_and_atomic_mpos.sql` / `004_memberships_billing_payments_audit.sql`) or require weakening RLS on `public.orders`.
 - **Single Upstream Privileged Subscription**:
   - `src/lib/order-events.ts` maintains a bounded, reference-counted singleton `OrderEventsBroker`.
-  - When at least one authorized SSE client is connected, the broker opens a single server-side Supabase Realtime `postgres_changes` channel (`event: '*'`, `schema: 'public'`, `table: 'orders'`) authenticated exclusively with the backend `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SECRET_KEY`).
+  - When at least one authorized SSE client is connected, the broker opens a single server-side Supabase Realtime `postgres_changes` channel (`event: '*'`, `schema: 'public'`, `table: 'orders'` and `table: 'table_service_requests'`) authenticated exclusively with the backend `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SECRET_KEY`), and also broadcasts immediate `{ "type": "change", "shopId" }` invalidations via `notifyShopChange(shopId)` when table service requests (`call_staff` / `request_bill`) are created or updated.
   - The backend key is validated (`isValidRealtimeBackendKey`) to reject empty keys, `sb_publishable_*` keys, keys equal to the public anon key, and JWTs whose `role` claim is not `service_role`.
   - When the last SSE client disconnects, the upstream Realtime channel and any reconnect timers are immediately torn down (`getActiveUpstreamChannelCount() === 0`).
 

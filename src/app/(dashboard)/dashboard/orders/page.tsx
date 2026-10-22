@@ -34,8 +34,10 @@ import {
   OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  ServiceRequestStatus,
   ShopMembership,
   ShopOrder,
+  TableServiceRequest,
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
@@ -59,6 +61,7 @@ import {
   requestBrowserNotificationPermission,
   saveOrderChimeSettings,
   sendBrowserOrderNotification,
+  sendBrowserServiceRequestNotification,
 } from '@/lib/order-chime';
 
 const EN_CHIME_SOUND_TEXT: Record<
@@ -110,6 +113,8 @@ export default function CounterOrdersPage() {
   const disposedRef = useRef(false);
   useEffect(() => { disposedRef.current = false; return () => { disposedRef.current = true; }; }, []);
   const [orders, setOrders] = useState<ShopOrder[]>([]);
+  const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
+  const [updatingServiceReqId, setUpdatingServiceReqId] = useState<string | null>(null);
   const [membership, setMembership] = useState<ShopMembership | null>(null);
   const [catalogCategories, setCatalogCategories] = useState<Category[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
@@ -161,6 +166,7 @@ export default function CounterOrdersPage() {
   );
 
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const knownServiceRequestIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
   const chimeSettingsRef = useRef<OrderChimeSettings>(DEFAULT_CHIME_SETTINGS);
 
@@ -257,6 +263,11 @@ export default function CounterOrdersPage() {
           const data = await ordersRes.json();
           if (disposedRef.current || scopeRef.current !== scope) return;
           const fetchedOrders: ShopOrder[] = data.orders || [];
+          const fetchedServiceRequests: TableServiceRequest[] = Array.isArray(
+            data.serviceRequests
+          )
+            ? data.serviceRequests
+            : [];
           if (Array.isArray(data.items)) setCatalogItems(data.items);
           if (data.membership) {
             setMembership(data.membership as ShopMembership);
@@ -266,6 +277,11 @@ export default function CounterOrdersPage() {
             const brandNewOrder = fetchedOrders.find(
               (o) =>
                 o.status === 'new' && !knownOrderIdsRef.current.has(o.id)
+            );
+            const brandNewServiceReq = fetchedServiceRequests.find(
+              (r) =>
+                r.status === 'pending' &&
+                !knownServiceRequestIdsRef.current.has(r.id)
             );
             if (brandNewOrder) {
               const latestChime = loadOrderChimeSettings();
@@ -296,12 +312,31 @@ export default function CounterOrdersPage() {
                 itemsSummary,
                 shopName: activeShop.name,
               });
+            } else if (brandNewServiceReq) {
+              const latestChime = loadOrderChimeSettings();
+              chimeSettingsRef.current = latestChime;
+              if (latestChime.enabled) {
+                playOrderAlertChime(
+                  latestChime,
+                  brandNewServiceReq.table_label
+                );
+              }
+              sendBrowserServiceRequestNotification({
+                requestId: brandNewServiceReq.id,
+                tableLabel: brandNewServiceReq.table_label,
+                requestType: brandNewServiceReq.request_type,
+                shopName: activeShop.name,
+              });
             }
           }
 
           knownOrderIdsRef.current = new Set(fetchedOrders.map((o) => o.id));
+          knownServiceRequestIdsRef.current = new Set(
+            fetchedServiceRequests.map((r) => r.id)
+          );
           isFirstLoadRef.current = false;
           setOrders(fetchedOrders);
+          setServiceRequests(fetchedServiceRequests);
         }
 
         if (catRes?.ok) {
@@ -324,7 +359,12 @@ export default function CounterOrdersPage() {
   useEffect(() => {
     isFirstLoadRef.current = true;
     knownOrderIdsRef.current = new Set();
-    setOrders([]); setCatalogItems([]); setCatalogCategories([]); setMembership(null);
+    knownServiceRequestIdsRef.current = new Set();
+    setOrders([]);
+    setServiceRequests([]);
+    setCatalogItems([]);
+    setCatalogCategories([]);
+    setMembership(null);
     if (!activeShop?.id) return;
     void fetchOrdersAndCatalog(false);
 
@@ -391,13 +431,16 @@ export default function CounterOrdersPage() {
     };
   }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name, activeShop?.currency]);
 
-  // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders and remindUntilAccepted is enabled
+  // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders or pending service requests and remindUntilAccepted is enabled
   useEffect(() => {
     const pendingNewOrders = orders.filter((o) => o.status === 'new');
+    const pendingServiceReqs = serviceRequests.filter(
+      (r) => r.status === 'pending'
+    );
     if (
       !chimeSettings.enabled ||
       !chimeSettings.remindUntilAccepted ||
-      pendingNewOrders.length === 0
+      (pendingNewOrders.length === 0 && pendingServiceReqs.length === 0)
     ) {
       return;
     }
@@ -407,13 +450,75 @@ export default function CounterOrdersPage() {
       if (latestChime.enabled && latestChime.remindUntilAccepted) {
         playOrderAlertChime(
           latestChime,
-          pendingNewOrders[0]?.table_label
+          pendingNewOrders[0]?.table_label ||
+            pendingServiceReqs[0]?.table_label
         );
       }
     }, 10000);
 
     return () => clearInterval(reminderTimer);
-  }, [orders, chimeSettings.enabled, chimeSettings.remindUntilAccepted]);
+  }, [
+    orders,
+    serviceRequests,
+    chimeSettings.enabled,
+    chimeSettings.remindUntilAccepted,
+  ]);
+
+  const handleUpdateServiceRequestStatus = async (
+    requestId: string,
+    status: ServiceRequestStatus
+  ) => {
+    if (!activeShop || updatingServiceReqId === requestId) return;
+    setUpdatingServiceReqId(requestId);
+    try {
+      const res = await fetch('/api/service-requests', {
+        method: 'PATCH',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          id: requestId,
+          shop_id: activeShop.id,
+          status,
+        }),
+      });
+      if (res.status === 401) {
+        setSessionExpired(true);
+      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        showActionToast(
+          'error',
+          data?.error ||
+            tx(
+              'Không thể cập nhật trạng thái yêu cầu phục vụ.',
+              'Could not update service request status.'
+            )
+        );
+        return;
+      }
+
+      await fetchOrdersAndCatalog(true);
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('qlaok_realtime_sync');
+        bc.postMessage({
+          type: 'service_request_updated',
+          shopId: activeShop.id,
+        });
+        bc.close();
+      }
+    } catch (error) {
+      showActionToast(
+        'error',
+        error instanceof Error && error.message
+          ? error.message
+          : tx(
+              'Không thể cập nhật trạng thái yêu cầu phục vụ.',
+              'Could not update service request status.'
+            )
+      );
+    } finally {
+      setUpdatingServiceReqId(null);
+    }
+  };
 
   const handleUpdateOrder = async (
     orderId: string,
@@ -743,10 +848,128 @@ export default function CounterOrdersPage() {
       ? tx('Cần đăng nhập lại', 'Sign in again')
       : t('orders.syncPolling');
 
+  const activeServiceRequests = serviceRequests.filter(
+    (r) => r.status === 'pending' || r.status === 'acknowledged'
+  );
+  const pendingServiceRequestsCount = activeServiceRequests.filter(
+    (r) => r.status === 'pending'
+  ).length;
+
   const showSessionExpired = sessionExpired || liveStatus === 'unauthorized';
 
   return (
     <div className="space-y-4">
+      {activeServiceRequests.length > 0 && (
+        <section
+          aria-live="polite"
+          data-testid="orders-service-requests-panel"
+          className="rounded-3xl border-2 border-amber-400 bg-amber-50/95 p-4 shadow-md dark:border-amber-500/60 dark:bg-amber-950/60 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-amber-500 text-slate-950 shadow-2xs">
+                <BellRing
+                  className={`h-4 w-4 ${
+                    pendingServiceRequestsCount > 0 ? 'animate-bounce' : ''
+                  }`}
+                />
+              </span>
+              <div>
+                <h2 className="text-sm font-black text-amber-950 dark:text-amber-100">
+                  {tx(
+                    'Yêu cầu hỗ trợ từ QR bàn ({count})',
+                    'Table QR service requests ({count})',
+                    { count: activeServiceRequests.length }
+                  )}
+                </h2>
+                <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                  {tx(
+                    'Khách tại bàn đang gọi phục vụ hoặc xin hóa đơn. Tiếp nhận và hoàn tất yêu cầu không tự động đánh dấu đơn đã thu tiền.',
+                    'Guests at tables are calling staff or requesting a bill. Acknowledging or resolving never marks an order as paid.'
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {activeServiceRequests.map((req) => {
+              const isBill = req.request_type === 'request_bill';
+              const isPending = req.status === 'pending';
+              const isBusy = updatingServiceReqId === req.id;
+              return (
+                <div
+                  key={req.id}
+                  data-testid={`service-request-item-${req.id}`}
+                  className={`flex flex-col justify-between gap-2.5 rounded-2xl border p-3 shadow-2xs ${
+                    isPending
+                      ? 'border-amber-400 bg-white dark:border-amber-500/60 dark:bg-slate-900'
+                      : 'border-emerald-300 bg-emerald-50/60 dark:border-emerald-500/40 dark:bg-slate-900/80'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center rounded-lg bg-slate-900 px-2 py-0.5 text-xs font-black text-white dark:bg-slate-100 dark:text-slate-900">
+                          {req.table_label}
+                        </span>
+                        <span
+                          className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[11px] font-extrabold ${
+                            isBill
+                              ? 'bg-indigo-100 text-indigo-900 dark:bg-indigo-500/20 dark:text-indigo-200'
+                              : 'bg-amber-100 text-amber-900 dark:bg-amber-500/20 dark:text-amber-200'
+                          }`}
+                        >
+                          {isBill
+                            ? tx('🧾 Xin hóa đơn', '🧾 Request bill')
+                            : tx('🔔 Gọi phục vụ', '🔔 Call staff')}
+                        </span>
+                      </div>
+                      <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
+                        {isPending
+                          ? tx('Chờ tiếp nhận', 'Pending acknowledgement')
+                          : tx('Đã tiếp nhận — đang hỗ trợ', 'Acknowledged — in progress')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-1.5 pt-1">
+                    {isPending && (
+                      <button
+                        type="button"
+                        data-testid={`service-request-ack-${req.id}`}
+                        disabled={isBusy}
+                        onClick={() =>
+                          handleUpdateServiceRequestStatus(
+                            req.id,
+                            'acknowledged'
+                          )
+                        }
+                        className="inline-flex items-center gap-1 rounded-xl border border-amber-500 bg-amber-500 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-400 disabled:opacity-60"
+                      >
+                        <span>{tx('Đã nhận', 'Acknowledge')}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-testid={`service-request-resolve-${req.id}`}
+                      disabled={isBusy}
+                      onClick={() =>
+                        handleUpdateServiceRequestStatus(req.id, 'resolved')
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-600 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-60"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>{tx('Hoàn tất', 'Resolve')}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {showSessionExpired && (
         <div
           role="alert"

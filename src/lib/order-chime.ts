@@ -459,3 +459,74 @@ export function sendBrowserOrderNotification(params: {
     return false;
   }
 }
+
+let lastNotifiedServiceReqKey = '';
+let lastNotifiedServiceReqAtMs = 0;
+
+export function sendBrowserServiceRequestNotification(params: {
+  requestId: string;
+  tableLabel: string;
+  requestType: 'call_staff' | 'request_bill';
+  shopName?: string;
+  onClickNavigate?: () => void;
+}): boolean {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return false;
+  }
+
+  const settings = loadOrderChimeSettings();
+  if (!settings.browserNotificationEnabled) {
+    return false;
+  }
+
+  if (window.Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const dedupeKey = `${params.requestId}-${params.tableLabel}-${params.requestType}`;
+  const now = Date.now();
+  if (
+    dedupeKey === lastNotifiedServiceReqKey &&
+    now - lastNotifiedServiceReqAtMs < 3000
+  ) {
+    return false;
+  }
+  lastNotifiedServiceReqKey = dedupeKey;
+  lastNotifiedServiceReqAtMs = now;
+
+  const isBill = params.requestType === 'request_bill';
+  const title = isBill
+    ? `🧾 Khách xin hóa đơn • ${params.tableLabel}`
+    : `🔔 Khách gọi phục vụ • ${params.tableLabel}`;
+  const body = isBill
+    ? `${params.tableLabel} yêu cầu kiểm tra hóa đơn / thanh toán${params.shopName ? ` (${params.shopName})` : ''}.`
+    : `${params.tableLabel} đang gọi nhân viên hỗ trợ tại bàn${params.shopName ? ` (${params.shopName})` : ''}.`;
+
+  try {
+    const notification = new window.Notification(title, {
+      body,
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      tag: `qlaok-service-req-${params.requestId}`,
+      requireInteraction: true,
+    });
+
+    notification.onclick = () => {
+      try {
+        window.focus();
+      } catch {
+        // ignore
+      }
+      notification.close();
+      if (params.onClickNavigate) {
+        params.onClickNavigate();
+      } else {
+        window.location.href = '/dashboard/orders';
+      }
+    };
+
+    return true;
+  } catch {
+    return false;
+  }
+}

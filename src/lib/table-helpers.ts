@@ -490,6 +490,25 @@ export function resolveStorefrontMenuTableState(input: {
   };
 }
 
+export function canUseStorefrontTableServiceActions(input: {
+  lockedTable: ShopTable | null;
+  tableQrVerified: boolean | null;
+  isTakeawaySelected: boolean;
+  error: string | null;
+  qrTableSigParam?: string | null;
+}): boolean {
+  const cleanSig = (input.qrTableSigParam ?? '').trim();
+  return Boolean(
+    input.lockedTable &&
+      input.lockedTable.is_active &&
+      !input.lockedTable.is_archived &&
+      input.tableQrVerified === true &&
+      !input.isTakeawaySelected &&
+      !input.error &&
+      cleanSig.length > 0
+  );
+}
+
 export function summarizeOrdersByTable(
   orders: ShopOrder[],
   shopId: string,
