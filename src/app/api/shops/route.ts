@@ -93,15 +93,21 @@ export async function GET(req: Request) {
   }
 
   if (slug) {
+    const normalizedSlug = slug.trim().toLowerCase();
     let allowUnpublished = sessionUser?.role === 'admin';
+    let allowedUnpublishedShopIds: string[] = [];
     if (!allowUnpublished && sessionUser) {
       const data = await dbGetAllShopsAndProfile(sessionUser.sub);
-      allowUnpublished = data.shops.some((s) => s.slug === slug);
+      allowedUnpublishedShopIds = data.shops.map((s) => s.id);
+      allowUnpublished = data.shops.some(
+        (s) => s.slug.trim().toLowerCase() === normalizedSlug
+      );
     }
 
     const view = (searchParams.get('view') ?? '').trim().toLowerCase();
     const bundle = await dbGetStorefrontBundle(slug, {
       allowUnpublished,
+      allowedUnpublishedShopIds,
       includePosts: view !== 'menu',
     });
     if (!bundle) {

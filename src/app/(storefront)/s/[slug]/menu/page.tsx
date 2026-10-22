@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft,
   Search,
@@ -44,6 +44,7 @@ import {
   createScopedTableQrVerification,
   filterSelectableTables,
   resolveScopedTableQrVerification,
+  resolveStorefrontCanonicalRedirect,
   resolveStorefrontMenuTableState,
   shouldRefreshStorefrontCatalog,
   STOREFRONT_MENU_POLL_INTERVAL_MS,
@@ -145,6 +146,7 @@ function clearStoredGuestOrder(shopId: string) {
 
 export default function StorefrontMenuPage() {
   const params = useParams<{ slug: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
 
@@ -159,6 +161,9 @@ export default function StorefrontMenuPage() {
     (srcParam === 'table' || Boolean(qrTableIdParam) || Boolean(qrTableParam));
 
   const [shop, setShop] = useState<Shop | null>(null);
+  const [resolvedRequestSlug, setResolvedRequestSlug] = useState<string | null>(
+    null
+  );
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [tables, setTables] = useState<ShopTable[]>([]);
@@ -234,6 +239,7 @@ export default function StorefrontMenuPage() {
   const restoredOrderShopRef = useRef<string | null>(null);
   const requestSeqRef = useRef(0);
   const initializedSlugRef = useRef<string | null>(null);
+  const trackedTableScanKeyRef = useRef<string | null>(null);
   const inFlightFetchRef = useRef(false);
   const lastFetchedAtRef = useRef(0);
 
@@ -245,8 +251,21 @@ export default function StorefrontMenuPage() {
       previousTableQueryKeyRef.current !== currentTableQueryKey;
 
     if (slugChanged) {
+      const prevNormalized = previousSlugRef.current.trim().toLowerCase();
+      const nextNormalized = slug.trim().toLowerCase();
+      const isCanonicalizingSameShop =
+        Boolean(shop?.slug) &&
+        shop?.slug.trim().toLowerCase() === nextNormalized &&
+        resolvedRequestSlug === prevNormalized;
+
       previousSlugRef.current = slug;
       previousTableQueryKeyRef.current = currentTableQueryKey;
+
+      if (isCanonicalizingSameShop) {
+        setResolvedRequestSlug(nextNormalized);
+        return;
+      }
+
       setCart([]);
       setLastOrder(null);
       setEditingOrder(null);
@@ -257,6 +276,7 @@ export default function StorefrontMenuPage() {
       setTables([]);
       setTablesLoadError(null);
       setTableQrVerification(null);
+      setResolvedRequestSlug(null);
       setLoading(true);
       return;
     }
@@ -277,7 +297,15 @@ export default function StorefrontMenuPage() {
         return stillMatches ? prev : null;
       });
     }
-  }, [slug, currentTableQueryKey, qrTableIdParam, qrTableSigParam, shop?.id]);
+  }, [
+    slug,
+    currentTableQueryKey,
+    qrTableIdParam,
+    qrTableSigParam,
+    resolvedRequestSlug,
+    shop?.id,
+    shop?.slug,
+  ]);
 
   const fetchCatalogData = useCallback(
     async (isInitial = false) => {
@@ -372,13 +400,22 @@ export default function StorefrontMenuPage() {
             !t.is_archived
         );
 
+        const canonicalRedirect = resolveStorefrontCanonicalRedirect({
+          requestedSlug: currentSlug,
+          canonicalSlug: loadedShop.slug,
+          view: 'menu',
+          searchParams: searchParams.toString(),
+        });
+
         setShop(loadedShop);
+        setResolvedRequestSlug(currentSlug.trim().toLowerCase());
         setCategories(data.categories || []);
         setItems(data.items || []);
         setTables(activeOnlyTables);
         setTableQrVerification(
           createScopedTableQrVerification({
             shopSlug: currentSlug,
+            canonicalSlug: loadedShop.slug,
             shopId: loadedShop.id,
             tableId: requestedTableId,
             sig: requestedTableSig,
@@ -393,8 +430,12 @@ export default function StorefrontMenuPage() {
         );
         setAllowedLangs(planLangs);
 
-        if (isInitial || initializedSlugRef.current !== currentSlug) {
-          initializedSlugRef.current = currentSlug;
+        if (canonicalRedirect?.isAlias) {
+          router.replace(canonicalRedirect.canonicalUrl);
+        }
+
+        if (isInitial || initializedSlugRef.current !== loadedShop.id) {
+          initializedSlugRef.current = loadedShop.id;
           const detected = detectVisitorLocale(planLangs, langParam);
           setLocale(detected);
           setLoading(false);
@@ -409,7 +450,9 @@ export default function StorefrontMenuPage() {
           }
 
           // Track QR Table Scan (skip door-page / explore navigation to avoid double counting)
-          if (isTableQrEntry) {
+          const tableScanKey = `${loadedShop.id}:${requestedTableId}:${requestedTableSig}:${qrTableParam || ''}`;
+          if (isTableQrEntry && trackedTableScanKeyRef.current !== tableScanKey) {
+            trackedTableScanKeyRef.current = tableScanKey;
             fetch('/api/analytics/track', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -432,7 +475,16 @@ export default function StorefrontMenuPage() {
         }
       }
     },
-    [slug, langParam, isTableQrEntry, qrTableIdParam, qrTableSigParam]
+    [
+      slug,
+      router,
+      searchParams,
+      langParam,
+      isTableQrEntry,
+      qrTableIdParam,
+      qrTableSigParam,
+      qrTableParam,
+    ]
   );
 
   useEffect(() => {
@@ -523,9 +575,12 @@ export default function StorefrontMenuPage() {
     }
   }, [isStaffModalOpen, fetchCatalogData]);
 
+  const normalizedCurrentSlug = slug.trim().toLowerCase();
   const currentShopId =
     shop &&
-    (!shop.slug || shop.slug.trim().toLowerCase() === slug.trim().toLowerCase())
+    (!shop.slug ||
+      shop.slug.trim().toLowerCase() === normalizedCurrentSlug ||
+      resolvedRequestSlug === normalizedCurrentSlug)
       ? shop.id
       : null;
 

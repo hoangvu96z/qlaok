@@ -1277,8 +1277,8 @@ export default function DashboardSettingsPage() {
               >
                 ⚠️{' '}
                 {tx(
-                  'Đổi từ /s/{oldSlug} sang /s/{newSlug} sẽ làm vô hiệu các bảng mã QR đã in trước đây.',
-                  'Changing /s/{oldSlug} to /s/{newSlug} will invalidate previously printed QR codes.',
+                  'Đổi từ /s/{oldSlug} sang /s/{newSlug}: đường dẫn cũ sẽ được bảo lưu và tự chuyển hướng sang đường dẫn mới cho các mã QR đã in.',
+                  'Changing /s/{oldSlug} to /s/{newSlug}: the old URL will be preserved as a redirect alias so previously printed QR codes continue to work.',
                   {
                     oldSlug: slugConfirmation.currentNormalized,
                     newSlug: slugConfirmation.nextNormalized,
@@ -1721,8 +1721,8 @@ export default function DashboardSettingsPage() {
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
                   {tx(
-                    'Khi đổi đường dẫn (Slug), mọi mã QR dán cửa và QR tại bàn đã in theo đường dẫn cũ sẽ không còn truy cập được. Bạn sẽ cần tải và in lại mã QR mới trong mục Thiết kế & In QR.',
-                    'Changing your store URL slug invalidates all previously printed Door QR and Table QR codes using the old link. You will need to reprint updated QR codes from QR Studio.'
+                    'Khi đổi đường dẫn (Slug), đường dẫn cũ sẽ được hệ thống bảo lưu làm bí danh (alias) và tự động chuyển hướng sang đường dẫn mới kèm đầy đủ tham số bàn/chữ ký cho các mã QR dán cửa và QR tại bàn đã in trước đây. Các bản in mới trong mục Thiết kế & In QR sẽ sử dụng đường dẫn mới.',
+                    'When you change your store URL slug, the previous slug is preserved as a server alias that automatically redirects previously printed Door QR and signed Table QR links (with all query parameters intact) to the new canonical URL. New prints in QR Studio will use the new slug.'
                   )}
                 </p>
               </div>

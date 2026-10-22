@@ -10,6 +10,8 @@ import { setSupabaseDbClientForTests } from '@/lib/db';
 import {
   buildTableMenuUrl,
   createScopedTableQrVerification,
+  resolveScopedTableQrVerification,
+  resolveStorefrontCanonicalRedirect,
   resolveStorefrontMenuTableState,
   resolveTableSelection,
   summarizeOrdersByTable,
@@ -26,7 +28,7 @@ import {
   verifyTableQrSignature,
 } from '@/lib/shop-tables';
 import { PATCH as patchOrders, POST as postOrders } from '@/app/api/orders/route';
-import { GET as getShops } from '@/app/api/shops/route';
+import { GET as getShops, PATCH as patchShops } from '@/app/api/shops/route';
 import {
   GET as getTables,
   PATCH as patchTables,
@@ -1299,5 +1301,381 @@ test('dbUpdateShopTable narrow PATCH: captures only explicitly changed fields, p
     } finally {
       setShopTablesDbClientForTests(null);
     }
+  }
+});
+
+test('already-printed door and signed table QR links continue to resolve, verify HMAC signatures, lock the intended table, and canonicalize with all query params after repeated shop slug changes', async () => {
+  const shopId = 'shop-fnb-001';
+  const ownerId = 'owner-fnb-001';
+  const otherShopId = 'shop-service-002';
+  const tableId = 'tbl-qr-alias-01';
+  const validSig = signTableQr(shopId, tableId);
+  const wrongShopSig = signTableQr(otherShopId, tableId);
+
+  const shopsMap = new Map<string, Record<string, unknown>>([
+    [
+      shopId,
+      {
+        id: shopId,
+        owner_id: ownerId,
+        slug: 'pho-hoi-an',
+        name: 'Phở Hội An Truyền Thống',
+        vertical: 'fnb',
+        is_published: true,
+        supported_langs: ['vi', 'en', 'ja'],
+        currency: 'VND',
+        theme_config: { primaryColor: '#10b981', layout: 'list' },
+      },
+    ],
+    [
+      otherShopId,
+      {
+        id: otherShopId,
+        owner_id: 'owner-service-002',
+        slug: 'aura-spa-wellness',
+        name: 'Aura Spa',
+        vertical: 'service',
+        is_published: true,
+        supported_langs: ['vi', 'en'],
+        currency: 'VND',
+        theme_config: { primaryColor: '#ec4899', layout: 'grid' },
+      },
+    ],
+  ]);
+
+  const aliasesMap = new Map<string, string>();
+  const tablesList: ShopTable[] = [
+    {
+      id: tableId,
+      shop_id: shopId,
+      table_code: 'T01',
+      name: 'Bàn Sân Vườn 01',
+      section: 'Tầng 1',
+      capacity: 4,
+      sort_order: 1,
+      is_active: true,
+      is_archived: false,
+      archived_at: null,
+      layout_x: 10,
+      layout_y: 20,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  const mockDb = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select() {
+            const filters: Array<{ op: 'eq' | 'neq'; col: string; val: unknown }> = [];
+            const chain = {
+              limit: async () => ({
+                data: Array.from(shopsMap.values()).slice(0, 1),
+                error: null,
+              }),
+              order: async () => ({
+                data: Array.from(shopsMap.values()),
+                error: null,
+              }),
+              eq(col: string, val: unknown) {
+                filters.push({ op: 'eq', col, val });
+                return chain;
+              },
+              neq(col: string, val: unknown) {
+                filters.push({ op: 'neq', col, val });
+                return chain;
+              },
+              maybeSingle: async () => {
+                const matched = Array.from(shopsMap.values()).find((row) =>
+                  filters.every((f) =>
+                    f.op === 'eq' ? row[f.col] === f.val : row[f.col] !== f.val
+                  )
+                );
+                return { data: matched ? { ...matched } : null, error: null };
+              },
+              single: async () => {
+                const matched = Array.from(shopsMap.values()).find((row) =>
+                  filters.every((f) =>
+                    f.op === 'eq' ? row[f.col] === f.val : row[f.col] !== f.val
+                  )
+                );
+                return {
+                  data: matched ? { ...matched } : null,
+                  error: matched ? null : { message: 'Shop not found' },
+                };
+              },
+            };
+            return chain;
+          },
+          update(patch: Record<string, unknown>) {
+            return {
+              eq(_col: string, idVal: string) {
+                return {
+                  select() {
+                    return {
+                      single: async () => {
+                        const existing = shopsMap.get(idVal);
+                        if (!existing) {
+                          return { data: null, error: { message: 'Not found' } };
+                        }
+                        const updated = { ...existing, ...patch };
+                        shopsMap.set(idVal, updated);
+                        return { data: { ...updated }, error: null };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+
+      if (table === 'shop_slug_aliases') {
+        return {
+          select() {
+            let eqSlug = '';
+            const chain = {
+              eq(col: string, val: string) {
+                if (col === 'slug') eqSlug = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                const ownerShopId = aliasesMap.get(eqSlug);
+                return {
+                  data: ownerShopId ? { slug: eqSlug, shop_id: ownerShopId } : null,
+                  error: null,
+                };
+              },
+            };
+            return chain;
+          },
+          upsert: async (payload: { slug: string; shop_id: string }) => {
+            aliasesMap.set(payload.slug, payload.shop_id);
+            return { data: payload, error: null };
+          },
+          delete() {
+            let targetSlug = '';
+            let targetShopId = '';
+            const delChain = {
+              eq(col: string, val: string) {
+                if (col === 'slug') targetSlug = val;
+                if (col === 'shop_id') targetShopId = val;
+                if (targetSlug && (!targetShopId || aliasesMap.get(targetSlug) === targetShopId)) {
+                  aliasesMap.delete(targetSlug);
+                }
+                return delChain;
+              },
+              then(resolve: (v: unknown) => unknown) {
+                return Promise.resolve({ error: null }).then(resolve);
+              },
+            };
+            return delChain;
+          },
+        };
+      }
+
+      if (table === 'shop_tables') {
+        return {
+          select() {
+            let filterShopId = '';
+            const chain = {
+              eq(col: string, val: unknown) {
+                if (col === 'shop_id') filterShopId = String(val);
+                return chain;
+              },
+              order() {
+                return chain;
+              },
+              then(resolve: (v: unknown) => unknown) {
+                const rows = tablesList.filter(
+                  (t) => !filterShopId || t.shop_id === filterShopId
+                );
+                return Promise.resolve({ data: rows, error: null }).then(resolve);
+              },
+            };
+            return chain;
+          },
+        };
+      }
+
+      return {
+        select() {
+          const emptyChain = {
+            eq: () => emptyChain,
+            order: () => Promise.resolve({ data: [], error: null }),
+            maybeSingle: () => Promise.resolve({ data: null, error: null }),
+            single: () => Promise.resolve({ data: null, error: null }),
+          };
+          return emptyChain;
+        },
+      };
+    },
+  };
+
+  setSupabaseDbClientForTests(mockDb);
+  setShopTablesDbClientForTests(mockDb, true);
+
+  try {
+    const ownerToken = issueSessionToken({
+      id: ownerId,
+      email: 'owner@qlaok.vn',
+      role: 'owner',
+    });
+
+    // 1. Change slug pho-hoi-an -> pho-hoi-an-flagship, then -> pho-hoi-an-grand
+    const patch1 = await patchShops(
+      new Request('http://localhost/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({ id: shopId, slug: 'pho-hoi-an-flagship' }),
+      })
+    );
+    assert.equal(patch1.status, 200);
+
+    const patch2 = await patchShops(
+      new Request('http://localhost/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({ id: shopId, slug: 'pho-hoi-an-grand' }),
+      })
+    );
+    assert.equal(patch2.status, 200);
+
+    // 2. Old printed table QR link (/s/pho-hoi-an/menu?src=table&tableId=...&sig=...&table=T01&lang=ja)
+    //    resolves to the shop and passes server HMAC signature verification
+    const oldSlugRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?slug=pho-hoi-an&view=menu&tableId=${encodeURIComponent(tableId)}&sig=${encodeURIComponent(validSig)}`
+      )
+    );
+    assert.equal(oldSlugRes.status, 200);
+    const oldSlugBundle = await oldSlugRes.json();
+    assert.equal(oldSlugBundle.shop.id, shopId);
+    assert.equal(oldSlugBundle.shop.slug, 'pho-hoi-an-grand');
+    assert.equal(oldSlugBundle.tableQrVerified, true);
+
+    // Intermediate alias (pho-hoi-an-flagship) also resolves and verifies signature
+    const midSlugRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?slug=pho-hoi-an-flagship&view=menu&tableId=${encodeURIComponent(tableId)}&sig=${encodeURIComponent(validSig)}`
+      )
+    );
+    assert.equal(midSlugRes.status, 200);
+    const midSlugBundle = await midSlugRes.json();
+    assert.equal(midSlugBundle.shop.id, shopId);
+    assert.equal(midSlugBundle.shop.slug, 'pho-hoi-an-grand');
+    assert.equal(midSlugBundle.tableQrVerified, true);
+
+    // Tampered or cross-shop signature on old alias still fails verification
+    const badSigRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?slug=pho-hoi-an&view=menu&tableId=${encodeURIComponent(tableId)}&sig=${encodeURIComponent(wrongShopSig)}`
+      )
+    );
+    assert.equal(badSigRes.status, 200);
+    const badSigBundle = await badSigRes.json();
+    assert.equal(badSigBundle.tableQrVerified, false);
+
+    // 3. Canonical URL builder preserves EVERY query parameter for both /s/{slug} and /s/{slug}/menu
+    const doorRedirect = resolveStorefrontCanonicalRedirect({
+      requestedSlug: 'pho-hoi-an',
+      canonicalSlug: oldSlugBundle.shop.slug,
+      view: 'door',
+      searchParams: 'src=door&lang=ja&utm_source=qr_standee',
+    });
+    assert.deepEqual(doorRedirect, {
+      isAlias: true,
+      canonicalSlug: 'pho-hoi-an-grand',
+      canonicalPath: '/s/pho-hoi-an-grand',
+      canonicalUrl: '/s/pho-hoi-an-grand?src=door&lang=ja&utm_source=qr_standee',
+    });
+
+    const menuQuery = new URLSearchParams({
+      src: 'table',
+      tableId,
+      sig: validSig,
+      table: 'T01',
+      lang: 'ja',
+    });
+    const menuRedirect = resolveStorefrontCanonicalRedirect({
+      requestedSlug: 'pho-hoi-an',
+      canonicalSlug: oldSlugBundle.shop.slug,
+      view: 'menu',
+      searchParams: menuQuery,
+    });
+    assert.ok(menuRedirect);
+    assert.equal(menuRedirect.isAlias, true);
+    assert.equal(
+      menuRedirect.canonicalUrl,
+      `/s/pho-hoi-an-grand/menu?${menuQuery.toString()}`
+    );
+
+    // 4. Scoped table QR verification and menu table state lock the intended table both before and after canonical URL replacement
+    const verification = createScopedTableQrVerification({
+      shopSlug: 'pho-hoi-an',
+      canonicalSlug: oldSlugBundle.shop.slug,
+      shopId: oldSlugBundle.shop.id,
+      tableId,
+      sig: validSig,
+      tableQrVerified: oldSlugBundle.tableQrVerified,
+      activeSlug: 'pho-hoi-an',
+      activeTableId: tableId,
+      activeSig: validSig,
+    });
+    assert.ok(verification);
+
+    // Before router.replace finishes (route param is still old alias 'pho-hoi-an')
+    const stateOnOldSlug = resolveStorefrontMenuTableState({
+      shopSlug: 'pho-hoi-an',
+      shopId,
+      tables: tablesList,
+      qrTableIdParam: tableId,
+      qrTableSigParam: validSig,
+      qrTableParam: 'T01',
+      verification,
+      locale: 'ja',
+    });
+    assert.equal(stateOnOldSlug.tableQrVerified, true);
+    assert.equal(stateOnOldSlug.lockedTable?.id, tableId);
+    assert.equal(stateOnOldSlug.selectedTableId, tableId);
+    assert.equal(stateOnOldSlug.error, null);
+
+    // After router.replace finishes (route param is now canonical 'pho-hoi-an-grand')
+    const stateOnCanonicalSlug = resolveStorefrontMenuTableState({
+      shopSlug: 'pho-hoi-an-grand',
+      shopId,
+      tables: tablesList,
+      qrTableIdParam: tableId,
+      qrTableSigParam: validSig,
+      qrTableParam: 'T01',
+      verification,
+      locale: 'ja',
+    });
+    assert.equal(stateOnCanonicalSlug.tableQrVerified, true);
+    assert.equal(stateOnCanonicalSlug.lockedTable?.id, tableId);
+    assert.equal(stateOnCanonicalSlug.selectedTableId, tableId);
+    assert.equal(stateOnCanonicalSlug.error, null);
+
+    // Cross-shop slug must never reuse verification
+    assert.equal(
+      resolveScopedTableQrVerification(verification, {
+        shopSlug: 'aura-spa-wellness',
+        shopId,
+        tableId,
+        sig: validSig,
+      }),
+      null
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopTablesDbClientForTests(null);
   }
 });

@@ -156,6 +156,13 @@ export interface Shop {
   updated_at?: string;
 }
 
+export interface ShopSlugAlias {
+  slug: string;
+  shop_id: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Category {
   id: string;
   shop_id: string;

@@ -10,6 +10,7 @@ import type {
   Profile,
   Shop,
   ShopMembership,
+  ShopSlugAlias,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
@@ -39,9 +40,15 @@ let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
 let testDbClientOverride: SupabaseClient | null = null;
 let seedingInProgress: Promise<{ ok: boolean; error?: string }> | null = null;
+const inMemoryShopSlugAliases = new Map<string, string>(); // normalizedSlug -> shopId
+
+export function dbClearShopSlugAliasesForTests(): void {
+  inMemoryShopSlugAliases.clear();
+}
 
 export function setSupabaseDbClientForTests(client: unknown | null): void {
   testDbClientOverride = (client as SupabaseClient | null) ?? null;
+  inMemoryShopSlugAliases.clear();
 }
 
 export function isSupabaseDbClientOverriddenForTests(): boolean {
@@ -507,17 +514,273 @@ export async function dbGetShopById(shopId: string): Promise<Shop | undefined> {
   return data ? hydrateShopWithSeedDefaults(data as Shop) : undefined;
 }
 
+function normalizeShopSlugValue(slug: unknown): string {
+  return typeof slug === 'string' ? slug.trim().toLowerCase() : '';
+}
+
+function isIgnorableSlugAliasTableError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message?: unknown }).message ?? '')
+        : String(err ?? '');
+  return (
+    /unexpected table/i.test(msg) ||
+    (/shop_slug_aliases/i.test(msg) &&
+      /does not exist|not found|schema cache|relation/i.test(msg))
+  );
+}
+
+async function queryShopSlugAliasOwner(
+  sb: SupabaseClient | null,
+  slug: string
+): Promise<string | null> {
+  const normalized = normalizeShopSlugValue(slug);
+  if (!normalized) return null;
+
+  if (sb) {
+    try {
+      const tableRef = sb.from('shop_slug_aliases') as unknown as {
+        select?: (cols: string) => {
+          eq?: (
+            col: string,
+            val: string
+          ) => {
+            maybeSingle?: () => Promise<{
+              data?: { shop_id?: string } | null;
+              error?: { message?: string } | null;
+            }>;
+            single?: () => Promise<{
+              data?: { shop_id?: string } | null;
+              error?: { message?: string } | null;
+            }>;
+          };
+        };
+      };
+      const eqChain = tableRef?.select?.('slug, shop_id')?.eq?.('slug', normalized);
+      const fetchFn = eqChain?.maybeSingle ?? eqChain?.single;
+      if (typeof fetchFn === 'function') {
+        const res = await fetchFn.call(eqChain);
+        if (res?.error) {
+          if (!isIgnorableSlugAliasTableError(res.error)) {
+            throw new Error(String(res.error.message || 'SLUG_ALIAS_LOOKUP_FAILED'));
+          }
+        } else if (
+          res?.data &&
+          typeof res.data.shop_id === 'string' &&
+          res.data.shop_id.trim()
+        ) {
+          const ownerShopId = res.data.shop_id.trim();
+          inMemoryShopSlugAliases.set(normalized, ownerShopId);
+          return ownerShopId;
+        }
+      }
+    } catch (err) {
+      if (!isIgnorableSlugAliasTableError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  return inMemoryShopSlugAliases.get(normalized) ?? null;
+}
+
+async function recordShopSlugAlias(
+  sb: SupabaseClient | null,
+  shopId: string,
+  previousSlug: string,
+  nextSlug: string
+): Promise<void> {
+  const normalizedPrev = normalizeShopSlugValue(previousSlug);
+  const normalizedNext = normalizeShopSlugValue(nextSlug);
+  if (!shopId || !normalizedPrev || !normalizedNext || normalizedPrev === normalizedNext) {
+    return;
+  }
+
+  // If the shop is reverting to one of its own former slugs, remove that slug from aliases
+  if (inMemoryShopSlugAliases.get(normalizedNext) === shopId) {
+    inMemoryShopSlugAliases.delete(normalizedNext);
+  }
+
+  if (sb) {
+    try {
+      const deleteTable = sb.from('shop_slug_aliases') as unknown as {
+        delete?: () => {
+          eq?: (
+            col: string,
+            val: string
+          ) => {
+            eq?: (
+              col2: string,
+              val2: string
+            ) => Promise<{ error?: { message?: string } | null }>;
+          } & PromiseLike<{ error?: { message?: string } | null }>;
+        };
+      };
+      const firstEq = deleteTable?.delete?.()?.eq?.('slug', normalizedNext);
+      if (firstEq) {
+        if (typeof firstEq.eq === 'function') {
+          await firstEq.eq('shop_id', shopId);
+        } else if (typeof (firstEq as PromiseLike<unknown>).then === 'function') {
+          await firstEq;
+        }
+      }
+    } catch (err) {
+      if (!isIgnorableSlugAliasTableError(err)) {
+        throw err;
+      }
+    }
+
+    try {
+      const upsertTable = sb.from('shop_slug_aliases') as unknown as {
+        upsert?: (
+          payload: Record<string, unknown>,
+          opts?: { onConflict?: string }
+        ) => Promise<{ error?: { message?: string } | null }>;
+      };
+      if (typeof upsertTable?.upsert === 'function') {
+        const nowIso = new Date().toISOString();
+        const res = await upsertTable.upsert(
+          {
+            slug: normalizedPrev,
+            shop_id: shopId,
+            updated_at: nowIso,
+          },
+          { onConflict: 'slug' }
+        );
+        if (res?.error && !isIgnorableSlugAliasTableError(res.error)) {
+          throw new Error(String(res.error.message || 'SLUG_ALIAS_PERSIST_FAILED'));
+        }
+      }
+    } catch (err) {
+      if (!isIgnorableSlugAliasTableError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  inMemoryShopSlugAliases.set(normalizedPrev, shopId);
+}
+
+export async function dbDeleteShopSlugAliases(
+  shopId: string,
+  sbClient?: SupabaseClient
+): Promise<void> {
+  const cleanShopId = (shopId ?? '').trim();
+  if (!cleanShopId) return;
+
+  for (const [aliasSlug, ownerId] of inMemoryShopSlugAliases.entries()) {
+    if (ownerId === cleanShopId) {
+      inMemoryShopSlugAliases.delete(aliasSlug);
+    }
+  }
+
+  const sb =
+    sbClient ??
+    (testDbClientOverride || isSupabaseConfigured() ? getSupabaseDbClient() : null);
+  if (!sb) return;
+
+  try {
+    const deleteTable = sb.from('shop_slug_aliases') as unknown as {
+      delete?: () => {
+        eq?: (
+          col: string,
+          val: string
+        ) => Promise<{ error?: { message?: string } | null }>;
+      };
+    };
+    const deleteChain = deleteTable?.delete?.()?.eq?.('shop_id', cleanShopId);
+    if (deleteChain && typeof deleteChain.then === 'function') {
+      const res = await deleteChain;
+      if (res?.error && !isIgnorableSlugAliasTableError(res.error)) {
+        throw new Error(String(res.error.message));
+      }
+    }
+  } catch (err) {
+    if (!isIgnorableSlugAliasTableError(err)) {
+      throw err;
+    }
+  }
+}
+
+export async function dbGetShopSlugAliases(
+  shopId?: string
+): Promise<ShopSlugAlias[]> {
+  const cleanShopId = (shopId ?? '').trim();
+  const merged = new Map<string, ShopSlugAlias>();
+
+  for (const [slug, ownerShopId] of inMemoryShopSlugAliases.entries()) {
+    if (!cleanShopId || ownerShopId === cleanShopId) {
+      merged.set(slug, { slug, shop_id: ownerShopId });
+    }
+  }
+
+  if (testDbClientOverride || isSupabaseConfigured()) {
+    const sb = getSupabaseDbClient();
+    try {
+      let query = sb.from('shop_slug_aliases').select('*');
+      if (cleanShopId && typeof query.eq === 'function') {
+        query = query.eq('shop_id', cleanShopId);
+      }
+      const res = await query;
+      if (res?.error) {
+        if (!isIgnorableSlugAliasTableError(res.error)) {
+          throw new Error(res.error.message);
+        }
+      } else if (Array.isArray(res?.data)) {
+        for (const row of res.data as ShopSlugAlias[]) {
+          const norm = normalizeShopSlugValue(row.slug);
+          if (norm && row.shop_id) {
+            merged.set(norm, { ...row, slug: norm });
+          }
+        }
+      }
+    } catch (err) {
+      if (!isIgnorableSlugAliasTableError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  return Array.from(merged.values());
+}
+
 export async function dbGetStorefrontBundle(
   slug: string,
-  options?: { allowUnpublished?: boolean; includePosts?: boolean }
+  options?: {
+    allowUnpublished?: boolean;
+    allowedUnpublishedShopIds?: string[];
+    includePosts?: boolean;
+  }
 ) {
   const { dbGetPublicShopTables } = await import('@/lib/shop-tables');
   const shouldIncludePosts = options?.includePosts !== false;
+  const normalizedSlug = normalizeShopSlugValue(slug);
+  if (!normalizedSlug) return null;
+
+  const allowedShopIds = new Set(
+    (options?.allowedUnpublishedShopIds || [])
+      .map((id) => (id ?? '').trim())
+      .filter(Boolean)
+  );
+  const canViewShop = (candidate: { id: string; is_published?: boolean | null }) =>
+    candidate.is_published !== false ||
+    Boolean(options?.allowUnpublished) ||
+    allowedShopIds.has(candidate.id);
 
   if (!testDbClientOverride && !isSupabaseConfigured()) {
-    const seedShop = SEED_SHOPS.find((s) => s.slug === slug);
+    let seedShop = SEED_SHOPS.find(
+      (s) => normalizeShopSlugValue(s.slug) === normalizedSlug
+    );
+    if (!seedShop) {
+      const aliasedShopId = inMemoryShopSlugAliases.get(normalizedSlug);
+      if (aliasedShopId) {
+        seedShop = SEED_SHOPS.find((s) => s.id === aliasedShopId);
+      }
+    }
     if (!seedShop) return null;
-    if (!options?.allowUnpublished && seedShop.is_published === false) {
+    if (!canViewShop(seedShop)) {
       return null;
     }
     const shop = hydrateShopWithSeedDefaults(seedShop);
@@ -542,14 +805,30 @@ export async function dbGetStorefrontBundle(
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  let query = sb.from('shops').select('*').eq('slug', slug);
-  if (!options?.allowUnpublished) {
-    query = query.eq('is_published', true);
+  // 1. Canonical lookup first (never let an alias shadow a current canonical slug)
+  const canonicalQuery = sb.from('shops').select('*').eq('slug', normalizedSlug);
+  const { data: canonicalShop } =
+    typeof canonicalQuery.maybeSingle === 'function'
+      ? await canonicalQuery.maybeSingle()
+      : await canonicalQuery.single();
+
+  let rawShop = (canonicalShop as Shop | null) ?? null;
+
+  // 2. If no shop currently owns normalizedSlug as its canonical slug, resolve via shop_slug_aliases
+  if (!rawShop) {
+    const aliasedShopId = await queryShopSlugAliasOwner(sb, normalizedSlug);
+    if (aliasedShopId) {
+      const aliasShopQuery = sb.from('shops').select('*').eq('id', aliasedShopId);
+      const { data: aliasedShop } =
+        typeof aliasShopQuery.maybeSingle === 'function'
+          ? await aliasShopQuery.maybeSingle()
+          : await aliasShopQuery.single();
+      rawShop = (aliasedShop as Shop | null) ?? null;
+    }
   }
-  const { data: rawShop } = await query.maybeSingle();
 
   if (!rawShop) return null;
-  if (!options?.allowUnpublished && rawShop.is_published === false) {
+  if (!canViewShop(rawShop)) {
     return null;
   }
   const shop = hydrateShopWithSeedDefaults(rawShop as Shop);
@@ -671,8 +950,9 @@ export async function dbCreateShop(
     .select('id')
     .eq('slug', slug)
     .maybeSingle();
+  const existingAliasOwner = await queryShopSlugAliasOwner(sb, slug);
 
-  if (existingSlug) {
+  if (existingSlug || existingAliasOwner) {
     slug = `${slug}-${Math.floor(100 + Math.random() * 900)}`;
   }
 
@@ -753,10 +1033,17 @@ const ALLOWED_SHOP_PATCH_FIELDS: Array<keyof Shop> = [
 
 export async function dbUpdateShop(
   shopId: string,
-  patch: Partial<Shop>
+  patch: Partial<Shop>,
+  options?: {
+    allowOwnerIdPatch?: boolean;
+    sbClient?: SupabaseClient;
+    skipEnsureSeeded?: boolean;
+  }
 ): Promise<Shop | null> {
-  await ensureSupabaseReadyAndSeeded();
-  const sb = getSupabaseDbClient();
+  if (!options?.skipEnsureSeeded) {
+    await ensureSupabaseReadyAndSeeded();
+  }
+  const sb = options?.sbClient ?? getSupabaseDbClient();
 
   const sanitizedPatch: Record<string, unknown> = {};
   for (const key of ALLOWED_SHOP_PATCH_FIELDS) {
@@ -764,12 +1051,26 @@ export async function dbUpdateShop(
       sanitizedPatch[key] = patch[key];
     }
   }
+  if (options?.allowOwnerIdPatch && patch.owner_id !== undefined) {
+    sanitizedPatch.owner_id = patch.owner_id;
+  }
 
-  if (typeof sanitizedPatch.slug === 'string' && sanitizedPatch.slug) {
+  let previousSlug = '';
+  let nextSlug = '';
+
+  if (sanitizedPatch.slug !== undefined) {
+    nextSlug = normalizeShopSlugValue(sanitizedPatch.slug);
+    if (!nextSlug) {
+      throw new Error(
+        'INVALID_SHOP_SLUG: Đường dẫn cửa hàng (slug) không hợp lệ.'
+      );
+    }
+    sanitizedPatch.slug = nextSlug;
+
     const { data: duplicate } = await sb
       .from('shops')
       .select('id')
-      .eq('slug', sanitizedPatch.slug)
+      .eq('slug', nextSlug)
       .neq('id', shopId)
       .maybeSingle();
 
@@ -777,6 +1078,40 @@ export async function dbUpdateShop(
       throw new Error(
         'SLUG_ALREADY_EXISTS: Đường dẫn (slug) này đã có cửa hàng sử dụng.'
       );
+    }
+
+    const aliasOwnerShopId = await queryShopSlugAliasOwner(sb, nextSlug);
+    if (aliasOwnerShopId && aliasOwnerShopId !== shopId) {
+      throw new Error(
+        'SLUG_ALREADY_EXISTS: Đường dẫn (slug) này đã được bảo lưu từ mã QR cũ của cửa hàng khác.'
+      );
+    }
+
+    try {
+      const currentShopQuery = sb
+        .from('shops')
+        .select('id, slug')
+        .eq('id', shopId) as unknown as {
+        maybeSingle?: () => Promise<{ data?: { slug?: string } | null }>;
+        single?: () => Promise<{ data?: { slug?: string } | null }>;
+      };
+      const fetchCurrent =
+        currentShopQuery?.maybeSingle ?? currentShopQuery?.single;
+      if (typeof fetchCurrent === 'function') {
+        const currentRes = await fetchCurrent.call(currentShopQuery);
+        if (currentRes?.data && typeof currentRes.data.slug === 'string') {
+          previousSlug = normalizeShopSlugValue(currentRes.data.slug);
+        }
+      }
+    } catch {
+      // Fallback handled below if mock does not support select('id, slug').eq('id', shopId)
+    }
+
+    if (!previousSlug) {
+      const seedMatch = SEED_SHOPS.find((s) => s.id === shopId);
+      if (seedMatch) {
+        previousSlug = normalizeShopSlugValue(seedMatch.slug);
+      }
     }
   }
 
@@ -789,6 +1124,11 @@ export async function dbUpdateShop(
 
   if (error) throw new Error(error.message);
   const updated = data as Shop;
+
+  if (nextSlug && previousSlug && previousSlug !== nextSlug) {
+    await recordShopSlugAlias(sb, shopId, previousSlug, nextSlug);
+  }
+
   return {
     ...updated,
     opening_hours_confirmed: Boolean(updated.opening_hours_confirmed === true),

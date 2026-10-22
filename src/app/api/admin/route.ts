@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   dbCompletePaymentWebhook,
+  dbDeleteShopSlugAliases,
+  dbUpdateShop,
   ensureSupabaseReadyAndSeeded,
   requireSupabaseServiceRoleClient,
   shouldAutoSeedDemoData,
@@ -601,6 +603,7 @@ export async function POST(req: Request) {
         .eq('owner_id', ownerId);
 
       for (const s of ownerShops || []) {
+        await dbDeleteShopSlugAliases(s.id, sb);
         await sb.from('analytics_events').delete().eq('shop_id', s.id);
         await sb.from('posts').delete().eq('shop_id', s.id);
         await sb.from('items').delete().eq('shop_id', s.id);
@@ -636,17 +639,17 @@ export async function POST(req: Request) {
         );
       }
 
-      const { data, error } = await sb
-        .from('shops')
-        .update({ ...patch, updated_at: new Date().toISOString() })
-        .eq('id', shopId)
-        .select('*')
-        .single();
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
+      try {
+        const updatedShop = await dbUpdateShop(shopId, patch, {
+          allowOwnerIdPatch: true,
+          sbClient: sb,
+          skipEnsureSeeded: true,
+        });
+        return NextResponse.json({ shop: updatedShop });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return NextResponse.json({ error: message }, { status: 400 });
       }
-      return NextResponse.json({ shop: data });
     }
 
     // 6. Delete Shop
@@ -665,6 +668,8 @@ export async function POST(req: Request) {
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
+
+      await dbDeleteShopSlugAliases(shopId, sb);
       return NextResponse.json({ ok: true });
     }
 

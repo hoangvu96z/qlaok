@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   MapPin,
   Phone,
@@ -35,9 +35,11 @@ import {
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
 import { CatalogItem } from '@/types/qlaok';
+import { resolveStorefrontCanonicalRedirect } from '@/lib/table-helpers';
 
 export default function StorefrontDoorPage() {
   const params = useParams<{ slug: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
 
@@ -49,6 +51,7 @@ export default function StorefrontDoorPage() {
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   const [loading, setLoading] = useState(true);
   const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
+  const trackedScanShopIdRef = useRef<string | null>(null);
 
   const loadStorefront = useCallback(
     async (isInitial = false) => {
@@ -62,6 +65,16 @@ export default function StorefrontDoorPage() {
         }
         const data = await res.json();
         const loadedShop: Shop = data.shop;
+        const canonicalRedirect = resolveStorefrontCanonicalRedirect({
+          requestedSlug: slug,
+          canonicalSlug: loadedShop.slug,
+          view: 'door',
+          searchParams: searchParams.toString(),
+        });
+        if (canonicalRedirect?.isAlias) {
+          router.replace(canonicalRedirect.canonicalUrl);
+        }
+
         // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
         const planLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
@@ -90,23 +103,26 @@ export default function StorefrontDoorPage() {
             }
           }
 
-          // Track QR Door Scan
-          fetch('/api/analytics/track', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              shop_id: loadedShop.id,
-              event_type: 'scan_door',
-              visitor_lang: detected,
-            }),
-          }).catch(() => {});
+          if (trackedScanShopIdRef.current !== loadedShop.id) {
+            trackedScanShopIdRef.current = loadedShop.id;
+            // Track QR Door Scan
+            fetch('/api/analytics/track', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                shop_id: loadedShop.id,
+                event_type: 'scan_door',
+                visitor_lang: detected,
+              }),
+            }).catch(() => {});
+          }
         }
       } catch (err) {
         console.error('Error loading storefront:', err);
         setLoading(false);
       }
     },
-    [slug, searchParams]
+    [slug, router, searchParams]
   );
 
   useEffect(() => {

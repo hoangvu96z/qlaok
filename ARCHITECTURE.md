@@ -64,13 +64,13 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | Module | Nhiệm vụ và lưu ý |
 | --- | --- |
 | `src/types/qlaok.ts` | Contracts locale, catalog, đơn, membership, shop theme, payment |
-| `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, analytics, billing và seed (chỉ tự seed dữ liệu demo ở môi trường non-production; trên `NODE_ENV=production` khi `public.shops` rỗng trả `{ ready: true, seeded: false }` mà không tự ghi demo shop) |
+| `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, bảo lưu bí danh slug (`public.shop_slug_aliases`, migration `014_shop_slug_aliases.sql`) khi đổi slug qua Settings hoặc Super Admin (`dbUpdateShop`) kèm chống đụng độ chéo quán và phân giải ưu tiên canonical trước alias (`dbGetStorefrontBundle`), analytics, billing và seed (chỉ tự seed dữ liệu demo ở môi trường non-production; trên `NODE_ENV=production` khi `public.shops` rỗng trả `{ ready: true, seeded: false }` mà không tự ghi demo shop) |
 | `src/lib/mpos-store.ts` | Orders, stock, giá canonical, transition, bill theo bàn/session, hàng đợi bếp đang hoạt động (`dbGetShopActiveKitchenOrders`) và bộ đếm in |
 | `src/lib/shop-tables.ts` | Store bàn, kiểm tra bàn cùng quán/đang hoạt động, owner mutation (gồm lưu tọa độ sơ đồ `layout_x`, `layout_y` [0, 100]) và public DTO |
 | `src/lib/table-floor-plan.ts` | Tổng hợp trạng thái vận hành bàn (`free`, `occupied`, `waiting_payment`, `inactive`), đếm đơn mở và số tiền chưa thanh toán theo đơn hàng |
 | `src/components/ShopTableFloorPlanCanvas.tsx` | Canvas sơ đồ bàn trực quan: kéo-thả, phím mũi tên (bước nhảy 2%), bounds an toàn giữ mép trên desktop (≥ 1200x680) và co an toàn theo lề 80px ngang, 64px dọc trên kích thước khác, fallback grid |
 | `src/lib/service-requests.ts` | Yêu cầu phục vụ tại bàn (`call_staff`, `request_bill`) xác thực chữ ký QR bàn, chống spam lặp theo bàn/loại và chuyển trạng thái `pending → acknowledged → resolved` |
-| `src/lib/table-helpers.ts` | Helper client-safe: URL QR, resolve lựa chọn, lọc bàn và thống kê theo ID |
+| `src/lib/table-helpers.ts` | Helper client-safe: URL QR, chuẩn hóa URL chuyển hướng canonical (`resolveStorefrontCanonicalRedirect`) giữ nguyên toàn bộ query params (`src`, `tableId`, `sig`, `table`, `lang`), resolve lựa chọn/chữ ký bàn (`createScopedTableQrVerification`, `resolveScopedTableQrVerification`), lọc bàn và thống kê theo ID |
 | `src/lib/order-pricing.ts` | Công thức pricing dùng chung; không nhận tổng client làm nguồn quyết định |
 | `src/lib/server-auth.ts` | Kiểm phiên HMAC hoặc Supabase JWT, auth guards, kiểm quyền shop và admin |
 | `src/lib/shop-permissions.ts` | Membership và quyền theo shop; không dùng local để khôi phục quyền đã revoke |

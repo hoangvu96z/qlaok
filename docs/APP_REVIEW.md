@@ -55,7 +55,7 @@ Node cảnh báo MODULE_TYPELESS_PACKAGE_JSON ở các test TypeScript; suite v�
 
 ---
 
-## Cập nhật rà soát và đóng lỗi — 22/10/2026
+## Cập nhật rà soát và đóng lỗi — 23/10/2026
 
 ### Các lỗi và hành vi đã xác minh đóng trong source hiện tại
 
@@ -65,12 +65,13 @@ Node cảnh báo MODULE_TYPELESS_PACKAGE_JSON ở các test TypeScript; suite v�
 4. **Onboarding an toàn khi thử lại (`src/lib/onboarding-flow.ts`, `src/app/(auth)/onboarding/page.tsx`):** Khi tạo quán thành công nhưng bước `bulk_import` danh mục/món đầu tiên gặp lỗi một phần, luồng giữ lại `draftShop` đã lưu và dùng cặp ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để thử nhập lại an toàn mà không tạo trùng quán hoặc trùng danh mục/món.
 5. **Kiểm tra gói và quyền AI OCR (`src/app/api/ai/ocr-menu/route.ts`, `src/app/api/ai/_lib/guard.ts`):** `requireAiOcrPlan` xác định đúng chủ sở hữu của quán đang chọn mà người gọi được phép truy cập để kiểm tra gói có `allowAiOcr` (`403 PLAN_FEATURE_LOCKED` nếu gói không mở), đồng thời bắt buộc nhân viên/thu ngân phải có quyền chuẩn `catalog.manage` (`403 INSUFFICIENT_SHOP_PERMISSION`).
 6. **Lý do hoàn tiền và hủy đơn trên Mobile & Server (`mobile/src/lib/order-actions.ts`, `mobile/src/components/tabs/OrdersTab.tsx`, `mobile/App.tsx`, `src/app/api/orders/route.ts`):** Mobile mở hộp thoại yêu cầu nhập lý do theo ngôn ngữ VI/EN đang chọn trước khi gửi yêu cầu hủy đơn hoặc hoàn tiền (và chặn hủy trực tiếp đơn đã thu tiền khi chưa hoàn tiền); server kiểm tra bắt buộc lý do không rỗng, tối đa 500 ký tự (`CANCEL_REASON_REQUIRED`, `REFUND_REASON_REQUIRED`, `REASON_TOO_LONG`) và lưu `cancelled_reason` / `refund_reason` vào đơn cùng bản ghi audit.
+7. **Bảo lưu bí danh đường dẫn (Slug Aliases) cho QR đã in (`supabase/migrations/014_shop_slug_aliases.sql`, `src/lib/db.ts`, `src/lib/table-helpers.ts`, `src/app/api/shops/route.ts`, `src/app/api/admin/route.ts`, `/s/[slug]`, `/s/[slug]/menu`):** Khi chủ quán hoặc Super Admin đổi `slug`, đường dẫn cũ được lưu bền vững vào `public.shop_slug_aliases` (ngăn đụng độ với quán khác, hỗ trợ đổi nhiều lần hoặc hoàn nguyên về slug cũ của chính quán và không bao giờ che khuất slug canonical đang hoạt động). Truy vấn qua slug cũ phân giải về đúng quán (tôn trọng `is_published` và quyền owner/member/admin), xác thực chữ ký HMAC của QR bàn (`tableQrVerified`) theo `shop.id` và chuyển hướng (`router.replace`) sang URL canonical hiện tại với đầy đủ tham số truy vấn (`src`, `tableId`, `sig`, `table`, `lang`).
 
-### Kết quả kiểm chứng tại root (22/10/2026)
+### Kết quả kiểm chứng tại root (23/10/2026)
 
 - Web/mobile typecheck: **pass** (`npm run typecheck`, `npm run typecheck --prefix mobile`).
-- Unit tests: **86/86** pass (`npm run test:unit`).
-- Review tests: **97/97** pass (`npm run test:review`).
+- Unit tests: **107/107** pass (`npm run test:unit`).
+- Review tests: **120/120** pass (`npm run test:review`).
 - SQL tests: **1/1** pass (`npm run test:sql`).
 - Mobile tests: **40/40** pass (`npm test --prefix mobile`).
 - Production build: **pass** (`npm run build`).

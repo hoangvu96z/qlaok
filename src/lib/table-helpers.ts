@@ -80,8 +80,78 @@ export function filterSelectableTables(
     });
 }
 
+export type StorefrontSearchParamsInput =
+  | string
+  | URLSearchParams
+  | { toString(): string }
+  | Record<string, string | string[] | null | undefined>
+  | null
+  | undefined;
+
+export function serializeStorefrontSearchParams(
+  searchParams?: StorefrontSearchParamsInput
+): string {
+  if (!searchParams) return '';
+  if (typeof searchParams === 'string') {
+    return searchParams.trim().replace(/^\?+/, '');
+  }
+  if (
+    searchParams instanceof URLSearchParams ||
+    (typeof searchParams === 'object' &&
+      typeof (searchParams as { toString?: unknown }).toString === 'function' &&
+      (searchParams as { toString(): string }).toString !== Object.prototype.toString)
+  ) {
+    return (searchParams as { toString(): string }).toString().replace(/^\?+/, '');
+  }
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(
+    searchParams as Record<string, string | string[] | null | undefined>
+  )) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== undefined && item !== null) {
+          params.append(key, String(item));
+        }
+      }
+    } else {
+      params.append(key, String(value));
+    }
+  }
+  return params.toString();
+}
+
+export function resolveStorefrontCanonicalRedirect(input: {
+  requestedSlug?: string | null;
+  canonicalSlug?: string | null;
+  view?: 'door' | 'menu';
+  searchParams?: StorefrontSearchParamsInput;
+}): {
+  isAlias: boolean;
+  canonicalSlug: string;
+  canonicalPath: string;
+  canonicalUrl: string;
+} | null {
+  const requested = (input.requestedSlug ?? '').trim().toLowerCase();
+  const canonical = (input.canonicalSlug ?? '').trim().toLowerCase();
+  if (!canonical) return null;
+  const view = input.view === 'menu' ? 'menu' : 'door';
+  const encodedSlug = encodeURIComponent(canonical);
+  const canonicalPath =
+    view === 'menu' ? `/s/${encodedSlug}/menu` : `/s/${encodedSlug}`;
+  const query = serializeStorefrontSearchParams(input.searchParams);
+  const canonicalUrl = query ? `${canonicalPath}?${query}` : canonicalPath;
+  return {
+    isAlias: Boolean(requested) && requested !== canonical,
+    canonicalSlug: canonical,
+    canonicalPath,
+    canonicalUrl,
+  };
+}
+
 export interface ScopedTableQrVerification {
   shopSlug?: string | null;
+  canonicalSlug?: string | null;
   shopId?: string | null;
   tableId: string;
   sig: string;
@@ -155,9 +225,11 @@ export function resolveScopedTableQrVerification(
   }
   const currentSlug = (current.shopSlug ?? '').trim().toLowerCase();
   const verifiedSlug = (verification.shopSlug ?? '').trim().toLowerCase();
+  const verifiedCanonicalSlug = (verification.canonicalSlug ?? '').trim().toLowerCase();
   if (
-    (current.shopSlug !== undefined || verifiedSlug) &&
-    verifiedSlug !== currentSlug
+    (current.shopSlug !== undefined || verifiedSlug || verifiedCanonicalSlug) &&
+    verifiedSlug !== currentSlug &&
+    (!verifiedCanonicalSlug || verifiedCanonicalSlug !== currentSlug)
   ) {
     return null;
   }
@@ -174,6 +246,7 @@ export function resolveScopedTableQrVerification(
 
 export function createScopedTableQrVerification(input: {
   shopSlug: string;
+  canonicalSlug?: string | null;
   shopId?: string | null;
   tableId?: string | null;
   sig?: string | null;
@@ -183,6 +256,7 @@ export function createScopedTableQrVerification(input: {
   activeSig?: string | null;
 }): ScopedTableQrVerification | null {
   const cleanSlug = (input.shopSlug ?? '').trim();
+  const cleanCanonicalSlug = (input.canonicalSlug ?? '').trim();
   const cleanShopId = (input.shopId ?? '').trim();
   const cleanTableId = (input.tableId ?? '').trim();
   const cleanSig = (input.sig ?? '').trim();
@@ -191,11 +265,14 @@ export function createScopedTableQrVerification(input: {
     return null;
   }
 
-  if (
-    input.activeSlug !== undefined &&
-    (input.activeSlug ?? '').trim().toLowerCase() !== cleanSlug.toLowerCase()
-  ) {
-    return null;
+  if (input.activeSlug !== undefined) {
+    const cleanActiveSlug = (input.activeSlug ?? '').trim().toLowerCase();
+    if (
+      cleanActiveSlug !== cleanSlug.toLowerCase() &&
+      (!cleanCanonicalSlug || cleanActiveSlug !== cleanCanonicalSlug.toLowerCase())
+    ) {
+      return null;
+    }
   }
   if (
     input.activeTableId !== undefined &&
@@ -212,6 +289,7 @@ export function createScopedTableQrVerification(input: {
 
   return {
     shopSlug: cleanSlug,
+    ...(cleanCanonicalSlug ? { canonicalSlug: cleanCanonicalSlug } : {}),
     shopId: cleanShopId || null,
     tableId: cleanTableId,
     sig: cleanSig,

@@ -6115,3 +6115,858 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
     );
   });
 });
+
+// ============================================================================
+// SUITE 18: STOREFRONT SLUG ALIASES & CANONICAL REDIRECTS
+// ============================================================================
+describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () => {
+  test('settings PATCH /api/shops and admin POST /api/admin record durable aliases, handle repeated/no-op/revert updates, block cross-shop collisions, and enforce publish visibility', async () => {
+    const {
+      dbCreateShop,
+      dbGetShopSlugAliases,
+      dbClearShopSlugAliasesForTests,
+      setSupabaseDbClientForTests,
+    } = await import('@/lib/db');
+    const { setShopTablesDbClientForTests } = await import('@/lib/shop-tables');
+    const { GET: shopsGet, PATCH: shopsPatch } = await import(
+      '@/app/api/shops/route'
+    );
+    const { POST: adminPost } = await import('@/app/api/admin/route');
+    const { issueSessionToken } = await import('@/lib/server-auth');
+    const { SUPER_ADMIN_EMAIL, SUPER_ADMIN_ID } = await import(
+      '@/lib/auth-session'
+    );
+
+    const shopAId = 'shop-alias-a';
+    const ownerAId = 'owner-alias-a';
+    const shopBId = 'shop-alias-b';
+    const ownerBId = 'owner-alias-b';
+
+    const shopsStore = new Map<string, Record<string, unknown>>([
+      [
+        shopAId,
+        {
+          id: shopAId,
+          owner_id: ownerAId,
+          slug: 'pho-co-hoi-an',
+          name: 'Phở Cổ Hội An',
+          vertical: 'fnb',
+          is_published: true,
+          opening_hours_confirmed: true,
+          supported_langs: ['vi', 'en'],
+          currency: 'VND',
+          theme_config: { primaryColor: '#10b981', layout: 'list' },
+        },
+      ],
+      [
+        shopBId,
+        {
+          id: shopBId,
+          owner_id: ownerBId,
+          slug: 'tiem-tra-chanh',
+          name: 'Tiệm Trà Chanh',
+          vertical: 'fnb',
+          is_published: true,
+          opening_hours_confirmed: true,
+          supported_langs: ['vi', 'en'],
+          currency: 'VND',
+          theme_config: { primaryColor: '#f59e0b', layout: 'grid' },
+        },
+      ],
+    ]);
+
+    const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
+
+    const mockSupabase = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select() {
+              const filters: Array<{
+                op: 'eq' | 'neq' | 'in';
+                col: string;
+                val: unknown;
+              }> = [];
+              const matchesRow = (row: Record<string, unknown>) =>
+                filters.every((f) => {
+                  if (f.op === 'eq') return row[f.col] === f.val;
+                  if (f.op === 'neq') return row[f.col] !== f.val;
+                  if (f.op === 'in' && Array.isArray(f.val)) {
+                    return f.val.includes(row[f.col]);
+                  }
+                  return true;
+                });
+
+              const chain = {
+                limit: async () => ({
+                  data: Array.from(shopsStore.values()).filter(matchesRow).slice(0, 1),
+                  error: null,
+                }),
+                order: async () => ({
+                  data: Array.from(shopsStore.values()).filter(matchesRow),
+                  error: null,
+                }),
+                eq(col: string, val: unknown) {
+                  filters.push({ op: 'eq', col, val });
+                  return chain;
+                },
+                neq(col: string, val: unknown) {
+                  filters.push({ op: 'neq', col, val });
+                  return chain;
+                },
+                in(col: string, vals: unknown[]) {
+                  filters.push({ op: 'in', col, val: vals });
+                  return chain;
+                },
+                maybeSingle: async () => {
+                  const found = Array.from(shopsStore.values()).find(matchesRow);
+                  return { data: found ? { ...found } : null, error: null };
+                },
+                single: async () => {
+                  const found = Array.from(shopsStore.values()).find(matchesRow);
+                  return {
+                    data: found ? { ...found } : null,
+                    error: found ? null : { message: 'Shop not found' },
+                  };
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  const rows = Array.from(shopsStore.values()).filter(matchesRow);
+                  return Promise.resolve({ data: rows, error: null }).then(resolve);
+                },
+              };
+              return chain;
+            },
+            update(patch: Record<string, unknown>) {
+              return {
+                eq(_col: string, idVal: string) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          const existing = shopsStore.get(idVal);
+                          if (!existing) {
+                            return {
+                              data: null,
+                              error: { message: 'Shop not found' },
+                            };
+                          }
+                          const updated = { ...existing, ...patch };
+                          shopsStore.set(idVal, updated);
+                          return { data: { ...updated }, error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            insert(payload: Record<string, unknown>) {
+              const id = String(payload.id);
+              shopsStore.set(id, { ...payload });
+              return {
+                select: () => ({
+                  single: async () => ({ data: { ...payload }, error: null }),
+                }),
+              };
+            },
+          };
+        }
+
+        if (table === 'shop_slug_aliases') {
+          return {
+            select() {
+              const filters: Array<{ col: string; val: string }> = [];
+              const matchesAlias = (row: { slug: string; shop_id: string }) =>
+                filters.every((f) =>
+                  f.col === 'slug' ? row.slug === f.val : row.shop_id === f.val
+                );
+              const chain = {
+                eq(col: string, val: string) {
+                  filters.push({ col, val });
+                  return chain;
+                },
+                maybeSingle: async () => {
+                  const found = Array.from(aliasesStore.values()).find(
+                    matchesAlias
+                  );
+                  return { data: found ? { ...found } : null, error: null };
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  const rows = Array.from(aliasesStore.values()).filter(
+                    matchesAlias
+                  );
+                  return Promise.resolve({ data: rows, error: null }).then(
+                    resolve
+                  );
+                },
+              };
+              return chain;
+            },
+            upsert: async (payload: { slug: string; shop_id: string }) => {
+              aliasesStore.set(payload.slug, {
+                slug: payload.slug,
+                shop_id: payload.shop_id,
+              });
+              return { data: payload, error: null };
+            },
+            delete() {
+              const filters: Array<{ col: string; val: string }> = [];
+              const delChain = {
+                eq(col: string, val: string) {
+                  filters.push({ col, val });
+                  for (const [k, row] of aliasesStore.entries()) {
+                    const match = filters.every((f) =>
+                      f.col === 'slug'
+                        ? row.slug === f.val
+                        : row.shop_id === f.val
+                    );
+                    if (match) aliasesStore.delete(k);
+                  }
+                  return delChain;
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  return Promise.resolve({ error: null }).then(resolve);
+                },
+              };
+              return delChain;
+            },
+          };
+        }
+
+        if (table === 'profiles') {
+          return {
+            select() {
+              const chain = {
+                eq: () => chain,
+                limit: () => chain,
+                maybeSingle: async () => ({
+                  data: { id: ownerAId, plan: 'premium' },
+                  error: null,
+                }),
+                single: async () => ({
+                  data: { id: ownerAId, plan: 'premium' },
+                  error: null,
+                }),
+              };
+              return chain;
+            },
+            upsert: async () => ({ data: null, error: null }),
+          };
+        }
+
+        return {
+          select() {
+            const chain = {
+              eq: () => chain,
+              order: async () => ({ data: [], error: null }),
+              maybeSingle: async () => ({ data: null, error: null }),
+              single: async () => ({ data: null, error: null }),
+              then: (resolve: (v: unknown) => unknown) =>
+                Promise.resolve({ data: [], error: null }).then(resolve),
+            };
+            return chain;
+          },
+        };
+      },
+    };
+
+    setSupabaseDbClientForTests(mockSupabase);
+    setShopTablesDbClientForTests(mockSupabase, true);
+
+    try {
+      const ownerAToken = issueSessionToken({
+        id: ownerAId,
+        email: 'owner-a@qlaok.vn',
+        role: 'owner',
+      });
+      const ownerBToken = issueSessionToken({
+        id: ownerBId,
+        email: 'owner-b@qlaok.vn',
+        role: 'owner',
+      });
+      const adminToken = issueSessionToken({
+        id: SUPER_ADMIN_ID,
+        email: SUPER_ADMIN_EMAIL,
+        role: 'admin',
+        is_admin: true,
+      });
+
+      // 1. Owner A renames slug: pho-co-hoi-an -> pho-co-hoi-an-2
+      const rename1 = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({ id: shopAId, slug: 'pho-co-hoi-an-2' }),
+        })
+      );
+      assert.equal(rename1.status, 200);
+
+      // 2. No-op update (pho-co-hoi-an-2 -> PHO-CO-HOI-AN-2) does not add active slug to aliases
+      const noopRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({ id: shopAId, slug: '  PHO-CO-HOI-AN-2  ' }),
+        })
+      );
+      assert.equal(noopRes.status, 200);
+      assert.deepEqual(
+        (await dbGetShopSlugAliases(shopAId)).map((a) => a.slug),
+        ['pho-co-hoi-an']
+      );
+
+      // 3. Super Admin renames Shop A slug again via POST /api/admin: pho-co-hoi-an-2 -> pho-co-hoi-an-3
+      const adminRename = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'update_shop',
+            shopId: shopAId,
+            patch: { slug: 'pho-co-hoi-an-3' },
+          }),
+        })
+      );
+      assert.equal(adminRename.status, 200);
+      assert.deepEqual(
+        (await dbGetShopSlugAliases(shopAId)).map((a) => a.slug).sort(),
+        ['pho-co-hoi-an', 'pho-co-hoi-an-2']
+      );
+
+      // Both old slugs resolve to Shop A with canonical slug 'pho-co-hoi-an-3'
+      for (const oldSlug of ['pho-co-hoi-an', 'pho-co-hoi-an-2']) {
+        const res = await shopsGet(
+          new Request(`http://localhost:3000/api/shops?slug=${oldSlug}`)
+        );
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.shop.id, shopAId);
+        assert.equal(body.shop.slug, 'pho-co-hoi-an-3');
+      }
+
+      // 4. Cross-shop collision check: Shop B cannot take Shop A's canonical slug OR any of Shop A's aliases
+      for (const forbiddenSlug of [
+        'pho-co-hoi-an-3',
+        'pho-co-hoi-an',
+        'pho-co-hoi-an-2',
+      ]) {
+        const collisionPatch = await shopsPatch(
+          new Request('http://localhost:3000/api/shops', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${ownerBToken}`,
+            },
+            body: JSON.stringify({ id: shopBId, slug: forbiddenSlug }),
+          })
+        );
+        assert.equal(collisionPatch.status, 400);
+        const collisionBody = await collisionPatch.json();
+        assert.match(collisionBody.error, /SLUG_ALREADY_EXISTS/);
+
+        const adminCollision = await adminPost(
+          new Request('http://localhost:3000/api/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({
+              action: 'update_shop',
+              shopId: shopBId,
+              patch: { slug: forbiddenSlug },
+            }),
+          })
+        );
+        assert.equal(adminCollision.status, 400);
+      }
+
+      // 5. Creating a new shop with a slug that matches an existing alias auto-suffixes so it never shadows the alias
+      const createdShop = await dbCreateShop(
+        {
+          slug: 'pho-co-hoi-an',
+          name: 'Quán Mới Trùng Tên',
+          vertical: 'fnb',
+          tagline_i18n: { vi: '' },
+          description_i18n: { vi: '' },
+          logo_url: null,
+          cover_urls: [],
+          address: '',
+          city: 'Đà Nẵng',
+          google_maps_url: null,
+          google_review_url: null,
+          phone_contact: null,
+          zalo_phone: null,
+          wifi_info: { ssid: '', password: '' },
+          opening_hours: {
+            mon: { open: '07:00', close: '22:00', closed: false },
+            tue: { open: '07:00', close: '22:00', closed: false },
+            wed: { open: '07:00', close: '22:00', closed: false },
+            thu: { open: '07:00', close: '22:00', closed: false },
+            fri: { open: '07:00', close: '22:00', closed: false },
+            sat: { open: '07:00', close: '22:00', closed: false },
+            sun: { open: '07:00', close: '22:00', closed: false },
+          },
+          supported_langs: ['vi', 'en'],
+          currency: 'VND',
+          theme_config: { primaryColor: '#10b981', layout: 'list' },
+          is_published: true,
+        },
+        ownerBId
+      );
+      assert.notEqual(createdShop.slug, 'pho-co-hoi-an');
+      assert.match(createdShop.slug, /^pho-co-hoi-an-\d{3}$/);
+
+      // 6. Shop A can revert to its own former slug (pho-co-hoi-an-3 -> pho-co-hoi-an)
+      const revertRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({ id: shopAId, slug: 'pho-co-hoi-an' }),
+        })
+      );
+      assert.equal(revertRes.status, 200);
+      assert.deepEqual(
+        (await dbGetShopSlugAliases(shopAId)).map((a) => a.slug).sort(),
+        ['pho-co-hoi-an-2', 'pho-co-hoi-an-3']
+      );
+
+      // 7. Publish visibility: when Shop A is unpublished, anonymous and Owner B get 404 on aliases, while Owner A and Admin get 200
+      await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({ id: shopAId, is_published: false }),
+        })
+      );
+
+      const anonAliasRes = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an-2')
+      );
+      assert.equal(
+        anonAliasRes.status,
+        404,
+        'Anonymous caller must not access unpublished shop via alias'
+      );
+
+      const crossOwnerAliasRes = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an-2', {
+          headers: { Authorization: `Bearer ${ownerBToken}` },
+        })
+      );
+      assert.equal(
+        crossOwnerAliasRes.status,
+        404,
+        'Another shop owner must not access unpublished shop via alias'
+      );
+
+      const ownOwnerAliasRes = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an-2', {
+          headers: { Authorization: `Bearer ${ownerAToken}` },
+        })
+      );
+      assert.equal(
+        ownOwnerAliasRes.status,
+        200,
+        'Shop owner must still resolve their own unpublished shop via alias'
+      );
+
+      const adminAliasRes = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an-2', {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      );
+      assert.equal(
+        adminAliasRes.status,
+        200,
+        'Super Admin must resolve unpublished shop via alias'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+      setShopTablesDbClientForTests(null);
+      dbClearShopSlugAliasesForTests();
+    }
+  });
+
+  test('admin POST /api/admin delete_shop preserves durable aliases on failure and cleans up in-memory cache on confirmed success', async () => {
+    const {
+      dbGetShopSlugAliases,
+      dbClearShopSlugAliasesForTests,
+      setSupabaseDbClientForTests,
+    } = await import('@/lib/db');
+    const { POST: adminPost } = await import('@/app/api/admin/route');
+    const { issueSessionToken } = await import('@/lib/server-auth');
+    const { SUPER_ADMIN_EMAIL, SUPER_ADMIN_ID } = await import(
+      '@/lib/auth-session'
+    );
+
+    dbClearShopSlugAliasesForTests();
+
+    const targetShopId = 'shop-del-regress-test';
+    const targetOwnerId = 'owner-del-regress-test';
+
+    const shopsStore = new Map<string, Record<string, unknown>>([
+      [
+        targetShopId,
+        {
+          id: targetShopId,
+          owner_id: targetOwnerId,
+          slug: 'initial-del-slug',
+          name: 'Delete Target Shop',
+          vertical: 'fnb',
+          is_published: true,
+          supported_langs: ['vi', 'en'],
+          currency: 'VND',
+        },
+      ],
+    ]);
+
+    const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
+    let failShopDelete = false;
+
+    const mockSupabase = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select() {
+              const filters: Array<{
+                op: 'eq' | 'neq' | 'in';
+                col: string;
+                val: unknown;
+              }> = [];
+              const matchesRow = (row: Record<string, unknown>) =>
+                filters.every((f) => {
+                  if (f.op === 'eq') return row[f.col] === f.val;
+                  if (f.op === 'neq') return row[f.col] !== f.val;
+                  if (f.op === 'in' && Array.isArray(f.val)) {
+                    return f.val.includes(row[f.col]);
+                  }
+                  return true;
+                });
+
+              const chain = {
+                limit: async () => ({
+                  data: Array.from(shopsStore.values()).filter(matchesRow).slice(0, 1),
+                  error: null,
+                }),
+                order: async () => ({
+                  data: Array.from(shopsStore.values()).filter(matchesRow),
+                  error: null,
+                }),
+                eq(col: string, val: unknown) {
+                  filters.push({ op: 'eq', col, val });
+                  return chain;
+                },
+                neq(col: string, val: unknown) {
+                  filters.push({ op: 'neq', col, val });
+                  return chain;
+                },
+                in(col: string, vals: unknown[]) {
+                  filters.push({ op: 'in', col, val: vals });
+                  return chain;
+                },
+                maybeSingle: async () => {
+                  const found = Array.from(shopsStore.values()).find(matchesRow);
+                  return { data: found ? { ...found } : null, error: null };
+                },
+                single: async () => {
+                  const found = Array.from(shopsStore.values()).find(matchesRow);
+                  return {
+                    data: found ? { ...found } : null,
+                    error: found ? null : { message: 'Shop not found' },
+                  };
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  const rows = Array.from(shopsStore.values()).filter(matchesRow);
+                  return Promise.resolve({ data: rows, error: null }).then(resolve);
+                },
+              };
+              return chain;
+            },
+            update(patch: Record<string, unknown>) {
+              return {
+                eq(_col: string, idVal: string) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          const existing = shopsStore.get(idVal);
+                          if (!existing) {
+                            return {
+                              data: null,
+                              error: { message: 'Shop not found' },
+                            };
+                          }
+                          const updated = { ...existing, ...patch };
+                          shopsStore.set(idVal, updated);
+                          return { data: { ...updated }, error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            delete() {
+              const chain = {
+                eq(_col: string, idVal: string) {
+                  if (failShopDelete) {
+                    return Promise.resolve({
+                      error: { message: 'Simulated DB failure deleting shop' },
+                    });
+                  }
+                  shopsStore.delete(idVal);
+                  return Promise.resolve({ error: null });
+                },
+              };
+              return chain;
+            },
+          };
+        }
+
+        if (table === 'shop_slug_aliases') {
+          return {
+            select() {
+              const filters: Array<{ col: string; val: string }> = [];
+              const matchesAlias = (row: { slug: string; shop_id: string }) =>
+                filters.every((f) =>
+                  f.col === 'slug' ? row.slug === f.val : row.shop_id === f.val
+                );
+              const chain = {
+                eq(col: string, val: string) {
+                  filters.push({ col, val });
+                  return chain;
+                },
+                maybeSingle: async () => {
+                  const found = Array.from(aliasesStore.values()).find(
+                    matchesAlias
+                  );
+                  return { data: found ? { ...found } : null, error: null };
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  const rows = Array.from(aliasesStore.values()).filter(
+                    matchesAlias
+                  );
+                  return Promise.resolve({ data: rows, error: null }).then(
+                    resolve
+                  );
+                },
+              };
+              return chain;
+            },
+            upsert: async (payload: { slug: string; shop_id: string }) => {
+              aliasesStore.set(payload.slug, {
+                slug: payload.slug,
+                shop_id: payload.shop_id,
+              });
+              return { data: payload, error: null };
+            },
+            delete() {
+              const filters: Array<{ col: string; val: string }> = [];
+              const delChain = {
+                eq(col: string, val: string) {
+                  filters.push({ col, val });
+                  for (const [k, row] of aliasesStore.entries()) {
+                    const match = filters.every((f) =>
+                      f.col === 'slug'
+                        ? row.slug === f.val
+                        : row.shop_id === f.val
+                    );
+                    if (match) aliasesStore.delete(k);
+                  }
+                  return delChain;
+                },
+                then(resolve: (v: unknown) => unknown) {
+                  return Promise.resolve({ error: null }).then(resolve);
+                },
+              };
+              return delChain;
+            },
+          };
+        }
+
+        if (table === 'profiles') {
+          return {
+            select() {
+              const chain = {
+                eq: () => chain,
+                limit: () => chain,
+                maybeSingle: async () => ({
+                  data: { id: targetOwnerId, plan: 'premium' },
+                  error: null,
+                }),
+                single: async () => ({
+                  data: { id: targetOwnerId, plan: 'premium' },
+                  error: null,
+                }),
+              };
+              return chain;
+            },
+          };
+        }
+
+        return {
+          select() {
+            const chain = {
+              eq: () => chain,
+              order: async () => ({ data: [], error: null }),
+              maybeSingle: async () => ({ data: null, error: null }),
+              single: async () => ({ data: null, error: null }),
+              then: (resolve: (v: unknown) => unknown) =>
+                Promise.resolve({ data: [], error: null }).then(resolve),
+            };
+            return chain;
+          },
+          delete() {
+            const chain = {
+              eq: () => chain,
+              then: (resolve: (v: unknown) => unknown) =>
+                Promise.resolve({ error: null }).then(resolve),
+            };
+            return chain;
+          },
+        };
+      },
+    };
+
+    setSupabaseDbClientForTests(mockSupabase);
+
+    try {
+      const adminToken = issueSessionToken({
+        id: SUPER_ADMIN_ID,
+        email: SUPER_ADMIN_EMAIL,
+        role: 'admin',
+        is_admin: true,
+      });
+
+      // 1. Rename shop via admin API to generate an alias: initial-del-slug -> renamed-del-slug
+      const renameRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'update_shop',
+            shopId: targetShopId,
+            patch: { slug: 'renamed-del-slug' },
+          }),
+        })
+      );
+      assert.equal(renameRes.status, 200);
+
+      // Verify alias was recorded in durable storage and in-memory cache
+      const initialAliases = await dbGetShopSlugAliases(targetShopId);
+      assert.deepEqual(
+        initialAliases.map((a) => a.slug),
+        ['initial-del-slug']
+      );
+      assert.ok(aliasesStore.has('initial-del-slug'));
+
+      // 2. Failure case: shop deletion fails
+      failShopDelete = true;
+      const failDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_shop',
+            shopId: targetShopId,
+          }),
+        })
+      );
+      assert.equal(failDeleteRes.status, 400);
+      const failDeleteBody = await failDeleteRes.json();
+      assert.match(failDeleteBody.error, /Simulated DB failure deleting shop/);
+
+      // Verify that after failed shop deletion, aliases remain INTACT in both storage and memory
+      const aliasesAfterFailure = await dbGetShopSlugAliases(targetShopId);
+      assert.deepEqual(
+        aliasesAfterFailure.map((a) => a.slug),
+        ['initial-del-slug'],
+        'Durable aliases must remain intact when shop deletion fails'
+      );
+      assert.ok(
+        aliasesStore.has('initial-del-slug'),
+        'Mock DB durable alias row must not be deleted on failed shop deletion'
+      );
+      assert.ok(shopsStore.has(targetShopId), 'Shop must still exist after failed deletion');
+
+      // 3. Success case: shop deletion succeeds
+      failShopDelete = false;
+      const successDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_shop',
+            shopId: targetShopId,
+          }),
+        })
+      );
+      assert.equal(successDeleteRes.status, 200);
+      const successDeleteBody = await successDeleteRes.json();
+      assert.equal(successDeleteBody.ok, true);
+
+      // Verify shop was removed
+      assert.equal(shopsStore.has(targetShopId), false);
+
+      // Verify aliases were cleaned up (both in-memory cache and durable storage)
+      const aliasesAfterSuccess = await dbGetShopSlugAliases(targetShopId);
+      assert.deepEqual(
+        aliasesAfterSuccess,
+        [],
+        'Aliases in memory and DB must be cleaned up on confirmed deletion success'
+      );
+      assert.equal(aliasesStore.has('initial-del-slug'), false);
+    } finally {
+      setSupabaseDbClientForTests(null);
+      dbClearShopSlugAliasesForTests();
+    }
+  });
+
+  test('storefront door (/s/[slug]) and menu (/s/[slug]/menu) pages canonicalize alias URLs via router.replace while preserving all query parameters', async () => {
+    const fsMod = await import('node:fs');
+    const pathMod = await import('node:path');
+    const doorSource = fsMod.readFileSync(
+      pathMod.join(process.cwd(), 'src/app/(storefront)/s/[slug]/page.tsx'),
+      'utf8'
+    );
+    const menuSource = fsMod.readFileSync(
+      pathMod.join(process.cwd(), 'src/app/(storefront)/s/[slug]/menu/page.tsx'),
+      'utf8'
+    );
+
+    assert.match(doorSource, /resolveStorefrontCanonicalRedirect\(/);
+    assert.match(doorSource, /view:\s*'door'/);
+    assert.match(doorSource, /searchParams:\s*searchParams\.toString\(\)/);
+    assert.match(doorSource, /router\.replace\(canonicalRedirect\.canonicalUrl\)/);
+
+    assert.match(menuSource, /resolveStorefrontCanonicalRedirect\(/);
+    assert.match(menuSource, /view:\s*'menu'/);
+    assert.match(menuSource, /searchParams:\s*searchParams\.toString\(\)/);
+    assert.match(menuSource, /router\.replace\(canonicalRedirect\.canonicalUrl\)/);
+  });
+});

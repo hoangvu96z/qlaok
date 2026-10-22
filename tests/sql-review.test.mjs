@@ -456,5 +456,128 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       /null value in column "opening_hours_confirmed"|not-null/i
     );
 
+    // Verify 014_shop_slug_aliases.sql: durable aliases, repeated changes, revert, collision prevention, and RLS
+    await db.exec(
+      fs.readFileSync('supabase/migrations/014_shop_slug_aliases.sql', 'utf8')
+    );
+
+    // 1. Changing canonical slug records old slug as alias
+    await db.query(
+      "UPDATE shops SET slug = '  SQL-PUB-SHOP-V2  ' WHERE id = 'sql-pub-shop'"
+    );
+    const updatedPubShop = (
+      await db.query("SELECT slug FROM shops WHERE id = 'sql-pub-shop'")
+    ).rows[0];
+    assert.equal(updatedPubShop.slug, 'sql-pub-shop-v2');
+
+    let pubAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+      )
+    ).rows;
+    assert.deepEqual(pubAliases, [
+      { slug: 'sql-pub-shop', shop_id: 'sql-pub-shop' },
+    ]);
+
+    // 2. No-op update does not create a self-alias for the active canonical slug
+    await db.query(
+      "UPDATE shops SET slug = 'SQL-PUB-SHOP-V2' WHERE id = 'sql-pub-shop'"
+    );
+    pubAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+      )
+    ).rows;
+    assert.deepEqual(pubAliases, [
+      { slug: 'sql-pub-shop', shop_id: 'sql-pub-shop' },
+    ]);
+
+    // 3. Repeated slug change keeps all previous slugs as aliases for the same shop
+    await db.query(
+      "UPDATE shops SET slug = 'sql-pub-shop-v3' WHERE id = 'sql-pub-shop'"
+    );
+    pubAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+      )
+    ).rows;
+    assert.deepEqual(pubAliases, [
+      { slug: 'sql-pub-shop', shop_id: 'sql-pub-shop' },
+      { slug: 'sql-pub-shop-v2', shop_id: 'sql-pub-shop' },
+    ]);
+
+    // 4. Cross-shop collision with another shop's canonical slug or reserved alias is rejected
+    await assert.rejects(
+      db.query(
+        "UPDATE shops SET slug = 'sql-pub-shop-v3' WHERE id = 'sql-shop'"
+      ),
+      /SLUG_ALREADY_EXISTS/i
+    );
+    await assert.rejects(
+      db.query("UPDATE shops SET slug = 'sql-pub-shop' WHERE id = 'sql-shop'"),
+      /SLUG_ALREADY_EXISTS/i
+    );
+    await assert.rejects(
+      db.query(
+        "INSERT INTO shops (id, owner_id, slug, name, is_published) VALUES ('sql-collide-shop', '00000000-0000-0000-0000-000000000001', 'sql-pub-shop-v2', 'Colliding Shop', true)"
+      ),
+      /SLUG_ALREADY_EXISTS/i
+    );
+
+    // 5. Reverting a shop back to one of its own former aliases succeeds and removes that canonical slug from aliases
+    await db.query(
+      "UPDATE shops SET slug = 'sql-pub-shop' WHERE id = 'sql-pub-shop'"
+    );
+    pubAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+      )
+    ).rows;
+    assert.deepEqual(pubAliases, [
+      { slug: 'sql-pub-shop-v2', shop_id: 'sql-pub-shop' },
+      { slug: 'sql-pub-shop-v3', shop_id: 'sql-pub-shop' },
+    ]);
+
+    // 6. Unpublished shop alias visibility & direct client write boundaries
+    await db.query(
+      "UPDATE shops SET slug = 'sql-shop-v2' WHERE id = 'sql-shop'"
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.sub', '', false); SELECT set_config('request.jwt.claims', '{\"role\":\"anon\"}', false); SET ROLE anon"
+    );
+    const anonVisibleAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases ORDER BY slug"
+      )
+    ).rows;
+    assert.deepEqual(
+      anonVisibleAliases,
+      [
+        { slug: 'sql-pub-shop-v2', shop_id: 'sql-pub-shop' },
+        { slug: 'sql-pub-shop-v3', shop_id: 'sql-pub-shop' },
+      ],
+      'anon must only see aliases for published shops and never see unpublished shop aliases'
+    );
+    await assert.rejects(
+      db.query(
+        "INSERT INTO shop_slug_aliases (slug, shop_id) VALUES ('hijack-alias', 'sql-pub-shop')"
+      ),
+      /permission denied|row-level security|FORBIDDEN_SHOP_SLUG_ALIAS_MUTATION/i
+    );
+
+    // Authorized member of unpublished sql-shop can read its alias
+    await db.exec(
+      `RESET ROLE; SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub', '${staff}', false); SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${staff}"}', false);`
+    );
+    const staffVisibleUnpubAliases = (
+      await db.query(
+        "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-shop'"
+      )
+    ).rows;
+    assert.deepEqual(staffVisibleUnpubAliases, [
+      { slug: 'sql-shop', shop_id: 'sql-shop' },
+    ]);
+    await db.exec('RESET ROLE');
+
   } finally { await db.close(); }
 });
