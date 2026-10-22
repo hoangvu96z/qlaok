@@ -34,6 +34,7 @@ export function useShopRealtimeOrders({
   const [realtimeStatus, setRealtimeStatus] = useState<
     'connecting' | 'connected' | 'fallback'
   >('connecting');
+  const [fetchError, setFetchError] = useState<string>('');
 
   const knownNewOrderIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
@@ -91,14 +92,20 @@ export function useShopRealtimeOrders({
         if (scope !== scopeRef.current || request !== requestId.current) return;
         if (!Array.isArray(data.orders)) throw new Error('Danh sách đơn không hợp lệ');
         needsSyncRef.current = false;
+        setFetchError('');
         notifyIfBrandNewOrder(data.orders);
         setOrders(data.orders);
         if (Array.isArray(data.items)) onItemsSyncedRef.current?.(data.items);
         if (data.membership) onMembershipSyncedRef.current?.(data.membership as MobileShopMembership);
-      } catch {
+      } catch (err) {
         if (scope !== scopeRef.current || request !== requestId.current) return;
         needsSyncRef.current = true;
         setRealtimeStatus('fallback');
+        setFetchError(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Không thể tải danh sách đơn hàng'
+        );
         // Never read public theme_config.recent_orders after a failed authenticated request,
         // and preserve previously loaded orders in memory rather than wiping the screen on transient network hiccup.
       }
@@ -111,6 +118,7 @@ export function useShopRealtimeOrders({
     knownNewOrderIdsRef.current = new Set();
     setOrders([]);
     setLiveOrderAlert(null);
+    setFetchError('');
     if (isLoggedIn && shopId) void fetchOrdersFromApi(shopId);
   }, [isLoggedIn, shopId, fetchOrdersFromApi]);
 
@@ -185,6 +193,7 @@ export function useShopRealtimeOrders({
     liveOrderAlert,
     setLiveOrderAlert,
     realtimeStatus,
+    fetchError,
     fetchOrdersFromApi,
   };
 }

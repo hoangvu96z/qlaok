@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   Alert,
+  Linking,
   RefreshControl,
   SafeAreaView,
   ScrollView,
@@ -28,6 +29,7 @@ import {
   MobileShopOrder,
   MobileShopPermission,
   MobileShopThemeConfig,
+  PRODUCTION_API_URL,
   supabase,
 } from './src/lib/supabase';
 import { MobileThemePalette, styles } from './src/styles/mobileStyles';
@@ -79,6 +81,13 @@ export default function App() {
   );
 }
 
+function formatLocalIsoDate(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function Workspace({ userId }: { userId: string }) {
   const { t } = useMobileI18n();
   // Localized request errors must not make changing language reload shop data/drafts.
@@ -88,6 +97,7 @@ function Workspace({ userId }: { userId: string }) {
   const loadGeneration = useRef(0);
   const scopeRef = useRef('');
   const pendingOrders = useRef(new Set<string>());
+  const [pendingOrderIds, setPendingOrderIds] = useState<string[]>([]);
   useEffect(() => () => { loadGeneration.current++; scopeRef.current = ''; }, []);
   const [isDarkMode, setIsDarkMode] = useState(false);
 
@@ -144,7 +154,7 @@ function Workspace({ userId }: { userId: string }) {
     content: 'Áp dụng trực tiếp khi chọn món trên Menu QR',
     voucherCode: 'QLAOK15',
   });
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = formatLocalIsoDate();
   const [flashSale, setFlashSale] = useState<MobileFlashSaleConfig>({
     enabled: false,
     badgeText: '⚡ FLASH SALE GIỜ VÀNG',
@@ -234,6 +244,7 @@ function Workspace({ userId }: { userId: string }) {
     liveOrderAlert,
     setLiveOrderAlert,
     realtimeStatus,
+    fetchError,
     fetchOrdersFromApi,
   } = useShopRealtimeOrders({
     isLoggedIn,
@@ -243,7 +254,7 @@ function Workspace({ userId }: { userId: string }) {
   });
 
   const hydrateThemeAndPromoState = useCallback(
-    (shop: MobileShop, loadedItems: MobileCatalogItem[]) => {
+    (shop: MobileShop, _loadedItems: MobileCatalogItem[]) => {
       const tc = shop.theme_config;
       setPrimaryColor(tc?.primaryColor || '#10b981');
       setLayoutMode(
@@ -251,7 +262,7 @@ function Workspace({ userId }: { userId: string }) {
       );
       setBackgroundStyle(tc?.backgroundStyle || 'clean');
 
-      const defaultToday = new Date().toISOString().slice(0, 10);
+      const defaultToday = formatLocalIsoDate();
 
       if (tc?.promoBanner) {
         setPromoBanner({
@@ -329,10 +340,9 @@ function Workspace({ userId }: { userId: string }) {
             tc.flashSale.endDate || tc.flashSale.startDate || defaultToday,
           startTime: tc.flashSale.startTime || '11:00',
           endTime: tc.flashSale.endTime || '22:00',
-          itemIds:
-            tc.flashSale.itemIds?.length > 0
-              ? tc.flashSale.itemIds
-              : loadedItems.slice(0, 3).map((i) => i.id),
+          itemIds: Array.isArray(tc?.flashSale?.itemIds)
+            ? tc.flashSale.itemIds
+            : [],
         });
       } else {
         setFlashSale({
@@ -345,7 +355,7 @@ function Workspace({ userId }: { userId: string }) {
           endDate: defaultToday,
           startTime: '11:00',
           endTime: '22:00',
-          itemIds: loadedItems.slice(0, 3).map((i) => i.id),
+          itemIds: [],
         });
       }
     },
@@ -405,7 +415,7 @@ function Workspace({ userId }: { userId: string }) {
           scopeRef.current = currentShop.id;
           setActiveShopId(currentShop.id);
           setEditShopName(currentShop.name);
-          setEditCity(currentShop.city || 'Đà Nẵng');
+          setEditCity(currentShop.city || '');
           setEditPhone(currentShop.phone_contact || '');
           setEditWifiSsid(currentShop.wifi_info?.ssid || '');
           setEditWifiPass(currentShop.wifi_info?.password || '');
@@ -481,6 +491,9 @@ function Workspace({ userId }: { userId: string }) {
       const generation = loadGeneration.current;
       if (scopeRef.current !== shopId || pendingOrders.current.has(orderId)) return;
       pendingOrders.current.add(orderId);
+      setPendingOrderIds((prev) =>
+        prev.includes(orderId) ? prev : [...prev, orderId]
+      );
       setOrderError('');
       try {
         const response = await fetchApi('/api/orders', {
@@ -509,14 +522,15 @@ function Workspace({ userId }: { userId: string }) {
         if (scopeRef.current === shopId && generation === loadGeneration.current) setOrderError(error instanceof Error ? error.message : t('alert.updateOrderFailed'));
       } finally {
         pendingOrders.current.delete(orderId);
+        setPendingOrderIds((prev) => prev.filter((id) => id !== orderId));
       }
     },
     [activeShop, orders, setOrders, t]
   );
 
-  const handleSaveShopAndTheme = useCallback(async () => {
+  const handleSavePromotions = useCallback(async () => {
     if (!activeShop) return;
-    if (!canManageSettings && !canManagePromotions) {
+    if (!canManagePromotions) {
       Alert.alert(
         t('alert.permissionDeniedTitle'),
         t('alert.permissionDeniedDesc')
@@ -524,17 +538,63 @@ function Workspace({ userId }: { userId: string }) {
       return;
     }
     const saveGeneration = loadGeneration.current;
+    const existingTc = activeShop.theme_config || {};
     const nextThemeConfig: MobileShopThemeConfig = {
-      ...activeShop.theme_config,
-      primaryColor,
-      layout: layoutMode,
-      backgroundStyle,
+      ...existingTc,
       promoBanner,
       welcomePopup: {
         ...welcomePopup,
         voucherCode: promoBanner.voucherCode || welcomePopup.voucherCode,
       },
       flashSale,
+    };
+
+    try {
+      await fetchApi('/api/shops', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeShop.id,
+          theme_config: nextThemeConfig,
+        }),
+      });
+    } catch (error) {
+      Alert.alert(
+        t('alert.saveErrorTitle'),
+        error instanceof Error ? error.message : t('alert.saveErrorDesc')
+      );
+      return;
+    }
+
+    if (saveGeneration !== loadGeneration.current) return;
+    Alert.alert(t('alert.saveSuccessTitle'), t('alert.saveSuccessDesc'));
+    loadShopsAndData(activeShop.id);
+  }, [
+    activeShop,
+    canManagePromotions,
+    promoBanner,
+    welcomePopup,
+    flashSale,
+    loadShopsAndData,
+    t,
+  ]);
+
+  const handleSaveSettings = useCallback(async () => {
+    if (!activeShop) return;
+    if (!canManageSettings) {
+      Alert.alert(
+        t('alert.permissionDeniedTitle'),
+        t('alert.permissionDeniedDesc')
+      );
+      return;
+    }
+    const saveGeneration = loadGeneration.current;
+    const existingTc = activeShop.theme_config || {};
+    const nextThemeConfig: MobileShopThemeConfig = {
+      ...existingTc,
+      primaryColor,
+      layout: layoutMode,
+      backgroundStyle,
     };
 
     try {
@@ -554,26 +614,22 @@ function Workspace({ userId }: { userId: string }) {
         }),
       });
     } catch (error) {
-      Alert.alert(t('alert.saveErrorTitle'), error instanceof Error ? error.message : t('alert.saveErrorDesc'));
+      Alert.alert(
+        t('alert.saveErrorTitle'),
+        error instanceof Error ? error.message : t('alert.saveErrorDesc')
+      );
       return;
     }
 
     if (saveGeneration !== loadGeneration.current) return;
-    Alert.alert(
-      t('alert.saveSuccessTitle'),
-      t('alert.saveSuccessDesc')
-    );
+    Alert.alert(t('alert.saveSuccessTitle'), t('alert.saveSuccessDesc'));
     loadShopsAndData(activeShop.id);
   }, [
     activeShop,
     canManageSettings,
-    canManagePromotions,
     primaryColor,
     layoutMode,
     backgroundStyle,
-    promoBanner,
-    welcomePopup,
-    flashSale,
     editShopName,
     editCity,
     editPhone,
@@ -710,9 +766,25 @@ function Workspace({ userId }: { userId: string }) {
               accessibilityRole="button"
               accessibilityLabel={t('shell.logout')}
               style={[styles.logoutBtn, { backgroundColor: theme.subCard }]}
-              onPress={async () => {
-                const { error } = await supabase.auth.signOut({ scope: 'local' });
-                if (error) Alert.alert(t('shell.logoutErrorTitle'), error.message);
+              onPress={() => {
+                Alert.alert(
+                  t('shell.logoutConfirmTitle'),
+                  t('shell.logoutConfirmDesc'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    {
+                      text: t('shell.logout'),
+                      style: 'destructive',
+                      onPress: async () => {
+                        const { error } = await supabase.auth.signOut({
+                          scope: 'local',
+                        });
+                        if (error)
+                          Alert.alert(t('shell.logoutErrorTitle'), error.message);
+                      },
+                    },
+                  ]
+                );
               }}
             >
               <Ionicons name="log-out-outline" size={18} color={theme.subText} />
@@ -769,37 +841,54 @@ function Workspace({ userId }: { userId: string }) {
 
       {/* NEW ORDER NOTIFICATION BANNER ON MOBILE */}
       {liveOrderAlert && (
-        <TouchableOpacity
-          style={styles.liveAlertBanner}
-          onPress={() => {
-            navigateTab('orders');
-            setOrderFilter('active');
-            setLiveOrderAlert(null);
-          }}
-        >
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Ionicons
-                name="notifications"
-                size={13}
-                color="#ffffff"
-                style={{ marginRight: 4 }}
-              />
-              <Text style={styles.liveAlertBadge}>
-                {t('shell.liveOrderBadge')}
+        <View style={styles.liveAlertBanner}>
+          <TouchableOpacity
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+            onPress={() => {
+              navigateTab('orders');
+              setOrderFilter('active');
+              setLiveOrderAlert(null);
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons
+                  name="notifications"
+                  size={13}
+                  color="#ffffff"
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={styles.liveAlertBadge}>
+                  {t('shell.liveOrderBadge')}
+                </Text>
+              </View>
+              <Text style={styles.liveAlertTitle}>
+                {liveOrderAlert.tableLabel} • #{liveOrderAlert.orderCode} (
+                {formatVnd(liveOrderAlert.totalAmount)})
               </Text>
             </View>
-            <Text style={styles.liveAlertTitle}>
-              {liveOrderAlert.tableLabel} • #{liveOrderAlert.orderCode} (
-              {formatVnd(liveOrderAlert.totalAmount)})
+            <View style={styles.liveAlertCta}>
+              <Text style={styles.liveAlertCtaText}>
+                {t('shell.liveOrderViewCta')}
+              </Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('common.close')}
+            onPress={() => setLiveOrderAlert(null)}
+            style={{ marginLeft: 10, paddingHorizontal: 6, paddingVertical: 4 }}
+          >
+            <Text style={{ color: '#94a3b8', fontSize: 15, fontWeight: '900' }}>
+              ✕
             </Text>
-          </View>
-          <View style={styles.liveAlertCta}>
-            <Text style={styles.liveAlertCtaText}>
-              {t('shell.liveOrderViewCta')}
-            </Text>
-          </View>
-        </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
       )}
 
       {loading ? (
@@ -808,6 +897,74 @@ function Workspace({ userId }: { userId: string }) {
           <Text style={[styles.loadingText, { color: theme.subText }]}>
             {t('shell.loadingStore')}
           </Text>
+        </View>
+      ) : shops.length === 0 ? (
+        <View style={[styles.centerBox, { padding: 24 }]}>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: theme.card,
+                borderColor: theme.border,
+                width: '100%',
+                alignItems: 'center',
+              },
+            ]}
+          >
+            <Ionicons
+              name="storefront-outline"
+              size={36}
+              color="#10b981"
+              style={{ marginBottom: 10 }}
+            />
+            <Text
+              style={[
+                styles.cardHeading,
+                { color: theme.text, textAlign: 'center' },
+              ]}
+            >
+              {t('shell.noShopsTitle')}
+            </Text>
+            <Text
+              style={[
+                styles.itemSub,
+                {
+                  color: theme.subText,
+                  textAlign: 'center',
+                  marginBottom: 16,
+                },
+              ]}
+            >
+              {t('shell.noShopsDesc')}
+            </Text>
+            <TouchableOpacity
+              accessibilityRole="link"
+              style={[styles.saveSettingsBtn, { width: '100%', marginTop: 0 }]}
+              onPress={() => void Linking.openURL(PRODUCTION_API_URL)}
+            >
+              <Text style={styles.saveSettingsBtnText}>
+                {t('shell.openWebOnboarding')}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={[
+                styles.choiceBtn,
+                {
+                  width: '100%',
+                  flex: 0,
+                  marginTop: 10,
+                  backgroundColor: theme.subCard,
+                  borderColor: theme.border,
+                },
+              ]}
+              onPress={() => void loadShopsAndData()}
+            >
+              <Text style={[styles.choiceBtnText, { color: theme.text }]}>
+                {t('shell.refreshStores')}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <View style={{ flex: 1 }}>
@@ -831,6 +988,11 @@ function Workspace({ userId }: { userId: string }) {
                 onChangeOrderFilter={setOrderFilter}
                 onUpdateOrderStatus={handleUpdateOrderStatus}
                 onPrintOrder={setPrintingOrder}
+                pendingOrderIds={pendingOrderIds}
+                fetchError={fetchError}
+                onRetryFetchOrders={() =>
+                  activeShop ? void fetchOrdersFromApi(activeShop.id) : undefined
+                }
                 canCollectPayment={canCollectPayment}
                 canRefundOrder={canRefundOrder}
                 canCancelOrder={hasPerm('orders.cancel_unpaid')}
@@ -916,7 +1078,7 @@ function Workspace({ userId }: { userId: string }) {
                 flashSale={flashSale}
                 setFlashSale={setFlashSale}
                 items={items}
-                onSaveShopAndTheme={handleSaveShopAndTheme}
+                onSaveShopAndTheme={handleSavePromotions}
                 theme={theme}
               />
             </ScrollView>
@@ -957,7 +1119,7 @@ function Workspace({ userId }: { userId: string }) {
                 promoBanner={promoBanner}
                 flashSale={flashSale}
                 items={items}
-                onSaveShopAndTheme={handleSaveShopAndTheme}
+                onSaveShopAndTheme={handleSaveSettings}
                 theme={theme}
               />
             </ScrollView>

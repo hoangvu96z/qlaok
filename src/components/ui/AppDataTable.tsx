@@ -472,7 +472,7 @@ export function AppDataTable<T>(
           fontWeight: 800,
           textTransform: 'uppercase',
           letterSpacing: '0.04em',
-          color: isDark ? '#94a3b8' : '#64748b',
+          color: isDark ? '#cbd5e1' : '#475569',
           paddingLeft: '14px',
           paddingRight: '14px',
         },
@@ -483,7 +483,7 @@ export function AppDataTable<T>(
           fontSize: '13px',
           backgroundColor: isDark ? '#0f172a' : '#ffffff',
           color: isDark ? '#e2e8f0' : '#1e293b',
-          borderBottomColor: isDark ? 'rgba(30, 41, 59, 0.75)' : '#f1f5f9',
+          borderBottomColor: isDark ? 'rgba(30, 41, 59, 0.75)' : '#e2e8f0',
         },
         denseStyle: {
           minHeight: '36px',
@@ -501,6 +501,7 @@ export function AppDataTable<T>(
           paddingRight: '14px',
           paddingTop: '8px',
           paddingBottom: '8px',
+          color: isDark ? '#e2e8f0' : '#1e293b',
         },
       },
       footer: {

@@ -7,7 +7,8 @@ import {
   parseRawOcrTextFallback,
   smartFallbackTranslate,
 } from '@/lib/gemini';
-import { BusinessVertical, I18nText } from '@/types/qlaok';
+import type { BusinessVertical, I18nText } from '@/types/qlaok';
+import { requireAiCaller, requireAiOcrPlan } from '../_lib/guard';
 
 interface OcrAiResponse {
   categories: Array<{
@@ -22,6 +23,10 @@ interface OcrAiResponse {
 }
 
 export async function POST(req: Request) {
+  // Paid AI endpoint: require a verified session and apply per-user rate limit
+  const guard = await requireAiCaller(req, 'ocr');
+  if (guard.errorResponse) return guard.errorResponse;
+
   let vertical: BusinessVertical = 'fnb';
   let extractedText = '';
 
@@ -48,6 +53,10 @@ export async function POST(req: Request) {
         provider: 'demo-ocr',
       });
     }
+
+    // Server-side plan gate: real OCR / AI Vision requires a plan with allowAiOcr
+    const planLock = await requireAiOcrPlan(guard.user);
+    if (planLock) return planLock;
 
     extractedText = (rawOcrText || '').trim();
 

@@ -21,6 +21,10 @@ import {
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import {
+  resolvePostLoginRoute,
+  sanitizeNextPath,
+} from '@/lib/post-login-route';
 import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
   AppLanguageSwitcher,
@@ -28,6 +32,24 @@ import {
 } from '@/components/ui/AppI18nProvider';
 
 type AuthMode = 'password_login' | 'register' | 'otp';
+
+/**
+ * Keeps the previously selected shop when it is still accessible (owned or
+ * member), otherwise selects the first accessible shop.
+ */
+function rememberActiveShop(
+  fallbackShopId: string | null,
+  data: { shops?: Array<{ id: string }>; memberShops?: Array<{ id: string }> }
+) {
+  if (typeof window === 'undefined' || !fallbackShopId) return;
+  const accessible = new Set(
+    [...(data.shops || []), ...(data.memberShops || [])].map((s) => s.id)
+  );
+  const saved = localStorage.getItem('qlaok_active_shop_id');
+  if (!saved || !accessible.has(saved)) {
+    localStorage.setItem('qlaok_active_shop_id', fallbackShopId);
+  }
+}
 
 function LoginFormContent() {
   const router = useRouter();
@@ -67,7 +89,11 @@ function LoginFormContent() {
     if (existing && !searchParams.get('switch')) {
       // Do not auto-redirect if user explicitly opened /login?mode=register
       if (!searchParams.get('mode')) {
-        router.replace(isSuperAdmin(existing) ? '/admin' : '/dashboard');
+        router.replace(
+          isSuperAdmin(existing)
+            ? '/admin'
+            : sanitizeNextPath(searchParams.get('next')) || '/dashboard'
+        );
       }
     }
   }, [router, searchParams]);
@@ -134,20 +160,16 @@ function LoginFormContent() {
         }
 
         setStoredAuthOwner(data.user, data.accessToken);
-        if (data.isAdmin || isSuperAdmin(data.user)) {
-          router.push('/admin');
-          return;
-        }
-
-        const ownerShops = data.shops || [];
-        if (ownerShops.length === 0) {
-          router.push('/onboarding');
-        } else {
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('qlaok_active_shop_id', ownerShops[0].id);
-          }
-          router.push('/dashboard');
-        }
+        const target = resolvePostLoginRoute(
+          {
+            isAdmin: Boolean(data.isAdmin || isSuperAdmin(data.user)),
+            shops: data.shops,
+            memberShops: data.memberShops,
+          },
+          searchParams.get('next')
+        );
+        rememberActiveShop(target.activeShopId, data);
+        router.push(target.path);
         return;
       }
 
@@ -248,12 +270,22 @@ function LoginFormContent() {
             if (syncData.user) {
               setStoredAuthOwner(syncData.user, syncData.accessToken);
             }
-            if ((syncData.shops || []).length === 0) {
-              router.push('/onboarding');
-              return;
-            }
+            const target = resolvePostLoginRoute(
+              {
+                isAdmin: Boolean(
+                  syncData.isAdmin ||
+                    (syncData.user && isSuperAdmin(syncData.user))
+                ),
+                shops: syncData.shops,
+                memberShops: syncData.memberShops,
+              },
+              searchParams.get('next')
+            );
+            rememberActiveShop(target.activeShopId, syncData);
+            router.push(target.path);
+            return;
           }
-          router.push('/dashboard');
+          router.push(sanitizeNextPath(searchParams.get('next')) || '/dashboard');
         }
       }
     } catch (err) {

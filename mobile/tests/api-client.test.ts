@@ -65,3 +65,22 @@ test('forwards caller cancellation to the network request', async () => {
   controller.abort();
   await assert.rejects(api('/api/orders', { signal: controller.signal }), /aborted/);
 });
+
+test('invokes onUnauthorized callback on HTTP 401 only', async () => {
+  let signOutCount = 0;
+  let nextStatus = 403;
+  const api = createApiClient(
+    'http://dev:3000',
+    async () => 'jwt',
+    async () => Response.json({ error: 'auth error' }, { status: nextStatus }),
+    async () => {
+      signOutCount++;
+    }
+  );
+  await assert.rejects(api('/api/orders'), /auth error/);
+  assert.equal(signOutCount, 0);
+
+  nextStatus = 401;
+  await assert.rejects(api('/api/orders'), /auth error/);
+  assert.equal(signOutCount, 1);
+});

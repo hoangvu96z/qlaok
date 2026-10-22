@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Check, ArrowRight, Sparkles } from 'lucide-react';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
@@ -12,9 +12,19 @@ import {
   useAppI18n,
 } from '@/components/ui/AppI18nProvider';
 import { BrandLogo } from '@/components/ui/BrandLogo';
+import { getStoredAuthOwner, getStoredAuthToken } from '@/lib/auth-session';
+
+const BILLING_PATH = '/dashboard/billing';
+const LOGIN_TO_BILLING_PATH = `/login?next=${encodeURIComponent(BILLING_PATH)}`;
 
 export default function MarketingPricingPage() {
   const { locale, tx } = useAppI18n();
+  // Resolved after mount to avoid hydration mismatch (auth lives in localStorage).
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  useEffect(() => {
+    setIsLoggedIn(Boolean(getStoredAuthToken() || getStoredAuthOwner()));
+  }, []);
+  const upgradeHref = isLoggedIn ? BILLING_PATH : LOGIN_TO_BILLING_PATH;
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -39,7 +49,7 @@ export default function MarketingPricingPage() {
               {tx('Khám phá', 'Explore')}
             </Link>
             <Link
-              href="/dashboard/billing"
+              href={upgradeHref}
               className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-500"
             >
               {tx('Nâng cấp', 'Upgrade')}
@@ -122,7 +132,7 @@ export default function MarketingPricingPage() {
 
                 <div className="pt-6">
                   <Link
-                    href={tier === 'free' ? '/onboarding' : '/dashboard/billing'}
+                    href={tier === 'free' ? '/onboarding' : upgradeHref}
                     className={`flex w-full items-center justify-center gap-1.5 rounded-2xl py-3.5 px-4 text-xs font-black ${
                       isPremium
                         ? 'bg-emerald-600 text-white shadow-md hover:bg-emerald-500'

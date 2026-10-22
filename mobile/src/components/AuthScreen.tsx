@@ -1,6 +1,9 @@
 import React, { memo, useState } from 'react';
 import {
   Image,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
   SafeAreaView,
   Text,
   TextInput,
@@ -8,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { supabase } from '../lib/supabase';
+import { PRODUCTION_API_URL, supabase } from '../lib/supabase';
 import { styles } from '../styles/mobileStyles';
 import { MobileLanguageSwitcher, useMobileI18n } from './MobileI18nProvider';
 
@@ -18,8 +21,11 @@ export const AuthScreen = memo(function AuthScreen() {
   const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const canSubmit =
+    !authLoading && email.trim().length > 0 && password.length > 0;
 
   const handleLogin = async () => {
+    if (!email.trim() || !password || authLoading) return;
     setAuthLoading(true);
     setAuthError('');
     try {
@@ -42,64 +48,93 @@ export const AuthScreen = memo(function AuthScreen() {
   return (
     <SafeAreaView style={styles.authContainer}>
       <StatusBar style="light" />
-      <View style={styles.authCard}>
-        <View
-          style={{
-            flexDirection: 'row',
-            justifyContent: 'flex-end',
-            marginBottom: 8,
-          }}
-        >
-          <MobileLanguageSwitcher variant="dark" />
-        </View>
-        <View style={[styles.logoBadge, { overflow: 'hidden' }]}>
-          <Image
-            source={require('../../assets/q-menu.png')}
-            accessibilityLabel="Qlaok"
-            resizeMode="cover"
-            style={{ width: '100%', height: '100%' }}
-          />
-        </View>
-        <Text style={styles.authTitle}>{t('auth.title')}</Text>
-        <Text style={styles.authSubtitle}>{t('auth.subtitle')}</Text>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1, justifyContent: 'center' }}
+      >
+        <View style={styles.authCard}>
+          <View
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'flex-end',
+              marginBottom: 8,
+            }}
+          >
+            <MobileLanguageSwitcher variant="dark" />
+          </View>
+          <View style={[styles.logoBadge, { overflow: 'hidden' }]}>
+            <Image
+              source={require('../../assets/q-menu.png')}
+              accessibilityLabel="Qlaok"
+              resizeMode="cover"
+              style={{ width: '100%', height: '100%' }}
+            />
+          </View>
+          <Text style={styles.authTitle}>{t('auth.title')}</Text>
+          <Text style={styles.authSubtitle}>{t('auth.subtitle')}</Text>
 
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('auth.emailLabel')}</Text>
-          <TextInput
-            accessibilityLabel={t('auth.emailLabel')}
-            autoComplete="email"
-            style={styles.authInput}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-          />
-        </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>{t('auth.emailLabel')}</Text>
+            <TextInput
+              accessibilityLabel={t('auth.emailLabel')}
+              autoComplete="email"
+              style={styles.authInput}
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
+          </View>
 
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('auth.passwordLabel')}</Text>
-          <TextInput
-            accessibilityLabel={t('auth.passwordLabel')}
-            autoComplete="current-password"
-            style={styles.authInput}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
-        </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>{t('auth.passwordLabel')}</Text>
+            <TextInput
+              accessibilityLabel={t('auth.passwordLabel')}
+              autoComplete="current-password"
+              style={styles.authInput}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+            />
+          </View>
 
-        {authError ? <Text accessibilityRole="alert" style={{ color: '#fca5a5', marginBottom: 12 }}>{authError}</Text> : null}
-        <TouchableOpacity
-          accessibilityRole="button"
-          style={styles.primaryAuthBtn}
-          onPress={() => handleLogin()}
-          disabled={authLoading}
-        >
-          <Text style={styles.primaryAuthBtnText}>
-            {authLoading ? t('auth.submitting') : t('auth.submit')}
-          </Text>
-        </TouchableOpacity>
-      </View>
+          {authError ? (
+            <Text
+              accessibilityRole="alert"
+              style={{ color: '#fca5a5', marginBottom: 12 }}
+            >
+              {authError}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            accessibilityRole="button"
+            style={[styles.primaryAuthBtn, !canSubmit && { opacity: 0.5 }]}
+            onPress={() => handleLogin()}
+            disabled={!canSubmit}
+          >
+            <Text style={styles.primaryAuthBtnText}>
+              {authLoading ? t('auth.submitting') : t('auth.submit')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            accessibilityRole="link"
+            onPress={() => void Linking.openURL(PRODUCTION_API_URL)}
+            style={{ marginTop: 16, alignItems: 'center' }}
+          >
+            <Text
+              style={{
+                color: '#34d399',
+                fontSize: 12,
+                fontWeight: '700',
+                textAlign: 'center',
+              }}
+            >
+              {t('auth.createStorePrompt')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 });

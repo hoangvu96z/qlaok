@@ -19,13 +19,14 @@ import { uploadCompressedImage } from '@/lib/upload-helper';
 
 interface QuickItemRowProps {
   item: CatalogItem;
-  onToggleAvailable: (item: CatalogItem, nextAvailable: boolean) => Promise<void>;
-  onUpdatePrice: (item: CatalogItem, nextPrice: number) => Promise<void>;
-  onUpdateStock?: (item: CatalogItem, nextStock: number | null) => Promise<void>;
-  onUpdateImage?: (item: CatalogItem, nextImageUrl: string) => Promise<void>;
-  onToggleFeatured: (item: CatalogItem, nextFeatured: boolean) => Promise<void>;
+  /** Mutation callbacks may resolve `false` when the server rejected the change (state rolled back). */
+  onToggleAvailable: (item: CatalogItem, nextAvailable: boolean) => Promise<boolean | void>;
+  onUpdatePrice: (item: CatalogItem, nextPrice: number) => Promise<boolean | void>;
+  onUpdateStock?: (item: CatalogItem, nextStock: number | null) => Promise<boolean | void>;
+  onUpdateImage?: (item: CatalogItem, nextImageUrl: string) => Promise<boolean | void>;
+  onToggleFeatured: (item: CatalogItem, nextFeatured: boolean) => Promise<boolean | void>;
   onEditTranslations: (item: CatalogItem) => void;
-  onDelete: (itemId: string) => Promise<void>;
+  onDelete: (itemId: string) => Promise<boolean | void>;
 }
 
 export function QuickItemRow({
@@ -75,8 +76,16 @@ export function QuickItemRow({
       return;
     }
     setSavingPrice(true);
-    await onUpdatePrice(item, numeric);
-    setSavingPrice(false);
+    let ok: boolean | void = false;
+    try {
+      ok = await onUpdatePrice(item, numeric);
+    } finally {
+      setSavingPrice(false);
+    }
+    if (ok === false) {
+      setPriceInput(String(item.price));
+      return;
+    }
     setPriceSaved(true);
     setTimeout(() => setPriceSaved(false), 1800);
   };
@@ -94,7 +103,11 @@ export function QuickItemRow({
       return;
     }
 
-    await onUpdateStock(item, nextStock);
+    const ok = await onUpdateStock(item, nextStock);
+    if (ok === false) {
+      setStockInput(currentStock === null ? '' : String(currentStock));
+      return;
+    }
     setStockSaved(true);
     setTimeout(() => setStockSaved(false), 1800);
   };

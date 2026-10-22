@@ -21,6 +21,9 @@ import {
   AlertTriangle,
   Utensils,
   RefreshCw,
+  Lock,
+  XCircle,
+  Ban,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -33,7 +36,10 @@ import {
 import {
   formatCurrency,
   formatTableLabel,
+  getGuestOrderLabels,
+  localizeGuestOrderError,
   LOCALE_META,
+  localizeStorefrontTableError,
   QUICK_TAGS_BY_VERTICAL,
   tField,
   UI_LABELS,
@@ -56,6 +62,14 @@ export interface ShowToStaffModalProps {
   locale: SupportedLocale;
   cart: CartSelection[];
   tables?: ShopTable[];
+  /** Table pinned by a valid QR tableId — hides the table chooser (no switching). */
+  lockedTable?: ShopTable | null;
+  /** HMAC signature from the scanned table QR URL (?sig=...). */
+  tableQrSignature?: string | null;
+  /** Whether the guest arrived via a per-table QR URL (?tableId=...). */
+  isTableQrEntry?: boolean;
+  /** Shop is outside opening hours — new order submission is disabled. */
+  isShopClosed?: boolean;
   selectedTableId?: string | null;
   isTakeawaySelected?: boolean;
   tableResolutionError?: string | null;
@@ -74,6 +88,21 @@ export interface ShowToStaffModalProps {
   onUpdateQuantity: (index: number, delta: number) => void;
   onClearCart: () => void;
   onOrderCreated?: (order: ShopOrder) => void;
+  /** Guest dismissed a finished (completed / cancelled) order — clear persisted state. */
+  onDismissOrder?: () => void;
+}
+
+/** True when the guest no longer needs the tracker for this order. */
+function isGuestOrderFinished(order: ShopOrder | null | undefined): boolean {
+  if (!order) return false;
+  if (order.status === 'cancelled' || order.payment_status === 'refunded') {
+    return true;
+  }
+  if (order.status === 'completed') {
+    // Keep a completed-but-unpaid VietQR order so the guest can still scan to pay
+    return order.payment_status === 'paid' || order.payment_method !== 'vietqr';
+  }
+  return false;
 }
 
 const SEND_ORDER_LABELS: Record<
@@ -220,6 +249,10 @@ export function ShowToStaffModal({
   locale,
   cart,
   tables,
+  lockedTable = null,
+  tableQrSignature = null,
+  isTableQrEntry = false,
+  isShopClosed = false,
   selectedTableId = null,
   isTakeawaySelected = false,
   tableResolutionError = null,
@@ -234,9 +267,8 @@ export function ShowToStaffModal({
   onUpdateQuantity,
   onClearCart,
   onOrderCreated,
+  onDismissOrder,
 }: ShowToStaffModalProps) {
-  const tx = (vi: string, en: string) => (locale === 'vi' ? vi : en);
-
   // Active unarchived tables belonging to this shop
   const activeTables = useMemo(
     () => filterSelectableTables(tables, shop.id),
@@ -256,12 +288,27 @@ export function ShowToStaffModal({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const [activeOrder, setActiveOrder] = useState<ShopOrder | null>(null);
+  const [cancellingOrder, setCancellingOrder] = useState(false);
+  const [trackerError, setTrackerError] = useState('');
+  const [activeOrder, setActiveOrder] = useState<ShopOrder | null>(
+    cart.length === 0 && activeOrderProp && !editingOrder
+      ? activeOrderProp
+      : null
+  );
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const orderText = SEND_ORDER_LABELS[locale] || SEND_ORDER_LABELS.vi;
+  const guestLabels = getGuestOrderLabels(locale);
   const visitorMeta = LOCALE_META[locale] || LOCALE_META.vi;
   const quickTagsPool = QUICK_TAGS_BY_VERTICAL[shop.vertical] || [];
+  const resolvedTableError = useMemo(
+    () => localizeStorefrontTableError(tableResolutionError, locale),
+    [tableResolutionError, locale]
+  );
+  const resolvedTablesLoadError = useMemo(
+    () => localizeStorefrontTableError(tablesLoadError, locale),
+    [tablesLoadError, locale]
+  );
 
   // Sync parent selection into modal state when not editing an existing order
   useEffect(() => {
@@ -331,10 +378,18 @@ export function ShowToStaffModal({
       editingOrder.payment_status === 'unpaid'
   );
 
+  // QR-locked table: chooser hidden, guest cannot switch tables
+  const isTableLocked = Boolean(lockedTable);
+  // New orders are blocked while the shop is closed (edits/cancel of a pending order stay allowed)
+  const isSubmitBlockedByHours = isShopClosed && !isEditingExisting;
+
   // Determine current effective table display & whether selection is valid
   const currentSelectionDisplay = useMemo(() => {
     if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
       return formatTableLabel(editingOrder.table_label, locale);
+    }
+    if (lockedTable) {
+      return lockedTable.name;
     }
     if (selectedActiveTable) {
       return selectedActiveTable.name;
@@ -345,24 +400,26 @@ export function ShowToStaffModal({
     if (tables === undefined && initialTableLabel && !tableResolutionError) {
       return formatTableLabel(initialTableLabel, locale);
     }
-    return tx('Chưa chọn bàn', 'No table selected');
+    return labels.noTableSelected;
   }, [
     isEditingExisting,
     editingOrder,
     hasEditedOrderTable,
+    lockedTable,
     selectedActiveTable,
     localTakeaway,
     tables,
     initialTableLabel,
     tableResolutionError,
     locale,
+    labels.noTableSelected,
   ]);
 
   const isSelectionResolved = useMemo(() => {
     if (isEditingExisting && editingOrder && !hasEditedOrderTable) {
       return true;
     }
-    if (selectedActiveTable || localTakeaway) {
+    if (lockedTable || selectedActiveTable || localTakeaway) {
       return true;
     }
     if (tables === undefined && !tableResolutionError && !tablesLoadError) {
@@ -373,6 +430,7 @@ export function ShowToStaffModal({
     isEditingExisting,
     editingOrder,
     hasEditedOrderTable,
+    lockedTable,
     selectedActiveTable,
     localTakeaway,
     tables,
@@ -479,13 +537,14 @@ export function ShowToStaffModal({
   const handleSendOrderToMpos = async () => {
     if (cart.length === 0 || submitting) return;
 
+    if (isSubmitBlockedByHours) {
+      setSubmitError(guestLabels.errorShopClosed);
+      return;
+    }
+
     if (!isSelectionResolved) {
       setSubmitError(
-        tableResolutionError ||
-          tx(
-            'Mời quý khách chọn bàn phục vụ hoặc chọn Mang về trước khi bấm nút gửi đến quầy.',
-            'Please select an active table or choose Takeaway before sending your order to the counter.'
-          )
+        resolvedTableError || labels.selectTableBeforeSendError
       );
       return;
     }
@@ -521,11 +580,10 @@ export function ShowToStaffModal({
         };
       });
 
-      const resolvedNewTableId = selectedActiveTable
-        ? selectedActiveTable.id
-        : null;
-      const resolvedNewTableLabel = selectedActiveTable
-        ? selectedActiveTable.name
+      const effectiveTable = lockedTable || selectedActiveTable;
+      const resolvedNewTableId = effectiveTable ? effectiveTable.id : null;
+      const resolvedNewTableLabel = effectiveTable
+        ? effectiveTable.name
         : localTakeaway
           ? 'Mang về'
           : initialTableLabel.trim() || 'Mang về';
@@ -549,6 +607,12 @@ export function ShowToStaffModal({
               shop_id: shop.id,
               table_id: resolvedNewTableId,
               table_label: resolvedNewTableLabel,
+              ...(lockedTable || isTableQrEntry
+                ? {
+                    qr_table_mode: true,
+                    table_qr_sig: (tableQrSignature ?? '').trim(),
+                  }
+                : {}),
               visitor_lang: locale,
               customer_note:
                 `${customerNote.trim()}${promoNoteSuffix}`.trim() || undefined,
@@ -565,10 +629,16 @@ export function ShowToStaffModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to submit order');
+        // Never surface raw "CODE: Vietnamese" server text to guests
+        throw new Error(
+          localizeGuestOrderError(
+            { code: data?.code, error: data?.error, status: res.status },
+            locale
+          )
+        );
       }
 
       const savedOrder: ShopOrder = {
@@ -592,11 +662,95 @@ export function ShowToStaffModal({
       }
     } catch (err) {
       setSubmitError(
-        err instanceof Error ? err.message : 'Unable to send order'
+        err instanceof Error && err.message
+          ? err.message
+          : guestLabels.errorGeneric
       );
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // Close the modal; finished orders (completed / cancelled) are dismissed for good
+  const handleCloseModal = () => {
+    if (activeOrder && isGuestOrderFinished(activeOrder)) {
+      onDismissOrder?.();
+    }
+    setActiveOrder(null);
+    setTrackerError('');
+    onClose();
+  };
+
+  // Guest self-cancel while the order is still new + unpaid (guest PATCH path)
+  const handleGuestCancelOrder = async () => {
+    const target = activeOrder;
+    if (!target || cancellingOrder) return;
+    if (target.status !== 'new' || target.payment_status !== 'unpaid') return;
+    if (!target.tracking_token) return;
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(guestLabels.cancelOrderConfirm)
+    ) {
+      return;
+    }
+    setCancellingOrder(true);
+    setTrackerError('');
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tracking-token': target.tracking_token,
+        },
+        body: JSON.stringify({
+          order_id: target.id,
+          tracking_token: target.tracking_token,
+          status: 'cancelled',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.order) {
+        throw new Error(
+          localizeGuestOrderError(
+            { code: data?.code, error: data?.error, status: res.status },
+            locale
+          )
+        );
+      }
+      const merged: ShopOrder = {
+        ...data.order,
+        tracking_token: target.tracking_token,
+      };
+      setActiveOrder(merged);
+      onOrderCreated?.(merged);
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('qlaok_realtime_sync');
+        bc.postMessage({ type: 'order_updated', order: merged, shopId: shop.id });
+        bc.close();
+      }
+    } catch (err) {
+      setTrackerError(
+        err instanceof Error && err.message
+          ? err.message
+          : guestLabels.errorGeneric
+      );
+    } finally {
+      setCancellingOrder(false);
+    }
+  };
+
+  // "Clear selection": confirm, empty the cart AND leave edit mode (bug: editingOrder stayed set)
+  const handleClearSelection = () => {
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(guestLabels.clearSelectionConfirm)
+    ) {
+      return;
+    }
+    onClearCart();
+    if (editingOrder) onCancelEditOrder?.();
+    setSubmitError('');
+    onClose();
   };
 
   return (
@@ -640,11 +794,8 @@ export function ShowToStaffModal({
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setActiveOrder(null);
-                  onClose();
-                }}
-                aria-label={tx('Đóng cửa sổ đặt món', 'Close order modal')}
+                onClick={handleCloseModal}
+                aria-label={labels.closeOrderModalAria}
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black/20 text-white hover:bg-black/35 transition"
               >
                 <X className="h-5 w-5" />
@@ -658,7 +809,13 @@ export function ShowToStaffModal({
               <motion.div
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="rounded-3xl border-2 border-emerald-500/40 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-lg space-y-5"
+                data-testid="guest-order-tracker"
+                data-order-status={activeOrder.status}
+                className={`rounded-3xl border-2 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-lg space-y-5 ${
+                  activeOrder.status === 'cancelled'
+                    ? 'border-rose-400/60'
+                    : 'border-emerald-500/40'
+                }`}
               >
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
                   <div className="min-w-0">
@@ -672,12 +829,39 @@ export function ShowToStaffModal({
                         {formatTableLabel(activeOrder.table_label, locale)}
                       </span>
                     </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      {labels.autoNotifiedSub}
-                    </p>
+                    {activeOrder.status !== 'cancelled' && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {labels.autoNotifiedSub}
+                      </p>
+                    )}
+                    <span
+                      data-testid="guest-order-payment-badge"
+                      className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-black ${
+                        activeOrder.payment_status === 'paid'
+                          ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                          : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                      }`}
+                    >
+                      {activeOrder.payment_status === 'paid' ? (
+                        <>
+                          <CheckCircle2 className="h-3 w-3" />
+                          {guestLabels.paidBadge}
+                        </>
+                      ) : (
+                        guestLabels.unpaidBadge
+                      )}
+                    </span>
                   </div>
-                  <div className="flex h-12 w-12 sm:h-14 sm:w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
-                    {activeOrder.status === 'completed' ? (
+                  <div
+                    className={`flex h-12 w-12 sm:h-14 sm:w-14 shrink-0 items-center justify-center rounded-2xl ${
+                      activeOrder.status === 'cancelled'
+                        ? 'bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400'
+                        : 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400'
+                    }`}
+                  >
+                    {activeOrder.status === 'cancelled' ? (
+                      <XCircle className="h-7 w-7 sm:h-8 sm:w-8" />
+                    ) : activeOrder.status === 'completed' ? (
                       <CheckCircle2 className="h-7 w-7 sm:h-8 sm:w-8" />
                     ) : activeOrder.status === 'preparing' ? (
                       <ChefHat className="h-7 w-7 sm:h-8 sm:w-8 animate-bounce" />
@@ -687,7 +871,24 @@ export function ShowToStaffModal({
                   </div>
                 </div>
 
-                {/* 3-Step Visual Progress Bar */}
+                {/* Cancelled state replaces the progress steps */}
+                {activeOrder.status === 'cancelled' ? (
+                  <div
+                    role="status"
+                    data-testid="guest-order-cancelled"
+                    className="flex items-start gap-3 rounded-2xl border-2 border-rose-300 bg-rose-50 p-4 text-rose-900 dark:border-rose-700/60 dark:bg-rose-950/50 dark:text-rose-100"
+                  >
+                    <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600 dark:text-rose-400" />
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-black">
+                        {guestLabels.statusCancelledTitle}
+                      </p>
+                      <p className="text-xs font-medium leading-relaxed">
+                        {guestLabels.statusCancelledSub}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
                 <div className="space-y-2.5">
                   {[
                     {
@@ -732,6 +933,23 @@ export function ShowToStaffModal({
                     </div>
                   ))}
                 </div>
+                )}
+
+                {/* Thank-you state once the order is served & completed */}
+                {activeOrder.status === 'completed' && (
+                  <div
+                    role="status"
+                    data-testid="guest-order-thank-you"
+                    className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-center text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100"
+                  >
+                    <p className="text-base font-black">
+                      🎉 {guestLabels.thankYouTitle}
+                    </p>
+                    <p className="mt-0.5 text-xs font-medium">
+                      {guestLabels.thankYouSub}
+                    </p>
+                  </div>
+                )}
 
                 {/* Ordered Items Summary */}
                 <div className="rounded-2xl bg-slate-50 dark:bg-slate-950/70 p-4 space-y-2 border border-slate-200 dark:border-slate-800">
@@ -779,6 +997,7 @@ export function ShowToStaffModal({
                 {/* Live Shop Payment QR when customer selected VietQR */}
                 {activeOrder.payment_method === 'vietqr' &&
                   activeOrder.payment_status !== 'paid' &&
+                  activeOrder.status !== 'cancelled' &&
                   (() => {
                     const qrInfo = getShopPaymentQrInfo(
                       shop,
@@ -788,10 +1007,7 @@ export function ShowToStaffModal({
                     if (!qrInfo.isConfigured || !qrInfo.qrImageUrl) {
                       return (
                         <div className="rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200 p-3.5 text-center text-xs font-bold">
-                          {tx(
-                            'Quán chưa cấu hình mã VietQR tự động. Vui lòng thanh toán trực tiếp với nhân viên tại bàn/quầy.',
-                            'Online QR is not configured for this shop. Please pay with staff at your table or counter.'
-                          )}
+                          {labels.qrNotConfiguredNotice}
                         </div>
                       );
                     }
@@ -808,7 +1024,7 @@ export function ShowToStaffModal({
                         >
                           <img
                             src={qrInfo.qrImageUrl}
-                            alt="VietQR Payment"
+                            alt={labels.qrPayment}
                             className="h-full w-full object-contain"
                           />
                         </div>
@@ -848,15 +1064,49 @@ export function ShowToStaffModal({
                     </button>
                   )}
 
+                {/* Guest self-cancel ONLY while status === 'new' and unpaid */}
+                {activeOrder.status === 'new' &&
+                  activeOrder.payment_status === 'unpaid' &&
+                  activeOrder.tracking_token && (
+                    <button
+                      type="button"
+                      data-testid="guest-order-cancel-btn"
+                      disabled={cancellingOrder}
+                      onClick={handleGuestCancelOrder}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-300 bg-white text-rose-700 hover:bg-rose-50 dark:border-rose-700/60 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/40 py-3 text-sm font-bold transition disabled:opacity-50"
+                    >
+                      {cancellingOrder ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>{guestLabels.cancellingOrder}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Ban className="h-4 w-4" />
+                          <span>{guestLabels.cancelOrderBtn}</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+
+                {trackerError && (
+                  <div
+                    role="alert"
+                    data-testid="guest-order-tracker-error"
+                    className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-800 dark:bg-rose-950/80 dark:border-rose-700 dark:text-rose-200"
+                  >
+                    ⚠️ {trackerError}
+                  </div>
+                )}
+
                 <button
                   type="button"
-                  onClick={() => {
-                    setActiveOrder(null);
-                    onClose();
-                  }}
+                  onClick={handleCloseModal}
                   className="w-full rounded-2xl bg-slate-200 text-slate-800 hover:bg-slate-300 dark:bg-slate-800 dark:text-white dark:hover:bg-slate-700 py-3.5 text-sm font-bold transition"
                 >
-                  {orderText.orderMoreBtn}
+                  {isGuestOrderFinished(activeOrder)
+                    ? guestLabels.dismissOrderBtn
+                    : orderText.orderMoreBtn}
                 </button>
               </motion.div>
             ) : (
@@ -869,10 +1119,7 @@ export function ShowToStaffModal({
                         {formatTableLabel(editingOrder.table_label, locale)}
                       </p>
                       <p className="text-[11px] text-amber-800 dark:text-amber-100/90">
-                        {tx(
-                          'Mời quý khách kiểm tra lại món, tăng/giảm số lượng hoặc chọn thêm món trước khi bấm nút gửi đến quầy.',
-                          'Please review your items, adjust quantities, or add more dishes before sending to the counter.'
-                        )}
+                        {labels.editingOrderHint}
                       </p>
                     </div>
                     <button
@@ -880,13 +1127,13 @@ export function ShowToStaffModal({
                       onClick={onClose}
                       className="shrink-0 rounded-xl bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
                     >
-                      {tx('+ Chọn thêm món', '+ Add Items')}
+                      {labels.addMoreItemsBtn}
                     </button>
                   </div>
                 )}
 
                 {/* Invalid / Inactive QR Table Resolution Warning */}
-                {tableResolutionError && !isSelectionResolved && (
+                {resolvedTableError && !isSelectionResolved && (
                   <div
                     role="alert"
                     data-testid="modal-table-resolution-warning"
@@ -894,27 +1141,22 @@ export function ShowToStaffModal({
                   >
                     <div className="flex items-center gap-2 text-xs font-black text-amber-800 dark:text-amber-300">
                       <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                      <span>
-                        {tx(
-                          'Cần xác nhận lại bàn phục vụ',
-                          'Table confirmation required'
-                        )}
-                      </span>
+                      <span>{labels.tableConfirmationRequiredTitle}</span>
                     </div>
                     <p className="text-xs font-semibold leading-relaxed">
-                      {tableResolutionError}
+                      {resolvedTableError}
                     </p>
                   </div>
                 )}
 
                 {/* Tables Load Error Banner */}
-                {tablesLoadError && (
+                {resolvedTablesLoadError && (
                   <div
                     role="alert"
                     data-testid="modal-tables-load-error"
                     className="flex items-center justify-between gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-800 dark:border-rose-700/60 dark:bg-rose-950/50 dark:text-rose-200"
                   >
-                    <span>⚠️ {tablesLoadError}</span>
+                    <span>⚠️ {resolvedTablesLoadError}</span>
                     {onRetryLoadTables && (
                       <button
                         type="button"
@@ -922,7 +1164,7 @@ export function ShowToStaffModal({
                         className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-rose-600 px-2.5 py-1 text-[11px] font-black text-white hover:bg-rose-500"
                       >
                         <RefreshCw className="h-3 w-3" />
-                        <span>{tx('Thử lại', 'Retry')}</span>
+                        <span>{labels.retryBtn}</span>
                       </button>
                     )}
                   </div>
@@ -956,9 +1198,8 @@ export function ShowToStaffModal({
 
                       {isEditingExisting && editingOrder && !hasEditedOrderTable && (
                         <p className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-semibold text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-                          {tx(
-                            `Đang giữ nguyên vị trí của đơn #${editingOrder.order_code}: `,
-                            `Keeping existing table for #${editingOrder.order_code}: `
+                          {labels.keepingExistingTablePrefix(
+                            editingOrder.order_code
                           )}
                           <strong className="text-slate-900 dark:text-white">
                             {formatTableLabel(editingOrder.table_label, locale)}
@@ -966,82 +1207,92 @@ export function ShowToStaffModal({
                         </p>
                       )}
 
-                      <div className="flex flex-wrap gap-1.5">
-                        {activeTables.map((tb) => {
-                          const isSelected =
-                            (!isEditingExisting || hasEditedOrderTable) &&
-                            !localTakeaway &&
-                            selectedActiveTable?.id === tb.id;
-                          return (
+                      {isTableLocked ? (
+                        <p
+                          data-testid="modal-table-locked"
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-700/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+                        >
+                          <Lock className="h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            {guestLabels.tableLockedTitle}:{' '}
+                            <strong>{lockedTable?.name}</strong> —{' '}
+                            {guestLabels.tableLockedHint}
+                          </span>
+                        </p>
+                      ) : (
+                        <>
+                          <div className="flex flex-wrap gap-1.5">
+                            {activeTables.map((tb) => {
+                              const isSelected =
+                                (!isEditingExisting || hasEditedOrderTable) &&
+                                !localTakeaway &&
+                                selectedActiveTable?.id === tb.id;
+                              return (
+                                <button
+                                  key={tb.id}
+                                  type="button"
+                                  aria-pressed={isSelected}
+                                  data-testid={`modal-table-chip-${tb.id}`}
+                                  onClick={() => handleChooseManagedTable(tb)}
+                                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                                    isSelected
+                                      ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                                      : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                                  }`}
+                                >
+                                  <Utensils className="h-3.5 w-3.5 shrink-0" />
+                                  <span>{tb.name}</span>
+                                  {tb.section ? (
+                                    <span
+                                      className={`text-[10px] font-semibold ${
+                                        isSelected
+                                          ? 'text-emerald-100 dark:text-slate-900'
+                                          : 'text-slate-500 dark:text-slate-400'
+                                      }`}
+                                    >
+                                      ({tb.section})
+                                    </span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+
+                            {/* Takeaway Option */}
                             <button
-                              key={tb.id}
                               type="button"
-                              aria-pressed={isSelected}
-                              data-testid={`modal-table-chip-${tb.id}`}
-                              onClick={() => handleChooseManagedTable(tb)}
+                              aria-pressed={
+                                (!isEditingExisting || hasEditedOrderTable) &&
+                                localTakeaway
+                              }
+                              data-testid="modal-table-chip-takeaway"
+                              onClick={handleChooseTakeaway}
                               className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                                isSelected
+                                (!isEditingExisting || hasEditedOrderTable) &&
+                                localTakeaway
                                   ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
                                   : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
                               }`}
                             >
-                              <Utensils className="h-3.5 w-3.5 shrink-0" />
-                              <span>{tb.name}</span>
-                              {tb.section ? (
-                                <span
-                                  className={`text-[10px] font-semibold ${
-                                    isSelected
-                                      ? 'text-emerald-100 dark:text-slate-900'
-                                      : 'text-slate-500 dark:text-slate-400'
-                                  }`}
-                                >
-                                  ({tb.section})
-                                </span>
-                              ) : null}
+                              <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
+                              <span>{formatTableLabel('Mang về', locale)}</span>
                             </button>
-                          );
-                        })}
+                          </div>
 
-                        {/* Takeaway Option */}
-                        <button
-                          type="button"
-                          aria-pressed={
-                            (!isEditingExisting || hasEditedOrderTable) &&
-                            localTakeaway
-                          }
-                          data-testid="modal-table-chip-takeaway"
-                          onClick={handleChooseTakeaway}
-                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                            (!isEditingExisting || hasEditedOrderTable) &&
-                            localTakeaway
-                              ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                              : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-                          }`}
-                        >
-                          <ShoppingBag className="h-3.5 w-3.5 shrink-0" />
-                          <span>{formatTableLabel('Mang về', locale)}</span>
-                        </button>
-                      </div>
-
-                      {tables !== undefined &&
-                        activeTables.length === 0 &&
-                        !tablesLoadError && (
-                          <p className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                            {tx(
-                              'Quán hiện chưa mở bàn tại chỗ. Bạn có thể chọn "Mang về" để gửi đơn.',
-                              'No dine-in tables are currently active. You can select "Takeaway" to place your order.'
+                          {tables !== undefined &&
+                            activeTables.length === 0 &&
+                            !tablesLoadError && (
+                              <p className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                {labels.noActiveTablesTakeawayHint}
+                              </p>
                             )}
-                          </p>
-                        )}
+                        </>
+                      )}
                     </div>
 
                     {/* Payment Method Toggle */}
                     <div
                       role="group"
-                      aria-label={tx(
-                        'Phương thức thanh toán',
-                        'Payment method'
-                      )}
+                      aria-label={labels.paymentMethodGroupAria}
                       className="grid grid-cols-2 gap-2 pt-1"
                     >
                       <button
@@ -1225,10 +1476,7 @@ export function ShowToStaffModal({
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              aria-label={tx(
-                                `Giảm số lượng ${primaryName}`,
-                                `Decrease quantity of ${primaryName}`
-                              )}
+                              aria-label={labels.decreaseQtyAria(primaryName)}
                               onClick={() => onUpdateQuantity(idx, -1)}
                               className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
@@ -1239,10 +1487,7 @@ export function ShowToStaffModal({
                             </span>
                             <button
                               type="button"
-                              aria-label={tx(
-                                `Tăng số lượng ${primaryName}`,
-                                `Increase quantity of ${primaryName}`
-                              )}
+                              aria-label={labels.increaseQtyAria(primaryName)}
                               onClick={() => onUpdateQuantity(idx, 1)}
                               className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
@@ -1317,9 +1562,19 @@ export function ShowToStaffModal({
                 </div>
 
                 {/* Primary Button: Send Directly to Counter mPOS */}
+                {isSubmitBlockedByHours && (
+                  <div
+                    role="status"
+                    data-testid="modal-shop-closed-notice"
+                    className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-800 dark:bg-rose-950/80 dark:border-rose-700 dark:text-rose-200"
+                  >
+                    🕒 {guestLabels.shopClosedSubmitDisabled}
+                  </div>
+                )}
+
                 <button
                   type="button"
-                  disabled={submitting}
+                  disabled={submitting || isSubmitBlockedByHours}
                   onClick={handleSendOrderToMpos}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-4 text-base font-black text-slate-950 shadow-lg shadow-emerald-500/25 transition hover:bg-emerald-400 active:scale-[0.99] disabled:opacity-50"
                 >
@@ -1341,10 +1596,7 @@ export function ShowToStaffModal({
                 <div className="flex items-center justify-end">
                   <button
                     type="button"
-                    onClick={() => {
-                      onClearCart();
-                      onClose();
-                    }}
+                    onClick={handleClearSelection}
                     className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-rose-500 dark:text-rose-400" />

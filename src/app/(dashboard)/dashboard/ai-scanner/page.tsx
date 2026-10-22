@@ -77,7 +77,7 @@ export default function DashboardAiScannerPage() {
     );
     const res = await fetch('/api/ai/ocr-menu', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         imageBase64: imgBase64 ?? previewImage ?? undefined,
         mimeType: 'image/webp',

@@ -94,11 +94,18 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   },
 });
 
-export const fetchApi = createApiClient(API_BASE_URL, async () => {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  return data.session?.access_token ?? null;
-});
+export const fetchApi = createApiClient(
+  API_BASE_URL,
+  async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    return data.session?.access_token ?? null;
+  },
+  fetch,
+  async () => {
+    await supabase.auth.signOut({ scope: 'local' });
+  }
+);
 
 export interface MobilePromoBannerConfig {
   enabled: boolean;

@@ -20,6 +20,7 @@ export interface PrintableStandeeProps {
   tableName?: string | null;
   tableCode?: string | null;
   sectionName?: string | null;
+  qrSig?: string | null;
 }
 
 export function PrintableStandee({
@@ -33,6 +34,7 @@ export function PrintableStandee({
   tableName = null,
   tableCode = null,
   sectionName = null,
+  qrSig = null,
 }: PrintableStandeeProps) {
   const { t, tx } = useAppI18n();
   const standeeRef = useRef<HTMLDivElement>(null);
@@ -46,18 +48,24 @@ export function PrintableStandee({
   const effectiveTableName = (table?.name || tableName || '').trim();
   const effectiveTableCode = (table?.table_code || tableCode || '').trim();
   const effectiveSection = (table?.section || sectionName || '').trim();
+  const effectiveQrSig = (table?.qr_sig || qrSig || '').trim();
 
   const normalizedBase = (baseUrl || '').trim().replace(/\/+$/, '');
 
   const targetUrl =
     qrType === 'door'
       ? `${normalizedBase}/s/${shop.slug}?src=door`
-      : buildTableMenuUrl(normalizedBase, shop.slug, effectiveTableId);
+      : buildTableMenuUrl(
+          normalizedBase,
+          shop.slug,
+          effectiveTableId,
+          effectiveQrSig
+        );
 
   const relativePath =
     qrType === 'door'
       ? `/s/${shop.slug}?src=door`
-      : buildTableMenuUrl('', shop.slug, effectiveTableId);
+      : buildTableMenuUrl('', shop.slug, effectiveTableId, effectiveQrSig);
 
   const handleDownloadPng = async () => {
     if (!standeeRef.current) return;

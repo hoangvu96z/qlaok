@@ -588,11 +588,13 @@ export const PromotionsTab = memo(function PromotionsTab({
               { label: t('promo.preset14Days'), days: 13 },
               { label: t('promo.preset30Days'), days: 29 },
             ].map((preset) => {
+              const formatLocalDate = (d: Date) =>
+                `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
               const dStart = new Date();
-              const startIso = dStart.toISOString().slice(0, 10);
+              const startIso = formatLocalDate(dStart);
               const dEnd = new Date();
               dEnd.setDate(dEnd.getDate() + preset.days);
-              const endIso = dEnd.toISOString().slice(0, 10);
+              const endIso = formatLocalDate(dEnd);
               const isActive =
                 flashSale.startDate === startIso &&
                 flashSale.endDate === endIso;

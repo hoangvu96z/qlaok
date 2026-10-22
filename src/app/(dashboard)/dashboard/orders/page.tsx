@@ -22,6 +22,8 @@ import {
   Settings,
   Monitor,
   Edit3,
+  Loader2,
+  LogIn,
 } from 'lucide-react';
 import { startOrderLiveSync, type OrderLiveStatus } from '@/lib/order-live-sync';
 import { getAuthHeaders } from '@/lib/auth-session';
@@ -41,6 +43,7 @@ import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { formatChimeSummaryLabel } from '@/lib/app-i18n';
 import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
+import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import {
   CHIME_SETTINGS_EVENT,
@@ -129,6 +132,33 @@ export default function CounterOrdersPage() {
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
   const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
+  const [updatingAction, setUpdatingAction] = useState<string | null>(null);
+  const updatingRef = useRef<string | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [actionToast, setActionToast] = useState<{
+    kind: 'error' | 'success';
+    message: string;
+  } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
+
+  const showActionToast = useCallback(
+    (kind: 'error' | 'success', message: string) => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setActionToast({ kind, message });
+      toastTimerRef.current = setTimeout(
+        () => setActionToast(null),
+        kind === 'error' ? 7000 : 3000
+      );
+    },
+    []
+  );
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    []
+  );
 
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const isFirstLoadRef = useRef(true);
@@ -218,6 +248,11 @@ export default function CounterOrdersPage() {
         ]);
 
         if (disposedRef.current || scopeRef.current !== scope) return;
+        if (ordersRes.status === 401) {
+          setSessionExpired(true);
+        } else if (ordersRes.ok) {
+          setSessionExpired(false);
+        }
         if (ordersRes.ok) {
           const data = await ordersRes.json();
           if (disposedRef.current || scopeRef.current !== scope) return;
@@ -297,25 +332,42 @@ export default function CounterOrdersPage() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = (ev) => {
-        if (
-          ev.data?.type === 'new_order_submitted' &&
-          ev.data?.shopId === activeShop?.id
-        ) {
+        const msgType = ev.data?.type;
+        // Guest modal (ShowToStaffModal) broadcasts 'order_created' / 'order_updated' with
+        // the saved order; legacy flows send 'new_order_submitted' with flat fields.
+        // Only brand-new orders chime; updates just trigger a silent refresh below.
+        const isNewOrderMessage =
+          msgType === 'new_order_submitted' || msgType === 'order_created';
+        if (isNewOrderMessage && ev.data?.shopId === activeShop?.id) {
+          const msgOrder: Partial<ShopOrder> | undefined =
+            ev.data?.order && typeof ev.data.order === 'object'
+              ? ev.data.order
+              : undefined;
+          const orderCode: string | undefined =
+            ev.data?.orderCode || msgOrder?.order_code;
+          const tableLabel: string | undefined =
+            ev.data?.tableLabel || msgOrder?.table_label;
+          const totalAmount =
+            Number(
+              ev.data?.totalAmount ?? ev.data?.totalVnd ?? msgOrder?.total_amount
+            ) || 0;
+          // Mark as known so the follow-up refresh does not chime a second time.
+          if (msgOrder?.id) knownOrderIdsRef.current.add(msgOrder.id);
           const latestChime = loadOrderChimeSettings();
           chimeSettingsRef.current = latestChime;
           if (latestChime.enabled) {
             playOrderAlertChime(
               latestChime,
-              ev.data?.tableLabel || translateRef.current('Khách mới', 'New guest'),
-              ev.data?.orderCode
+              tableLabel || translateRef.current('Khách mới', 'New guest'),
+              orderCode
             );
           }
-          if (ev.data?.orderCode) {
+          if (orderCode) {
             sendBrowserOrderNotification({
-              orderCode: ev.data.orderCode,
-              tableLabel: ev.data.tableLabel || translateRef.current('Tại quầy', 'Counter'),
+              orderCode,
+              tableLabel: tableLabel || translateRef.current('Tại quầy', 'Counter'),
               totalFormatted: formatCurrency(
-                Number(ev.data.totalAmount || ev.data.totalVnd) || 0,
+                totalAmount,
                 activeShop?.currency || 'VND'
               ),
               shopName: activeShop?.name,
@@ -371,15 +423,22 @@ export default function CounterOrdersPage() {
       payment_method?: PaymentMethod;
       restock_items?: boolean;
       refund_reason?: string;
+      cancelled_reason?: string;
     },
-    forcePrint = false
+    forcePrint = false,
+    actionKey = 'update'
   ): Promise<ShopOrder | null> => {
     if (!activeShop) return null;
+    // Guard against double-submits while a mutation for this order is in flight.
+    if (updatingRef.current === orderId) return null;
+    updatingRef.current = orderId;
     setUpdatingId(orderId);
+    setUpdatingAction(actionKey);
+    const fallbackError = tx('Không thể cập nhật đơn hàng', 'Could not update order');
     try {
       const res = await fetch('/api/orders', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           shop_id: activeShop.id,
           order_id: orderId,
@@ -408,29 +467,195 @@ export default function CounterOrdersPage() {
         }
         return updatedOrder;
       }
+      if (res.status === 401) setSessionExpired(true);
       const error = await res.json().catch(() => null);
-      window.alert(
-        error?.error || tx('Không thể cập nhật đơn hàng', 'Could not update order')
+      showActionToast(
+        'error',
+        res.status === 401
+          ? tx(
+              'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+              'Your session has expired. Please sign in again.'
+            )
+          : error?.error || fallbackError
       );
+      // Server state may have moved on (e.g. 409 total changed) — resync silently.
+      if (res.status === 409) void fetchOrdersAndCatalog(true);
       return null;
     } catch (error) {
-      window.alert(
-        error instanceof Error && error.message
-          ? error.message
-          : tx('Không thể cập nhật đơn hàng', 'Could not update order')
+      showActionToast(
+        'error',
+        error instanceof Error && error.message ? error.message : fallbackError
       );
       return null;
     } finally {
+      if (updatingRef.current === orderId) updatingRef.current = null;
       setUpdatingId(null);
+      setUpdatingAction(null);
     }
   };
 
+  const hasPermission = (permission: ShopMembership['permissions'][number]) =>
+    Boolean(
+      membership &&
+        (membership.role === 'owner' ||
+          membership.permissions.includes(permission))
+    );
+  // Non-destructive capabilities keep the legacy optimistic default while membership loads;
+  // the server still enforces every permission on PATCH.
   const canCollectPayment =
     !membership || membership.permissions.includes('payment.collect');
   const canViewReports =
     !membership || membership.permissions.includes('reports.view');
-  const canRefundOrder =
-    !membership || membership.permissions.includes('payment.refund');
+  // Destructive / editing actions: default deny until membership is known.
+  const canRefundOrder = hasPermission('payment.refund');
+  const canEditItems = hasPermission('orders.edit_items');
+  const canCancelUnpaid = hasPermission('orders.cancel_unpaid');
+
+  const paymentMethodLabel = (method?: PaymentMethod | null) =>
+    method === 'vietqr'
+      ? t('orders.paymentMethodQr')
+      : t('orders.paymentMethodCash');
+
+  const isActionPending = (orderId: string, actionKey: string) =>
+    updatingId === orderId && updatingAction === actionKey;
+
+  const renderOrderSummary = (order: ShopOrder, method?: PaymentMethod | null) => (
+    <dl className="space-y-1 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      <div className="flex justify-between gap-3">
+        <dt className="text-slate-500">{tx('Đơn', 'Order')}</dt>
+        <dd className="font-bold text-slate-900">
+          {order.table_label} • #{order.order_code}
+        </dd>
+      </div>
+      <div className="flex justify-between gap-3">
+        <dt className="text-slate-500">{tx('Số tiền', 'Amount')}</dt>
+        <dd className="font-black text-emerald-600">
+          {formatCurrency(Number(order.total_amount) || 0, activeShop?.currency || 'VND')}
+        </dd>
+      </div>
+      {method !== undefined && (
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">{tx('Phương thức', 'Method')}</dt>
+          <dd className="font-bold text-slate-900">{paymentMethodLabel(method)}</dd>
+        </div>
+      )}
+    </dl>
+  );
+
+  const requestMarkPaid = async (
+    order: ShopOrder,
+    options: { method?: PaymentMethod; status?: OrderStatus; forcePrint?: boolean } = {}
+  ): Promise<ShopOrder | null> => {
+    const method = options.method || order.payment_method || 'cash';
+    const result = await confirm({
+      title: tx('Xác nhận đã thu tiền?', 'Confirm payment received?'),
+      description: tx(
+        'Chỉ xác nhận khi đã nhận đủ tiền từ khách.',
+        'Only confirm once the full amount has been received.'
+      ),
+      details: renderOrderSummary(order, method),
+      confirmLabel: tx('Đã thu tiền', 'Mark paid'),
+    });
+    if (!result) return null;
+    return handleUpdateOrder(
+      order.id,
+      {
+        payment_status: 'paid',
+        ...(options.method ? { payment_method: options.method } : {}),
+        ...(options.status ? { status: options.status } : {}),
+      },
+      Boolean(options.forcePrint),
+      'pay'
+    );
+  };
+
+  const requestCancelOrder = async (order: ShopOrder) => {
+    const isPreparingOrder = order.status === 'preparing';
+    // Restock choice only matters when at least one line tracks inventory (or catalog is unknown).
+    const restockApplicable =
+      catalogItems.length === 0 ||
+      order.items.some((line) => {
+        const catalogItem = catalogItems.find((item) => item.id === line.item_id);
+        return catalogItem?.stock_quantity !== null && catalogItem?.stock_quantity !== undefined;
+      });
+    const defaultRestock = !isPreparingOrder;
+    const result = await confirm({
+      variant: 'danger',
+      title: tx('Hủy đơn #{code}?', 'Cancel order #{code}?', {
+        code: order.order_code,
+      }),
+      description: tx(
+        'Đơn sẽ chuyển sang Đã hủy. Thao tác này không thể hoàn tác.',
+        'The order will be marked as cancelled. This cannot be undone.'
+      ),
+      details: renderOrderSummary(order),
+      reason: {
+        label: tx('Lý do hủy', 'Cancellation reason'),
+        placeholder: tx(
+          'VD: Khách đổi ý, hết món...',
+          'e.g. Guest changed mind, item sold out...'
+        ),
+      },
+      checkbox: restockApplicable
+        ? {
+            label: tx('Hoàn lại tồn kho các món', 'Restock items'),
+            description: isPreparingOrder
+              ? tx(
+                  'Bếp đã bắt đầu làm — bỏ chọn để ghi nhận hao hụt.',
+                  'Kitchen already started — leave unchecked to record waste.'
+                )
+              : tx(
+                  'Cộng lại số lượng món vào tồn kho.',
+                  'Return item quantities to inventory.'
+                ),
+            defaultChecked: defaultRestock,
+          }
+        : undefined,
+      confirmLabel: tx('Hủy đơn', 'Cancel order'),
+      cancelLabel: tx('Giữ đơn', 'Keep order'),
+    });
+    if (!result) return;
+    await handleUpdateOrder(
+      order.id,
+      {
+        status: 'cancelled',
+        restock_items: restockApplicable ? result.checked : defaultRestock,
+        ...(result.reason ? { cancelled_reason: result.reason } : {}),
+      },
+      false,
+      'cancel'
+    );
+  };
+
+  const requestRefundOrder = async (order: ShopOrder) => {
+    const result = await confirm({
+      variant: 'danger',
+      title: tx('Hoàn tiền đơn #{code}?', 'Refund order #{code}?', {
+        code: order.order_code,
+      }),
+      description: tx(
+        'Ghi nhận hoàn trả toàn bộ số tiền cho khách. Thao tác này không thể hoàn tác.',
+        'Records a full refund to the guest. This cannot be undone.'
+      ),
+      details: renderOrderSummary(order, order.payment_method),
+      reason: {
+        label: tx('Lý do hoàn tiền', 'Refund reason'),
+        placeholder: tx(
+          'VD: Món lỗi, khách hủy sau khi thanh toán...',
+          'e.g. Wrong item, guest cancelled after paying...'
+        ),
+        required: true,
+      },
+      confirmLabel: tx('Hoàn tiền', 'Refund'),
+    });
+    if (!result) return;
+    await handleUpdateOrder(
+      order.id,
+      { payment_status: 'refunded', refund_reason: result.reason },
+      false,
+      'refund'
+    );
+  };
 
   if (!activeShop) {
     return (
@@ -517,8 +742,57 @@ export default function CounterOrdersPage() {
       ? tx('Cần đăng nhập lại', 'Sign in again')
       : t('orders.syncPolling');
 
+  const showSessionExpired = sessionExpired || liveStatus === 'unauthorized';
+
   return (
     <div className="space-y-4">
+      {showSessionExpired && (
+        <div
+          role="alert"
+          data-testid="orders-session-expired-banner"
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border-2 border-rose-400 bg-rose-50 px-4 py-3 shadow-sm"
+        >
+          <div className="flex items-center gap-2.5 text-sm font-black text-rose-800">
+            <XCircle className="h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
+            <span>
+              {tx(
+                'Phiên đăng nhập hết hạn — đơn mới sẽ không tự cập nhật.',
+                'Session expired — new orders will not update automatically.'
+              )}
+            </span>
+          </div>
+          <Link
+            href="/login?next=/dashboard/orders"
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white hover:bg-rose-500"
+          >
+            <LogIn className="h-4 w-4" aria-hidden="true" />
+            <span>{tx('Đăng nhập lại', 'Sign in again')}</span>
+          </Link>
+        </div>
+      )}
+
+      {actionToast && (
+        <div
+          role={actionToast.kind === 'error' ? 'alert' : 'status'}
+          data-testid="orders-action-toast"
+          className={`fixed bottom-20 md:bottom-6 right-4 z-[60] flex max-w-sm items-start gap-2 rounded-2xl border px-4 py-3 text-xs font-bold shadow-xl ${
+            actionToast.kind === 'error'
+              ? 'border-rose-300 bg-rose-600 text-white'
+              : 'border-slate-700 bg-slate-900 text-white'
+          }`}
+        >
+          <span className="flex-1">{actionToast.message}</span>
+          <button
+            type="button"
+            onClick={() => setActionToast(null)}
+            aria-label={t('common.close')}
+            className="-m-1 rounded-full p-1 hover:bg-white/15"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header Banner + Mode Switcher (POS Terminal vs Kitchen/Table Orders) */}
       <div className="rounded-3xl bg-slate-900 text-white p-4 sm:p-5 shadow-md space-y-3.5">
         {/* Top Row: Short Heading + Separate Truncated Shop Name + Primary Mode Switcher */}
@@ -738,7 +1012,16 @@ export default function CounterOrdersPage() {
             onCancelEditOrder={() => setEditingOrder(null)}
             autoPrintOnPay={autoPrintOnPay}
             onPrintOrder={(ord) => setPrintingOrder(ord)}
-            onUpdateOrder={(id, up) => handleUpdateOrder(id, up)}
+            onUpdateOrder={(id, up) => {
+              const target = orders.find((o) => o.id === id);
+              if (target && up.payment_status === 'paid') {
+                return requestMarkPaid(target, { status: up.status });
+              }
+              if (target && up.status === 'cancelled') {
+                return requestCancelOrder(target);
+              }
+              return handleUpdateOrder(id, up);
+            }}
             onOrderCreated={async (createdOrder, shouldPrint) => {
               setEditingOrder(null);
               await fetchOrdersAndCatalog(true);
@@ -933,6 +1216,7 @@ export default function CounterOrdersPage() {
                 const isPreparing = order.status === 'preparing';
                 const isCompleted = order.status === 'completed';
                 const isCancelled = order.status === 'cancelled';
+                const isOrderUpdating = updatingId === order.id;
 
                 return (
                   <div
@@ -1128,11 +1412,12 @@ export default function CounterOrdersPage() {
                     {/* Action Buttons Footer */}
                     {!isCancelled && (
                       <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
-                        {order.payment_status === 'unpaid' && (
+                        {order.payment_status === 'unpaid' && canEditItems && (
                           <button
                             type="button"
+                            disabled={isOrderUpdating}
                             onClick={() => handleOpenEditOrderInPos(order)}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-2xl border-2 border-amber-400 bg-amber-100 px-3.5 py-2.5 text-xs font-black text-amber-950 shadow-2xs hover:bg-amber-200 transition"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-2xl border-2 border-amber-400 bg-amber-100 px-3.5 py-2.5 text-xs font-black text-amber-950 shadow-2xs hover:bg-amber-200 transition disabled:opacity-50"
                             title={tx(
                               'Mở giao diện bán hàng tại quầy để thêm/bớt món hoặc đổi tùy chọn trước khi thanh toán',
                               'Open Counter POS to add/remove items or edit options before checkout'
@@ -1144,118 +1429,104 @@ export default function CounterOrdersPage() {
                         )}
 
                         {isNew && (
-                          <>
-                            <button
-                              type="button"
-                              disabled={updatingId === order.id}
-                              onClick={() =>
-                                handleUpdateOrder(order.id, {
-                                  status: 'preparing',
-                                })
-                              }
-                              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                            >
+                          <button
+                            type="button"
+                            disabled={isOrderUpdating}
+                            aria-busy={isActionPending(order.id, 'accept') || undefined}
+                            onClick={() =>
+                              handleUpdateOrder(
+                                order.id,
+                                { status: 'preparing' },
+                                false,
+                                'accept'
+                              )
+                            }
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
+                          >
+                            {isActionPending(order.id, 'accept') ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            ) : (
                               <ChefHat className="h-4 w-4" />
-                              <span>{t('orders.actionAccept')}</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={updatingId === order.id}
-                              onClick={() =>
-                                handleUpdateOrder(order.id, {
-                                  status: 'cancelled',
-                                })
-                              }
-                              className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
-                            >
-                              <XCircle className="h-4 w-4" />
-                              <span>{t('orders.actionCancel')}</span>
-                            </button>
-                          </>
+                            )}
+                            <span>{t('orders.actionAccept')}</span>
+                          </button>
                         )}
 
                         {isPreparing && (
-                          <>
-                            <button
-                              type="button"
-                              disabled={updatingId === order.id}
-                              onClick={() =>
-                                handleUpdateOrder(order.id, {
-                                  status: 'completed',
-                                })
-                              }
-                              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                            >
+                          <button
+                            type="button"
+                            disabled={isOrderUpdating}
+                            aria-busy={isActionPending(order.id, 'serve') || undefined}
+                            onClick={() =>
+                              handleUpdateOrder(
+                                order.id,
+                                { status: 'completed' },
+                                false,
+                                'serve'
+                              )
+                            }
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
+                          >
+                            {isActionPending(order.id, 'serve') ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            ) : (
                               <CheckCircle2 className="h-4 w-4" />
-                              <span>{t('orders.actionServed')}</span>
-                            </button>
-                            {order.payment_status === 'unpaid' &&
-                              canCollectPayment && (
-                                <button
-                                  type="button"
-                                  disabled={updatingId === order.id}
-                                  onClick={() =>
-                                    handleUpdateOrder(order.id, {
-                                      payment_status: 'paid',
-                                    })
-                                  }
-                                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
-                                >
-                                  <Banknote className="h-4 w-4" />
-                                  <span>{t('orders.actionMarkPaid')}</span>
-                                </button>
-                              )}
-                            <button
-                              type="button"
-                              disabled={updatingId === order.id}
-                              onClick={() =>
-                                handleUpdateOrder(order.id, {
-                                  status: 'cancelled',
-                                  restock_items: false,
-                                })
-                              }
-                              className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
-                            >
-                              <XCircle className="h-4 w-4" />
-                              <span>{t('orders.actionCancel')}</span>
-                            </button>
-                          </>
+                            )}
+                            <span>{t('orders.actionServed')}</span>
+                          </button>
                         )}
 
-                        {isCompleted &&
+                        {(isPreparing || isCompleted) &&
                           order.payment_status === 'unpaid' &&
                           canCollectPayment && (
                             <button
                               type="button"
-                              disabled={updatingId === order.id}
-                              onClick={() =>
-                                handleUpdateOrder(order.id, {
-                                  payment_status: 'paid',
-                                })
-                              }
+                              disabled={isOrderUpdating}
+                              aria-busy={isActionPending(order.id, 'pay') || undefined}
+                              onClick={() => void requestMarkPaid(order)}
                               className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 disabled:opacity-50"
                             >
-                              <Banknote className="h-4 w-4" />
+                              {isActionPending(order.id, 'pay') ? (
+                                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Banknote className="h-4 w-4" />
+                              )}
                               <span>{t('orders.actionMarkPaid')}</span>
+                            </button>
+                          )}
+
+                        {(isNew || isPreparing) &&
+                          order.payment_status !== 'paid' &&
+                          canCancelUnpaid && (
+                            <button
+                              type="button"
+                              disabled={isOrderUpdating}
+                              aria-busy={isActionPending(order.id, 'cancel') || undefined}
+                              onClick={() => void requestCancelOrder(order)}
+                              className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                            >
+                              {isActionPending(order.id, 'cancel') ? (
+                                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <XCircle className="h-4 w-4" />
+                              )}
+                              <span>{t('orders.actionCancel')}</span>
                             </button>
                           )}
 
                         {order.payment_status === 'paid' && canRefundOrder && (
                           <button
                             type="button"
-                            disabled={updatingId === order.id}
-                            onClick={() =>
-                              handleUpdateOrder(order.id, {
-                                payment_status: 'refunded',
-                                refund_reason: tx(
-                                  'Hoàn tiền tại quầy',
-                                  'Refunded at counter'
-                                ),
-                              })
-                            }
+                            disabled={isOrderUpdating}
+                            aria-busy={isActionPending(order.id, 'refund') || undefined}
+                            onClick={() => void requestRefundOrder(order)}
                             className="inline-flex items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
                           >
-                            <XCircle className="h-4 w-4" />
+                            {isActionPending(order.id, 'refund') ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <XCircle className="h-4 w-4" />
+                            )}
                             <span>{t('orders.actionRefund')}</span>
                           </button>
                         )}
@@ -1426,6 +1697,7 @@ export default function CounterOrdersPage() {
                   {canCollectPayment && (
                     <button
                       type="button"
+                      disabled={updatingId === qrOrderModal.id}
                       onClick={async () => {
                         const targetOrder = qrOrderModal;
                         setQrOrderModal(null);
@@ -1435,10 +1707,11 @@ export default function CounterOrdersPage() {
                             payment_status: 'paid',
                             payment_method: 'vietqr',
                           },
-                          true
+                          true,
+                          'pay'
                         );
                       }}
-                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500"
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
                     >
                       <CheckCircle2 className="h-4 w-4" />
                       <span>
@@ -1858,6 +2131,8 @@ export default function CounterOrdersPage() {
           }
         />
       )}
+
+      {confirmDialog}
     </div>
   );
 }

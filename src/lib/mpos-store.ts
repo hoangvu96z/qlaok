@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   CatalogItem,
+  OpeningHours,
   OrderLineItem,
   OrderPaymentStatus,
   OrderStatus,
@@ -16,6 +17,7 @@ import type {
   TicketPrintType,
 } from '@/types/qlaok';
 import { getSupabaseDbClient } from './db';
+import { checkShopOpenStatus, DEFAULT_SHOP_TIMEZONE } from './i18n-helper';
 import {
   computeSharedOrderQuote,
   getItemFlashSalePrice,
@@ -67,6 +69,21 @@ const PROCESS_TEST_STORE_FILE = IS_NODE_TEST_PROCESS
 let testStoreFileOverride: string | null = null;
 let testDbClientOverride: SupabaseClient | null = null;
 let testForceDbMode: boolean | null = null;
+let testOpeningHoursEnforcement: boolean | null = null;
+
+/**
+ * Guest opening-hours enforcement is ON in every runtime except node:test processes
+ * (where many fixtures create guest orders at arbitrary wall-clock times). Tests that
+ * exercise SHOP_CLOSED opt in explicitly via this setter.
+ */
+export function setOpeningHoursEnforcementForTests(enabled: boolean | null) {
+  testOpeningHoursEnforcement = enabled;
+}
+
+function isOpeningHoursEnforcementActive(): boolean {
+  if (testOpeningHoursEnforcement !== null) return testOpeningHoursEnforcement;
+  return !IS_NODE_TEST_PROCESS;
+}
 
 export function setMposStoreFileForTests(filePath: string | null) {
   testStoreFileOverride = filePath;
@@ -1008,9 +1025,11 @@ function isSyntheticTestBypass(isSynthetic: boolean): boolean {
 async function loadShopCatalogAndTheme(shopId: string): Promise<{
   itemMap: Map<string, CatalogItem>;
   themeConfig: ShopThemeConfig | null;
+  openingHours: OpeningHours | null;
 }> {
   const itemMap = new Map<string, CatalogItem>();
   let themeConfig: ShopThemeConfig | null = null;
+  let openingHours: OpeningHours | null = null;
 
   for (const seedItem of (isOrderDbConfigured() ? [] : SEED_ITEMS)) {
     if (seedItem.shop_id === shopId) {
@@ -1021,12 +1040,15 @@ async function loadShopCatalogAndTheme(shopId: string): Promise<{
   if (!isOrderDbConfigured() && seedShop?.theme_config) {
     themeConfig = seedShop.theme_config;
   }
+  if (!isOrderDbConfigured() && seedShop?.opening_hours) {
+    openingHours = seedShop.opening_hours;
+  }
 
   try {
     const sb = getActiveDbClient();
     const [{ data: dbItems, error: itemsError }, { data: dbShop, error: shopError }] = await Promise.all([
       sb.from('items').select('*').eq('shop_id', shopId),
-      sb.from('shops').select('theme_config').eq('id', shopId).maybeSingle(),
+      sb.from('shops').select('theme_config, opening_hours').eq('id', shopId).maybeSingle(),
     ]);
     if (isOrderDbConfigured() && (itemsError || shopError || !dbShop)) throw new Error(itemsError?.message || shopError?.message || 'SHOP_NOT_FOUND');
     for (const raw of dbItems || []) {
@@ -1038,12 +1060,15 @@ async function loadShopCatalogAndTheme(shopId: string): Promise<{
         ...(dbShop.theme_config as ShopThemeConfig),
       };
     }
+    if (dbShop && 'opening_hours' in dbShop) {
+      openingHours = (dbShop.opening_hours as OpeningHours | null) ?? null;
+    }
   } catch (error) {
     if (isOrderDbConfigured()) throw error;
     // offline or unit test mode
   }
 
-  return { itemMap, themeConfig };
+  return { itemMap, themeConfig, openingHours };
 }
 
 export async function quoteOrderPricing(params: {
@@ -1119,7 +1144,7 @@ function assertAggregatedStockAvailable(
     const itemName = dbItem?.name_i18n?.vi || nameByItem.get(itemId) || itemId;
 
     if (dbItem && dbItem.is_available === false) {
-      throw new Error(`Món "${itemName}" hiện đã tạm hết hàng.`);
+      throw new Error(`ITEM_UNAVAILABLE: Món "${itemName}" hiện đã tạm hết hàng.`);
     }
 
     const effectiveStock =
@@ -1131,7 +1156,7 @@ function assertAggregatedStockAvailable(
 
     if (effectiveStock !== null && effectiveStock < totalRequestedQty) {
       throw new Error(
-        `Món "${itemName}" chỉ còn ${effectiveStock} phần trong kho.`
+        `INSUFFICIENT_STOCK: Món "${itemName}" chỉ còn ${effectiveStock} phần trong kho.`
       );
     }
   }
@@ -1365,6 +1390,8 @@ export async function dbCreateOrder(params: {
   table_id?: string | null;
   table_code?: string | null;
   table_label?: string;
+  table_qr_sig?: string | null;
+  require_table_qr_sig?: boolean;
   session_id?: string;
   visitor_lang?: SupportedLocale;
   customer_note?: string;
@@ -1382,6 +1409,8 @@ export async function dbCreateOrder(params: {
   payment_idempotency_key?: string;
   isStaffAuthorized?: boolean;
   themeConfigOverride?: ShopThemeConfig | null;
+  /** Reference clock for opening-hours enforcement (tests). */
+  now?: Date;
   items: OrderLineItem[];
 }): Promise<ShopOrder> {
   return withOrderInventoryLock(async () => {
@@ -1411,6 +1440,8 @@ export async function dbCreateOrder(params: {
       table_id: params.table_id,
       table_code: params.table_code,
       table_label: params.table_label,
+      table_qr_sig: params.table_qr_sig,
+      require_table_qr_sig: params.require_table_qr_sig,
       dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
     });
     const resolvedTableId = resolvedTable.table_id;
@@ -1420,6 +1451,22 @@ export async function dbCreateOrder(params: {
     const loaded = await loadShopCatalogAndTheme(params.shop_id);
     const itemMap = loaded.itemMap;
     const themeConfig = params.themeConfigOverride !== undefined ? params.themeConfigOverride : loaded.themeConfig;
+
+    // 0b. Guest (QR) orders are rejected while the shop is closed, evaluated in the
+    // shop timezone with overnight ranges. Staff counter orders are never blocked.
+    const isGuestOrder =
+      params.isStaffAuthorized !== true && params.source !== 'counter_pos';
+    if (isGuestOrder && isOpeningHoursEnforcementActive()) {
+      const openStatus = checkShopOpenStatus(loaded.openingHours, {
+        now: params.now,
+        timeZone: DEFAULT_SHOP_TIMEZONE,
+      });
+      if (!openStatus.isOpen) {
+        throw new Error(
+          'SHOP_CLOSED: Quán hiện đang đóng cửa, chưa thể nhận đơn. Vui lòng quay lại trong giờ mở cửa.'
+        );
+      }
+    }
     if (isOrderDbConfigured()) for (const item of itemMap.values()) {
       store.inventory[item.id] = { stock_quantity: item.stock_quantity ?? null, sold_count: Number(item.sold_count || 0) };
     }

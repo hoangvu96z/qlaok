@@ -462,7 +462,7 @@ export function ShopTableManager({
   };
 
   const handleCopyTableUrl = async (table: ShopTable) => {
-    const url = buildTableMenuUrl(baseUrl, shop.slug, table.id);
+    const url = buildTableMenuUrl(baseUrl, shop.slug, table.id, table.qr_sig);
     try {
       await navigator.clipboard.writeText(url);
       setCopiedTableId(table.id);
@@ -820,12 +820,14 @@ export function ShopTableManager({
               const tableMenuUrl = buildTableMenuUrl(
                 baseUrl,
                 shop.slug,
-                tb.id
+                tb.id,
+                tb.qr_sig
               );
               const relativeTableMenuPath = buildTableMenuUrl(
                 '',
                 shop.slug,
-                tb.id
+                tb.id,
+                tb.qr_sig
               );
 
               return (

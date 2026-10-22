@@ -758,8 +758,8 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (shop) => (
         <div className="py-1">
-          <p className="font-bold text-white">{shop.name}</p>
-          <p className="text-[11px] text-slate-400">
+          <p className="font-bold text-slate-900 dark:text-white">{shop.name}</p>
+          <p className="text-[11px] text-slate-600 dark:text-slate-400">
             /s/{shop.slug} • {shop.city}
           </p>
         </div>
@@ -774,8 +774,8 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (shop) => (
         <div className="py-1">
-          <p className="font-semibold text-slate-200">{shop.ownerEmail}</p>
-          <span className="inline-block rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-amber-300">
+          <p className="font-semibold text-slate-800 dark:text-slate-200">{shop.ownerEmail}</p>
+          <span className="inline-block rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-amber-700 dark:text-amber-300">
             {shop.ownerPlan}
           </span>
         </div>
@@ -792,7 +792,7 @@ export default function SuperAdminPortalPage() {
         Number(a.itemsCount || 0) - Number(b.itemsCount || 0),
       minWidth: '140px',
       cell: (shop) => (
-        <span className="font-semibold text-slate-300">
+        <span className="font-semibold text-slate-700 dark:text-slate-300">
           {tx(
             '{items} món • {orders} đơn',
             '{items} items • {orders} orders',
@@ -813,7 +813,7 @@ export default function SuperAdminPortalPage() {
       sortFunction: (a, b) => Number(a.shopGmv || 0) - Number(b.shopGmv || 0),
       minWidth: '130px',
       cell: (shop) => (
-        <span className="font-black text-emerald-400">
+        <span className="font-black text-emerald-700 dark:text-emerald-400">
           {formatCurrency(shop.shopGmv, shop.currency || 'VND')}
         </span>
       ),
@@ -854,7 +854,7 @@ export default function SuperAdminPortalPage() {
         return (
           <div className="py-1">
             <div className="flex items-center gap-2">
-              <span className="font-black text-white">
+              <span className="font-black text-slate-900 dark:text-white">
                 {owner.full_name || tx('Chủ quán', 'Shop Owner')}
               </span>
               {isRootAdmin && (
@@ -863,8 +863,8 @@ export default function SuperAdminPortalPage() {
                 </span>
               )}
             </div>
-            <p className="text-slate-300 font-semibold mt-0.5">{owner.email}</p>
-            <p className="text-[11px] text-slate-500">
+            <p className="text-slate-700 dark:text-slate-300 font-semibold mt-0.5">{owner.email}</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
               ID: {owner.id} {owner.phone ? `• 📞 ${owner.phone}` : ''}
             </p>
           </div>
@@ -890,13 +890,13 @@ export default function SuperAdminPortalPage() {
                 ? 'bg-amber-400 text-slate-950'
                 : owner.plan === 'basic'
                   ? 'bg-emerald-500 text-slate-950'
-                  : 'bg-slate-800 text-slate-300'
+                  : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
             }`}
           >
             {owner.plan}
           </span>
           {owner.plan_expires_at && (
-            <p className="text-[10px] text-slate-400 mt-1">
+            <p className="text-[10px] text-slate-600 dark:text-slate-400 mt-1">
               {tx('Hết hạn:', 'Expires:')}{' '}
               {new Date(owner.plan_expires_at).toLocaleDateString(
                 locale === 'en' ? 'en-US' : 'vi-VN'
@@ -917,15 +917,15 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (owner) =>
         owner.shops.length === 0 ? (
-          <span className="text-slate-500 italic">
+          <span className="text-slate-500 dark:text-slate-400 italic">
             {tx('Chưa tạo quán (0)', 'No shops (0)')}
           </span>
         ) : (
           <div className="space-y-1 py-1">
             {owner.shops.map((s) => (
               <div key={s.id} className="flex items-center gap-1.5">
-                <span className="font-bold text-emerald-300">{s.name}</span>
-                <span className="text-[10px] text-slate-500">
+                <span className="font-bold text-emerald-700 dark:text-emerald-300">{s.name}</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">
                   (/s/{s.slug})
                 </span>
               </div>
@@ -970,8 +970,8 @@ export default function SuperAdminPortalPage() {
                 }}
                 className={`rounded-lg px-2.5 py-1 text-[10px] font-black uppercase border transition-all ${
                   owner.plan === tier
-                    ? 'border-amber-400 bg-amber-400/20 text-amber-300'
-                    : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500'
+                    ? 'border-amber-400 bg-amber-400/20 text-amber-800 dark:text-amber-300'
+                    : 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 hover:border-slate-500'
                 } disabled:opacity-40`}
               >
                 {tier}
@@ -996,7 +996,7 @@ export default function SuperAdminPortalPage() {
                   )
                 );
               }}
-              className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-300 hover:bg-amber-500/20"
+              className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-800 dark:text-amber-300 hover:bg-amber-500/20"
             >
               {tx('+1 Năm VIP', '+1 Year VIP')}
             </button>
@@ -1021,9 +1021,9 @@ export default function SuperAdminPortalPage() {
                 e.stopPropagation();
                 handleResetOwnerPassword(owner);
               }}
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-400"
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-800 dark:text-slate-200 hover:border-amber-400"
             >
-              <KeyRound className="h-3 w-3 text-amber-400" />
+              <KeyRound className="h-3 w-3 text-amber-600 dark:text-amber-400" />
               <span>{tx('Đổi MK', 'Reset PW')}</span>
             </button>
             {!isRootAdmin && (
@@ -1058,7 +1058,7 @@ export default function SuperAdminPortalPage() {
                     );
                   }
                 }}
-                className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-400 hover:bg-rose-500/20"
+                className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20"
                 title={tx('Xóa tài khoản', 'Delete account')}
                 aria-label={tx('Xóa tài khoản', 'Delete account')}
               >
@@ -1084,9 +1084,9 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (order) => (
         <div className="py-1">
-          <span className="font-black text-amber-300">#{order.order_code}</span>
-          <p className="font-bold text-white">{order.table_label}</p>
-          <p className="text-[10px] text-slate-500">
+          <span className="font-black text-amber-700 dark:text-amber-300">#{order.order_code}</span>
+          <p className="font-bold text-slate-900 dark:text-white">{order.table_label}</p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400">
             {new Date(order.created_at).toLocaleString(
               locale === 'en' ? 'en-US' : 'vi-VN'
             )}
@@ -1103,8 +1103,8 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (order) => (
         <div className="py-1">
-          <span className="font-bold text-emerald-300">{order.shopName}</span>
-          <p className="text-[10px] uppercase text-slate-400">
+          <span className="font-bold text-emerald-700 dark:text-emerald-300">{order.shopName}</span>
+          <p className="text-[10px] uppercase text-slate-600 dark:text-slate-400">
             {tx('Khách:', 'Guest:')} {order.visitor_lang} •{' '}
             {order.payment_method}
           </p>
@@ -1122,12 +1122,12 @@ export default function SuperAdminPortalPage() {
       cell: (order) => (
         <div className="space-y-0.5 py-1">
           {order.items.map((line, idx) => (
-            <p key={idx} className="text-slate-200">
+            <p key={idx} className="text-slate-800 dark:text-slate-200">
               <strong>{line.quantity}x</strong> {line.name_vi}
             </p>
           ))}
           {order.customer_note && (
-            <p className="text-[11px] text-amber-300 italic">
+            <p className="text-[11px] text-amber-700 dark:text-amber-300 italic">
               {tx('Ghi chú:', 'Note:')} &ldquo;{order.customer_note}&rdquo;
             </p>
           )}
@@ -1145,9 +1145,9 @@ export default function SuperAdminPortalPage() {
       minWidth: '140px',
       wrap: true,
       cell: (order) => (
-        <div className="py-1 text-right font-black text-emerald-400">
+        <div className="py-1 text-right font-black text-emerald-700 dark:text-emerald-400">
           {formatCurrency(order.total_amount, 'VND')}
-          <span className="block text-[10px] font-bold text-slate-400 uppercase">
+          <span className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">
             {order.payment_status === 'paid'
               ? tx('Đã thanh toán', 'Paid')
               : tx('Chưa thu tiền', 'Unpaid')}
@@ -1170,7 +1170,7 @@ export default function SuperAdminPortalPage() {
                 ? 'bg-sky-400 text-slate-950'
                 : order.status === 'completed'
                   ? 'bg-emerald-500 text-slate-950'
-                  : 'bg-rose-500/20 text-rose-300'
+                  : 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
           }`}
         >
           {order.status === 'new'
@@ -1234,7 +1234,7 @@ export default function SuperAdminPortalPage() {
                   )
                 );
               }}
-              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20"
+              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-500/20"
             >
               {t('common.cancel')}
             </button>
@@ -1257,10 +1257,10 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (trx) => (
         <div className="py-1">
-          <span className="font-mono font-black text-amber-300">
+          <span className="font-mono font-black text-amber-700 dark:text-amber-300">
             {trx.order_code}
           </span>
-          <p className="text-[10px] text-slate-500">
+          <p className="text-[10px] text-slate-500 dark:text-slate-400">
             {new Date(trx.created_at).toLocaleString(
               locale === 'en' ? 'en-US' : 'vi-VN'
             )}
@@ -1277,8 +1277,8 @@ export default function SuperAdminPortalPage() {
       wrap: true,
       cell: (trx) => (
         <div className="py-1">
-          <p className="font-bold text-white">{trx.ownerName}</p>
-          <p className="text-[11px] text-slate-400">{trx.ownerEmail}</p>
+          <p className="font-bold text-slate-900 dark:text-white">{trx.ownerName}</p>
+          <p className="text-[11px] text-slate-600 dark:text-slate-400">{trx.ownerEmail}</p>
         </div>
       ),
     },
@@ -1289,7 +1289,7 @@ export default function SuperAdminPortalPage() {
       selector: (trx) => trx.target_plan,
       minWidth: '130px',
       cell: (trx) => (
-        <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-300">
+        <span className="rounded-full bg-amber-400/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-800 dark:text-amber-300">
           {trx.target_plan}
         </span>
       ),
@@ -1303,7 +1303,7 @@ export default function SuperAdminPortalPage() {
       sortFunction: (a, b) => Number(a.amount || 0) - Number(b.amount || 0),
       minWidth: '130px',
       cell: (trx) => (
-        <span className="font-black text-emerald-400">
+        <span className="font-black text-emerald-700 dark:text-emerald-400">
           {formatCurrency(trx.amount, 'VND')}
         </span>
       ),
@@ -1323,7 +1323,7 @@ export default function SuperAdminPortalPage() {
                 ? 'bg-emerald-500 text-slate-950'
                 : trx.status === 'pending'
                   ? 'bg-amber-400 text-slate-950 animate-pulse'
-                  : 'bg-rose-500/20 text-rose-300'
+                  : 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
             }`}
           >
             {trx.status === 'completed'
@@ -1333,7 +1333,7 @@ export default function SuperAdminPortalPage() {
                 : trx.status}
           </span>
           {trx.bank_ref_id && (
-            <p className="text-[10px] text-slate-500 mt-0.5">
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
               Ref: {trx.bank_ref_id}
             </p>
           )}
@@ -1377,7 +1377,7 @@ export default function SuperAdminPortalPage() {
             <span>{tx('Duyệt & Kích hoạt', 'Approve & Activate')}</span>
           </button>
         ) : (
-          <span className="text-[11px] text-slate-500 font-semibold">
+          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
             {tx('Đã hoàn tất', 'Completed')}
           </span>
         ),
@@ -2031,7 +2031,6 @@ export default function SuperAdminPortalPage() {
                   ) : (
                     <div className="rounded-2xl border border-slate-800 bg-slate-900 overflow-hidden">
                       <AppDataTable<EnrichedShop>
-                        forceDark
                         keyField="id"
                         ariaLabel={tx(
                           'Bảng Xếp Hạng Cửa Hàng',
@@ -2251,7 +2250,6 @@ export default function SuperAdminPortalPage() {
               {/* Owners Table */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
                 <AppDataTable<EnrichedOwner>
-                  forceDark
                   keyField="id"
                   ariaLabel={tx('Danh sách Chủ quán', 'Shop Owners List')}
                   columns={ownerColumns}
@@ -2262,7 +2260,7 @@ export default function SuperAdminPortalPage() {
                   noDataComponent={
                     <div className="py-8 px-4 text-center">
                       <div className="max-w-md mx-auto space-y-2.5">
-                        <p className="text-xs font-bold text-slate-300">
+                        <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
                           {ownerSearch || ownerPlanFilter !== 'all'
                             ? tx(
                                 'Không tìm thấy tài khoản Chủ quán nào khớp với bộ lọc.',
@@ -2281,7 +2279,7 @@ export default function SuperAdminPortalPage() {
                                 setOwnerSearch('');
                                 setOwnerPlanFilter('all');
                               }}
-                              className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
+                              className="rounded-xl border border-slate-300 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-200 hover:border-amber-400"
                             >
                               {t('common.clearFilters')}
                             </button>
@@ -2668,7 +2666,6 @@ export default function SuperAdminPortalPage() {
               {/* Global Orders List */}
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
                 <AppDataTable<EnrichedOrder>
-                  forceDark
                   keyField="id"
                   ariaLabel={tx('Danh sách đơn hàng toàn sàn', 'Global Orders List')}
                   columns={orderColumns}
@@ -2679,7 +2676,7 @@ export default function SuperAdminPortalPage() {
                   noDataComponent={
                     <div className="py-8 px-4 text-center">
                       <div className="max-w-md mx-auto space-y-2.5">
-                        <p className="text-xs font-bold text-slate-300">
+                        <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
                           {orderStatusFilter !== 'all' ||
                           orderShopFilter !== 'all'
                             ? tx(
@@ -2700,7 +2697,7 @@ export default function SuperAdminPortalPage() {
                                 setOrderStatusFilter('all');
                                 setOrderShopFilter('all');
                               }}
-                              className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-amber-400"
+                              className="rounded-xl border border-slate-300 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-200 hover:border-amber-400"
                             >
                               {t('common.clearFilters')}
                             </button>
@@ -2755,7 +2752,6 @@ export default function SuperAdminPortalPage() {
 
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
                 <AppDataTable<EnrichedTransaction>
-                  forceDark
                   keyField="id"
                   ariaLabel={tx(
                     'Giao Dịch Nâng Cấp Gói (VietQR)',
@@ -2769,7 +2765,7 @@ export default function SuperAdminPortalPage() {
                   noDataComponent={
                     <div className="py-8 px-4 text-center">
                       <div className="max-w-md mx-auto space-y-2.5">
-                        <p className="text-xs font-bold text-slate-300">
+                        <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
                           {tx(
                             'Chưa có giao dịch nâng cấp gói cước nào.',
                             'No plan upgrade transactions recorded yet.'

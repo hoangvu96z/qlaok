@@ -993,7 +993,7 @@ export function StorefrontWelcomePopup({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Close promotion popup"
+              aria-label={(UI_LABELS[locale] || UI_LABELS.vi).closePromoPopupAria}
               className="absolute right-3 top-3 z-20 flex h-8 w-8 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-xs hover:bg-black/60"
             >
               <X className="h-4 w-4" />

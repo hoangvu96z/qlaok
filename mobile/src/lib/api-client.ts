@@ -3,6 +3,7 @@ export function createApiClient(
   baseUrl: string,
   getAccessToken: () => Promise<string | null>,
   fetchRequest: typeof fetch = fetch,
+  onUnauthorized?: () => void | Promise<void>,
 ) {
   return async (path: string, init: RequestInit = {}): Promise<Response> => {
     if (!path.startsWith('/api/')) throw new Error('Đường dẫn API không hợp lệ');
@@ -25,6 +26,13 @@ export function createApiClient(
       init.signal?.removeEventListener('abort', abort);
     }
     if (!response.ok) {
+      if (response.status === 401) {
+        try {
+          await onUnauthorized?.();
+        } catch {
+          // ignore local sign-out errors
+        }
+      }
       const data = await response.json().catch(() => null);
       throw new Error(data?.error || `Yêu cầu thất bại (${response.status})`);
     }

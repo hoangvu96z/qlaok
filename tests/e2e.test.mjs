@@ -331,9 +331,13 @@ test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment
   const orderCode = orderRes.data.transaction.order_code;
   assert.ok(orderCode.startsWith("QLAOKP"));
 
-  // Simulate webhook callback from bank transfer
+  // Simulate webhook callback from bank transfer (server must have PAYMENT_WEBHOOK_SECRET configured;
+  // there is no hardcoded fallback secret).
+  const webhookSecret = process.env.PAYMENT_WEBHOOK_SECRET || "";
+  assert.ok(webhookSecret, "PAYMENT_WEBHOOK_SECRET must be set for the e2e webhook test");
   const webhook = await fetchJson("/api/webhooks/payment", {
     method: "POST",
+    headers: { "x-webhook-secret": webhookSecret },
     body: JSON.stringify({
       content: `CHUYEN KHOAN ${orderCode} NANG CAP GOI`,
       referenceCode: "FT2628799999",

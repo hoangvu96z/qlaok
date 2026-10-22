@@ -1,5 +1,12 @@
 import React, { memo } from 'react';
-import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   formatVnd,
@@ -21,6 +28,9 @@ interface OrdersTabProps {
     payment_status?: MobileOrderPaymentStatus
   ) => void;
   onPrintOrder: (order: MobileShopOrder) => void;
+  pendingOrderIds?: string[];
+  fetchError?: string;
+  onRetryFetchOrders?: () => void;
   canCollectPayment?: boolean;
   canRefundOrder?: boolean;
   canCancelOrder?: boolean;
@@ -33,6 +43,9 @@ export const OrdersTab = memo(function OrdersTab({
   onChangeOrderFilter,
   onUpdateOrderStatus,
   onPrintOrder,
+  pendingOrderIds = [],
+  fetchError = '',
+  onRetryFetchOrders,
   canCollectPayment = true,
   canRefundOrder = false,
   canCancelOrder = false,
@@ -49,6 +62,60 @@ export const OrdersTab = memo(function OrdersTab({
       o.status === 'preparing' ||
       (o.status !== 'cancelled' && o.payment_status === 'unpaid')
   ).length;
+
+  const confirmCancelOrder = (order: MobileShopOrder) => {
+    Alert.alert(
+      t('orders.confirmCancelTitle'),
+      t('orders.confirmCancelDesc', {
+        code: order.order_code,
+        table: order.table_label,
+      }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('orders.actionCancel'),
+          style: 'destructive',
+          onPress: () => onUpdateOrderStatus(order.id, 'cancelled'),
+        },
+      ]
+    );
+  };
+
+  const confirmMarkPaid = (order: MobileShopOrder) => {
+    Alert.alert(
+      t('orders.confirmPaidTitle'),
+      t('orders.confirmPaidDesc', {
+        code: order.order_code,
+        total: formatVnd(order.total_amount),
+      }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('orders.actionConfirmPaid'),
+          onPress: () => onUpdateOrderStatus(order.id, order.status, 'paid'),
+        },
+      ]
+    );
+  };
+
+  const confirmRefundOrder = (order: MobileShopOrder) => {
+    Alert.alert(
+      t('orders.confirmRefundTitle'),
+      t('orders.confirmRefundDesc', {
+        code: order.order_code,
+        total: formatVnd(order.total_amount),
+      }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('orders.actionRefund'),
+          style: 'destructive',
+          onPress: () =>
+            onUpdateOrderStatus(order.id, order.status, 'refunded'),
+        },
+      ]
+    );
+  };
 
   const visibleOrders = orders.filter((o) => {
     if (orderFilter === 'active') {
@@ -109,7 +176,39 @@ export const OrdersTab = memo(function OrdersTab({
         })}
       </ScrollView>
 
-      {visibleOrders.length === 0 ? (
+      {fetchError ? (
+        <View
+          accessibilityRole="alert"
+          style={[
+            styles.card,
+            {
+              backgroundColor: '#fef2f2',
+              borderColor: '#fecaca',
+            },
+          ]}
+        >
+          <Text style={[styles.cardHeading, { color: '#991b1b', marginBottom: 4 }]}>
+            {t('orders.fetchErrorTitle')}
+          </Text>
+          <Text style={[styles.itemSub, { color: '#b91c1c', marginBottom: 12 }]}>
+            {fetchError}
+          </Text>
+          {onRetryFetchOrders && (
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={[
+                styles.btnPrepare,
+                { backgroundColor: '#dc2626', minWidth: 120, flex: 0, alignSelf: 'flex-start', paddingHorizontal: 16 },
+              ]}
+              onPress={onRetryFetchOrders}
+            >
+              <Text style={styles.btnPrepareText}>{t('orders.retryBtn')}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      ) : null}
+
+      {visibleOrders.length === 0 && !fetchError ? (
         <View
           style={[
             styles.card,
@@ -127,6 +226,7 @@ export const OrdersTab = memo(function OrdersTab({
         visibleOrders.map((order) => {
           const isNew = order.status === 'new';
           const isPreparing = order.status === 'preparing';
+          const isOrderPending = pendingOrderIds.includes(order.id);
 
           return (
             <View
@@ -244,10 +344,29 @@ export const OrdersTab = memo(function OrdersTab({
 
               {/* Order Action Buttons */}
               <View style={styles.orderActionsRow}>
+                {isOrderPending && (
+                  <View
+                    style={{
+                      width: '100%',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      paddingVertical: 4,
+                      gap: 6,
+                    }}
+                  >
+                    <ActivityIndicator size="small" color="#10b981" />
+                  </View>
+                )}
+
                 {isNew && (
                   <>
                     <TouchableOpacity
-                      style={styles.btnPrepare}
+                      disabled={isOrderPending}
+                      style={[
+                        styles.btnPrepare,
+                        isOrderPending && { opacity: 0.6 },
+                      ]}
                       onPress={() => onUpdateOrderStatus(order.id, 'preparing')}
                     >
                       <View
@@ -268,21 +387,31 @@ export const OrdersTab = memo(function OrdersTab({
                         </Text>
                       </View>
                     </TouchableOpacity>
-                    {canCancelOrder && order.payment_status === 'unpaid' && <TouchableOpacity
-                      style={styles.btnCancel}
-                      onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
-                    >
-                      <Text style={styles.btnCancelText}>
-                        {t('orders.actionCancel')}
-                      </Text>
-                    </TouchableOpacity>}
+                    {canCancelOrder && order.payment_status === 'unpaid' && (
+                      <TouchableOpacity
+                        disabled={isOrderPending}
+                        style={[
+                          styles.btnCancel,
+                          isOrderPending && { opacity: 0.6 },
+                        ]}
+                        onPress={() => confirmCancelOrder(order)}
+                      >
+                        <Text style={styles.btnCancelText}>
+                          {t('orders.actionCancel')}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </>
                 )}
 
                 {isPreparing && (
                   <>
                     <TouchableOpacity
-                      style={styles.btnComplete}
+                      disabled={isOrderPending}
+                      style={[
+                        styles.btnComplete,
+                        isOrderPending && { opacity: 0.6 },
+                      ]}
                       onPress={() =>
                         onUpdateOrderStatus(order.id, 'completed')
                       }
@@ -305,14 +434,20 @@ export const OrdersTab = memo(function OrdersTab({
                         </Text>
                       </View>
                     </TouchableOpacity>
-                    {canCancelOrder && order.payment_status === 'unpaid' && <TouchableOpacity
-                      style={styles.btnCancel}
-                      onPress={() => onUpdateOrderStatus(order.id, 'cancelled')}
-                    >
-                      <Text style={styles.btnCancelText}>
-                        {t('orders.actionCancel')}
-                      </Text>
-                    </TouchableOpacity>}
+                    {canCancelOrder && order.payment_status === 'unpaid' && (
+                      <TouchableOpacity
+                        disabled={isOrderPending}
+                        style={[
+                          styles.btnCancel,
+                          isOrderPending && { opacity: 0.6 },
+                        ]}
+                        onPress={() => confirmCancelOrder(order)}
+                      >
+                        <Text style={styles.btnCancelText}>
+                          {t('orders.actionCancel')}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </>
                 )}
 
@@ -320,10 +455,12 @@ export const OrdersTab = memo(function OrdersTab({
                   order.status !== 'cancelled' &&
                   canCollectPayment && (
                     <TouchableOpacity
-                      style={styles.btnComplete}
-                      onPress={() =>
-                        onUpdateOrderStatus(order.id, order.status, 'paid')
-                      }
+                      disabled={isOrderPending}
+                      style={[
+                        styles.btnComplete,
+                        isOrderPending && { opacity: 0.6 },
+                      ]}
+                      onPress={() => confirmMarkPaid(order)}
                     >
                       <Text style={styles.btnCompleteText}>
                         {t('orders.actionConfirmPaid')}
@@ -333,10 +470,12 @@ export const OrdersTab = memo(function OrdersTab({
 
                 {order.payment_status === 'paid' && canRefundOrder && (
                   <TouchableOpacity
-                    style={styles.btnCancel}
-                    onPress={() =>
-                      onUpdateOrderStatus(order.id, order.status, 'refunded')
-                    }
+                    disabled={isOrderPending}
+                    style={[
+                      styles.btnCancel,
+                      isOrderPending && { opacity: 0.6 },
+                    ]}
+                    onPress={() => confirmRefundOrder(order)}
                   >
                     <Text style={styles.btnCancelText}>
                       {t('orders.actionRefund')}
@@ -345,6 +484,7 @@ export const OrdersTab = memo(function OrdersTab({
                 )}
 
                 <TouchableOpacity
+                  disabled={isOrderPending}
                   style={[
                     styles.btnCancel,
                     {
@@ -356,6 +496,7 @@ export const OrdersTab = memo(function OrdersTab({
                       flexBasis: 120,
                       paddingHorizontal: 12,
                     },
+                    isOrderPending && { opacity: 0.6 },
                   ]}
                   onPress={() => onPrintOrder(order)}
                 >

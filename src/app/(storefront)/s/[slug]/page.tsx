@@ -18,8 +18,9 @@ import {
 } from 'lucide-react';
 import { Post, Shop, SupportedLocale } from '@/types/qlaok';
 import {
-  ALL_LOCALES,
   checkShopOpenStatus,
+  DEFAULT_STOREFRONT_LOCALES,
+  normalizeShopSupportedLangs,
   detectVisitorLocale,
   tField,
   UI_LABELS,
@@ -43,7 +44,7 @@ export default function StorefrontDoorPage() {
   const [shop, setShop] = useState<Shop | null>(null);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
-  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(ALL_LOCALES);
+  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(DEFAULT_STOREFRONT_LOCALES);
   const [locale, setLocale] = useState<SupportedLocale>('vi');
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   const [loading, setLoading] = useState(true);
@@ -61,12 +62,11 @@ export default function StorefrontDoorPage() {
         }
         const data = await res.json();
         const loadedShop: Shop = data.shop;
-        const rawPlanLangs = getAllowedLocalesForPlan(
+        // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
+        const planLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
-          loadedShop.supported_langs
+          normalizeShopSupportedLangs(loadedShop.supported_langs)
         );
-        const planLangs =
-          rawPlanLangs.length > 1 ? rawPlanLangs : ALL_LOCALES;
 
         setShop(loadedShop);
         setItems(data.items || []);
@@ -135,12 +135,14 @@ export default function StorefrontDoorPage() {
     }
   };
 
+  const labels = UI_LABELS[locale] || UI_LABELS.vi;
+
   if (loading) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8 space-y-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
         <p className="text-xs font-semibold text-slate-500">
-          Đang tải thông tin cửa hàng...
+          {labels.loadingShopInfo}
         </p>
       </div>
     );
@@ -151,22 +153,21 @@ export default function StorefrontDoorPage() {
       <div className="flex flex-1 flex-col items-center justify-center p-8 text-center space-y-4">
         <div className="text-4xl">🏪</div>
         <h1 className="text-lg font-bold text-slate-900">
-          Không tìm thấy cửa hàng
+          {labels.shopNotFoundTitle}
         </h1>
         <p className="text-xs text-slate-500">
-          Đường dẫn <code className="font-mono text-rose-600">/s/{slug}</code> không tồn tại.
+          <code className="font-mono text-rose-600">/s/{slug}</code>
         </p>
         <Link
           href="/explore"
           className="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white"
         >
-          Khám phá các cửa hàng khác
+          {labels.backToExplore}
         </Link>
       </div>
     );
   }
 
-  const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
   const openStatus = checkShopOpenStatus(shop.opening_hours);
   const bgProps = getStorefrontBackgroundProps(shop);
@@ -217,7 +218,7 @@ export default function StorefrontDoorPage() {
                 className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200"
               >
                 <Gift className="h-3 w-3 text-rose-600" />
-                <span>Voucher</span>
+                <span>{labels.promosShort}</span>
               </button>
             )}
           </div>
@@ -440,7 +441,7 @@ export default function StorefrontDoorPage() {
                     </h3>
                     {post.is_pinned && (
                       <span className="shrink-0 rounded-full bg-amber-400/30 px-2 py-0.5 text-[10px] font-bold text-amber-900">
-                        📌 Pinned
+                        📌 {labels.pinnedBadge}
                       </span>
                     )}
                   </div>

@@ -25,3 +25,8 @@ assert.ok(html.includes('Mời quý khách kiểm tra lại món trước khi b�
 assert.ok(!html.includes('Bàn 05'),'no fabricated example table chips');
 assert.ok(html.includes('Không hành'), 'selected dietary notes must survive rendering');
 console.log('PASS: actual confirmation component server-rendered with managed table and canonical cart labels');
+for (const locale of ['ko','ja','zh','es','it','ru']) {
+ const localized=renderToStaticMarkup(React.createElement(ShowToStaffModal,{isOpen:true,onClose(){},shop,locale,cart,tables:[],onUpdateQuantity(){},onClearCart(){}}));
+ assert.doesNotMatch(localized,/No table selected|No dine-in tables|Please select an active table|Close order modal|aria-label="Payment method"|Decrease quantity|Increase quantity/, `${locale}: checkout system strings must use guest locale`);
+}
+console.log('PASS: all six non-VI/EN checkout locales avoid English system fallbacks');

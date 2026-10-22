@@ -40,6 +40,7 @@ import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustom
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
@@ -160,6 +161,17 @@ export default function DashboardPostsPage() {
   const [activeLangTab, setActiveLangTab] = useState<SupportedLocale>('vi');
   const [translating, setTranslating] = useState(false);
   const [savingPost, setSavingPost] = useState(false);
+  const [postsError, setPostsError] = useState('');
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
+
+  /** Reads the server error message from a failed response, falling back to a generic text. */
+  const readResponseError = async (res: Response, fallback: string) => {
+    const payload = await res.json().catch(() => null);
+    return typeof payload?.error === 'string' && payload.error.trim()
+      ? payload.error
+      : fallback;
+  };
 
   const loadPosts = useCallback(async () => {
     if (!activeShop) return;
@@ -397,8 +409,9 @@ export default function DashboardPostsPage() {
     e.preventDefault();
     if (!titleI18n.vi.trim()) return;
     setSavingPost(true);
+    setPostsError('');
     try {
-      await fetch('/api/posts', {
+      const res = await fetch('/api/posts', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -409,32 +422,98 @@ export default function DashboardPostsPage() {
           is_active: true,
         }),
       });
+      if (!res.ok) {
+        // Keep the draft so the user can retry.
+        setPostsError(
+          await readResponseError(
+            res,
+            tx('Không thể đăng thông báo', 'Could not publish announcement')
+          )
+        );
+        return;
+      }
       setTitleI18n({ vi: '', en: '', ko: '', ja: '', zh: '' });
       setContentI18n({ vi: '', en: '', ko: '', ja: '', zh: '' });
       await loadPosts();
+    } catch (err) {
+      setPostsError(
+        err instanceof Error && err.message
+          ? err.message
+          : tx('Không thể đăng thông báo', 'Could not publish announcement')
+      );
     } finally {
       setSavingPost(false);
     }
   };
 
   const handleTogglePin = async (post: Post) => {
-    await fetch('/api/posts', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        ...post,
-        is_pinned: !post.is_pinned,
-      }),
-    });
-    await loadPosts();
+    setPostsError('');
+    try {
+      const res = await fetch('/api/posts', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          ...post,
+          is_pinned: !post.is_pinned,
+        }),
+      });
+      if (!res.ok) {
+        setPostsError(
+          await readResponseError(
+            res,
+            tx('Không thể cập nhật ghim', 'Could not update pin')
+          )
+        );
+        return;
+      }
+      await loadPosts();
+    } catch (err) {
+      setPostsError(
+        err instanceof Error && err.message
+          ? err.message
+          : tx('Không thể cập nhật ghim', 'Could not update pin')
+      );
+    }
   };
 
-  const handleDeletePost = async (postId: string) => {
-    await fetch(`/api/posts?postId=${encodeURIComponent(postId)}`, {
-      method: 'DELETE',
-      headers: getAuthHeaders(),
+  const handleDeletePost = async (post: Post) => {
+    const confirmed = await confirm({
+      variant: 'danger',
+      title: tx('Xóa thông báo này?', 'Delete this announcement?'),
+      description: tx(
+        'Thông báo "{title}" sẽ bị gỡ khỏi trang cửa hàng. Thao tác này không thể hoàn tác.',
+        '"{title}" will be removed from your store page. This cannot be undone.',
+        { title: post.title_i18n.vi }
+      ),
+      confirmLabel: t('common.delete'),
     });
-    await loadPosts();
+    if (!confirmed) return;
+    setPostsError('');
+    setDeletingPostId(post.id);
+    try {
+      const res = await fetch(`/api/posts?postId=${encodeURIComponent(post.id)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        setPostsError(
+          await readResponseError(
+            res,
+            tx('Không thể xóa thông báo', 'Could not delete announcement')
+          )
+        );
+        return;
+      }
+      await loadPosts();
+    } catch (err) {
+      setPostsError(
+        err instanceof Error && err.message
+          ? err.message
+          : tx('Không thể xóa thông báo', 'Could not delete announcement')
+      );
+    } finally {
+      setDeletingPostId(null);
+    }
   };
 
   // Live preview shop object for the right-hand smartphone viewer
@@ -1469,6 +1548,15 @@ export default function DashboardPostsPage() {
               </form>
 
               <div className="space-y-2.5">
+                {postsError && (
+                  <p
+                    role="alert"
+                    data-testid="posts-mutation-error"
+                    className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-bold text-rose-700"
+                  >
+                    {postsError}
+                  </p>
+                )}
                 {loadingData ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center space-y-2">
                     <Loader2 className="mx-auto h-7 w-7 animate-spin text-emerald-600" />
@@ -1524,12 +1612,18 @@ export default function DashboardPostsPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDeletePost(post.id)}
+                          onClick={() => void handleDeletePost(post)}
+                          disabled={deletingPostId === post.id}
+                          aria-busy={deletingPostId === post.id || undefined}
                           title={t('common.delete')}
                           aria-label={t('common.delete')}
-                          className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-rose-600"
+                          className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-rose-600 disabled:opacity-50"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          {deletingPostId === post.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -1574,6 +1668,8 @@ export default function DashboardPostsPage() {
         isOpen={previewPopupOpen}
         onClose={() => setPreviewPopupOpen(false)}
       />
+
+      {confirmDialog}
     </div>
   );
 }

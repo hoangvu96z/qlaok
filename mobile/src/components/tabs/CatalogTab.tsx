@@ -45,6 +45,7 @@ export const CatalogTab = memo(function CatalogTab({
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
   const [newItemStock, setNewItemStock] = useState('');
+  const [isAddingItem, setIsAddingItem] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
 
   const visibleItems =
@@ -154,8 +155,23 @@ export const CatalogTab = memo(function CatalogTab({
   };
 
   const handleQuickAddItem = async () => {
-    if (!canManageCatalog) return;
-    if (!activeShop || !newItemName.trim()) return;
+    if (!canManageCatalog || !activeShop || isAddingItem) return;
+    const trimmedName = newItemName.trim();
+    if (!trimmedName) {
+      Alert.alert(t('catalog.errAddItemTitle'), t('catalog.errInvalidNameDesc'));
+      return;
+    }
+
+    const cleanedPrice = newItemPrice.trim().replace(/[^0-9]/g, '');
+    const parsedPrice = Number(cleanedPrice);
+    if (!cleanedPrice || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+      Alert.alert(
+        t('catalog.errAddItemTitle'),
+        t('catalog.errInvalidPriceDesc')
+      );
+      return;
+    }
+
     const targetCatId =
       selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id;
 
@@ -164,17 +180,12 @@ export const CatalogTab = memo(function CatalogTab({
       return;
     }
 
-    const cleanedPrice = newItemPrice.replace(/[^0-9]/g, '');
-    const parsedPrice = Number(cleanedPrice);
-    const priceNum =
-      cleanedPrice !== '' && Number.isFinite(parsedPrice)
-        ? Math.max(0, parsedPrice)
-        : 35000;
     const stockNum =
       newItemStock.trim() === ''
         ? null
         : Math.max(0, Number(newItemStock.replace(/[^0-9]/g, '')));
 
+    setIsAddingItem(true);
     try {
       const res = await fetchApi('/api/catalog', {
         method: 'POST',
@@ -184,13 +195,13 @@ export const CatalogTab = memo(function CatalogTab({
           item: {
             shop_id: activeShop.id,
             category_id: targetCatId,
-            price: priceNum,
+            price: parsedPrice,
             stock_quantity: stockNum,
             is_available: stockNum !== 0,
             is_featured: false,
             name_i18n: {
-              vi: newItemName.trim(),
-              en: newItemName.trim(),
+              vi: trimmedName,
+              en: trimmedName,
             },
             desc_i18n: { vi: '' },
           },
@@ -211,74 +222,82 @@ export const CatalogTab = memo(function CatalogTab({
         t('catalog.errAddItemTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')
       );
+    } finally {
+      setIsAddingItem(false);
     }
   };
 
   return (
     <View style={styles.sectionStack}>
       {/* Quick Add Bar */}
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: theme.card, borderColor: theme.border },
-        ]}
-      >
-        <Text style={[styles.cardHeading, { color: theme.text }]}>
-          {t('catalog.quickAddHeading')}
-        </Text>
-        <View style={styles.quickAddRow}>
-          <TextInput
-            style={[
-              styles.input,
-              {
-                flex: 1.3,
-                backgroundColor: theme.subCard,
-                borderColor: theme.border,
-                color: theme.text,
-              },
-            ]}
-            placeholder={t('catalog.namePlaceholder')}
-            placeholderTextColor={theme.subText}
-            value={newItemName}
-            onChangeText={setNewItemName}
-          />
-          <TextInput
-            style={[
-              styles.input,
-              {
-                flex: 0.8,
-                backgroundColor: theme.subCard,
-                borderColor: theme.border,
-                color: theme.text,
-              },
-            ]}
-            placeholder={t('catalog.pricePlaceholder')}
-            placeholderTextColor={theme.subText}
-            keyboardType="numeric"
-            value={newItemPrice}
-            onChangeText={setNewItemPrice}
-          />
-          <TextInput
-            style={[
-              styles.input,
-              {
-                flex: 0.6,
-                backgroundColor: theme.subCard,
-                borderColor: theme.border,
-                color: theme.text,
-              },
-            ]}
-            placeholder={t('catalog.stockPlaceholder')}
-            placeholderTextColor={theme.subText}
-            keyboardType="numeric"
-            value={newItemStock}
-            onChangeText={setNewItemStock}
-          />
-          <TouchableOpacity style={styles.addBtn} onPress={handleQuickAddItem}>
-            <Text style={styles.addBtnText}>{t('catalog.addBtn')}</Text>
-          </TouchableOpacity>
+      {canManageCatalog && (
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: theme.card, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.cardHeading, { color: theme.text }]}>
+            {t('catalog.quickAddHeading')}
+          </Text>
+          <View style={styles.quickAddRow}>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  flex: 1.3,
+                  backgroundColor: theme.subCard,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholder={t('catalog.namePlaceholder')}
+              placeholderTextColor={theme.subText}
+              value={newItemName}
+              onChangeText={setNewItemName}
+            />
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  flex: 0.8,
+                  backgroundColor: theme.subCard,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholder={t('catalog.pricePlaceholder')}
+              placeholderTextColor={theme.subText}
+              keyboardType="numeric"
+              value={newItemPrice}
+              onChangeText={setNewItemPrice}
+            />
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  flex: 0.6,
+                  backgroundColor: theme.subCard,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholder={t('catalog.stockPlaceholder')}
+              placeholderTextColor={theme.subText}
+              keyboardType="numeric"
+              value={newItemStock}
+              onChangeText={setNewItemStock}
+            />
+            <TouchableOpacity
+              style={[styles.addBtn, isAddingItem && { opacity: 0.6 }]}
+              onPress={handleQuickAddItem}
+              disabled={isAddingItem}
+            >
+              <Text style={styles.addBtnText}>{t('catalog.addBtn')}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
+      )}
 
       {/* Category Filter */}
       <ScrollView
@@ -363,28 +382,36 @@ export const CatalogTab = memo(function CatalogTab({
               {/* Price Row */}
               <View style={styles.priceRow}>
                 <Text style={styles.priceBadge}>{formatVnd(item.price)}</Text>
-                <TouchableOpacity
-                  style={[
-                    styles.priceStepBtn,
-                    { backgroundColor: theme.subCard },
-                  ]}
-                  onPress={() => handleUpdateItemPrice(item, -5000)}
-                >
-                  <Text style={[styles.priceStepText, { color: theme.text }]}>
-                    -5k
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.priceStepBtn,
-                    { backgroundColor: theme.subCard },
-                  ]}
-                  onPress={() => handleUpdateItemPrice(item, 5000)}
-                >
-                  <Text style={[styles.priceStepText, { color: theme.text }]}>
-                    +5k
-                  </Text>
-                </TouchableOpacity>
+                {canManageCatalog && (
+                  <>
+                    <TouchableOpacity
+                      style={[
+                        styles.priceStepBtn,
+                        { backgroundColor: theme.subCard },
+                      ]}
+                      onPress={() => handleUpdateItemPrice(item, -5000)}
+                    >
+                      <Text
+                        style={[styles.priceStepText, { color: theme.text }]}
+                      >
+                        -5k
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.priceStepBtn,
+                        { backgroundColor: theme.subCard },
+                      ]}
+                      onPress={() => handleUpdateItemPrice(item, 5000)}
+                    >
+                      <Text
+                        style={[styles.priceStepText, { color: theme.text }]}
+                      >
+                        +5k
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
 
               {/* Stock Quantity Row */}
@@ -408,24 +435,32 @@ export const CatalogTab = memo(function CatalogTab({
                   </Text>
                 </View>
                 <TouchableOpacity
+                  disabled={stock === null || stock <= 0}
                   style={[
                     styles.priceStepBtn,
                     { backgroundColor: theme.subCard },
+                    (stock === null || stock <= 0) && { opacity: 0.45 },
                   ]}
-                  onPress={() =>
-                    handleUpdateItemStock(item, Math.max(0, (stock ?? 10) - 1))
-                  }
+                  onPress={() => {
+                    if (typeof stock !== 'number') return;
+                    handleUpdateItemStock(item, Math.max(0, stock - 1));
+                  }}
                 >
                   <Text style={[styles.priceStepText, { color: theme.text }]}>
                     -1
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  disabled={stock === null}
                   style={[
                     styles.priceStepBtn,
                     { backgroundColor: theme.subCard },
+                    stock === null && { opacity: 0.45 },
                   ]}
-                  onPress={() => handleUpdateItemStock(item, (stock ?? 0) + 5)}
+                  onPress={() => {
+                    if (typeof stock !== 'number') return;
+                    handleUpdateItemStock(item, stock + 5);
+                  }}
                 >
                   <Text style={[styles.priceStepText, { color: theme.text }]}>
                     +5
@@ -435,10 +470,22 @@ export const CatalogTab = memo(function CatalogTab({
                   style={[
                     styles.priceStepBtn,
                     { backgroundColor: theme.subCard },
+                    stock === null && {
+                      backgroundColor: '#ecfdf5',
+                      borderWidth: 1,
+                      borderColor: '#10b981',
+                    },
                   ]}
-                  onPress={() => handleUpdateItemStock(item, null)}
+                  onPress={() =>
+                    handleUpdateItemStock(item, stock === null ? 20 : null)
+                  }
                 >
-                  <Text style={[styles.priceStepText, { color: theme.text }]}>
+                  <Text
+                    style={[
+                      styles.priceStepText,
+                      { color: stock === null ? '#059669' : theme.text },
+                    ]}
+                  >
                     ∞
                   </Text>
                 </TouchableOpacity>

@@ -12,6 +12,8 @@ import {
   ShoppingBag,
   AlertTriangle,
   RefreshCw,
+  Lock,
+  Clock,
 } from 'lucide-react';
 import {
   CartSelection,
@@ -23,10 +25,14 @@ import {
   SupportedLocale,
 } from '@/types/qlaok';
 import {
-  ALL_LOCALES,
+  checkShopOpenStatus,
+  DEFAULT_STOREFRONT_LOCALES,
   detectVisitorLocale,
   formatCurrency,
   formatTableLabel,
+  getGuestOrderLabels,
+  localizeStorefrontTableError,
+  normalizeShopSupportedLangs,
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
@@ -58,22 +64,105 @@ interface UserTableChoice {
   isTakeaway: boolean;
 }
 
+/** Persisted guest active order (per shop) so tracker / edit / VietQR survive reloads. */
+interface StoredGuestOrder {
+  orderId: string;
+  trackingToken: string;
+  orderCode: string;
+  savedAt: number;
+}
+
+const GUEST_ORDER_STORAGE_PREFIX = 'qlaok_guest_order_';
+const GUEST_ORDER_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+function guestOrderStorageKey(shopId: string) {
+  return `${GUEST_ORDER_STORAGE_PREFIX}${shopId}`;
+}
+
+function readStoredGuestOrder(shopId: string): StoredGuestOrder | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(guestOrderStorageKey(shopId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredGuestOrder>;
+    if (
+      typeof parsed?.orderId !== 'string' ||
+      typeof parsed?.trackingToken !== 'string' ||
+      !parsed.orderId ||
+      !parsed.trackingToken
+    ) {
+      return null;
+    }
+    if (
+      typeof parsed.savedAt === 'number' &&
+      Date.now() - parsed.savedAt > GUEST_ORDER_MAX_AGE_MS
+    ) {
+      window.localStorage.removeItem(guestOrderStorageKey(shopId));
+      return null;
+    }
+    return {
+      orderId: parsed.orderId,
+      trackingToken: parsed.trackingToken,
+      orderCode: typeof parsed.orderCode === 'string' ? parsed.orderCode : '',
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredGuestOrder(shopId: string, order: ShopOrder) {
+  if (typeof window === 'undefined' || !order.id || !order.tracking_token) return;
+  try {
+    const existing = readStoredGuestOrder(shopId);
+    const payload: StoredGuestOrder = {
+      orderId: order.id,
+      trackingToken: order.tracking_token,
+      orderCode: order.order_code || '',
+      savedAt:
+        existing && existing.orderId === order.id ? existing.savedAt : Date.now(),
+    };
+    window.localStorage.setItem(
+      guestOrderStorageKey(shopId),
+      JSON.stringify(payload)
+    );
+  } catch {
+    // storage unavailable (private mode / quota) — tracker still works in-memory
+  }
+}
+
+function clearStoredGuestOrder(shopId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(guestOrderStorageKey(shopId));
+  } catch {
+    // ignore
+  }
+}
+
 export default function StorefrontMenuPage() {
   const params = useParams<{ slug: string }>();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
 
   const qrTableIdParam = searchParams.get('tableId');
+  const qrTableSigParam = searchParams.get('sig');
   const qrTableParam = searchParams.get('table');
   const langParam = searchParams.get('lang');
+  const srcParam = searchParams.get('src');
+  // Only real table-QR entries count as scan_table (door page already logged scan_door)
+  const isTableQrEntry =
+    srcParam !== 'door' &&
+    (srcParam === 'table' || Boolean(qrTableIdParam) || Boolean(qrTableParam));
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [tables, setTables] = useState<ShopTable[]>([]);
   const [tablesLoadError, setTablesLoadError] = useState<string | null>(null);
-  const [allowedLangs, setAllowedLangs] =
-    useState<SupportedLocale[]>(ALL_LOCALES);
+  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(
+    DEFAULT_STOREFRONT_LOCALES
+  );
   const [locale, setLocale] = useState<SupportedLocale>('vi');
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -92,8 +181,15 @@ export default function StorefrontMenuPage() {
   const [userTableChoice, setUserTableChoice] =
     useState<UserTableChoice | null>(null);
   const [loading, setLoading] = useState(true);
+  // Minute ticker so the opening-hours banner flips without a reload
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const activeSlugRef = useRef(slug);
+  const restoredOrderShopRef = useRef<string | null>(null);
   const requestSeqRef = useRef(0);
   const initializedSlugRef = useRef<string | null>(null);
 
@@ -138,12 +234,11 @@ export default function StorefrontMenuPage() {
         }
 
         const loadedShop: Shop = data.shop;
-        const rawPlanLangs = getAllowedLocalesForPlan(
+        // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
+        const planLangs = getAllowedLocalesForPlan(
           data.ownerPlan || 'premium',
-          loadedShop.supported_langs
+          normalizeShopSupportedLangs(loadedShop.supported_langs)
         );
-        const planLangs =
-          rawPlanLangs.length > 1 ? rawPlanLangs : ALL_LOCALES;
 
         let loadedTables: ShopTable[] = [];
         if (Array.isArray(data.tables)) {
@@ -208,16 +303,18 @@ export default function StorefrontMenuPage() {
             }
           }
 
-          // Track QR Table Scan
-          fetch('/api/analytics/track', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              shop_id: loadedShop.id,
-              event_type: 'scan_table',
-              visitor_lang: detected,
-            }),
-          }).catch(() => {});
+          // Track QR Table Scan (skip door-page / explore navigation to avoid double counting)
+          if (isTableQrEntry) {
+            fetch('/api/analytics/track', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                shop_id: loadedShop.id,
+                event_type: 'scan_table',
+                visitor_lang: detected,
+              }),
+            }).catch(() => {});
+          }
         }
       } catch (err) {
         console.error('Failed to fetch storefront menu:', err);
@@ -226,7 +323,7 @@ export default function StorefrontMenuPage() {
         }
       }
     },
-    [slug, langParam]
+    [slug, langParam, isTableQrEntry]
   );
 
   useEffect(() => {
@@ -256,8 +353,30 @@ export default function StorefrontMenuPage() {
     return filterSelectableTables(tables, shop.id);
   }, [tables, shop]);
 
+  // Table lock: a valid, active ?tableId= from the table QR pins the order to that table.
+  // Invalid / paused / foreign tableIds fall back to the chooser + warning banner.
+  const lockedTable = useMemo<ShopTable | null>(() => {
+    if (!qrTableIdParam || !shop) return null;
+    const resolved = resolveTableSelection(
+      activeTables,
+      { tableId: qrTableIdParam },
+      locale
+    );
+    return resolved.table && !resolved.error ? resolved.table : null;
+  }, [qrTableIdParam, shop, activeTables, locale]);
+
   // Resolve QR table parameters (?tableId=... or ?table=...) against activeTables
   const tableState = useMemo(() => {
+    // 0. Locked QR table always wins (no switching)
+    if (lockedTable) {
+      return {
+        selectedTable: lockedTable as ShopTable | null,
+        selectedTableId: lockedTable.id as string | null,
+        isTakeawaySelected: false,
+        error: null as string | null,
+      };
+    }
+
     // 1. User explicitly chose a table or takeaway in this shop session
     if (userTableChoice && userTableChoice.shopSlug === slug) {
       if (userTableChoice.isTakeaway) {
@@ -269,9 +388,13 @@ export default function StorefrontMenuPage() {
         };
       }
       if (userTableChoice.tableId) {
-        const check = resolveTableSelection(activeTables, {
-          tableId: userTableChoice.tableId,
-        });
+        const check = resolveTableSelection(
+          activeTables,
+          {
+            tableId: userTableChoice.tableId,
+          },
+          locale
+        );
         if (check.table) {
           return {
             selectedTable: check.table,
@@ -300,10 +423,14 @@ export default function StorefrontMenuPage() {
     }
 
     // 3. Resolve QR ?tableId= or ?table= via pure resolveTableSelection helper
-    const resolved = resolveTableSelection(activeTables, {
-      tableId: qrTableIdParam,
-      table: qrTableParam,
-    });
+    const resolved = resolveTableSelection(
+      activeTables,
+      {
+        tableId: qrTableIdParam,
+        table: qrTableParam,
+      },
+      locale
+    );
 
     return {
       selectedTable: resolved.table,
@@ -312,12 +439,19 @@ export default function StorefrontMenuPage() {
       error: resolved.error,
     };
   }, [
+    lockedTable,
     userTableChoice,
     slug,
     activeTables,
     qrTableIdParam,
     qrTableParam,
+    locale,
   ]);
+
+  const localizedTablesLoadError = useMemo(
+    () => localizeStorefrontTableError(tablesLoadError, locale),
+    [tablesLoadError, locale]
+  );
 
   const handleSelectTableChoice = useCallback(
     (selection: {
@@ -334,6 +468,58 @@ export default function StorefrontMenuPage() {
     },
     [slug]
   );
+
+  // Restore a persisted guest order (per shop) after reload so tracker/edit/VietQR survive
+  useEffect(() => {
+    if (!shop?.id || restoredOrderShopRef.current === shop.id) return;
+    restoredOrderShopRef.current = shop.id;
+    const stored = readStoredGuestOrder(shop.id);
+    if (!stored) return;
+    const shopId = shop.id;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/orders?orderId=${encodeURIComponent(stored.orderId)}`,
+          {
+            headers: { 'x-tracking-token': stored.trackingToken },
+            cache: 'no-store',
+            signal: controller.signal,
+          }
+        );
+        if (res.status === 403 || res.status === 404) {
+          clearStoredGuestOrder(shopId);
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data?.order || data.order.shop_id !== shopId) {
+          clearStoredGuestOrder(shopId);
+          return;
+        }
+        if (activeSlugRef.current !== slug) return;
+        setLastOrder((prev) =>
+          prev ? prev : { ...data.order, tracking_token: stored.trackingToken }
+        );
+      } catch {
+        // offline / aborted — keep stored order for the next load
+      }
+    })();
+    return () => controller.abort();
+  }, [shop?.id, slug]);
+
+  // Persist the active guest order whenever it changes
+  useEffect(() => {
+    if (!shop?.id || !lastOrder?.id || !lastOrder.tracking_token) return;
+    if (lastOrder.shop_id && lastOrder.shop_id !== shop.id) return;
+    writeStoredGuestOrder(shop.id, lastOrder);
+  }, [shop?.id, lastOrder]);
+
+  const handleDismissGuestOrder = useCallback(() => {
+    if (shop?.id) clearStoredGuestOrder(shop.id);
+    setLastOrder(null);
+    setEditingOrder(null);
+  }, [shop?.id]);
 
   const handleClosePopup = () => {
     setIsPromoPopupOpen(false);
@@ -506,14 +692,14 @@ export default function StorefrontMenuPage() {
     setIsStaffModalOpen(true);
   };
 
+  const labels = UI_LABELS[locale] || UI_LABELS.vi;
+
   if (loading) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8 space-y-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
         <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-          {locale === 'vi'
-            ? 'Đang tải thực đơn đa ngôn ngữ...'
-            : 'Loading multilingual menu...'}
+          {labels.loadingMenu}
         </p>
       </div>
     );
@@ -523,24 +709,25 @@ export default function StorefrontMenuPage() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8 text-center space-y-3">
         <h1 className="text-base font-bold text-slate-900 dark:text-slate-100">
-          {locale === 'vi'
-            ? 'Không tìm thấy thực đơn cửa hàng'
-            : 'Storefront menu not found'}
+          {labels.menuNotFoundTitle}
         </h1>
         <Link
           href="/explore"
           className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white"
         >
-          {locale === 'vi' ? 'Quay lại trang khám phá' : 'Back to Explore'}
+          {labels.backToExplore}
         </Link>
       </div>
     );
   }
 
-  const labels = UI_LABELS[locale] || UI_LABELS.vi;
-  const tx = (vi: string, en: string) => (locale === 'vi' ? vi : en);
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
   const bgProps = getStorefrontBackgroundProps(shop);
+  const guestLabels = getGuestOrderLabels(locale);
+  const openStatus = checkShopOpenStatus(shop.opening_hours, {
+    now: new Date(clockTick),
+  });
+  const isShopClosed = !openStatus.isOpen;
   const hasActivePopup = Boolean(
     shop.theme_config?.welcomePopup?.enabled &&
       shop.theme_config?.welcomePopup?.title?.trim()
@@ -617,7 +804,7 @@ export default function StorefrontMenuPage() {
                 className="shrink-0 inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200 dark:bg-rose-500/20 dark:text-rose-300"
               >
                 <Gift className="h-3 w-3 text-rose-600 dark:text-rose-400" />
-                <span>{tx('Ưu đãi', 'Promos')}</span>
+                <span>{labels.promosShort}</span>
               </button>
             )}
           </div>
@@ -633,63 +820,84 @@ export default function StorefrontMenuPage() {
           </div>
         </div>
 
-        {/* Configured Table / Takeaway Selector Bar */}
-        <div
-          data-testid="menu-table-selector-bar"
-          className="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3.5 pb-2"
-        >
-          <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
-            {tx('Vị trí:', 'Table:')}
-          </span>
-          {activeTables.map((tb) => {
-            const active =
-              !tableState.isTakeawaySelected &&
-              tableState.selectedTableId === tb.id;
-            return (
-              <button
-                key={tb.id}
-                type="button"
-                aria-pressed={active}
-                data-testid={`menu-table-chip-${tb.id}`}
-                onClick={() =>
-                  handleSelectTableChoice({
-                    tableId: tb.id,
-                    tableLabel: tb.name,
-                    isTakeaway: false,
-                  })
-                }
-                className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
-                  active
-                    ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                    : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-                }`}
-              >
-                <Utensils className="h-3 w-3" />
-                <span>{tb.name}</span>
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            aria-pressed={tableState.isTakeawaySelected}
-            data-testid="menu-table-chip-takeaway"
-            onClick={() =>
-              handleSelectTableChoice({
-                tableId: null,
-                tableLabel: 'Mang về',
-                isTakeaway: true,
-              })
-            }
-            className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
-              tableState.isTakeawaySelected
-                ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
-            }`}
+        {/* Configured Table / Takeaway Selector Bar (locked when a valid QR tableId is present) */}
+        {lockedTable ? (
+          <div
+            data-testid="menu-table-locked-bar"
+            className="flex items-center gap-1.5 px-3.5 pb-2"
           >
-            <ShoppingBag className="h-3 w-3" />
-            <span>{formatTableLabel('Mang về', locale)}</span>
-          </button>
-        </div>
+            <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+              {labels.tableSelectorLabel}
+            </span>
+            <span
+              data-testid="menu-table-locked-chip"
+              className="inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950"
+            >
+              <Lock className="h-3 w-3" />
+              <span>{lockedTable.name}</span>
+            </span>
+            <span className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400">
+              {guestLabels.tableLockedHint}
+            </span>
+          </div>
+        ) : (
+          <div
+            data-testid="menu-table-selector-bar"
+            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3.5 pb-2"
+          >
+            <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+              {labels.tableSelectorLabel}
+            </span>
+            {activeTables.map((tb) => {
+              const active =
+                !tableState.isTakeawaySelected &&
+                tableState.selectedTableId === tb.id;
+              return (
+                <button
+                  key={tb.id}
+                  type="button"
+                  aria-pressed={active}
+                  data-testid={`menu-table-chip-${tb.id}`}
+                  onClick={() =>
+                    handleSelectTableChoice({
+                      tableId: tb.id,
+                      tableLabel: tb.name,
+                      isTakeaway: false,
+                    })
+                  }
+                  className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                    active
+                      ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                      : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <Utensils className="h-3 w-3" />
+                  <span>{tb.name}</span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              aria-pressed={tableState.isTakeawaySelected}
+              data-testid="menu-table-chip-takeaway"
+              onClick={() =>
+                handleSelectTableChoice({
+                  tableId: null,
+                  tableLabel: 'Mang về',
+                  isTakeaway: true,
+                })
+              }
+              className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                tableState.isTakeawaySelected
+                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
+                  : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+              }`}
+            >
+              <ShoppingBag className="h-3 w-3" />
+              <span>{formatTableLabel('Mang về', locale)}</span>
+            </button>
+          </div>
+        )}
 
         {/* Search Input */}
         <div className="px-3.5 pb-2.5">
@@ -709,7 +917,7 @@ export default function StorefrontMenuPage() {
             {searchQuery && (
               <button
                 type="button"
-                aria-label={tx('Xóa từ khóa tìm kiếm', 'Clear search')}
+                aria-label={labels.clearSearchAria}
                 onClick={() => setSearchQuery('')}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >
@@ -774,10 +982,7 @@ export default function StorefrontMenuPage() {
             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
             <div className="space-y-1">
               <p className="text-xs font-black text-amber-900 dark:text-amber-300">
-                {tx(
-                  'Mã QR bàn không khả dụng — vui lòng chọn lại bàn hoặc Mang về',
-                  'Table QR unavailable — please select an active table or Takeaway'
-                )}
+                {labels.tableQrUnavailableTitle}
               </p>
               <p className="text-xs font-medium leading-relaxed">
                 {tableState.error}
@@ -820,21 +1025,43 @@ export default function StorefrontMenuPage() {
         </div>
       )}
 
+      {/* Shop Closed Banner (server also rejects guest orders with SHOP_CLOSED) */}
+      {isShopClosed && (
+        <div
+          role="status"
+          data-testid="menu-shop-closed-banner"
+          className="relative z-10 mx-3.5 mt-3 flex items-start gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-rose-900 dark:border-rose-700/60 dark:bg-rose-950/70 dark:text-rose-100"
+        >
+          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+          <div className="space-y-0.5">
+            <p className="text-xs font-black">{guestLabels.shopClosedTitle}</p>
+            <p className="text-[11px] font-medium leading-relaxed">
+              {openStatus.todaySchedule.closed
+                ? guestLabels.shopClosedDayOff
+                : guestLabels.shopClosedSub(
+                    openStatus.todaySchedule.open,
+                    openStatus.todaySchedule.close
+                  )}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Tables Load Error Banner */}
-      {tablesLoadError && (
+      {localizedTablesLoadError && (
         <div
           role="alert"
           data-testid="menu-tables-load-error"
           className="relative z-10 mx-3.5 mt-3 flex items-center justify-between gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-800 dark:border-rose-700/60 dark:bg-rose-950/70 dark:text-rose-200"
         >
-          <span>⚠️ {tablesLoadError}</span>
+          <span>⚠️ {localizedTablesLoadError}</span>
           <button
             type="button"
             onClick={() => fetchCatalogData(false)}
             className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-rose-600 px-2.5 py-1 text-[11px] font-black text-white hover:bg-rose-500"
           >
             <RefreshCw className="h-3 w-3" />
-            <span>{tx('Thử lại', 'Retry')}</span>
+            <span>{labels.retryBtn}</span>
           </button>
         </div>
       )}
@@ -844,23 +1071,54 @@ export default function StorefrontMenuPage() {
         <div className="relative z-10 mx-3.5 mt-3">
           <button
             type="button"
+            data-testid="menu-live-order-banner"
             onClick={() => setIsStaffModalOpen(true)}
-            className="flex w-full items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-white dark:bg-slate-900 px-3.5 py-2.5 text-left text-slate-900 dark:text-white shadow-md"
+            className={`flex w-full items-center justify-between gap-2 rounded-2xl border bg-white dark:bg-slate-900 px-3.5 py-2.5 text-left text-slate-900 dark:text-white shadow-md ${
+              lastOrder.status === 'cancelled'
+                ? 'border-rose-400/60'
+                : 'border-emerald-500/40'
+            }`}
           >
             <div className="flex items-center gap-2.5 min-w-0">
-              <span className="flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500 animate-ping" />
+              <span
+                className={`flex h-2.5 w-2.5 shrink-0 rounded-full ${
+                  lastOrder.status === 'cancelled'
+                    ? 'bg-rose-500'
+                    : lastOrder.status === 'completed'
+                      ? 'bg-emerald-500'
+                      : 'bg-emerald-500 animate-ping'
+                }`}
+              />
               <div className="min-w-0">
-                <p className="truncate text-xs font-extrabold text-emerald-700 dark:text-emerald-400">
-                  {labels.liveOrderSentPrefix}#{lastOrder.order_code} •{' '}
-                  {formatTableLabel(lastOrder.table_label, locale)}
-                  {labels.liveOrderSentSuffix}
-                </p>
+                {lastOrder.status === 'cancelled' ? (
+                  <p className="truncate text-xs font-extrabold text-rose-700 dark:text-rose-400">
+                    #{lastOrder.order_code} • {guestLabels.statusCancelledTitle}
+                  </p>
+                ) : lastOrder.status === 'completed' ? (
+                  <p className="truncate text-xs font-extrabold text-emerald-700 dark:text-emerald-400">
+                    #{lastOrder.order_code} • {guestLabels.thankYouTitle}
+                  </p>
+                ) : (
+                  <p className="truncate text-xs font-extrabold text-emerald-700 dark:text-emerald-400">
+                    {labels.liveOrderSentPrefix}#{lastOrder.order_code} •{' '}
+                    {formatTableLabel(lastOrder.table_label, locale)}
+                    {labels.liveOrderSentSuffix}
+                  </p>
+                )}
                 <p className="truncate text-[11px] text-slate-600 dark:text-slate-300">
-                  {labels.liveOrderBannerSub}
+                  {lastOrder.payment_status === 'paid'
+                    ? `✓ ${guestLabels.paidBadge}`
+                    : labels.liveOrderBannerSub}
                 </p>
               </div>
             </div>
-            <span className="shrink-0 rounded-xl bg-emerald-500 px-2.5 py-1 text-[11px] font-black text-slate-950">
+            <span
+              className={`shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-black ${
+                lastOrder.status === 'cancelled'
+                  ? 'bg-rose-500 text-white'
+                  : 'bg-emerald-500 text-slate-950'
+              }`}
+            >
               {labels.viewOrderBtn}
             </span>
           </button>
@@ -988,10 +1246,14 @@ export default function StorefrontMenuPage() {
         locale={locale}
         cart={cart}
         tables={activeTables}
+        lockedTable={lockedTable}
+        tableQrSignature={qrTableSigParam}
+        isTableQrEntry={Boolean(qrTableIdParam)}
+        isShopClosed={isShopClosed}
         selectedTableId={tableState.selectedTableId}
         isTakeawaySelected={tableState.isTakeawaySelected}
         tableResolutionError={tableState.error}
-        tablesLoadError={tablesLoadError}
+        tablesLoadError={localizedTablesLoadError}
         onSelectTable={handleSelectTableChoice}
         onRetryLoadTables={() => fetchCatalogData(false)}
         initialTableLabel={
@@ -1008,6 +1270,7 @@ export default function StorefrontMenuPage() {
           setLastOrder(createdOrder);
           fetchCatalogData(false);
         }}
+        onDismissOrder={handleDismissGuestOrder}
       />
     </div>
   );

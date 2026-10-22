@@ -12,6 +12,7 @@ import {
   dbGetShopTableById,
   dbGetShopTables,
   dbUpdateShopTable,
+  withTableQrSignature,
 } from '@/lib/shop-tables';
 
 function mapTableErrorStatus(message: string): number {
@@ -94,7 +95,7 @@ export async function GET(req: Request) {
         includeInactive,
         includeArchived,
       });
-      return NextResponse.json({ tables });
+      return NextResponse.json({ tables: tables.map(withTableQrSignature) });
     }
 
     const shop = await dbGetShopById(shopId);
@@ -156,7 +157,10 @@ export async function POST(req: Request) {
         body?.is_active !== undefined ? Boolean(body.is_active) : true,
     });
 
-    return NextResponse.json({ table }, { status: 201 });
+    return NextResponse.json(
+      { table: withTableQrSignature(table) },
+      { status: 201 }
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Không thể tạo bàn mới.';
@@ -217,7 +221,7 @@ export async function PATCH(req: Request) {
         body?.is_archived !== undefined ? Boolean(body.is_archived) : undefined,
     });
 
-    return NextResponse.json({ table });
+    return NextResponse.json({ table: withTableQrSignature(table) });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Không thể cập nhật bàn.';

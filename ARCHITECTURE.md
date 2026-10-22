@@ -50,6 +50,8 @@ Các đường `/posts`, `/settings` trong bảng là hậu tố của `/dashboa
 
 API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
 
+`/api/ai/translate` và `/api/ai/ocr-menu` yêu cầu phiên đăng nhập (`requireAuthenticatedUser`) và giới hạn tần suất in-memory theo user (translate 30 req/10 phút, OCR 10 req/10 phút → 429). OCR thật (không phải `useDemo`) chỉ cho gói có `allowAiOcr` (Premium) hoặc Super Admin, trả `403 PLAN_FEATURE_LOCKED`. `/api/webhooks/payment` không có secret mặc định: thiếu `PAYMENT_WEBHOOK_SECRET` thì mọi webhook từ nhà cung cấp bị từ chối (503).
+
 ## Bảng dữ liệu và file báo cáo
 
 Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui/AppDataTable.tsx`; React Native không dùng thư viện React DOM này. CSV và workbook XLSX được tạo ở `src/lib/table-export.ts`, XLSX dùng ExcelJS tải theo nhu cầu. UI và export báo cáo dùng cùng dữ liệu đã lọc/sắp xếp, phân biệt phạm vi toàn bộ kết quả và trang hiện tại. Chart hiện tại vẫn là SVG/CSS tự vẽ (web) và View/Text (mobile). Xem [quy ước bảng/export](docs/DATA_TABLES_AND_EXPORT.md).

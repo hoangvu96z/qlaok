@@ -306,22 +306,17 @@ export default function ExploreDirectoryPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 border-t border-slate-100 p-3.5 bg-slate-50/60">
+                  <div className="border-t border-slate-100 p-3.5 bg-slate-50/60">
+                    {/* Always enter via the door page so analytics count a door visit (not a table scan) */}
                     <Link
-                      href={`/s/${shop.slug}?src=door`}
-                      className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white py-2 px-3 text-xs font-bold text-slate-800 hover:bg-slate-100"
-                    >
-                      <span>{tx('Trang quán', 'Store Page')}</span>
-                    </Link>
-                    <Link
-                      href={`/s/${shop.slug}/menu?src=table`}
+                      href={`/s/${shop.slug}`}
                       style={{
                         backgroundColor:
                           shop.theme_config?.primaryColor || '#10b981',
                       }}
                       className="flex items-center justify-center gap-1 rounded-xl py-2 px-3 text-xs font-black text-white shadow-2xs hover:opacity-95"
                     >
-                      <span>{tx('Xem Menu QR', 'QR Menu')}</span>
+                      <span>{tx('Xem quán & Menu', 'View Store & Menu')}</span>
                       <ArrowRight className="h-3.5 w-3.5" />
                     </Link>
                   </div>

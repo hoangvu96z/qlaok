@@ -42,6 +42,7 @@ import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
+import { ShopMembersManager } from '@/components/dashboard/ShopMembersManager';
 import { WeeklyOpeningHoursPicker } from '@/components/ui/TimeSchedulePicker';
 import { uploadCompressedImage } from '@/lib/upload-helper';
 import {
@@ -1514,6 +1515,9 @@ export default function DashboardSettingsPage() {
           onChange={(nextHours) => setOpeningHours(nextHours)}
         />
       </div>
+
+      {/* 6. Staff & roles (owner only; component renders nothing otherwise) */}
+      <ShopMembersManager />
 
       {/* Right Preview Sidebar Live Smartphone Viewer */}
       <RightPreviewSidebar

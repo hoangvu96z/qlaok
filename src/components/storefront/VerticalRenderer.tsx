@@ -194,7 +194,7 @@ export function VerticalRenderer({
                             onClick={(e) => onQuickAdd(item, e)}
                             style={{ backgroundColor: primaryColor }}
                             className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full text-white shadow-md ring-2 ring-white transition-transform active:scale-90"
-                            aria-label="Add item"
+                            aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                           >
                             <Plus className="h-4 w-4" />
                           </button>
@@ -267,6 +267,7 @@ export function VerticalRenderer({
                               onClick={(e) => onQuickAdd(item, e)}
                               style={{ backgroundColor: primaryColor }}
                               className="flex h-7 w-7 items-center justify-center rounded-lg text-white shadow-xs active:scale-90"
+                              aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                             >
                               <Plus className="h-3.5 w-3.5" />
                             </button>
@@ -417,7 +418,7 @@ export function VerticalRenderer({
                               onClick={(e) => onQuickAdd(item, e)}
                               style={{ backgroundColor: primaryColor }}
                               className="flex h-7 w-7 items-center justify-center rounded-full text-white shadow-xs active:scale-90"
-                              aria-label="Add product"
+                              aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                             >
                               <ShoppingBag className="h-3.5 w-3.5" />
                             </button>

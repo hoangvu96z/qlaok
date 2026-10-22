@@ -23,6 +23,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Monitor,
+  RefreshCw,
+  Globe,
+  EyeOff,
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import {
@@ -46,6 +49,13 @@ import {
   formatNotificationToggleLabel,
 } from '@/lib/app-i18n';
 import { ShopOrder } from '@/types/qlaok';
+import {
+  canAccessDashboardHref,
+  getFallbackDashboardHref,
+  getNavRequirementForPath,
+  isShopOwnerMembership,
+  membershipHasPermission,
+} from '@/lib/dashboard-nav';
 import { formatCurrency } from '@/lib/i18n-helper';
 import {
   ensureAudioContextUnlocked,
@@ -114,7 +124,20 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { locale, t, tx } = useAppI18n();
-  const { shops, activeShop, profile, loading, selectShop } = useDashboard();
+  const {
+    shops,
+    activeShop,
+    activeMembership,
+    profile,
+    loading,
+    error: dashboardError,
+    membershipsLoaded,
+    selectShop,
+    refreshDashboard,
+  } = useDashboard();
+  const [retrying, setRetrying] = useState(false);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
   const [latestNewTableLabel, setLatestNewTableLabel] = useState<string>('Bàn khách');
@@ -312,7 +335,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = (ev) => {
         if (ev.data?.shopId !== shopId) return;
-        if (ev.data?.type === 'new_order_submitted') {
+        // Guest storefront sends 'order_created'; keep legacy
+        // 'new_order_submitted' for compatibility.
+        if (
+          ev.data?.type === 'order_created' ||
+          ev.data?.type === 'new_order_submitted'
+        ) {
           if (typeof ev.data.orderId === 'string') {
             knownNewIdsRef.current.add(ev.data.orderId);
           }
@@ -358,6 +386,22 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     return () => clearInterval(reminderInterval);
   }, [pathname, newOrdersCount, latestNewTableLabel]);
 
+  // Role-based route guard: e.g. staff without reports.view landing on the
+  // overview are sent to the orders screen. Never "allow" before memberships load.
+  const routeRequirement = getNavRequirementForPath(pathname);
+  const routeAllowed =
+    !routeRequirement ||
+    (membershipsLoaded &&
+      Boolean(activeShop) &&
+      canAccessDashboardHref(pathname || '/dashboard', activeMembership));
+  useEffect(() => {
+    if (!membershipsLoaded || !activeShop || routeAllowed) return;
+    const fallback = getFallbackDashboardHref(activeMembership);
+    if (fallback && fallback !== pathname) {
+      router.replace(fallback);
+    }
+  }, [membershipsLoaded, activeShop, activeMembership, routeAllowed, pathname, router]);
+
   const handleEnableOrTestBrowserNotifications = async () => {
     const perm = await requestBrowserNotificationPermission();
     setBrowserPerm(perm);
@@ -400,6 +444,89 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     }
     router.replace('/login');
   };
+
+  const visibleNavItems = NAV_ITEMS.filter((item) =>
+    canAccessDashboardHref(item.href, activeMembership)
+  );
+  const isOwner = isShopOwnerMembership(activeMembership);
+  const canPublish = membershipHasPermission(activeMembership, 'settings.manage');
+  const canViewOrders = membershipHasPermission(activeMembership, 'orders.view');
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await refreshDashboard();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const handleTogglePublish = async () => {
+    if (!activeShop || publishBusy) return;
+    const nextPublished = activeShop.is_published === false;
+    setPublishBusy(true);
+    setPublishError(null);
+    try {
+      const res = await fetch('/api/shops', {
+        method: 'PATCH',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ id: activeShop.id, is_published: nextPublished }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (data as { error?: string }).error ||
+            tx('Không thể cập nhật trạng thái công khai.', 'Could not update publish status.')
+        );
+      }
+      await refreshDashboard();
+    } catch (err) {
+      setPublishError(
+        err instanceof Error
+          ? err.message
+          : tx('Không thể cập nhật trạng thái công khai.', 'Could not update publish status.')
+      );
+    } finally {
+      setPublishBusy(false);
+    }
+  };
+
+  if (dashboardError && !profile) {
+    return (
+      <div
+        role="alert"
+        data-testid="dashboard-layout-error"
+        className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 space-y-4 text-center"
+      >
+        <p className="text-sm font-black text-rose-300">
+          {tx(
+            'Không thể tải dữ liệu quản lý quán. Vui lòng kiểm tra kết nối mạng.',
+            'Could not load your store dashboard. Please check your connection.'
+          )}
+        </p>
+        <p className="text-[11px] text-slate-400 break-all">{dashboardError}</p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={retrying}
+            data-testid="dashboard-layout-retry"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-black text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
+            {tx('Thử lại', 'Retry')}
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-xl border border-slate-700 px-4 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800"
+          >
+            {t('header.logout')}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (loading || !profile) {
     return (
@@ -629,7 +756,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             isSidebarCollapsed ? 'p-2' : 'p-3'
           }`}
         >
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const label = t(item.labelKey);
             const active =
@@ -722,8 +849,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             </button>
           )}
 
+          {isOwner && (
           <Link
-            href="/onboarding"
+            href="/onboarding?intent=new_branch"
             title={t('header.addBranch')}
             aria-label={t('header.addBranch')}
             className={`flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 ${
@@ -733,6 +861,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             <PlusCircle className="h-4 w-4 shrink-0" />
             {!isSidebarCollapsed && <span>{t('header.addBranch')}</span>}
           </Link>
+          )}
 
           {!isSidebarCollapsed ? (
             <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 px-3 py-2 border border-slate-200 dark:border-slate-800">
@@ -852,8 +981,49 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             <AppLanguageSwitcher />
             <ThemeToggle />
 
+            {activeShop && canPublish && (
+              <button
+                type="button"
+                onClick={handleTogglePublish}
+                disabled={publishBusy}
+                data-testid="header-publish-toggle"
+                aria-pressed={activeShop.is_published !== false}
+                title={
+                  publishError ||
+                  (activeShop.is_published === false
+                    ? tx(
+                        'Cửa hàng đang ở chế độ nháp — khách chưa xem được menu. Bấm để công khai.',
+                        'Store is a draft — guests cannot see the menu yet. Click to go live.'
+                      )
+                    : tx(
+                        'Cửa hàng đang công khai. Bấm để chuyển về nháp.',
+                        'Store is live. Click to switch back to draft.'
+                      ))
+                }
+                className={`inline-flex items-center gap-1 rounded-xl border px-2 sm:px-2.5 py-1.5 text-xs font-black shrink-0 disabled:opacity-60 ${
+                  publishError
+                    ? 'border-rose-400 bg-rose-50 text-rose-700'
+                    : activeShop.is_published === false
+                      ? 'border-amber-400 bg-amber-400 text-slate-950 hover:bg-amber-300'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                }`}
+              >
+                {activeShop.is_published === false ? (
+                  <EyeOff className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <Globe className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="hidden sm:inline">
+                  {activeShop.is_published === false
+                    ? tx('Nháp • Công khai', 'Draft • Go live')
+                    : tx('Đang công khai', 'Live')}
+                </span>
+              </button>
+            )}
+
             {activeShop && (
               <>
+                {canViewOrders && (
                 <Link
                   href="/dashboard/orders"
                   title={t('nav.orders')}
@@ -873,6 +1043,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                     </span>
                   )}
                 </Link>
+                )}
                 <a
                   href={`/s/${activeShop.slug}/menu?src=table`}
                   target="_blank"
@@ -893,13 +1064,37 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
         <main className="flex-1 w-full p-3 sm:p-5">
           <PwaInstallBanner />
-          {children}
+          {routeAllowed ? (
+            children
+          ) : (
+            <div
+              role="status"
+              data-testid="dashboard-route-forbidden"
+              className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-10 text-center space-y-2"
+            >
+              <ShieldCheck className="mx-auto h-8 w-8 text-amber-500" />
+              <p className="text-sm font-black text-slate-900 dark:text-white">
+                {tx(
+                  'Tài khoản của bạn không có quyền mở trang này.',
+                  'Your account does not have access to this page.'
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {getFallbackDashboardHref(activeMembership)
+                  ? tx('Đang chuyển hướng...', 'Redirecting...')
+                  : tx(
+                      'Vui lòng liên hệ chủ cửa hàng để được cấp quyền.',
+                      'Please ask the store owner to grant access.'
+                    )}
+              </p>
+            </div>
+          )}
         </main>
       </div>
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-2 py-1.5 flex items-center gap-1 overflow-x-auto no-scrollbar shadow-lg">
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const Icon = item.icon;
           const label = t(item.labelKey);
           const active =

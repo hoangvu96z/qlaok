@@ -40,3 +40,10 @@ CodeGraph đã dùng: explore khu vực report/export/table/chart; node reports,
 - Chưa kiểm thử tải dữ liệu thật/ghi DB production hoặc các thao tác quản trị có thay đổi dữ liệu. Các kiểm tra trình duyệt dùng dữ liệu cô lập, không ghi DB.
 
 Build production (`npm run build`): đạt sau khi dừng dev server. `git diff --check`: đạt.
+
+
+## Sửa lỗi theme và ngôn ngữ sau phản hồi UI
+
+Rà soát lại ngày 20/10/2026: kiểm tra trước đó chấp nhận bảng Admin luôn tối là kỳ vọng sai. Bốn bảng Admin phải dùng theme hiện tại của ứng dụng, không ép dark trong light mode. Kiểm chứng cần đo màu nền/chữ thực tế của bảng khi chuyển light → dark → light và qua cả bốn tab, không chỉ kiểm tra render thành công.
+
+Storefront có miền ngôn ngữ riêng tám locale; helper chỉ phân biệt VI/EN không phù hợp cho checkout/tracking. Thông báo hệ thống (kể cả thiếu QR, chọn bàn, lỗi và nhãn hỗ trợ truy cập) phải dùng locale khách chọn. Tên/nội dung do quán nhập có thể giữ nguyên khi chưa có bản dịch; tên món tiếng Việt kèm bản dịch là hành vi đối chiếu với quầy, không phải nhãn hệ thống.

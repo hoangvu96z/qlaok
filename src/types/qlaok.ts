@@ -204,6 +204,7 @@ export type ShopPermission =
   | 'payment.refund'
   | 'catalog.view'
   | 'catalog.manage'
+  | 'inventory.adjust'
   | 'promotions.manage'
   | 'settings.manage'
   | 'settings.bank'
@@ -253,6 +254,7 @@ export interface ShopTable {
   archived_at?: string | null;
   created_at?: string;
   updated_at?: string;
+  qr_sig?: string;
 }
 
 export interface PublicShopTable {

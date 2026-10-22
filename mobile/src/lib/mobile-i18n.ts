@@ -48,6 +48,7 @@ const VI_MOBILE_DICTIONARY = {
   'auth.submit': 'Đăng nhập',
   'auth.submitting': 'Đang đăng nhập...',
   'auth.errorFallback': 'Vui lòng kiểm tra lại email hoặc mật khẩu',
+  'auth.createStorePrompt': 'Chưa có tài khoản cửa hàng? Đăng ký trên Web',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Quản lý quán',
@@ -58,10 +59,17 @@ const VI_MOBILE_DICTIONARY = {
   'shell.themeLight': 'Chế độ sáng',
   'shell.themeDark': 'Chế độ tối',
   'shell.logout': 'Thoát',
+  'shell.logoutConfirmTitle': 'Đăng xuất tài khoản?',
+  'shell.logoutConfirmDesc': 'Bạn có chắc muốn đăng xuất khỏi thiết bị này?',
   'shell.logoutErrorTitle': 'Không thể đăng xuất',
   'shell.liveOrderBadge': 'ĐƠN MỚI TẠI BÀN',
   'shell.liveOrderViewCta': 'Xem đơn',
   'shell.loadingStore': 'Đang tải dữ liệu quán...',
+  'shell.noShopsTitle': 'Tài khoản chưa có cửa hàng',
+  'shell.noShopsDesc':
+    'Tài khoản này hiện chưa sở hữu hoặc tham gia cửa hàng nào. Bạn có thể khởi tạo cửa hàng mới trên trang web hoặc tải lại.',
+  'shell.openWebOnboarding': 'Mở trang tạo cửa hàng',
+  'shell.refreshStores': 'Tải lại danh sách',
 
   'nav.orders': 'Đơn ({count})',
   'nav.overview': 'Doanh thu',
@@ -104,6 +112,14 @@ const VI_MOBILE_DICTIONARY = {
   'orders.actionCancel': 'Hủy',
   'orders.actionViewReceipt': 'Xem hóa đơn',
   'orders.actionViewTicket': 'Xem phiếu in',
+  'orders.confirmCancelTitle': 'Xác nhận hủy đơn',
+  'orders.confirmCancelDesc': 'Bạn có chắc muốn hủy đơn #{code} ({table})?',
+  'orders.confirmPaidTitle': 'Xác nhận đã thu tiền',
+  'orders.confirmPaidDesc': 'Xác nhận đã thu {total} cho đơn #{code}?',
+  'orders.confirmRefundTitle': 'Xác nhận hoàn tiền',
+  'orders.confirmRefundDesc': 'Xác nhận hoàn tiền {total} cho đơn #{code}?',
+  'orders.fetchErrorTitle': 'Không thể tải danh sách đơn hàng',
+  'orders.retryBtn': 'Thử lại',
 
   // OverviewTab
   'overview.heroLabel': 'DOANH THU ĐÃ THU HÔM NAY',
@@ -138,6 +154,8 @@ const VI_MOBILE_DICTIONARY = {
   'catalog.errNoCatTitle': 'Chưa có danh mục',
   'catalog.errNoCatDesc': 'Vui lòng tạo danh mục trước.',
   'catalog.errAddItemTitle': 'Không thể thêm món',
+  'catalog.errInvalidNameDesc': 'Vui lòng nhập tên món.',
+  'catalog.errInvalidPriceDesc': 'Vui lòng nhập giá bán hợp lệ lớn hơn 0đ.',
 
   // Preview & PromotionsTab
   'preview.defaultShopName': 'Tên Quán',
@@ -255,6 +273,7 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'auth.submit': 'Sign in',
   'auth.submitting': 'Signing in...',
   'auth.errorFallback': 'Please check your email or password',
+  'auth.createStorePrompt': 'Need a store account? Register on Web',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Store Manager',
@@ -265,10 +284,17 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'shell.themeLight': 'Light mode',
   'shell.themeDark': 'Dark mode',
   'shell.logout': 'Sign out',
+  'shell.logoutConfirmTitle': 'Sign out?',
+  'shell.logoutConfirmDesc': 'Are you sure you want to sign out of this device?',
   'shell.logoutErrorTitle': 'Unable to sign out',
   'shell.liveOrderBadge': 'NEW TABLE ORDER',
   'shell.liveOrderViewCta': 'View',
   'shell.loadingStore': 'Loading store data...',
+  'shell.noShopsTitle': 'No stores found',
+  'shell.noShopsDesc':
+    'This account does not own or belong to any store yet. You can create a new store on the web app or refresh.',
+  'shell.openWebOnboarding': 'Create store on Web',
+  'shell.refreshStores': 'Refresh list',
 
   'nav.orders': 'Orders ({count})',
   'nav.overview': 'Sales',
@@ -311,6 +337,14 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'orders.actionCancel': 'Cancel',
   'orders.actionViewReceipt': 'View receipt',
   'orders.actionViewTicket': 'Print preview',
+  'orders.confirmCancelTitle': 'Cancel order',
+  'orders.confirmCancelDesc': 'Are you sure you want to cancel order #{code} ({table})?',
+  'orders.confirmPaidTitle': 'Confirm payment',
+  'orders.confirmPaidDesc': 'Confirm collecting {total} for order #{code}?',
+  'orders.confirmRefundTitle': 'Confirm refund',
+  'orders.confirmRefundDesc': 'Confirm refunding {total} for order #{code}?',
+  'orders.fetchErrorTitle': 'Unable to load orders',
+  'orders.retryBtn': 'Retry',
 
   // OverviewTab
   'overview.heroLabel': 'PAID REVENUE TODAY',
@@ -345,6 +379,8 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'catalog.errNoCatTitle': 'No category',
   'catalog.errNoCatDesc': 'Please create a category first.',
   'catalog.errAddItemTitle': 'Unable to add item',
+  'catalog.errInvalidNameDesc': 'Please enter an item name.',
+  'catalog.errInvalidPriceDesc': 'Please enter a valid price greater than 0.',
 
   // Preview & PromotionsTab
   'preview.defaultShopName': 'Store Name',

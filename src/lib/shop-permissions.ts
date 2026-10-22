@@ -22,12 +22,123 @@ export const ALL_SHOP_PERMISSIONS: ShopPermission[] = [
   'payment.refund',
   'catalog.view',
   'catalog.manage',
+  'inventory.adjust',
   'promotions.manage',
   'settings.manage',
   'settings.bank',
   'reports.view',
   'members.manage',
 ];
+
+/**
+ * Item fields that may be changed with only `inventory.adjust` (toggle
+ * availability / stock). Any other field change still requires
+ * `catalog.manage`.
+ */
+export const INVENTORY_ADJUST_ITEM_FIELDS = [
+  'is_available',
+  'stock_quantity',
+] as const;
+
+/** Fields that identify an item but are not treated as edits. */
+const ITEM_IDENTITY_FIELDS = ['id', 'shop_id'] as const;
+
+/**
+ * Server-managed / derived fields that clients echo back from GET but that
+ * are never written from an inventory-only update.
+ */
+const ITEM_IGNORED_DIFF_FIELDS = ['created_at', 'updated_at', 'sold_count'] as const;
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value ?? null);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
+    .join(',')}}`;
+}
+
+function isNumericLike(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  return typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value));
+}
+
+function itemValuesEquivalent(a: unknown, b: unknown): boolean {
+  const aEmpty = a === null || a === undefined;
+  const bEmpty = b === null || b === undefined;
+  if (aEmpty || bEmpty) return aEmpty && bEmpty;
+  if (isNumericLike(a) && isNumericLike(b)) return Number(a) === Number(b);
+  return stableStringify(a) === stableStringify(b);
+}
+
+/**
+ * Returns the permissions that are each sufficient to apply `incoming` to the
+ * stored `existing` item. Updates to an existing item that only change
+ * stock/availability accept `inventory.adjust` OR `catalog.manage`; creating
+ * items or changing any other field requires `catalog.manage`.
+ */
+export function getCatalogItemUpdatePermissionOptions(
+  incoming: Record<string, unknown> | null | undefined,
+  existing: Record<string, unknown> | null | undefined
+): ShopPermission[] {
+  if (!incoming || !existing) return ['catalog.manage'];
+  const inventoryFields = new Set<string>(INVENTORY_ADJUST_ITEM_FIELDS);
+  const identityFields = new Set<string>(ITEM_IDENTITY_FIELDS);
+  const ignoredFields = new Set<string>(ITEM_IGNORED_DIFF_FIELDS);
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === undefined || ignoredFields.has(key) || inventoryFields.has(key)) {
+      continue;
+    }
+    if (identityFields.has(key)) {
+      if (String(value) !== String(existing[key])) return ['catalog.manage'];
+      continue;
+    }
+    if (!itemValuesEquivalent(value, existing[key])) return ['catalog.manage'];
+  }
+  return ['catalog.manage', 'inventory.adjust'];
+}
+
+/**
+ * Builds the minimal write payload for an inventory-only update so that no
+ * other item field can be written through the `inventory.adjust` path.
+ */
+export function buildInventoryOnlyItemPatch(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {
+    id: existing.id,
+    shop_id: existing.shop_id,
+    category_id: existing.category_id,
+  };
+  if (typeof incoming.is_available === 'boolean') {
+    patch.is_available = incoming.is_available;
+  }
+  if (incoming.stock_quantity === null) {
+    patch.stock_quantity = null;
+  } else if (isNumericLike(incoming.stock_quantity)) {
+    const qty = Math.floor(Number(incoming.stock_quantity));
+    if (qty < 0) {
+      throw new Error('INVALID_STOCK_QUANTITY: Tồn kho không được âm.');
+    }
+    patch.stock_quantity = qty;
+  }
+  return patch;
+}
+
+/** True when the membership holds at least one of the listed permissions. */
+export function hasAnyShopPermission(
+  membership: Pick<ShopMembership, 'role' | 'permissions' | 'is_active'> | null | undefined,
+  anyOf: ShopPermission[]
+): boolean {
+  return anyOf.some((perm) => hasShopPermission(membership, perm));
+}
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<ShopRole, ShopPermission[]> = {
   owner: [...ALL_SHOP_PERMISSIONS],
@@ -42,6 +153,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<ShopRole, ShopPermission[]> = {
     'payment.collect',
     'discount.apply',
     'catalog.view',
+    'inventory.adjust',
   ],
   staff: [
     'orders.view',
@@ -49,6 +161,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<ShopRole, ShopPermission[]> = {
     'orders.fulfill',
     'orders.print_kitchen',
     'catalog.view',
+    'inventory.adjust',
   ],
 };
 

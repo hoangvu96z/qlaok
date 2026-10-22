@@ -33,6 +33,9 @@ import {
   normalizeAndTranslateOptionGroups,
 } from '@/lib/item-options-presets';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import Link from 'next/link';
+import { getAuthHeaders } from '@/lib/auth-session';
+import { formatPlanLimitError } from '@/lib/plan-limits';
 
 const PRESET_BUTTON_LABELS: Record<string, { vi: string; en: string }> = {
   sugar_level: { vi: '+ Mức đường', en: '+ Sugar level' },
@@ -262,7 +265,7 @@ export function TranslationEditorModal({
       const currentCategory = categories.find((c) => c.id === categoryId);
       const res = await fetch('/api/ai/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           vertical,
           categoryNameVi: currentCategory?.name_i18n.vi || 'Danh mục',
@@ -362,7 +365,7 @@ export function TranslationEditorModal({
 
       const res = await fetch('/api/catalog', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -390,6 +393,8 @@ export function TranslationEditorModal({
       setSaving(false);
     }
   };
+
+  const planLimitErr = errorMsg ? formatPlanLimitError(errorMsg, locale) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-2 sm:p-4 backdrop-blur-xs overflow-y-auto">
@@ -436,8 +441,17 @@ export function TranslationEditorModal({
           className="p-5 space-y-5 max-h-[82vh] overflow-y-auto"
         >
           {errorMsg && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
-              ⚠️ {errorMsg}
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700 flex flex-wrap items-center justify-between gap-2">
+              <span>⚠️ {planLimitErr ? planLimitErr.message : errorMsg}</span>
+              {planLimitErr && (
+                <Link
+                  href={planLimitErr.upgradeHref}
+                  onClick={onClose}
+                  className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-500"
+                >
+                  {planLimitErr.ctaLabel}
+                </Link>
+              )}
             </div>
           )}
 

@@ -17,6 +17,7 @@ import {
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { createClient } from '@/lib/supabase/client';
+import { CLIENT_ALL_SHOP_PERMISSIONS } from '@/lib/dashboard-nav';
 
 interface DashboardContextValue {
   shops: Shop[];
@@ -25,8 +26,20 @@ interface DashboardContextValue {
   memberships: Record<string, ShopMembership>;
   profile: Profile | null;
   loading: boolean;
+  /** Non-auth failure (network/server) while loading the session/shops. */
+  error: string | null;
+  /** True once memberships for the loaded shops are known. */
+  membershipsLoaded: boolean;
   selectShop: (shopId: string) => void;
   refreshDashboard: () => Promise<void>;
+}
+
+/** Builds `/login?next=<current path>` so users return after signing in. */
+function buildLoginRedirect(): string {
+  if (typeof window === 'undefined') return '/login';
+  const current = `${window.location.pathname}${window.location.search}`;
+  if (!current.startsWith('/dashboard')) return '/login';
+  return `/login?next=${encodeURIComponent(current)}`;
 }
 
 const DashboardContext = createContext<DashboardContextValue>({
@@ -36,6 +49,8 @@ const DashboardContext = createContext<DashboardContextValue>({
   memberships: {},
   profile: null,
   loading: true,
+  error: null,
+  membershipsLoaded: false,
   selectShop: () => {},
   refreshDashboard: async () => {},
 });
@@ -49,8 +64,11 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [activeShopId, setActiveShopId] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [membershipsLoaded, setMembershipsLoaded] = useState(false);
 
   const refreshDashboard = useCallback(async () => {
+    setError(null);
     try {
       let owner = getStoredAuthOwner();
 
@@ -90,7 +108,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
       if (!owner) {
         clearStoredAuthOwner();
-        router.replace('/login');
+        router.replace(buildLoginRedirect());
         return;
       }
 
@@ -104,15 +122,19 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
       if (res.status === 401 || res.status === 403) {
         clearStoredAuthOwner();
-        router.replace('/login');
+        router.replace(buildLoginRedirect());
         return;
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
 
       const data = await res.json();
       let loadedShops: Shop[] = data.shops || [];
-      if (data.memberships && typeof data.memberships === 'object') {
-        setMemberships(data.memberships as Record<string, ShopMembership>);
-      }
+      const loadedMemberships: Record<string, ShopMembership> =
+        data.memberships && typeof data.memberships === 'object'
+          ? { ...(data.memberships as Record<string, ShopMembership>) }
+          : {};
       const loadedProfile: Profile = {
         ...(data.profile || owner),
         ...(isSuperAdmin(owner)
@@ -132,6 +154,27 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
+      // Platform admins act as owner on every shop (server resolves the same).
+      if (isSuperAdmin(loadedProfile)) {
+        const nowIso = new Date().toISOString();
+        for (const shop of loadedShops) {
+          if (!loadedMemberships[shop.id]) {
+            loadedMemberships[shop.id] = {
+              id: `mem-admin-${shop.id}`,
+              shop_id: shop.id,
+              user_id: loadedProfile.id,
+              role: 'owner',
+              permissions: [...CLIENT_ALL_SHOP_PERMISSIONS],
+              is_active: true,
+              created_at: nowIso,
+              updated_at: nowIso,
+            };
+          }
+        }
+      }
+
+      setMemberships(loadedMemberships);
+      setMembershipsLoaded(true);
       setProfile(loadedProfile);
       setStoredAuthOwner(loadedProfile);
       setShops(loadedShops);
@@ -156,6 +199,11 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     } catch (err) {
       console.error('Error loading dashboard shops:', err);
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'NETWORK_ERROR'
+      );
       setLoading(false);
     }
   }, [router]);
@@ -186,6 +234,8 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         memberships,
         profile,
         loading,
+        error,
+        membershipsLoaded,
         selectShop,
         refreshDashboard,
       }}

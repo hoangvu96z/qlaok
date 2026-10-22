@@ -143,6 +143,7 @@ export function ItemDetailDrawer({
                 />
                 <button
                   type="button"
+                  aria-label={labels.closeItemDetailAria}
                   onClick={onClose}
                   className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-xs hover:bg-black/70"
                 >
@@ -162,6 +163,7 @@ export function ItemDetailDrawer({
                 </span>
                 <button
                   type="button"
+                  aria-label={labels.closeItemDetailAria}
                   onClick={onClose}
                   className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600"
                 >
@@ -238,9 +240,7 @@ export function ItemDetailDrawer({
                               </span>
                             ) : (
                               <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                                {locale === 'vi'
-                                  ? 'Chọn thêm (Nhiều mục)'
-                                  : 'Optional / Add-ons'}
+                                {labels.optionalBadge}
                               </span>
                             )}
                           </div>
@@ -368,6 +368,9 @@ export function ItemDetailDrawer({
                 <div className="flex items-center rounded-2xl border border-slate-200 bg-slate-50 p-1">
                   <button
                     type="button"
+                    aria-label={labels.decreaseQtyAria(
+                      tField(item.name_i18n, locale)
+                    )}
                     onClick={() => setQuantity((q) => Math.max(1, q - 1))}
                     className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-700 hover:bg-white active:scale-95"
                   >
@@ -378,6 +381,9 @@ export function ItemDetailDrawer({
                   </span>
                   <button
                     type="button"
+                    aria-label={labels.increaseQtyAria(
+                      tField(item.name_i18n, locale)
+                    )}
                     onClick={() => setQuantity((q) => q + 1)}
                     className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-700 hover:bg-white active:scale-95"
                   >

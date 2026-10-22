@@ -11,6 +11,11 @@ import {
   tField,
   formatCurrency,
   checkShopOpenStatus,
+  localizeStorefrontTableError,
+  localizeGuestOrderError,
+  getGuestOrderLabels,
+  GUEST_ORDER_LABELS,
+  normalizeShopSupportedLangs,
 } from '@/lib/i18n-helper';
 import {
   PLAN_CONFIGS,
@@ -46,6 +51,7 @@ import {
   dbSettleTableBill,
   dbRecordOrderPrint,
   computeShopRevenueAndInventoryStats,
+  setOpeningHoursEnforcementForTests,
 } from '@/lib/mpos-store';
 import {
   DEFAULT_ROLE_PERMISSIONS,
@@ -287,6 +293,58 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
       assert.ok(UI_LABELS[loc].cashPayment.length > 0);
       assert.ok(UI_LABELS[loc].qrPayment.length > 0);
       assert.ok(UI_LABELS[loc].tablePrefix.length > 0);
+      assert.ok(UI_LABELS[loc].tableSelectorLabel.length > 0);
+      assert.ok(UI_LABELS[loc].noTableSelected.length > 0);
+      assert.ok(UI_LABELS[loc].selectTableBeforeSendError.length > 0);
+      assert.ok(UI_LABELS[loc].tableConfirmationRequiredTitle.length > 0);
+      assert.ok(UI_LABELS[loc].tableQrUnavailableTitle.length > 0);
+      assert.ok(UI_LABELS[loc].tableQrInvalidError.length > 0);
+      assert.ok(UI_LABELS[loc].tableInactiveError('Bàn 01').includes('Bàn 01'));
+      assert.ok(UI_LABELS[loc].tableNotFoundError('T99').includes('T99'));
+      assert.ok(UI_LABELS[loc].tablesLoadError.length > 0);
+      assert.ok(UI_LABELS[loc].noActiveTablesTakeawayHint.length > 0);
+      assert.ok(UI_LABELS[loc].qrNotConfiguredNotice.length > 0);
+      assert.ok(UI_LABELS[loc].editingOrderHint.length > 0);
+      assert.ok(UI_LABELS[loc].addMoreItemsBtn.length > 0);
+      assert.ok(UI_LABELS[loc].keepingExistingTablePrefix('QL-101').includes('QL-101'));
+      assert.ok(UI_LABELS[loc].retryBtn.length > 0);
+      assert.ok(UI_LABELS[loc].submitOrderError.length > 0);
+      assert.ok(UI_LABELS[loc].closeOrderModalAria.length > 0);
+      assert.ok(UI_LABELS[loc].paymentMethodGroupAria.length > 0);
+      assert.ok(UI_LABELS[loc].decreaseQtyAria('Phở').includes('Phở'));
+      assert.ok(UI_LABELS[loc].increaseQtyAria('Phở').includes('Phở'));
+      assert.ok(UI_LABELS[loc].clearSearchAria.length > 0);
+      assert.ok(UI_LABELS[loc].selectLanguageAria.length > 0);
+
+      if (loc !== 'en') {
+        assert.notEqual(
+          UI_LABELS[loc].qrNotConfiguredNotice,
+          UI_LABELS.en.qrNotConfiguredNotice,
+          `Locale ${loc} must not leak English QR unconfigured message`
+        );
+        assert.notEqual(
+          UI_LABELS[loc].noTableSelected,
+          UI_LABELS.en.noTableSelected,
+          `Locale ${loc} must not leak English noTableSelected`
+        );
+      }
+
+      assert.equal(
+        localizeStorefrontTableError(UI_LABELS.vi.tableQrInvalidError, loc),
+        UI_LABELS[loc].tableQrInvalidError
+      );
+      assert.equal(
+        localizeStorefrontTableError(UI_LABELS.vi.tableInactiveError('VIP 2'), loc),
+        UI_LABELS[loc].tableInactiveError('VIP 2')
+      );
+      assert.equal(
+        localizeStorefrontTableError(UI_LABELS.vi.tableNotFoundError('A09'), loc),
+        UI_LABELS[loc].tableNotFoundError('A09')
+      );
+      assert.equal(
+        localizeStorefrontTableError(UI_LABELS.vi.tablesLoadError, loc),
+        UI_LABELS[loc].tablesLoadError
+      );
     }
 
     for (const vertical of ['fnb', 'service', 'retail'] as const) {
@@ -1048,6 +1106,12 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     const switchRes = await paymentPost(switchReq);
     assert.equal(switchRes.status, 403);
 
+    // No hardcoded fallback secret exists any more: configure one explicitly for this test.
+    // (<16 chars so it never becomes the session signing secret fallback.)
+    const previousWebhookSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+    const secret = 'unit-test-whsec';
+    process.env.PAYMENT_WEBHOOK_SECRET = secret;
+    try {
     // Unsigned webhook without secret -> 401
     const unsignedWebhookReq = new Request(
       'http://localhost:3000/api/webhooks/payment',
@@ -1064,7 +1128,6 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     assert.equal(unsignedRes.status, 401);
 
     // Signed webhook with unknown orderCode -> 404 (must NOT auto-create completed transaction)
-    const secret = process.env.PAYMENT_WEBHOOK_SECRET || 'qlaok-webhook-secret-v1';
     const unknownOrderReq = new Request(
       'http://localhost:3000/api/webhooks/payment',
       {
@@ -1081,6 +1144,46 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     );
     const unknownRes = await paymentPost(unknownOrderReq);
     assert.equal(unknownRes.status, 404);
+
+    // Wrong secret -> 401
+    const wrongSecretRes = await paymentPost(
+      new Request('http://localhost:3000/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'qlaok-webhook-secret-v1',
+        },
+        body: JSON.stringify({ orderCode: 'QLAOKP99999' }),
+      })
+    );
+    assert.equal(wrongSecretRes.status, 401);
+    } finally {
+      if (previousWebhookSecret === undefined) {
+        delete process.env.PAYMENT_WEBHOOK_SECRET;
+      } else {
+        process.env.PAYMENT_WEBHOOK_SECRET = previousWebhookSecret;
+      }
+    }
+
+    // Secret not configured -> every provider webhook is rejected (503), even with the old default secret
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+    try {
+      const unconfiguredRes = await paymentPost(
+        new Request('http://localhost:3000/api/webhooks/payment', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-webhook-secret': 'qlaok-webhook-secret-v1',
+          },
+          body: JSON.stringify({ orderCode: 'QLAOKP99999' }),
+        })
+      );
+      assert.equal(unconfiguredRes.status, 503);
+    } finally {
+      if (previousWebhookSecret !== undefined) {
+        process.env.PAYMENT_WEBHOOK_SECRET = previousWebhookSecret;
+      }
+    }
   });
 
   test('8.6 (P1 #6) dbCreateOrder enforces server catalog pricing and blocks customer paid/discount flags', async () => {
@@ -2018,5 +2121,379 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
     assert.equal(afterReceipt2?.isReprint, true);
 
     await dbUpdateOrderStatus(order.id, { status: 'cancelled' });
+  });
+});
+
+// ============================================================================
+// SUITE 9B: STAFF LOGIN ROUTING, ROLE NAV, INVENTORY.ADJUST & MEMBER MGMT
+// (dynamic imports keep the shared import header merge-safe)
+// ============================================================================
+describe('Suite 9B: Staff login routing, role-based nav, inventory.adjust & member management', () => {
+  test('9B.1 inventory.adjust is a known permission granted to owner, cashier and staff by default', async () => {
+    const { ALL_SHOP_PERMISSIONS } = await import('@/lib/shop-permissions');
+    const { CLIENT_ALL_SHOP_PERMISSIONS } = await import('@/lib/dashboard-nav');
+    assert.ok(ALL_SHOP_PERMISSIONS.includes('inventory.adjust'));
+    assert.deepEqual(
+      [...CLIENT_ALL_SHOP_PERMISSIONS].sort(),
+      [...ALL_SHOP_PERMISSIONS].sort(),
+      'Client permission list must stay in sync with server ALL_SHOP_PERMISSIONS'
+    );
+    for (const role of ['owner', 'cashier', 'staff'] as const) {
+      assert.ok(
+        DEFAULT_ROLE_PERMISSIONS[role].includes('inventory.adjust'),
+        `${role} must be able to toggle availability / stock`
+      );
+    }
+    assert.ok(!DEFAULT_ROLE_PERMISSIONS.staff.includes('catalog.manage'));
+    assert.ok(!DEFAULT_ROLE_PERMISSIONS.cashier.includes('catalog.manage'));
+  });
+
+  test('9B.2 catalog item diff: only stock/availability changes accept inventory.adjust', async () => {
+    const { getCatalogItemUpdatePermissionOptions, buildInventoryOnlyItemPatch } =
+      await import('@/lib/shop-permissions');
+    const existing = {
+      id: 'item-x',
+      shop_id: 'shop-x',
+      category_id: 'cat-x',
+      price: '35000',
+      is_available: true,
+      stock_quantity: 5,
+      name_i18n: { vi: 'Cà phê', en: 'Coffee' },
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+    // availability + stock only (with echoed unchanged fields, numeric price, reordered i18n keys)
+    assert.deepEqual(
+      getCatalogItemUpdatePermissionOptions(
+        {
+          ...existing,
+          price: 35000,
+          name_i18n: { en: 'Coffee', vi: 'Cà phê' },
+          is_available: false,
+          stock_quantity: 0,
+          updated_at: '2026-02-02T00:00:00Z',
+          sold_count: 99,
+        },
+        existing
+      ),
+      ['catalog.manage', 'inventory.adjust']
+    );
+    // price change requires catalog.manage
+    assert.deepEqual(
+      getCatalogItemUpdatePermissionOptions({ ...existing, price: 40000 }, existing),
+      ['catalog.manage']
+    );
+    // renaming requires catalog.manage
+    assert.deepEqual(
+      getCatalogItemUpdatePermissionOptions(
+        { ...existing, name_i18n: { vi: 'Trà' } },
+        existing
+      ),
+      ['catalog.manage']
+    );
+    // moving shops or creating new items requires catalog.manage
+    assert.deepEqual(
+      getCatalogItemUpdatePermissionOptions({ ...existing, shop_id: 'other' }, existing),
+      ['catalog.manage']
+    );
+    assert.deepEqual(
+      getCatalogItemUpdatePermissionOptions({ ...existing }, null),
+      ['catalog.manage']
+    );
+
+    const patch = buildInventoryOnlyItemPatch(
+      { ...existing, price: 1, is_available: false, stock_quantity: '3' },
+      existing
+    );
+    assert.deepEqual(patch, {
+      id: 'item-x',
+      shop_id: 'shop-x',
+      category_id: 'cat-x',
+      is_available: false,
+      stock_quantity: 3,
+    });
+    assert.throws(() =>
+      buildInventoryOnlyItemPatch({ stock_quantity: -1 }, existing)
+    );
+  });
+
+  test('9B.3 post-login routing: admin, owner, member, next param and onboarding only with zero shops', async () => {
+    const { resolvePostLoginRoute, sanitizeNextPath } = await import(
+      '@/lib/post-login-route'
+    );
+    assert.equal(resolvePostLoginRoute({ isAdmin: true, shops: [{ id: 'a' }] }).path, '/admin');
+    assert.equal(resolvePostLoginRoute({ shops: [], memberShops: [] }).path, '/onboarding');
+    const member = resolvePostLoginRoute({ shops: [], memberShops: [{ id: 'm1' }] });
+    assert.equal(member.path, '/dashboard', 'Staff with a membership must NOT be sent to onboarding');
+    assert.equal(member.activeShopId, 'm1');
+    assert.equal(
+      resolvePostLoginRoute({ shops: [{ id: 'o1' }] }, '/dashboard/orders?tab=new').path,
+      '/dashboard/orders?tab=new'
+    );
+    for (const bad of [
+      'https://evil.com',
+      '//evil.com/x',
+      '/\\evil.com',
+      'javascript:alert(1)',
+      'dashboard',
+      '/login?next=/x',
+      '/onboarding',
+    ]) {
+      assert.equal(sanitizeNextPath(bad), null, `must reject ${bad}`);
+      assert.equal(
+        resolvePostLoginRoute({ shops: [{ id: 'o1' }] }, bad).path,
+        '/dashboard'
+      );
+    }
+  });
+
+  test('9B.4 role-based dashboard nav hides sensitive items and redirects staff away from overview', async () => {
+    const {
+      canAccessDashboardHref,
+      getFallbackDashboardHref,
+      getNavRequirementForPath,
+    } = await import('@/lib/dashboard-nav');
+    const mk = (role: 'owner' | 'cashier' | 'staff') => ({
+      role,
+      permissions: DEFAULT_ROLE_PERMISSIONS[role],
+      is_active: true,
+    });
+    const staff = mk('staff');
+    const cashier = mk('cashier');
+    const owner = mk('owner');
+
+    // Loading / missing membership is never treated as allowed
+    assert.equal(canAccessDashboardHref('/dashboard/orders', null), false);
+    assert.equal(canAccessDashboardHref('/dashboard/settings', undefined), false);
+
+    assert.equal(canAccessDashboardHref('/dashboard', staff), false);
+    assert.equal(canAccessDashboardHref('/dashboard/reports', staff), false);
+    assert.equal(canAccessDashboardHref('/dashboard/orders', staff), true);
+    assert.equal(canAccessDashboardHref('/dashboard/catalog', staff), true, 'inventory.adjust opens catalog');
+    assert.equal(canAccessDashboardHref('/dashboard/ai-scanner', staff), false);
+    assert.equal(canAccessDashboardHref('/dashboard/posts', cashier), false);
+    assert.equal(canAccessDashboardHref('/dashboard/settings', cashier), false);
+    assert.equal(canAccessDashboardHref('/dashboard/billing', cashier), false);
+    assert.equal(
+      canAccessDashboardHref('/dashboard/billing', { ...cashier, permissions: [...DEFAULT_ROLE_PERMISSIONS.owner] }),
+      false,
+      'billing is owner-only even with every permission'
+    );
+    assert.equal(canAccessDashboardHref('/dashboard/billing', owner), true);
+    assert.equal(canAccessDashboardHref('/dashboard/orders', { ...staff, is_active: false }), false);
+
+    assert.equal(getFallbackDashboardHref(staff), '/dashboard/orders');
+    assert.deepEqual(getNavRequirementForPath('/dashboard/settings/anything'), { anyOf: ['settings.manage'] });
+  });
+
+  test('9B.5 catalog API upsert_item still rejects unauthenticated callers and non-members before any write', async () => {
+    // DB-backed allow paths (staff toggle OK / staff price edit 403) depend on
+    // Supabase and are covered at the decision level by 9B.2.
+    const { POST: catalogPost } = await import('@/app/api/catalog/route');
+    const shopId = 'shop-fnb-001';
+    const item = { id: 'item-fnb-1', shop_id: shopId, category_id: 'cat-fnb-1', is_available: false };
+    const call = (headers: Record<string, string>) =>
+      catalogPost(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ action: 'upsert_item', item }),
+        })
+      );
+    const anon = await call({});
+    assert.equal(anon.status, 401);
+    const stranger = issueSessionToken({ id: 'stranger-9b', email: 's9b@qlaok.vn', role: 'owner' });
+    const strangerRes = await call({ Authorization: `Bearer ${stranger}` });
+    assert.equal(strangerRes.status, 403, 'non-members are rejected even for availability-only updates');
+  });
+
+  test('9B.6 member management API is owner-only and validates invite role/email', async () => {
+    const shopId = 'shop-fnb-001';
+    const ownerToken = issueSessionToken({ id: SEED_PROFILE.id, email: SEED_PROFILE.email, role: 'owner' });
+    const cashierUserId = 'cashier-members-test-9b';
+    await dbUpsertShopMembership({ shop_id: shopId, user_id: cashierUserId, role: 'cashier', email: 'c9b@qlaok.vn' });
+    const cashierToken = issueSessionToken({ id: cashierUserId, email: 'c9b@qlaok.vn', role: 'owner' });
+    const post = (token: string, body: Record<string, unknown>) =>
+      shopsPost(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ shop_id: shopId, ...body }),
+        })
+      );
+
+    try {
+      const forbidden = await post(cashierToken, { action: 'invite_member', email: 'x@qlaok.vn', role: 'staff' });
+      assert.equal(forbidden.status, 403, 'non-owners cannot invite');
+
+      const badRole = await post(ownerToken, { action: 'invite_member', email: 'x@qlaok.vn', role: 'owner' });
+      assert.equal(badRole.status, 400, 'owner role is never invitable');
+
+      const badEmail = await post(ownerToken, { action: 'invite_member', email: 'nope', role: 'staff' });
+      assert.equal(badEmail.status, 400);
+
+      const ownerSelf = await post(ownerToken, { action: 'upsert_member', user_id: SEED_PROFILE.id, role: 'staff' });
+      assert.equal(ownerSelf.status, 400, 'shop owner membership cannot be downgraded');
+
+      // Role change keeps the stored email when the caller omits it
+      const changed = await post(ownerToken, { action: 'upsert_member', user_id: cashierUserId, role: 'staff' });
+      assert.equal(changed.status, 200);
+      const changedData = await changed.json();
+      assert.equal(changedData.membership.role, 'staff');
+      assert.equal(changedData.membership.email, 'c9b@qlaok.vn');
+
+      const deactivated = await post(ownerToken, { action: 'upsert_member', user_id: cashierUserId, role: 'staff', is_active: false });
+      assert.equal((await deactivated.json()).membership.is_active, false);
+
+      const removed = await post(ownerToken, { action: 'delete_member', user_id: cashierUserId });
+      assert.equal(removed.status, 200);
+      assert.equal((await removed.json()).deleted, true);
+    } finally {
+      await dbDeleteShopMembership(shopId, cashierUserId);
+    }
+  });
+});
+
+describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error localization', () => {
+  const week = (open: string, close: string, closed = false): OpeningHours => ({
+    mon: { open, close, closed },
+    tue: { open, close, closed },
+    wed: { open, close, closed },
+    thu: { open, close, closed },
+    fri: { open, close, closed },
+    sat: { open, close, closed },
+    sun: { open, close, closed },
+  });
+  // Asia/Ho_Chi_Minh is UTC+7 (no DST): VN local = UTC + 7h
+  const vn = (isoLocal: string) => new Date(`${isoLocal}+07:00`);
+
+  test('G.1 checkShopOpenStatus evaluates in the shop timezone, not the runtime clock', () => {
+    const hours = week('08:00', '22:00');
+    // 2026-10-19 (Mon) 07:30 VN = 00:30 UTC → closed in VN regardless of host TZ
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T07:30:00') }).isOpen, false);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T08:00:00') }).isOpen, true);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T21:59:00') }).isOpen, true);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T22:01:00') }).isOpen, false);
+    // Same instant evaluated in another zone gives a different answer
+    const instant = vn('2026-10-19T23:00:00'); // 16:00 UTC
+    assert.equal(checkShopOpenStatus(hours, { now: instant }).isOpen, false);
+    assert.equal(checkShopOpenStatus(hours, { now: instant, timeZone: 'UTC' }).isOpen, true);
+  });
+
+  test('G.2 checkShopOpenStatus supports overnight ranges (close < open) incl. previous-day tail', () => {
+    const hours = week('18:00', '02:00');
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T17:59:00') }).isOpen, false);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T18:00:00') }).isOpen, true);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-19T23:45:00') }).isOpen, true);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-20T01:30:00') }).isOpen, true);
+    assert.equal(checkShopOpenStatus(hours, { now: vn('2026-10-20T02:30:00') }).isOpen, false);
+
+    // Previous day closed → no early-morning tail today
+    const mondayOff: OpeningHours = { ...hours, mon: { open: '18:00', close: '02:00', closed: true } };
+    assert.equal(checkShopOpenStatus(mondayOff, { now: vn('2026-10-20T01:00:00') }).isOpen, false);
+    // ...but Tuesday evening opens normally
+    assert.equal(checkShopOpenStatus(mondayOff, { now: vn('2026-10-20T19:00:00') }).isOpen, true);
+  });
+
+  test('G.3 missing / unparseable opening hours are treated as open; closed days stay closed', () => {
+    const now = vn('2026-10-19T03:00:00');
+    assert.equal(checkShopOpenStatus(null, { now }).isOpen, true);
+    assert.equal(checkShopOpenStatus(undefined, { now }).isOpen, true);
+    assert.equal(checkShopOpenStatus({} as OpeningHours, { now }).isOpen, true);
+    assert.equal(checkShopOpenStatus(week('abc', '??'), { now }).isOpen, true);
+    assert.equal(checkShopOpenStatus(week('08:00', '08:00'), { now }).isOpen, true, 'open==close → 24h');
+    assert.equal(checkShopOpenStatus(week('08:00', '22:00', true), { now: vn('2026-10-19T12:00:00') }).isOpen, false);
+  });
+
+  test('G.4 dbCreateOrder rejects guest orders with SHOP_CLOSED outside opening hours (staff POS exempt)', async () => {
+    await setItemStockMetadata('item-fnb-1', 50, 0);
+    setOpeningHoursEnforcementForTests(true);
+    try {
+      // Seed shop-fnb-001 hours: Mon 07:00–22:30 (VN)
+      const closedNow = vn('2026-10-19T23:30:00');
+      const guestOrder = {
+        shop_id: 'shop-fnb-001',
+        table_label: 'Mang về',
+        source: 'qr_table' as const,
+        items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: [] }],
+      };
+      await assert.rejects(
+        dbCreateOrder({ ...guestOrder, now: closedNow }),
+        (err: Error) => err.message.startsWith('SHOP_CLOSED:')
+      );
+
+      const staffOrder = await dbCreateOrder({
+        ...guestOrder,
+        source: 'counter_pos',
+        isStaffAuthorized: true,
+        now: closedNow,
+      });
+      assert.equal(staffOrder.status, 'new');
+      await dbUpdateOrderStatus(staffOrder.id, { status: 'cancelled' });
+
+      const openOrder = await dbCreateOrder({ ...guestOrder, now: vn('2026-10-19T12:00:00') });
+      assert.equal(openOrder.status, 'new');
+      await dbUpdateOrderStatus(openOrder.id, { status: 'cancelled' });
+    } finally {
+      setOpeningHoursEnforcementForTests(null);
+    }
+  });
+
+  test('G.5 POST /api/orders returns 409 + code SHOP_CLOSED for guest orders while closed', async (t) => {
+    setOpeningHoursEnforcementForTests(true);
+    t.mock.timers.enable({ apis: ['Date'], now: vn('2026-10-19T23:45:00').getTime() });
+    try {
+      const res = await ordersPost(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shop_id: 'shop-fnb-001',
+            table_label: 'Mang về',
+            source: 'qr_table',
+            items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: [] }],
+          }),
+        })
+      );
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.code, 'SHOP_CLOSED');
+      assert.equal(localizeGuestOrderError({ code: data.code, error: data.error, status: res.status }, 'en'), getGuestOrderLabels('en').errorShopClosed);
+    } finally {
+      t.mock.timers.reset();
+      setOpeningHoursEnforcementForTests(null);
+    }
+  });
+
+  test('G.6 localizeGuestOrderError maps server codes to localized text and never leaks raw CODE strings', () => {
+    const ko = getGuestOrderLabels('ko');
+    assert.equal(localizeGuestOrderError({ code: 'ITEM_UNAVAILABLE' }, 'ko'), ko.errorItemUnavailable);
+    assert.equal(localizeGuestOrderError({ error: 'ITEM_UNAVAILABLE: Món "Phở" hiện đã tạm hết hàng.' }, 'vi'), getGuestOrderLabels('vi').errorItemUnavailable);
+    assert.equal(localizeGuestOrderError({ error: 'INSUFFICIENT_STOCK: Món "Phở" chỉ còn 2 phần trong kho.' }, 'en'), getGuestOrderLabels('en').errorInsufficientStock);
+    assert.equal(localizeGuestOrderError({ error: 'INACTIVE_SHOP_TABLE: Bàn "B1" hiện đang tạm ngưng.' }, 'ja'), getGuestOrderLabels('ja').errorTableInactive);
+    assert.equal(localizeGuestOrderError({ error: 'INVALID_TABLE_SHOP: x' }, 'zh'), getGuestOrderLabels('zh').errorTableInvalid);
+    assert.equal(localizeGuestOrderError({ code: 'PRICE_CHANGED', status: 409 }, 'es'), getGuestOrderLabels('es').errorPriceChanged);
+    assert.equal(localizeGuestOrderError({ code: 'ORDER_ALREADY_ACCEPTED', status: 409 }, 'it'), getGuestOrderLabels('it').errorOrderAccepted);
+    // Legacy 409 without code → already accepted
+    assert.equal(localizeGuestOrderError({ error: 'Đơn hàng đã được bếp tiếp nhận', status: 409 }, 'ru'), getGuestOrderLabels('ru').errorOrderAccepted);
+    // Unknown / raw Vietnamese → generic, never the raw text
+    const generic = localizeGuestOrderError({ error: 'SOMETHING_WEIRD: Lỗi lạ' }, 'en');
+    assert.equal(generic, getGuestOrderLabels('en').errorGeneric);
+    assert.ok(!generic.includes('SOMETHING_WEIRD'));
+
+    // Every locale resolves every key (English fallback for partial locales)
+    for (const loc of ALL_LOCALES) {
+      const labels = getGuestOrderLabels(loc);
+      assert.ok(GUEST_ORDER_LABELS[loc], `labels for ${loc}`);
+      assert.ok(labels.errorShopClosed.length > 0 && labels.statusCancelledTitle.length > 0, loc);
+      assert.ok(labels.shopClosedSub('08:00', '22:00').includes('08:00'), loc);
+    }
+  });
+
+  test('G.7 normalizeShopSupportedLangs respects configured langs and defaults to vi+en', () => {
+    assert.deepEqual(normalizeShopSupportedLangs(['vi']), ['vi']);
+    assert.deepEqual(normalizeShopSupportedLangs(['en', 'ko', 'ko', 'xx']), ['en', 'ko']);
+    assert.deepEqual(normalizeShopSupportedLangs([]), ['vi', 'en']);
+    assert.deepEqual(normalizeShopSupportedLangs(undefined), ['vi', 'en']);
+    assert.deepEqual(getAllowedLocalesForPlan('premium', normalizeShopSupportedLangs(['vi'])), ['vi']);
   });
 });

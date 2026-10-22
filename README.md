@@ -59,7 +59,9 @@ Sao chép mẫu, không commit giá trị thật.
 | Supabase public | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | URL và public key |
 | Backend | `SUPABASE_SERVICE_ROLE_KEY` | DB đặc quyền/RPC/admin và realtime server; chỉ server |
 | Phiên/khởi tạo | `SESSION_SECRET`, `INITIAL_SUPER_ADMIN_PASSWORD` | Secret ký phiên; mật khẩu khởi tạo admin chỉ khi cấu hình rõ |
-| Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS |
+| Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS (header `x-webhook-secret`/`Authorization: Apikey …` hoặc HMAC `x-webhook-signature`). **Bắt buộc**: không có giá trị mặc định; nếu thiếu, mọi webhook bị từ chối (503) |
+| Billing dev | `PAYMENT_DEV_SIMULATE` | Tùy chọn, chỉ ngoài production: `true` cho phép chủ quán giả lập webhook (`simulateWebhook`) cho đơn của chính mình. Super Admin luôn giả lập được |
+| Billing VietQR (public) | `NEXT_PUBLIC_SAAS_BANK_BIN`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME`, `NEXT_PUBLIC_SAAS_BANK_NAME` | Tài khoản nhận tiền gói SaaS hiển thị QR ở `/dashboard/billing` (BIN/mã VietQR, số TK, tên chủ TK, tên NH). Thiếu BIN/số TK → trang hiện "chưa cấu hình thanh toán, liên hệ hỗ trợ" thay vì QR giả |
 | Migration | `SUPABASE_ACCESS_TOKEN` | PAT dùng Management API; không cần cho client |
 | AI | `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`, `AI_VISION_MODEL` | Gateway text/vision |
 | R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `NEXT_PUBLIC_R2_PUBLIC_URL` | Upload và URL ảnh công khai |

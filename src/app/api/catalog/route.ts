@@ -9,6 +9,12 @@ import {
   getSupabaseDbClient,
 } from '@/lib/db';
 import { requireShopPermission } from '@/lib/server-auth';
+import {
+  buildInventoryOnlyItemPatch,
+  getCatalogItemUpdatePermissionOptions,
+  hasAnyShopPermission,
+  hasShopPermission,
+} from '@/lib/shop-permissions';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -37,14 +43,54 @@ export async function POST(req: Request) {
 
     if (action === 'upsert_item') {
       const targetShopId = body.item?.shop_id;
-      const auth = await requireShopPermission(
-        req,
-        targetShopId,
-        'catalog.manage'
-      );
+      // Validate an active membership first; the specific permission depends
+      // on which fields actually change.
+      const auth = await requireShopPermission(req, targetShopId, []);
       if (auth.errorResponse) return auth.errorResponse;
 
-      const item = await dbUpsertItem(body.item);
+      const incoming = (body.item || {}) as Record<string, unknown>;
+      let existing: Record<string, unknown> | null = null;
+      if (typeof incoming.id === 'string' && incoming.id) {
+        const { data: existingRow, error: existingErr } = await getSupabaseDbClient()
+          .from('items')
+          .select('*')
+          .eq('id', incoming.id)
+          .maybeSingle();
+        if (existingErr) {
+          return NextResponse.json(
+            { error: existingErr.message },
+            { status: 500 }
+          );
+        }
+        existing = (existingRow as Record<string, unknown> | null) || null;
+      }
+
+      const permissionOptions = getCatalogItemUpdatePermissionOptions(
+        incoming,
+        existing
+      );
+      if (!hasAnyShopPermission(auth.membership, permissionOptions)) {
+        return NextResponse.json(
+          {
+            error: `Tài khoản (${auth.membership.role}) không có quyền thực hiện thao tác này (cần quyền: ${permissionOptions.join(' hoặc ')}).`,
+            code: 'INSUFFICIENT_SHOP_PERMISSION',
+            role: auth.membership.role,
+            requiredPermissions: permissionOptions,
+          },
+          { status: 403 }
+        );
+      }
+
+      const canManageCatalog = hasShopPermission(
+        auth.membership,
+        'catalog.manage'
+      );
+      const payload =
+        canManageCatalog || !existing
+          ? body.item
+          : buildInventoryOnlyItemPatch(incoming, existing);
+
+      const item = await dbUpsertItem(payload);
       return NextResponse.json({ item });
     }
 

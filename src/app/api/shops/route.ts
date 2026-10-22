@@ -5,6 +5,7 @@ import {
   dbGetShopById,
   dbGetStorefrontBundle,
   dbUpdateShop,
+  getSupabaseDbClient,
 } from '@/lib/db';
 import {
   getRequestShopMembership,
@@ -20,6 +21,22 @@ import {
   hasShopPermission,
 } from '@/lib/shop-permissions';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
+
+/** Roles an owner may assign to invited staff (owner is never invitable). */
+const INVITABLE_MEMBER_ROLES: ShopRole[] = ['cashier', 'staff'];
+
+async function getShopForMemberAction(
+  shopId: string
+): Promise<Awaited<ReturnType<typeof dbGetShopById>>> {
+  try {
+    const shop = await dbGetShopById(shopId);
+    if (shop) return shop;
+  } catch {
+    // fall back to seed shops below
+  }
+  const { SEED_SHOPS } = await import('@/lib/seed-data');
+  return SEED_SHOPS.find((s) => s.id === shopId);
+}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -118,16 +135,114 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
+    if (body?.action === 'invite_member') {
+      const targetShopId = body.shop_id || body.shopId;
+      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const email =
+        typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      if (!email || !email.includes('@')) {
+        return NextResponse.json(
+          { error: 'Vui lòng nhập email hợp lệ của nhân viên.', code: 'INVALID_EMAIL' },
+          { status: 400 }
+        );
+      }
+      const role = body.role as ShopRole;
+      if (!INVITABLE_MEMBER_ROLES.includes(role)) {
+        return NextResponse.json(
+          {
+            error: `Vai trò "${String(body.role)}" không hợp lệ. Chỉ được mời: ${INVITABLE_MEMBER_ROLES.join(', ')}.`,
+            code: 'INVALID_ROLE',
+          },
+          { status: 400 }
+        );
+      }
+
+      const shop = await getShopForMemberAction(targetShopId);
+      if (!shop) {
+        return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
+      }
+
+      const { data: profiles, error: profileErr } = await getSupabaseDbClient()
+        .from('profiles')
+        .select('id, email, full_name')
+        .ilike('email', email)
+        .limit(1);
+      if (profileErr) {
+        return NextResponse.json(
+          {
+            error: `Không thể tra cứu tài khoản (${profileErr.message}).`,
+            code: 'PROFILE_LOOKUP_FAILED',
+          },
+          { status: 500 }
+        );
+      }
+      const profile = profiles?.[0] as
+        | { id: string; email?: string; full_name?: string }
+        | undefined;
+      if (!profile) {
+        return NextResponse.json(
+          {
+            error:
+              'Chưa có tài khoản Qlaok nào dùng email này. Hãy nhờ nhân viên đăng ký tài khoản trước, sau đó mời lại.',
+            code: 'MEMBER_ACCOUNT_NOT_FOUND',
+          },
+          { status: 404 }
+        );
+      }
+      if (profile.id === shop.owner_id) {
+        return NextResponse.json(
+          {
+            error: 'Email này là chủ cửa hàng, không thể thêm làm nhân viên.',
+            code: 'MEMBER_IS_OWNER',
+          },
+          { status: 400 }
+        );
+      }
+
+      const membership = await dbUpsertShopMembership({
+        shop_id: targetShopId,
+        user_id: profile.id,
+        email: profile.email || email,
+        full_name:
+          (typeof body.full_name === 'string' && body.full_name.trim()) ||
+          profile.full_name,
+        role,
+        is_active: true,
+      });
+      return NextResponse.json({ membership }, { status: 201 });
+    }
+
     if (body?.action === 'upsert_member') {
       const targetShopId = body.shop_id || body.shopId;
       const auth = await requireShopOwnerOrAdmin(req, targetShopId);
       if (auth.errorResponse) return auth.errorResponse;
 
+      const targetUserId = body.user_id || body.userId;
+      const shopForMember = await getShopForMemberAction(targetShopId);
+      if (shopForMember && targetUserId === shopForMember.owner_id) {
+        return NextResponse.json(
+          {
+            error: 'Không thể thay đổi vai trò của chủ cửa hàng.',
+            code: 'MEMBER_IS_OWNER',
+          },
+          { status: 400 }
+        );
+      }
+
+      // Preserve identity fields when the caller only changes role/status.
+      const existingMember = targetUserId
+        ? (await dbGetShopMemberships(targetShopId)).find(
+            (m) => m.user_id === targetUserId
+          )
+        : undefined;
+
       const membership = await dbUpsertShopMembership({
         shop_id: targetShopId,
-        user_id: body.user_id || body.userId,
-        email: body.email,
-        full_name: body.full_name || body.fullName,
+        user_id: targetUserId,
+        email: body.email ?? existingMember?.email,
+        full_name: body.full_name || body.fullName || existingMember?.full_name,
         role: (body.role as ShopRole) || 'staff',
         permissions: body.permissions,
         is_active: body.is_active !== false,

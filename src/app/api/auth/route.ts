@@ -19,8 +19,45 @@ import {
   issueSessionToken,
   verifyRequestUser,
 } from '@/lib/server-auth';
-import { SEED_PROFILE } from '@/lib/seed-data';
-import type { Profile, Shop } from '@/types/qlaok';
+import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
+import { dbGetUserShopMemberships } from '@/lib/shop-permissions';
+import type { Profile, Shop, ShopMembership } from '@/types/qlaok';
+
+/**
+ * Loads shops where the user is an active (non-owner) member so staff and
+ * cashiers are routed to the dashboard instead of onboarding after login.
+ */
+async function loadMemberShops(
+  sb: ReturnType<typeof getSupabaseDbClient>,
+  userId: string,
+  ownedShopIds: Set<string>
+): Promise<{ memberShops: Shop[]; memberships: ShopMembership[] }> {
+  const memberships = (await dbGetUserShopMemberships(userId)).filter(
+    (m) => m.is_active && !ownedShopIds.has(m.shop_id)
+  );
+  if (memberships.length === 0) {
+    return { memberShops: [], memberships: [] };
+  }
+  const shopIds = memberships.map((m) => m.shop_id);
+  const { data, error } = await sb.from('shops').select('*').in('id', shopIds);
+  if (error) {
+    throw new Error(
+      `Không thể tải danh sách cửa hàng được phân quyền (${error.message}).`
+    );
+  }
+  const shopMap = new Map<string, Shop>();
+  for (const shop of (data || []) as Shop[]) shopMap.set(shop.id, shop);
+  for (const sid of shopIds) {
+    if (!shopMap.has(sid)) {
+      const seed = SEED_SHOPS.find((s) => s.id === sid);
+      if (seed) shopMap.set(seed.id, seed);
+    }
+  }
+  return {
+    memberShops: Array.from(shopMap.values()),
+    memberships: memberships.filter((m) => shopMap.has(m.shop_id)),
+  };
+}
 
 export async function GET(req: Request) {
   try {
@@ -407,6 +444,31 @@ export async function POST(req: Request) {
         );
       }
 
+      let memberData: { memberShops: Shop[]; memberships: ShopMembership[] } = {
+        memberShops: [],
+        memberships: [],
+      };
+      if (!isAdminUser) {
+        try {
+          memberData = await loadMemberShops(
+            sb,
+            profile.id,
+            new Set(((ownerShops || []) as Shop[]).map((s) => s.id))
+          );
+        } catch (memberErr) {
+          return NextResponse.json(
+            {
+              error:
+                memberErr instanceof Error
+                  ? memberErr.message
+                  : 'Không thể tải cửa hàng được phân quyền.',
+              code: 'AUTH_MEMBER_SHOPS_QUERY_FAILED',
+            },
+            { status: 500 }
+          );
+        }
+      }
+
       const accessToken = issueSessionToken({
         id: finalUser.id,
         email: finalUser.email,
@@ -417,6 +479,8 @@ export async function POST(req: Request) {
       const res = NextResponse.json({
         user: finalUser,
         shops: (ownerShops || []) as Shop[],
+        memberShops: memberData.memberShops,
+        memberships: memberData.memberships,
         isAdmin: isAdminUser,
         accessToken,
       });
@@ -514,6 +578,22 @@ export async function POST(req: Request) {
         .eq('owner_id', finalUser.id)
         .order('created_at', { ascending: true });
 
+      let syncMemberData: {
+        memberShops: Shop[];
+        memberships: ShopMembership[];
+      } = { memberShops: [], memberships: [] };
+      if (!verifiedIsAdmin) {
+        try {
+          syncMemberData = await loadMemberShops(
+            sb,
+            finalUser.id,
+            new Set(((ownerShops || []) as Shop[]).map((s) => s.id))
+          );
+        } catch {
+          // Non-fatal for sync: dashboard reloads memberships authoritatively.
+        }
+      }
+
       const accessToken = issueSessionToken({
         id: finalUser.id,
         email: finalUser.email,
@@ -524,6 +604,8 @@ export async function POST(req: Request) {
       const res = NextResponse.json({
         user: finalUser,
         shops: (ownerShops || []) as Shop[],
+        memberShops: syncMemberData.memberShops,
+        memberships: syncMemberData.memberships,
         isAdmin: verifiedIsAdmin,
         accessToken,
       });

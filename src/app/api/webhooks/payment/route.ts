@@ -14,13 +14,29 @@ import {
 } from '@/lib/server-auth';
 import type { PlanTier } from '@/types/qlaok';
 
+/**
+ * Returns the configured webhook secret, or null when it is missing/blank.
+ * There is intentionally NO hardcoded fallback: an unset secret means
+ * provider webhooks cannot be authenticated and must be rejected.
+ */
+function getConfiguredWebhookSecret(): string | null {
+  const secret = (process.env.PAYMENT_WEBHOOK_SECRET || '').trim();
+  return secret.length > 0 ? secret : null;
+}
+
 function verifyWebhookSignatureOrSecret(
   req: Request,
   rawBody: string
-): { valid: boolean; reason?: string } {
-  const configuredSecret = (
-    process.env.PAYMENT_WEBHOOK_SECRET || 'qlaok-webhook-secret-v1'
-  ).trim();
+): { valid: boolean; status?: number; reason?: string } {
+  const configuredSecret = getConfiguredWebhookSecret();
+  if (!configuredSecret) {
+    return {
+      valid: false,
+      status: 503,
+      reason:
+        'Webhook thanh toán chưa được cấu hình (thiếu PAYMENT_WEBHOOK_SECRET). Từ chối mọi callback.',
+    };
+  }
 
   const headerSecret =
     req.headers.get('x-webhook-secret') ||
@@ -125,8 +141,13 @@ export async function POST(req: Request) {
     // 3. SePay / PayOS Webhook completion
     const sessionUser = await verifyRequestUser(req);
     const isSuperAdminCaller = sessionUser?.role === 'admin';
+    // Non-admin sandbox simulation is only possible outside production AND
+    // when explicitly enabled via PAYMENT_DEV_SIMULATE=true. It is further
+    // restricted below to the caller's own pending orders.
     const isDevSandboxSimulator =
+      !isSuperAdminCaller &&
       process.env.NODE_ENV !== 'production' &&
+      process.env.PAYMENT_DEV_SIMULATE === 'true' &&
       body.simulateWebhook === true &&
       Boolean(sessionUser);
 
@@ -135,7 +156,7 @@ export async function POST(req: Request) {
       if (!verification.valid) {
         return NextResponse.json(
           { error: verification.reason || 'Unauthorized webhook request' },
-          { status: 401 }
+          { status: verification.status || 401 }
         );
       }
     }
@@ -152,6 +173,20 @@ export async function POST(req: Request) {
         { error: 'Missing orderCode in webhook payload' },
         { status: 400 }
       );
+    }
+
+    if (isDevSandboxSimulator && sessionUser) {
+      const own = await dbGetBillingData(sessionUser.sub);
+      const ownsOrder = own.transactions.some(
+        (tx) =>
+          tx.order_code.toUpperCase() === String(orderCode).trim().toUpperCase()
+      );
+      if (!ownsOrder) {
+        return NextResponse.json(
+          { error: 'Chỉ được giả lập thanh toán cho đơn của chính bạn.' },
+          { status: 403 }
+        );
+      }
     }
 
     const verifiedTransferAmount =

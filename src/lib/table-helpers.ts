@@ -1,4 +1,10 @@
-import type { ShopOrder, ShopTable, TableOrderStats } from '@/types/qlaok';
+import type {
+  ShopOrder,
+  ShopTable,
+  SupportedLocale,
+  TableOrderStats,
+} from '@/types/qlaok';
+import { UI_LABELS } from '@/lib/i18n-helper';
 
 const TAKEAWAY_LABELS = new Set([
   'mang về',
@@ -28,16 +34,22 @@ export function isTakeawayTableLabel(label?: string | null): boolean {
 export function buildTableMenuUrl(
   baseUrl: string,
   slug: string,
-  tableId: string
+  tableId: string,
+  qrSig?: string | null
 ): string {
   const normalizedBase = (baseUrl ?? '').trim().replace(/\/+$/, '');
   const cleanSlug = encodeURIComponent((slug ?? '').trim());
   const cleanTableId = (tableId ?? '').trim();
+  const cleanSig = (qrSig ?? '').trim();
   const path = `${normalizedBase}/s/${cleanSlug}/menu`;
   if (!cleanTableId) {
     return `${path}?src=table`;
   }
-  return `${path}?src=table&tableId=${encodeURIComponent(cleanTableId)}`;
+  const baseQuery = `${path}?src=table&tableId=${encodeURIComponent(cleanTableId)}`;
+  if (!cleanSig) {
+    return baseQuery;
+  }
+  return `${baseQuery}&sig=${encodeURIComponent(cleanSig)}`;
 }
 
 export function filterSelectableTables(
@@ -61,7 +73,8 @@ export function filterSelectableTables(
 
 export function resolveTableSelection(
   tables: ShopTable[],
-  input: { tableId?: string | null; table?: string | null }
+  input: { tableId?: string | null; table?: string | null },
+  locale: SupportedLocale = 'vi'
 ): { table: ShopTable | null; error: string | null } {
   const rawTableId = (input?.tableId ?? '').trim();
   const rawTable = (input?.table ?? '').trim();
@@ -71,6 +84,7 @@ export function resolveTableSelection(
   }
 
   const list = Array.isArray(tables) ? tables : [];
+  const labels = UI_LABELS[locale] || UI_LABELS.vi;
 
   // tableId takes precedence when provided
   if (rawTableId) {
@@ -81,15 +95,14 @@ export function resolveTableSelection(
     if (!exactOrCaseMatch) {
       return {
         table: null,
-        error:
-          'Mã bàn từ QR không hợp lệ hoặc không thuộc quán này. Vui lòng chọn bàn đang hoạt động hoặc Mang về.',
+        error: labels.tableQrInvalidError,
       };
     }
 
     if (exactOrCaseMatch.is_archived || !exactOrCaseMatch.is_active) {
       return {
         table: null,
-        error: `Bàn "${exactOrCaseMatch.name}" hiện đang tạm ngưng phục vụ. Vui lòng chọn bàn khác hoặc Mang về.`,
+        error: labels.tableInactiveError(exactOrCaseMatch.name),
       };
     }
 
@@ -121,13 +134,13 @@ export function resolveTableSelection(
   if (inactiveMatch) {
     return {
       table: null,
-      error: `Bàn "${inactiveMatch.name}" hiện đang tạm ngưng phục vụ. Vui lòng chọn bàn khác hoặc Mang về.`,
+      error: labels.tableInactiveError(inactiveMatch.name),
     };
   }
 
   return {
     table: null,
-    error: `Không tìm thấy bàn "${rawTable}" tại quán này. Vui lòng chọn bàn đang hoạt động hoặc Mang về.`,
+    error: labels.tableNotFoundError(rawTable),
   };
 }
 

@@ -4,7 +4,8 @@ import {
   getAiConfig,
   smartFallbackTranslate,
 } from '@/lib/gemini';
-import { BusinessVertical, I18nText } from '@/types/qlaok';
+import type { BusinessVertical, I18nText } from '@/types/qlaok';
+import { requireAiCaller } from '../_lib/guard';
 
 interface TranslationAiResponse {
   category_i18n?: I18nText;
@@ -13,6 +14,10 @@ interface TranslationAiResponse {
 }
 
 export async function POST(req: Request) {
+  // Paid AI endpoint: require a verified session and apply per-user rate limit
+  const guard = await requireAiCaller(req, 'translate');
+  if (guard.errorResponse) return guard.errorResponse;
+
   let vertical: BusinessVertical = 'fnb';
   let categoryNameVi = 'Danh mục';
   let itemNameVi = '';

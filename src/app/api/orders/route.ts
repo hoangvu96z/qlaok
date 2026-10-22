@@ -31,6 +31,12 @@ import type {
   TicketPrintType,
 } from '@/types/qlaok';
 
+/** Extract a stable machine-readable code from "CODE: human message" errors. */
+function extractOrderErrorCode(message: string): string | undefined {
+  const match = /^([A-Z][A-Z0-9_]{2,})\s*:/.exec(message.trim());
+  return match ? match[1] : undefined;
+}
+
 function sanitizeCustomerOrderView(order: ShopOrder) {
   const {
     tracking_token: _t,
@@ -324,6 +330,11 @@ export async function POST(req: Request) {
       table_code,
       tableCode,
       table_label = 'Bàn khách',
+      table_qr_sig,
+      tableQrSig,
+      sig,
+      qr_table_mode,
+      qrTableMode,
       session_id,
       visitor_lang = 'vi',
       customer_note = '',
@@ -344,6 +355,11 @@ export async function POST(req: Request) {
       table_code?: string | null;
       tableCode?: string | null;
       table_label?: string;
+      table_qr_sig?: string | null;
+      tableQrSig?: string | null;
+      sig?: string | null;
+      qr_table_mode?: boolean;
+      qrTableMode?: boolean;
       session_id?: string;
       visitor_lang?: SupportedLocale;
       customer_note?: string;
@@ -437,15 +453,27 @@ export async function POST(req: Request) {
         canApplyManualDiscount: canApplyDiscount,
       });
       if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== expectedQuote.total_amount) {
-        return NextResponse.json({ error: 'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.', quote: expectedQuote }, { status: 409 });
+        return NextResponse.json({ error: 'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.', code: 'PRICE_CHANGED', quote: expectedQuote }, { status: 409 });
       }
     }
+
+    const resolvedTableQrSig =
+      table_qr_sig !== undefined
+        ? table_qr_sig
+        : tableQrSig !== undefined
+          ? tableQrSig
+          : sig !== undefined
+            ? sig
+            : req.headers.get('x-table-qr-sig') ?? undefined;
+    const requireTableQrSig = Boolean(qr_table_mode || qrTableMode);
 
     const order = await dbCreateOrder({
       shop_id,
       table_id: table_id !== undefined ? table_id : tableId,
       table_code: table_code !== undefined ? table_code : tableCode,
       table_label,
+      table_qr_sig: resolvedTableQrSig,
+      require_table_qr_sig: requireTableQrSig,
       session_id,
       visitor_lang,
       customer_note,
@@ -491,12 +519,12 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ order }, { status: 201 });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Không thể tạo đơn hàng';
+    const code = extractOrderErrorCode(message);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : 'Không thể tạo đơn hàng',
-      },
-      { status: 400 }
+      { error: message, ...(code ? { code } : {}) },
+      { status: code === 'SHOP_CLOSED' ? 409 : 400 }
     );
   }
 }
@@ -583,7 +611,10 @@ export async function PATCH(req: Request) {
         resolvedTrackingToken !== existingOrder.tracking_token
       ) {
         return NextResponse.json(
-          { error: 'Mã theo dõi đơn hàng (trackingToken) không hợp lệ.' },
+          {
+            error: 'Mã theo dõi đơn hàng (trackingToken) không hợp lệ.',
+            code: 'INVALID_TRACKING_TOKEN',
+          },
           { status: 403 }
         );
       }
@@ -596,6 +627,7 @@ export async function PATCH(req: Request) {
           {
             error:
               'Đơn hàng đã được bếp tiếp nhận hoặc đã thanh toán, không thể tự chỉnh sửa. Vui lòng báo nhân viên.',
+            code: 'ORDER_ALREADY_ACCEPTED',
           },
           { status: 409 }
         );
@@ -610,6 +642,7 @@ export async function PATCH(req: Request) {
           {
             error:
               'Khách hàng chỉ được phép cập nhật món hoặc hủy đơn khi quán chưa tiếp nhận.',
+            code: 'CUSTOMER_ACTION_FORBIDDEN',
           },
           { status: 403 }
         );
@@ -767,6 +800,7 @@ export async function PATCH(req: Request) {
         ? error.message
         : 'Không thể cập nhật trạng thái đơn';
     const statusCode = /ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
-    return NextResponse.json({ error: message }, { status: statusCode });
+    const code = extractOrderErrorCode(message);
+    return NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status: statusCode });
   }
 }

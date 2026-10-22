@@ -8,7 +8,19 @@ import { dbCreateOrder, dbGetOrderById, dbGetTableBill, dbUpdateOrderStatus, set
 import { setSupabaseDbClientForTests } from '@/lib/db';
 import { buildTableMenuUrl, resolveTableSelection, summarizeOrdersByTable } from '@/lib/table-helpers';
 import type { ShopOrder, ShopTable } from '@/types/qlaok';
-import { dbCreateShopTable, dbUpdateShopTable, setShopTablesDbClientForTests } from '@/lib/shop-tables';
+import {
+  buildCanonicalTableQrPayload,
+  dbCreateShopTable,
+  dbGetPublicShopTables,
+  dbUpdateShopTable,
+  setShopTablesDbClientForTests,
+  signTableQr,
+  verifyTableQrSignature,
+} from '@/lib/shop-tables';
+import { POST as postOrders } from '@/app/api/orders/route';
+import { GET as getTables, POST as postTables } from '@/app/api/tables/route';
+import { issueSessionToken } from '@/lib/server-auth';
+import { localizeGuestOrderError } from '@/lib/i18n-helper';
 
 test('table mutations must not report persistence when the DB returns no written row', async () => {
   const existing = { id: 'existing', shop_id: 'review-shop', table_code: 'T01', name: 'Existing', section: '', capacity: 4, sort_order: 1, is_active: true, is_archived: false };
@@ -187,4 +199,315 @@ test('table RLS limits mutations to each shop owner and public reads to active p
     await db.exec(fs.readFileSync('supabase/migrations/007_shop_tables.sql', 'utf8'));
     assert.deepEqual((await db.query("SELECT id,table_id,table_label,payment_status,total_amount FROM orders ORDER BY id")).rows, beforeReplay, 'migration replay must preserve order associations and money');
   } finally { await db.close(); }
+});
+
+test('table QR HMAC-SHA256 signing secures table QR orders against tableId tampering while preserving door QR manual choice', async () => {
+  const prevSecret = process.env.SESSION_SECRET;
+  process.env.SESSION_SECRET = 'test-session-secret-for-table-qr-hmac-2026';
+  try {
+    const shopId = 'shop-fnb-001';
+    const table1Id = 'tbl-fnb-01';
+    const table2Id = 'tbl-fnb-02';
+    const otherShopId = 'shop-service-002';
+    const otherShopTableId = 'tbl-service-01';
+
+    // 1. Canonical HMAC-SHA256 signature stability and URL embedding
+    assert.equal(
+      buildCanonicalTableQrPayload(' shop-fnb-001 ', ' tbl-fnb-01 '),
+      'qlaok-table-qr:v1:shop-fnb-001:tbl-fnb-01'
+    );
+    const sig1 = signTableQr(shopId, table1Id);
+    const sig1Repeat = signTableQr(shopId, table1Id);
+    const sig2 = signTableQr(shopId, table2Id);
+    assert.ok(sig1.length >= 32);
+    assert.equal(sig1, sig1Repeat, 'HMAC-SHA256 signature must be deterministic');
+    assert.notEqual(sig1, sig2, 'different tables must have distinct signatures');
+
+    const signedUrl = new URL(
+      buildTableMenuUrl('https://qlaok.example', 'pho-hoi-an', table1Id, sig1)
+    );
+    assert.equal(signedUrl.pathname, '/s/pho-hoi-an/menu');
+    assert.equal(signedUrl.searchParams.get('src'), 'table');
+    assert.equal(signedUrl.searchParams.get('tableId'), table1Id);
+    assert.equal(signedUrl.searchParams.get('sig'), sig1);
+
+    assert.equal(
+      verifyTableQrSignature({ shop_id: shopId, table_id: table1Id, signature: sig1 }),
+      true
+    );
+    assert.equal(
+      verifyTableQrSignature({ shop_id: shopId, table_id: table2Id, signature: sig1 }),
+      false,
+      'signature for table 1 must fail when customer changes tableId to table 2'
+    );
+    assert.equal(
+      verifyTableQrSignature({ shop_id: shopId, table_id: table1Id, signature: '' }),
+      false
+    );
+    assert.equal(
+      verifyTableQrSignature({ shop_id: otherShopId, table_id: table1Id, signature: sig1 }),
+      false,
+      'cross-shop signature verification must fail'
+    );
+
+    // Public tables list must NOT leak qr_sig so guests cannot harvest other tables' signatures
+    const publicTables = await dbGetPublicShopTables(shopId);
+    assert.ok(publicTables.length > 0);
+    assert.equal(
+      publicTables.some((t) => Boolean(t.qr_sig)),
+      false,
+      'public table list must not expose qr_sig'
+    );
+
+    const publicRes = await getTables(
+      new Request(`http://localhost/api/tables?shopId=${shopId}`)
+    );
+    const publicJson = (await publicRes.json()) as { tables: ShopTable[] };
+    assert.equal(publicRes.status, 200);
+    assert.equal(publicJson.tables.some((t) => Boolean(t.qr_sig)), false);
+
+    // Authenticated management list & POST issue qr_sig for owner/staff standees
+    const adminToken = issueSessionToken({
+      id: 'admin-hoangvu96z',
+      email: 'hoangvu96z@gmail.com',
+      role: 'admin',
+      is_admin: true,
+    });
+    const mgmtRes = await getTables(
+      new Request(
+        `http://localhost/api/tables?shopId=${shopId}&includeInactive=1&includeArchived=1`,
+        { headers: { Authorization: `Bearer ${adminToken}` } }
+      )
+    );
+    const mgmtJson = (await mgmtRes.json()) as { tables: ShopTable[] };
+    assert.equal(mgmtRes.status, 200);
+    const mgmtTable1 = mgmtJson.tables.find((t) => t.id === table1Id);
+    assert.equal(mgmtTable1?.qr_sig, sig1);
+
+    const sampleItems = [
+      {
+        item_id: 'item-fnb-1',
+        name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
+        quantity: 1,
+        unit_price: 65000,
+        extra_price: 0,
+        selected_choices: [],
+      },
+    ];
+
+    // 2. Valid signed table QR order succeeds
+    const validRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table1Id,
+          table_label: 'Bàn 01',
+          qr_table_mode: true,
+          table_qr_sig: sig1,
+          source: 'qr_table',
+          visitor_lang: 'en',
+          items: sampleItems,
+        }),
+      })
+    );
+    const validData = (await validRes.json()) as { order?: ShopOrder; error?: string };
+    assert.equal(validRes.status, 201, validData.error);
+    assert.equal(validData.order?.table_id, table1Id);
+    assert.equal(validData.order?.table_label, 'Bàn 01');
+
+    // 3. Tampered tableId (customer scanned table 1 QR with sig1, but changed tableId to table 2) -> rejected
+    const tamperedTableRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table2Id,
+          table_label: 'Bàn 02',
+          qr_table_mode: true,
+          table_qr_sig: sig1,
+          source: 'qr_table',
+          visitor_lang: 'en',
+          items: sampleItems,
+        }),
+      })
+    );
+    const tamperedTableData = (await tamperedTableRes.json()) as {
+      error?: string;
+      code?: string;
+    };
+    assert.equal(tamperedTableRes.status, 400);
+    assert.equal(tamperedTableData.code, 'INVALID_TABLE_QR_SIGNATURE');
+    assert.equal(
+      localizeGuestOrderError(
+        {
+          code: tamperedTableData.code,
+          error: tamperedTableData.error,
+          status: tamperedTableRes.status,
+        },
+        'en'
+      ),
+      'This table is not valid for this shop. Please select an active table or Takeaway.'
+    );
+    assert.equal(
+      localizeGuestOrderError(
+        {
+          code: tamperedTableData.code,
+          error: tamperedTableData.error,
+          status: tamperedTableRes.status,
+        },
+        'vi'
+      ),
+      'Bàn không hợp lệ hoặc không thuộc quán này. Vui lòng chọn bàn đang hoạt động hoặc Mang về.'
+    );
+
+    // 4. Tampered signature string -> rejected even without qr_table_mode flag
+    const forgedSigRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table1Id,
+          table_qr_sig: `${sig1.slice(0, -2)}ab`,
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const forgedSigData = (await forgedSigRes.json()) as {
+      error?: string;
+      code?: string;
+    };
+    assert.equal(forgedSigRes.status, 400);
+    assert.equal(forgedSigData.code, 'INVALID_TABLE_QR_SIGNATURE');
+
+    // 5. Missing signature in table QR mode -> rejected with localized error
+    const missingSigRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table1Id,
+          qr_table_mode: true,
+          table_qr_sig: '',
+          source: 'qr_table',
+          visitor_lang: 'vi',
+          items: sampleItems,
+        }),
+      })
+    );
+    const missingSigData = (await missingSigRes.json()) as {
+      error?: string;
+      code?: string;
+    };
+    assert.equal(missingSigRes.status, 400);
+    assert.equal(missingSigData.code, 'MISSING_TABLE_QR_SIGNATURE');
+    assert.equal(
+      localizeGuestOrderError(
+        {
+          code: missingSigData.code,
+          error: missingSigData.error,
+          status: missingSigRes.status,
+        },
+        'ko'
+      ),
+      '유효하지 않은 테이블입니다. 이용 가능한 테이블 또는 포장을 선택해 주세요.'
+    );
+
+    // 6. Cross-shop signature / tableId -> rejected
+    const otherSig = signTableQr(otherShopId, otherShopTableId);
+    const crossShopTableRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: otherShopTableId,
+          qr_table_mode: true,
+          table_qr_sig: otherSig,
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const crossShopTableData = (await crossShopTableRes.json()) as {
+      error?: string;
+      code?: string;
+    };
+    assert.equal(crossShopTableRes.status, 400);
+    assert.equal(crossShopTableData.code, 'INVALID_TABLE_SHOP');
+
+    const crossShopSigOnLocalTableRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table1Id,
+          qr_table_mode: true,
+          table_qr_sig: signTableQr(otherShopId, table1Id),
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const crossShopSigData = (await crossShopSigOnLocalTableRes.json()) as {
+      error?: string;
+      code?: string;
+    };
+    assert.equal(crossShopSigOnLocalTableRes.status, 400);
+    assert.equal(crossShopSigData.code, 'INVALID_TABLE_QR_SIGNATURE');
+
+    // 7. Door QR manual table choice & takeaway remain unchanged (no qr_table_mode / no table_qr_sig)
+    const doorTableRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: table2Id,
+          table_label: 'Bàn 02',
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const doorTableData = (await doorTableRes.json()) as {
+      order?: ShopOrder;
+      error?: string;
+    };
+    assert.equal(doorTableRes.status, 201, doorTableData.error);
+    assert.equal(doorTableData.order?.table_id, table2Id);
+
+    const doorTakeawayRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: shopId,
+          table_id: null,
+          table_label: 'Mang về',
+          source: 'qr_table',
+          items: sampleItems,
+        }),
+      })
+    );
+    const doorTakeawayData = (await doorTakeawayRes.json()) as {
+      order?: ShopOrder;
+      error?: string;
+    };
+    assert.equal(doorTakeawayRes.status, 201, doorTakeawayData.error);
+    assert.equal(doorTakeawayData.order?.table_id, null);
+    assert.equal(doorTakeawayData.order?.table_label, 'Mang về');
+  } finally {
+    if (prevSecret === undefined) {
+      delete process.env.SESSION_SECRET;
+    } else {
+      process.env.SESSION_SECRET = prevSecret;
+    }
+  }
 });

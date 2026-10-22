@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,60 @@ import {
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import type { PublicShopTable, ShopTable } from '@/types/qlaok';
+
+function getTableQrSigningSecret(): string {
+  const configured = process.env.SESSION_SECRET;
+  if (configured && configured.trim().length >= 16) {
+    return configured.trim();
+  }
+  const fallbackEnv =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.PAYMENT_WEBHOOK_SECRET;
+  if (fallbackEnv && fallbackEnv.trim().length >= 16) {
+    return fallbackEnv.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SESSION_SECRET (at least 16 characters) is required in production.');
+  }
+  return 'qlaok-server-hmac-secret-key-v2-do-not-share-in-client';
+}
+
+export function buildCanonicalTableQrPayload(shopId: string, tableId: string): string {
+  return `qlaok-table-qr:v1:${(shopId ?? '').trim()}:${(tableId ?? '').trim()}`;
+}
+
+export function signTableQr(shopId: string, tableId: string): string {
+  const cleanShopId = (shopId ?? '').trim();
+  const cleanTableId = (tableId ?? '').trim();
+  if (!cleanShopId || !cleanTableId) return '';
+  return createHmac('sha256', getTableQrSigningSecret())
+    .update(buildCanonicalTableQrPayload(cleanShopId, cleanTableId))
+    .digest('base64url');
+}
+
+export function verifyTableQrSignature(params: {
+  shop_id: string;
+  table_id: string;
+  signature?: string | null;
+}): boolean {
+  const cleanShopId = (params.shop_id ?? '').trim();
+  const cleanTableId = (params.table_id ?? '').trim();
+  const cleanSig = typeof params.signature === 'string' ? params.signature.trim() : '';
+  if (!cleanShopId || !cleanTableId || !cleanSig) return false;
+  const expected = signTableQr(cleanShopId, cleanTableId);
+  if (!expected) return false;
+  const sigBuf = Buffer.from(cleanSig, 'utf8');
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  if (sigBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(sigBuf, expectedBuf);
+}
+
+export function withTableQrSignature(table: ShopTable): ShopTable {
+  return {
+    ...table,
+    qr_sig: signTableQr(table.shop_id, table.id),
+  };
+}
 
 const IS_NODE_TEST_PROCESS =
   Boolean(process.env.NODE_TEST_CONTEXT) ||
@@ -523,6 +577,8 @@ export async function dbResolveOrderTableIdentity(params: {
   table_id?: string | null;
   table_code?: string | null;
   table_label?: string | null;
+  table_qr_sig?: string | null;
+  require_table_qr_sig?: boolean;
   strictTableSelection?: boolean;
   dbClient?: unknown;
 }): Promise<{ table_id: string | null; table_label: string }> {
@@ -530,6 +586,15 @@ export async function dbResolveOrderTableIdentity(params: {
   const rawTableId = (params.table_id ?? '').trim();
   const rawTableCode = (params.table_code ?? '').trim();
   const rawLabel = (params.table_label ?? '').trim();
+  const hasSigParam = params.table_qr_sig !== undefined && params.table_qr_sig !== null;
+  const cleanSig = typeof params.table_qr_sig === 'string' ? params.table_qr_sig.trim() : '';
+  const mustVerifySig = Boolean(params.require_table_qr_sig) || hasSigParam;
+
+  if (mustVerifySig && !rawTableId) {
+    throw new Error(
+      'MISSING_TABLE_QR_SIGNATURE: Mã xác thực QR bàn bị thiếu hoặc không hợp lệ.'
+    );
+  }
 
   if (rawTableId) {
     const table = await dbGetShopTableById(rawTableId, {
@@ -542,6 +607,24 @@ export async function dbResolveOrderTableIdentity(params: {
       throw new Error(
         `INVALID_TABLE_SHOP: Bàn "${rawTableId}" không thuộc cửa hàng này.`
       );
+    }
+    if (mustVerifySig) {
+      if (!cleanSig) {
+        throw new Error(
+          'MISSING_TABLE_QR_SIGNATURE: Mã QR bàn thiếu chữ ký bảo mật. Vui lòng quét lại mã QR tại bàn.'
+        );
+      }
+      if (
+        !verifyTableQrSignature({
+          shop_id: cleanShopId,
+          table_id: table.id,
+          signature: cleanSig,
+        })
+      ) {
+        throw new Error(
+          'INVALID_TABLE_QR_SIGNATURE: Mã QR bàn không hợp lệ hoặc đã bị thay đổi. Vui lòng quét lại mã QR tại bàn.'
+        );
+      }
     }
     if (!table.is_active || table.is_archived) {
       throw new Error(

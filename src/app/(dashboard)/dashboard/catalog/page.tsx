@@ -11,18 +11,31 @@ import {
   Crown,
   Loader2,
   UtensilsCrossed,
+  X,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import { CatalogItem, Category } from '@/types/qlaok';
-import { PLAN_CONFIGS } from '@/lib/plan-limits';
+import { PLAN_CONFIGS, formatPlanLimitError } from '@/lib/plan-limits';
 import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
 import { TranslationEditorModal } from '@/components/dashboard/TranslationEditorModal';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
+
+interface CatalogMutationError {
+  message: string;
+  upgradeHref?: string;
+  ctaLabel?: string;
+}
 
 export default function DashboardCatalogPage() {
   const { activeShop, profile } = useDashboard();
-  const { t, tx } = useAppI18n();
+  const { locale, t, tx } = useAppI18n();
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
+    null
+  );
+  const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,27 +91,82 @@ export default function DashboardCatalogPage() {
     setTimeout(() => setToastMsg(''), 2500);
   };
 
+  /** Converts a failed response / thrown error into a user-facing message (plan limits get a billing CTA). */
+  const toMutationError = (
+    payload: unknown,
+    fallback: string
+  ): CatalogMutationError => {
+    const planError = formatPlanLimitError(payload, locale);
+    if (planError) {
+      return {
+        message: planError.message,
+        upgradeHref: planError.upgradeHref,
+        ctaLabel: planError.ctaLabel,
+      };
+    }
+    if (payload && typeof payload === 'object' && !(payload instanceof Error)) {
+      const errText = (payload as { error?: unknown }).error;
+      if (typeof errText === 'string' && errText.trim()) return { message: errText };
+    }
+    if (payload instanceof Error && payload.message) return { message: payload.message };
+    return { message: fallback };
+  };
+
+  /**
+   * Sends a catalog mutation and resolves to true only when the server confirms it.
+   * On failure the error is surfaced in the inline banner; callers roll back optimistic state.
+   */
+  const sendCatalogMutation = async (
+    input: string,
+    init: RequestInit,
+    fallback: string
+  ): Promise<boolean> => {
+    try {
+      const res = await fetch(input, init);
+      if (res.ok) {
+        setMutationError(null);
+        return true;
+      }
+      const payload = await res.json().catch(() => null);
+      setMutationError(toMutationError(payload, fallback));
+      return false;
+    } catch (err) {
+      setMutationError(toMutationError(err, fallback));
+      return false;
+    }
+  };
+
+  const upsertItem = (item: CatalogItem) =>
+    sendCatalogMutation(
+      '/api/catalog',
+      {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'upsert_item', item }),
+      },
+      tx('Không thể lưu thay đổi món', 'Could not save item changes')
+    );
+
+  /** Restores the server-confirmed item snapshot after a rejected optimistic update. */
+  const rollbackItem = (original: CatalogItem) => {
+    setItems((prev) => prev.map((i) => (i.id === original.id ? original : i)));
+  };
+
   const handleToggleAvailable = async (
     item: CatalogItem,
     nextAvailable: boolean
-  ) => {
+  ): Promise<boolean> => {
     // Optimistic update
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, is_available: nextAvailable } : i
       )
     );
-    await fetch('/api/catalog', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        action: 'upsert_item',
-        item: {
-          ...item,
-          is_available: nextAvailable,
-        },
-      }),
-    });
+    const ok = await upsertItem({ ...item, is_available: nextAvailable });
+    if (!ok) {
+      rollbackItem(item);
+      return false;
+    }
     notifyRealtime();
     showToast(
       nextAvailable
@@ -109,30 +177,29 @@ export default function DashboardCatalogPage() {
             name: item.name_i18n.vi,
           })
     );
+    return true;
   };
 
-  const handleUpdatePrice = async (item: CatalogItem, nextPrice: number) => {
+  const handleUpdatePrice = async (
+    item: CatalogItem,
+    nextPrice: number
+  ): Promise<boolean> => {
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
-    await fetch('/api/catalog', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        action: 'upsert_item',
-        item: {
-          ...item,
-          price: nextPrice,
-        },
-      }),
-    });
+    const ok = await upsertItem({ ...item, price: nextPrice });
+    if (!ok) {
+      rollbackItem(item);
+      return false;
+    }
     notifyRealtime();
+    return true;
   };
 
   const handleUpdateStock = async (
     item: CatalogItem,
     nextStock: number | null
-  ) => {
+  ): Promise<boolean> => {
     const nextAvailable =
       nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
     setItems((prev) =>
@@ -142,18 +209,15 @@ export default function DashboardCatalogPage() {
           : i
       )
     );
-    await fetch('/api/catalog', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        action: 'upsert_item',
-        item: {
-          ...item,
-          stock_quantity: nextStock,
-          is_available: nextAvailable,
-        },
-      }),
+    const ok = await upsertItem({
+      ...item,
+      stock_quantity: nextStock,
+      is_available: nextAvailable,
     });
+    if (!ok) {
+      rollbackItem(item);
+      return false;
+    }
     notifyRealtime();
     showToast(
       nextStock === null
@@ -168,64 +232,85 @@ export default function DashboardCatalogPage() {
             { stock: nextStock, name: item.name_i18n.vi }
           )
     );
+    return true;
   };
 
   const handleToggleFeatured = async (
     item: CatalogItem,
     nextFeatured: boolean
-  ) => {
+  ): Promise<boolean> => {
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, is_featured: nextFeatured } : i
       )
     );
-    await fetch('/api/catalog', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        action: 'upsert_item',
-        item: {
-          ...item,
-          is_featured: nextFeatured,
-        },
-      }),
-    });
+    const ok = await upsertItem({ ...item, is_featured: nextFeatured });
+    if (!ok) {
+      rollbackItem(item);
+      return false;
+    }
     notifyRealtime();
+    return true;
   };
 
-  const handleUpdateImage = async (item: CatalogItem, nextImageUrl: string) => {
+  const handleUpdateImage = async (
+    item: CatalogItem,
+    nextImageUrl: string
+  ): Promise<boolean> => {
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, image_url: nextImageUrl } : i
       )
     );
-    await fetch('/api/catalog', {
-      method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        action: 'upsert_item',
-        item: {
-          ...item,
-          image_url: nextImageUrl,
-        },
-      }),
-    });
+    const ok = await upsertItem({ ...item, image_url: nextImageUrl });
+    if (!ok) {
+      rollbackItem(item);
+      return false;
+    }
     notifyRealtime();
     showToast(
       tx('Đã cập nhật ảnh món: {name}', 'Updated item photo: {name}', {
         name: item.name_i18n.vi,
       })
     );
+    return true;
   };
 
-  const handleDeleteItem = async (itemId: string) => {
-    setItems((prev) => prev.filter((i) => i.id !== itemId));
-    await fetch(`/api/catalog?itemId=${encodeURIComponent(itemId)}`, {
-      method: 'DELETE',
-      headers: getAuthHeaders(),
+  const handleDeleteItem = async (itemId: string): Promise<boolean> => {
+    const target = items.find((i) => i.id === itemId);
+    const confirmed = await confirm({
+      variant: 'danger',
+      title: tx('Xóa món khỏi thực đơn?', 'Delete this item from the menu?'),
+      description: tx(
+        'Món "{name}" sẽ bị xóa vĩnh viễn khỏi thực đơn QR. Thao tác này không thể hoàn tác.',
+        '"{name}" will be permanently removed from the QR menu. This cannot be undone.',
+        { name: target?.name_i18n.vi || '' }
+      ),
+      confirmLabel: t('common.delete'),
     });
+    if (!confirmed) return false;
+
+    const originalIndex = items.findIndex((i) => i.id === itemId);
+    setItems((prev) => prev.filter((i) => i.id !== itemId));
+    const ok = await sendCatalogMutation(
+      `/api/catalog?itemId=${encodeURIComponent(itemId)}`,
+      { method: 'DELETE', headers: getAuthHeaders() },
+      tx('Không thể xóa món', 'Could not delete item')
+    );
+    if (!ok) {
+      if (target) {
+        setItems((prev) => {
+          if (prev.some((i) => i.id === target.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(Math.max(originalIndex, 0), next.length), 0, target);
+          return next;
+        });
+      }
+      return false;
+    }
     notifyRealtime();
     showToast(tx('Đã xóa món khỏi thực đơn', 'Deleted item from menu'));
+    return true;
   };
 
   const handleCreateCategory = async (e: React.FormEvent) => {
@@ -233,55 +318,92 @@ export default function DashboardCatalogPage() {
     if (!activeShop || !newCategoryName.trim()) return;
     setAddingCategory(true);
     try {
-      // Translate category name via AI API
-      const transRes = await fetch('/api/ai/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vertical: activeShop.vertical,
-          categoryNameVi: newCategoryName.trim(),
-          itemNameVi: newCategoryName.trim(),
-        }),
-      });
-      const transData = await transRes.json();
+      const nameVi = newCategoryName.trim();
+      // Translate category name via AI API (best-effort: fall back to the Vietnamese name).
+      let translatedName: Category['name_i18n'] | null = null;
+      try {
+        const transRes = await fetch('/api/ai/translate', {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            vertical: activeShop.vertical,
+            categoryNameVi: nameVi,
+            itemNameVi: nameVi,
+          }),
+        });
+        if (transRes.ok) {
+          const transData = await transRes.json().catch(() => null);
+          translatedName = transData?.name_i18n || null;
+        }
+      } catch {
+        // translation is optional
+      }
 
-      await fetch('/api/catalog', {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          action: 'upsert_category',
-          category: {
-            shop_id: activeShop.id,
-            name_i18n: transData.name_i18n || {
-              vi: newCategoryName.trim(),
-              en: newCategoryName.trim(),
+      const ok = await sendCatalogMutation(
+        '/api/catalog',
+        {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            action: 'upsert_category',
+            category: {
+              shop_id: activeShop.id,
+              name_i18n: translatedName || { vi: nameVi, en: nameVi },
             },
-          },
-        }),
-      });
+          }),
+        },
+        tx('Không thể tạo danh mục', 'Could not create category')
+      );
+      if (!ok) return;
       setNewCategoryName('');
       await loadCatalog(true);
       notifyRealtime();
       showToast(
-        tx(
-          'Đã tạo danh mục mới và dịch tự động',
-          'Created category with auto-translation'
-        )
+        translatedName
+          ? tx(
+              'Đã tạo danh mục mới và dịch tự động',
+              'Created category with auto-translation'
+            )
+          : tx('Đã tạo danh mục mới', 'Created new category')
       );
     } finally {
       setAddingCategory(false);
     }
   };
 
-  const handleDeleteCategory = async (catId: string) => {
-    await fetch(`/api/catalog?categoryId=${encodeURIComponent(catId)}`, {
-      method: 'DELETE',
-      headers: getAuthHeaders(),
+  const handleDeleteCategory = async (cat: Category) => {
+    const itemCount = items.filter((i) => i.category_id === cat.id).length;
+    const confirmed = await confirm({
+      variant: 'danger',
+      title: tx('Xóa danh mục "{name}"?', 'Delete category "{name}"?', {
+        name: cat.name_i18n.vi,
+      }),
+      description:
+        itemCount > 0
+          ? tx(
+              'Danh mục đang có {count} món. Thao tác này không thể hoàn tác.',
+              'This category contains {count} item(s). This cannot be undone.',
+              { count: itemCount }
+            )
+          : tx('Thao tác này không thể hoàn tác.', 'This cannot be undone.'),
+      confirmLabel: t('common.delete'),
     });
-    if (selectedCategoryId === catId) setSelectedCategoryId('all');
-    await loadCatalog(true);
-    notifyRealtime();
-    showToast(tx('Đã xóa danh mục', 'Deleted category'));
+    if (!confirmed) return;
+    setDeletingCategoryId(cat.id);
+    try {
+      const ok = await sendCatalogMutation(
+        `/api/catalog?categoryId=${encodeURIComponent(cat.id)}`,
+        { method: 'DELETE', headers: getAuthHeaders() },
+        tx('Không thể xóa danh mục', 'Could not delete category')
+      );
+      if (!ok) return;
+      if (selectedCategoryId === cat.id) setSelectedCategoryId('all');
+      await loadCatalog(true);
+      notifyRealtime();
+      showToast(tx('Đã xóa danh mục', 'Deleted category'));
+    } finally {
+      setDeletingCategoryId(null);
+    }
   };
 
   if (!activeShop) {
@@ -297,6 +419,7 @@ export default function DashboardCatalogPage() {
 
   const planTier = profile?.plan || 'free';
   const planCfg = PLAN_CONFIGS[planTier];
+  const itemLimitReached = items.length >= planCfg.maxItems;
   const planLabel =
     planTier === 'premium'
       ? tx('Gói Cao Cấp (Premium)', 'Premium Plan')
@@ -316,6 +439,36 @@ export default function DashboardCatalogPage() {
 
   return (
     <div className="space-y-5">
+      {/* Mutation error (server rejected change; optimistic state already rolled back) */}
+      {mutationError && (
+        <div
+          role="alert"
+          data-testid="catalog-mutation-error"
+          className="flex items-start justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-800"
+        >
+          <div className="space-y-1">
+            <p>{mutationError.message}</p>
+            {mutationError.upgradeHref && (
+              <Link
+                href={mutationError.upgradeHref}
+                className="inline-flex items-center gap-1 font-black text-emerald-700 underline"
+              >
+                <Crown className="h-3.5 w-3.5" aria-hidden="true" />
+                {mutationError.ctaLabel || tx('Nâng cấp gói', 'Upgrade plan')} →
+              </Link>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setMutationError(null)}
+            aria-label={t('common.close')}
+            className="-m-1 rounded-full p-1 text-rose-500 hover:bg-rose-100"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {toastMsg && (
         <div className="fixed bottom-20 md:bottom-6 right-4 z-50 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-bold text-white shadow-xl border border-slate-700">
@@ -348,17 +501,52 @@ export default function DashboardCatalogPage() {
 
           <button
             type="button"
+            disabled={itemLimitReached}
+            aria-describedby={itemLimitReached ? 'catalog-item-limit-hint' : undefined}
+            title={
+              itemLimitReached
+                ? tx(
+                    'Đã đạt giới hạn {max} món của gói hiện tại',
+                    'Reached the {max}-item limit of your plan',
+                    { max: planCfg.maxItems }
+                  )
+                : undefined
+            }
             onClick={() => {
+              if (itemLimitReached) return;
               setEditingItem(null);
               setIsModalOpen(true);
             }}
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 active:scale-95"
+            className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100"
           >
             <Plus className="h-4 w-4" />
             <span>{tx('Thêm món mới', 'Add Item')}</span>
           </button>
         </div>
       </div>
+
+      {itemLimitReached && (
+        <div
+          id="catalog-item-limit-hint"
+          data-testid="catalog-item-limit-hint"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900"
+        >
+          <span>
+            {tx(
+              'Bạn đã dùng hết {max} món của {plan}. Nâng cấp để thêm món mới.',
+              'You have used all {max} items on the {plan}. Upgrade to add more items.',
+              { max: planCfg.maxItems, plan: planLabel }
+            )}
+          </span>
+          <Link
+            href="/dashboard/billing"
+            className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 font-black text-slate-950 hover:bg-amber-400"
+          >
+            <Crown className="h-3.5 w-3.5" aria-hidden="true" />
+            {tx('Nâng cấp gói', 'Upgrade plan')}
+          </Link>
+        </div>
+      )}
 
       {/* Plan Quota Usage Bar */}
       <div className="rounded-2xl border border-slate-200 bg-white p-3.5 flex items-center justify-between gap-3 flex-wrap">
@@ -446,8 +634,9 @@ export default function DashboardCatalogPage() {
                 {categories.length > 1 && (
                   <button
                     type="button"
-                    onClick={() => handleDeleteCategory(cat.id)}
-                    className="ml-1 opacity-60 hover:opacity-100"
+                    onClick={() => void handleDeleteCategory(cat)}
+                    disabled={deletingCategoryId === cat.id}
+                    className="ml-1 opacity-60 hover:opacity-100 disabled:cursor-wait disabled:opacity-30"
                     title={tx('Xóa danh mục', 'Delete category')}
                     aria-label={tx('Xóa danh mục', 'Delete category')}
                   >
@@ -561,6 +750,8 @@ export default function DashboardCatalogPage() {
           );
         }}
       />
+
+      {confirmDialog}
     </div>
   );
 }

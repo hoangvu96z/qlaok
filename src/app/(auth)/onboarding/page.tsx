@@ -51,6 +51,12 @@ export default function OnboardingWizardPage() {
 
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  // Guard against silently creating duplicate stores for users who already
+  // own or belong to a shop.
+  const [existingShops, setExistingShops] = useState<{
+    owned: number;
+    member: number;
+  } | null>(null);
 
   useEffect(() => {
     const owner = getStoredAuthOwner();
@@ -62,7 +68,37 @@ export default function OnboardingWizardPage() {
     if (owner.phone) {
       setPhone(owner.phone);
     }
-    setCheckingAuth(false);
+    let cancelled = false;
+    const wantsNewBranch =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('intent') === 'new_branch';
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/shops?ownerId=${encodeURIComponent(owner.id)}`,
+          { headers: getAuthHeaders(), cache: 'no-store' }
+        );
+        if (res.ok) {
+          const data = (await res.json()) as {
+            shops?: Array<{ id: string; owner_id?: string }>;
+          };
+          const shops = data.shops || [];
+          const owned = shops.filter((s) => s.owner_id === owner.id).length;
+          const member = shops.length - owned;
+          if (!cancelled && shops.length > 0 && !(wantsNewBranch && owned > 0)) {
+            setExistingShops({ owned, member });
+          }
+        }
+      } catch {
+        // Network failure: fall through to the wizard; the user must still
+        // submit explicitly, so no store is created silently.
+      } finally {
+        if (!cancelled) setCheckingAuth(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   const handleSelectVertical = (v: BusinessVertical) => {
@@ -107,7 +143,7 @@ export default function OnboardingWizardPage() {
       // 1. Translate first item & category into 5 languages via AI
       const transRes = await fetch('/api/ai/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           vertical,
           categoryNameVi: categoryVi,
@@ -147,11 +183,11 @@ export default function OnboardingWizardPage() {
           google_review_url: `https://maps.google.com/?q=${encodeURIComponent(
             `${shopName} ${city}`
           )}`,
-          phone_contact: phone.trim() || ownerProfile?.phone || '0905123456',
-          zalo_phone: phone.trim() || ownerProfile?.phone || '0905123456',
+          phone_contact: phone.trim() || ownerProfile?.phone || '',
+          zalo_phone: phone.trim() || ownerProfile?.phone || '',
           wifi_info: {
-            ssid: wifiSsid.trim() || `${slugBase}_FreeWiFi`,
-            password: wifiPassword.trim() || '12345678',
+            ssid: wifiSsid.trim(),
+            password: wifiPassword.trim(),
           },
           opening_hours: {
             mon: { open: '08:00', close: '22:00', closed: false },
@@ -173,7 +209,9 @@ export default function OnboardingWizardPage() {
                   : '#10b981',
             layout: vertical === 'retail' ? 'grid' : 'list',
           },
-          is_published: true,
+          // New stores start as drafts; owners go live from the dashboard
+          // header "Go live" toggle once the menu is ready.
+          is_published: false,
         }),
       });
       const shopData = await shopRes.json();
@@ -238,6 +276,56 @@ export default function OnboardingWizardPage() {
         <p className="text-xs font-bold text-slate-400">
           {tx('Đang kiểm tra tài khoản...', 'Checking account...')}
         </p>
+      </div>
+    );
+  }
+
+  if (existingShops) {
+    return (
+      <div
+        data-testid="onboarding-existing-shops"
+        className="min-h-screen bg-slate-950 text-white theme-surface-page flex flex-col justify-center items-center p-4"
+      >
+        <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-2xl space-y-5 text-center">
+          <Store className="mx-auto h-10 w-10 text-emerald-400" />
+          <h1 className="text-xl font-black">
+            {tx('Bạn đã có cửa hàng', 'You already have a store')}
+          </h1>
+          <p className="text-xs text-slate-400">
+            {existingShops.owned > 0
+              ? tx(
+                  'Tài khoản của bạn đang quản lý {count} cửa hàng. Bạn muốn vào trang quản lý hay tạo thêm chi nhánh mới?',
+                  'Your account already manages {count} store(s). Go to your dashboard or create another branch?',
+                  { count: existingShops.owned + existingShops.member }
+                )
+              : tx(
+                  'Tài khoản của bạn đã được thêm làm nhân viên của {count} cửa hàng.',
+                  'Your account is already a staff member of {count} store(s).',
+                  { count: existingShops.member }
+                )}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2 justify-center">
+            <button
+              type="button"
+              onClick={() => router.push('/dashboard')}
+              data-testid="onboarding-go-dashboard"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-xs font-black text-slate-950 hover:bg-emerald-400"
+            >
+              <span>{tx('Vào trang quản lý', 'Go to dashboard')}</span>
+              <ArrowRight className="h-4 w-4" />
+            </button>
+            {existingShops.owned > 0 && (
+              <button
+                type="button"
+                onClick={() => setExistingShops(null)}
+                data-testid="onboarding-create-branch"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-5 py-3 text-xs font-bold text-slate-200 hover:bg-slate-800"
+              >
+                {tx('Tạo thêm chi nhánh', 'Create another branch')}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
