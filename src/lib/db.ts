@@ -30,8 +30,7 @@ import {
   dbGetUserShopMemberships,
 } from './shop-permissions';
 import {
-  computeShopRevenueAndInventoryStats,
-  dbGetShopOrders,
+  dbComputeShopRevenueAndInventoryStats,
   enrichItemsWithInventory,
   setItemStockMetadata,
 } from './mpos-store';
@@ -1197,16 +1196,14 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
   }
 
   const resolvedShopId = targetShopId || SEED_SHOPS[0].id;
-  const [{ data: eventsData }, { data: itemsData }, shopOrders] =
-    await Promise.all([
-      sb
-        .from('analytics_events')
-        .select('*')
-        .eq('shop_id', resolvedShopId)
-        .order('created_at', { ascending: false }),
-      sb.from('items').select('*').eq('shop_id', resolvedShopId),
-      dbGetShopOrders(resolvedShopId),
-    ]);
+  const [{ data: eventsData }, { data: itemsData }] = await Promise.all([
+    sb
+      .from('analytics_events')
+      .select('*')
+      .eq('shop_id', resolvedShopId)
+      .order('created_at', { ascending: false }),
+    sb.from('items').select('*').eq('shop_id', resolvedShopId),
+  ]);
 
   const events = (eventsData || []) as AnalyticsEvent[];
   const rawItems = ((itemsData || []) as CatalogItem[]).map((i) => ({
@@ -1214,10 +1211,9 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     price: Number(i.price),
   }));
   const items = enrichItemsWithInventory(rawItems);
-  const mposStats = computeShopRevenueAndInventoryStats(
+  const mposStats = await dbComputeShopRevenueAndInventoryStats(
     resolvedShopId,
-    items,
-    shopOrders
+    items
   );
 
   const scanDoorCount = events.filter(

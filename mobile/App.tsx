@@ -252,6 +252,8 @@ function Workspace({ userId }: { userId: string }) {
   const {
     orders,
     setOrders,
+    orderStats,
+    setOrderStats,
     liveOrderAlert,
     setLiveOrderAlert,
     realtimeStatus,
@@ -390,7 +392,7 @@ function Workspace({ userId }: { userId: string }) {
       if (!isNotificationTap) {
         setOrderFilter('active');
       }
-      setCategories([]); setItems([]); setEvents([]); setOrders([]);
+      setCategories([]); setItems([]); setEvents([]); setOrders([]); setOrderStats(null);
       try {
         let loadedShops: MobileShop[] = [];
         let loadedMemberships: Record<string, MobileShopMembership> = {};
@@ -532,6 +534,7 @@ function Workspace({ userId }: { userId: string }) {
     [
       userId,
       setOrders,
+      setOrderStats,
       setLiveOrderAlert,
       navigateTab,
       fetchOrdersFromApi,
@@ -644,6 +647,7 @@ function Workspace({ userId }: { userId: string }) {
         if (scopeRef.current !== shopId || generation !== loadGeneration.current) return;
         setOrders((prev) => prev.map((o) => o.id === orderId ? order : o));
         if (payment_status === 'paid' && order.payment_status === 'paid') setPrintingOrder(order);
+        void fetchOrdersFromApi(shopId, true);
       } catch (error) {
         if (scopeRef.current === shopId && generation === loadGeneration.current) setOrderError(error instanceof Error ? error.message : t('alert.updateOrderFailed'));
       } finally {
@@ -651,7 +655,7 @@ function Workspace({ userId }: { userId: string }) {
         setPendingOrderIds((prev) => prev.filter((id) => id !== orderId));
       }
     },
-    [activeShop, orders, setOrders, t]
+    [activeShop, orders, setOrders, fetchOrdersFromApi, t]
   );
 
   const handleSavePromotions = useCallback(async () => {
@@ -778,8 +782,12 @@ function Workspace({ userId }: { userId: string }) {
   );
 
   const newOrdersCount = useMemo(
-    () => orders.filter((o) => o.status === 'new').length,
-    [orders]
+    () =>
+      typeof orderStats?.newOrdersCount === 'number' &&
+      Number.isFinite(orderStats.newOrdersCount)
+        ? orderStats.newOrdersCount
+        : orders.filter((o) => o.status === 'new').length,
+    [orderStats?.newOrdersCount, orders]
   );
 
   const handleRefresh = useCallback(() => {
@@ -1163,7 +1171,7 @@ function Workspace({ userId }: { userId: string }) {
               }
             >
               <OverviewTab
-                orders={orders}
+                stats={orderStats}
                 items={items}
                 events={events}
                 primaryColor={primaryColor}

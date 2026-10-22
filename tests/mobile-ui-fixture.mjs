@@ -31,7 +31,30 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/auth/v1/logout') { res.writeHead(204).end(); return; }
   if (url.pathname === '/api/shops') return send({ shops, memberships: Object.fromEntries(shops.map((shop) => [shop.id, membership(shop.id)])) });
   const shopId = url.searchParams.get('shopId') || url.searchParams.get('shop_id')?.replace('eq.', '') || 'fixture-a';
-  if (url.pathname === '/api/orders' && req.method === 'GET') return send({ orders: orders.filter((order) => order.shop_id === shopId), items: [item(shopId)], membership: membership(shopId) });
+  if (url.pathname === '/api/orders' && req.method === 'GET') {
+    const shopOrders = orders.filter((order) => order.shop_id === shopId);
+    const validOrders = shopOrders.filter((order) => order.status !== 'cancelled');
+    const paidOrders = validOrders.filter((order) => order.payment_status === 'paid');
+    const paidRevenue = paidOrders.reduce((sum, order) => sum + order.total_amount, 0);
+    const canReports = permissions[role].includes('reports.view');
+    const vnDate = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+    return send({
+      orders: shopOrders,
+      items: [item(shopId)],
+      membership: membership(shopId),
+      stats: {
+        todayRevenue: canReports ? paidRevenue : null,
+        totalRevenue: canReports ? paidRevenue : null,
+        paidOrdersCount: canReports ? paidOrders.length : null,
+        todayPaidOrdersCount: canReports ? paidOrders.length : null,
+        todayOrdersCount: validOrders.length,
+        totalOrdersCount: validOrders.length,
+        newOrdersCount: shopOrders.filter((order) => order.status === 'new').length,
+        preparingOrdersCount: shopOrders.filter((order) => order.status === 'preparing').length,
+        dailyRevenue7d: canReports ? [{ date: vnDate, label: vnDate.slice(8, 10), revenue: paidRevenue, ordersCount: validOrders.length }] : [],
+      },
+    });
+  }
   if (url.pathname === '/api/orders' && req.method === 'PATCH') {
     const order = orders.find((order) => order.id === body.orderId);
     if (!order) return send({ error: 'Order not found' }, 404);

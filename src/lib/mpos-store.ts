@@ -1172,9 +1172,18 @@ async function loadMergedOrders(shopId?: string): Promise<ShopOrder[]> {
   if (isOrderDbConfigured()) {
     let query = getActiveDbClient().from('orders').select('*');
     if (shopId) query = query.eq('shop_id', shopId);
-    const { data, error } = await query.order('created_at', { ascending: false });
+    query = query.order('created_at', { ascending: false });
+    const limitFn = (
+      query as unknown as { limit?: (count: number) => typeof query }
+    ).limit;
+    if (typeof limitFn === 'function') {
+      query = limitFn.call(query, STATS_ORDER_PAGE_SIZE);
+    }
+    const { data, error } = await query;
     if (error || !Array.isArray(data)) throw new Error(error?.message || 'DB_READ_FAILED');
-    const rows = data.map((row) => normalizeOrderRecord(row));
+    const rows = data
+      .slice(0, STATS_ORDER_PAGE_SIZE)
+      .map((row) => normalizeOrderRecord(row));
     return rows;
   }
 
@@ -2702,7 +2711,41 @@ export function computeShopRevenueAndInventoryStats(
     }
   }
 
-  // Inventory summary
+  const { lowStockItems, outOfStockItems, topSellingItems } =
+    buildInventoryAndTopItemsStats(enrichedItems, orderSoldMap);
+
+  return {
+    todayRevenue,
+    todayGrossOrderAmount,
+    todayUnpaidAmount,
+    todayRefundedAmount,
+    totalRefundedAmount,
+    todayOrdersCount: todayValidOrders.length,
+    todayPaidOrdersCount: todayPaidOrders.length,
+    todayCompletedCount: todayCompletedOrders.length,
+    completedOrdersCount: completedOrders.length,
+    paidOrdersCount: paidOrders.length,
+    totalRevenue,
+    totalOrdersCount: validOrders.length,
+    newOrdersCount,
+    preparingOrdersCount,
+    avgOrderValue,
+    lowStockCount: lowStockItems.length,
+    outOfStockCount: outOfStockItems.length,
+    lowStockItems,
+    dailyRevenue7d,
+    dailyRevenue7Days: dailyRevenue7d,
+    paymentBreakdown,
+    sourceBreakdown,
+    hourlyBreakdown,
+    topSellingItems,
+  };
+}
+
+function buildInventoryAndTopItemsStats(
+  enrichedItems: CatalogItem[],
+  orderSoldMap: Map<string, { qty: number; rev: number }>
+) {
   const lowStockItems = enrichedItems.filter(
     (i) =>
       i.stock_quantity !== null &&
@@ -2714,7 +2757,6 @@ export function computeShopRevenueAndInventoryStats(
     (i) => !i.is_available || i.stock_quantity === 0
   );
 
-  // Top selling items by sold_count & revenue
   const topSellingItems = [...enrichedItems]
     .map((item) => {
       const fromOrders = orderSoldMap.get(item.id);
@@ -2740,20 +2782,231 @@ export function computeShopRevenueAndInventoryStats(
     .slice(0, 5);
 
   return {
-    todayRevenue,
-    todayGrossOrderAmount,
-    todayUnpaidAmount,
-    todayRefundedAmount,
-    totalRefundedAmount,
-    todayOrdersCount: todayValidOrders.length,
-    todayPaidOrdersCount: todayPaidOrders.length,
-    todayCompletedCount: todayCompletedOrders.length,
-    completedOrdersCount: completedOrders.length,
-    totalRevenue,
-    totalOrdersCount: validOrders.length,
-    newOrdersCount,
-    preparingOrdersCount,
-    avgOrderValue,
+    lowStockItems,
+    outOfStockItems,
+    topSellingItems,
+  };
+}
+
+const STATS_ORDER_PAGE_SIZE = 1000;
+const STATS_ORDER_MAX_PAGES = 100;
+const STATS_ORDER_SELECT_COLUMNS =
+  'id,shop_id,status,payment_status,payment_method,source,total_amount,items,created_at,updated_at';
+
+export interface PaginatedStatsFetchOptions {
+  pageSize?: number;
+  maxPages?: number;
+}
+
+export async function fetchAllShopOrdersPaginatedForStats(
+  shopId: string,
+  clientOverride?: SupabaseClient,
+  options?: PaginatedStatsFetchOptions
+): Promise<ShopOrder[]> {
+  const sb = clientOverride ?? getActiveDbClient();
+  const seenById = new Map<string, ShopOrder>();
+  const pageSize = Math.max(
+    1,
+    Math.floor(options?.pageSize ?? STATS_ORDER_PAGE_SIZE)
+  );
+  const maxPages = Math.max(
+    1,
+    Math.floor(options?.maxPages ?? STATS_ORDER_MAX_PAGES)
+  );
+
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    let query = sb
+      .from('orders')
+      .select(STATS_ORDER_SELECT_COLUMNS)
+      .eq('shop_id', shopId)
+      .order('created_at', { ascending: false });
+
+    const rangeFn = (
+      query as unknown as {
+        range?: (start: number, end: number) => typeof query;
+      }
+    ).range;
+    const supportsRange = typeof rangeFn === 'function';
+    if (supportsRange) {
+      query = rangeFn.call(query, from, to);
+    }
+
+    const { data, error } = await query;
+    if (error || !Array.isArray(data)) {
+      throw new Error(error?.message || 'DB_READ_FAILED');
+    }
+
+    for (const row of data) {
+      const normalized = normalizeOrderRecord(row as Partial<ShopOrder>);
+      if (!seenById.has(normalized.id)) {
+        seenById.set(normalized.id, normalized);
+      }
+    }
+
+    if (data.length < pageSize) {
+      return Array.from(seenById.values());
+    }
+
+    if (!supportsRange) {
+      throw new Error(
+        'DB_STATS_PAGE_LIMIT_REACHED: Client does not support .range() pagination for a full order page; refusing to return truncated stats.'
+      );
+    }
+
+    if (page === maxPages - 1) {
+      throw new Error(
+        'DB_STATS_PAGE_LIMIT_REACHED: Order history exceeded maximum fallback pagination pages; refusing to return truncated stats.'
+      );
+    }
+  }
+
+  return Array.from(seenById.values());
+}
+
+function isMissingStatsRpcError(error: {
+  code?: string;
+  message?: string;
+} | null | undefined): boolean {
+  if (!error) return false;
+  const code = String(error.code || '').toUpperCase();
+  const msg = String(error.message || '').toLowerCase();
+  return (
+    code === 'PGRST202' ||
+    code === '42883' ||
+    (msg.includes('get_shop_order_stats_summary') &&
+      (msg.includes('not exist') ||
+        msg.includes('could not find') ||
+        msg.includes('schema cache')))
+  );
+}
+
+function normalizeStatsFromRpcPayload(
+  rawPayload: Record<string, unknown>,
+  enrichedItems: CatalogItem[]
+): ReturnType<typeof computeShopRevenueAndInventoryStats> {
+  const orderSoldMap = new Map<string, { qty: number; rev: number }>();
+  const rawItemSales = Array.isArray(rawPayload.itemSales)
+    ? rawPayload.itemSales
+    : [];
+  for (const entry of rawItemSales) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const itemId = typeof record.item_id === 'string' ? record.item_id.trim() : '';
+    if (!itemId) continue;
+    orderSoldMap.set(itemId, {
+      qty: Math.max(0, Number(record.qty || 0)),
+      rev: Math.max(0, Number(record.rev || 0)),
+    });
+  }
+
+  const { lowStockItems, outOfStockItems, topSellingItems } =
+    buildInventoryAndTopItemsStats(enrichedItems, orderSoldMap);
+
+  const dailyRevenue7d = Array.isArray(rawPayload.dailyRevenue7d)
+    ? rawPayload.dailyRevenue7d.map((rawDay) => {
+        const day = (rawDay || {}) as Record<string, unknown>;
+        const ordersCount = Math.max(
+          0,
+          Number(day.orderCount ?? day.orders ?? 0)
+        );
+        return {
+          date: String(day.date || ''),
+          label: String(day.label || ''),
+          revenue: Math.max(0, Number(day.revenue || 0)),
+          cashRevenue: Math.max(0, Number(day.cashRevenue || 0)),
+          vietqrRevenue: Math.max(0, Number(day.vietqrRevenue || 0)),
+          orders: ordersCount,
+          orderCount: ordersCount,
+        };
+      })
+    : [];
+
+  const rawPayment = (rawPayload.paymentBreakdown || {}) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const paymentBreakdown = {
+    vietqr: {
+      count: Math.max(0, Number(rawPayment.vietqr?.count || 0)),
+      revenue: Math.max(0, Number(rawPayment.vietqr?.revenue || 0)),
+      percentage: Number(rawPayment.vietqr?.percentage ?? 65),
+    },
+    cash: {
+      count: Math.max(0, Number(rawPayment.cash?.count || 0)),
+      revenue: Math.max(0, Number(rawPayment.cash?.revenue || 0)),
+      percentage: Number(rawPayment.cash?.percentage ?? 35),
+    },
+  };
+
+  const rawSource = (rawPayload.sourceBreakdown || {}) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const sourceBreakdown = {
+    qr_table: {
+      count: Math.max(0, Number(rawSource.qr_table?.count || 0)),
+      revenue: Math.max(0, Number(rawSource.qr_table?.revenue || 0)),
+      percentage: Number(rawSource.qr_table?.percentage ?? 75),
+    },
+    counter_pos: {
+      count: Math.max(0, Number(rawSource.counter_pos?.count || 0)),
+      revenue: Math.max(0, Number(rawSource.counter_pos?.revenue || 0)),
+      percentage: Number(rawSource.counter_pos?.percentage ?? 25),
+    },
+  };
+
+  const hourlyBreakdown = Array.isArray(rawPayload.hourlyBreakdown)
+    ? rawPayload.hourlyBreakdown.map((rawSlot) => {
+        const slot = (rawSlot || {}) as Record<string, unknown>;
+        return {
+          slot: String(slot.slot || ''),
+          label: String(slot.label || ''),
+          orders: Math.max(0, Number(slot.orders || 0)),
+          revenue: Math.max(0, Number(slot.revenue || 0)),
+          percentage: Math.max(8, Number(slot.percentage || 8)),
+        };
+      })
+    : [];
+
+  return {
+    todayRevenue: Math.max(0, Number(rawPayload.todayRevenue || 0)),
+    todayGrossOrderAmount: Math.max(
+      0,
+      Number(rawPayload.todayGrossOrderAmount || 0)
+    ),
+    todayUnpaidAmount: Math.max(0, Number(rawPayload.todayUnpaidAmount || 0)),
+    todayRefundedAmount: Math.max(
+      0,
+      Number(rawPayload.todayRefundedAmount || 0)
+    ),
+    totalRefundedAmount: Math.max(
+      0,
+      Number(rawPayload.totalRefundedAmount || 0)
+    ),
+    todayOrdersCount: Math.max(0, Number(rawPayload.todayOrdersCount || 0)),
+    todayPaidOrdersCount: Math.max(
+      0,
+      Number(rawPayload.todayPaidOrdersCount || 0)
+    ),
+    todayCompletedCount: Math.max(
+      0,
+      Number(rawPayload.todayCompletedCount || 0)
+    ),
+    completedOrdersCount: Math.max(
+      0,
+      Number(rawPayload.completedOrdersCount || 0)
+    ),
+    paidOrdersCount: Math.max(0, Number(rawPayload.paidOrdersCount || 0)),
+    totalRevenue: Math.max(0, Number(rawPayload.totalRevenue || 0)),
+    totalOrdersCount: Math.max(0, Number(rawPayload.totalOrdersCount || 0)),
+    newOrdersCount: Math.max(0, Number(rawPayload.newOrdersCount || 0)),
+    preparingOrdersCount: Math.max(
+      0,
+      Number(rawPayload.preparingOrdersCount || 0)
+    ),
+    avgOrderValue: Math.max(0, Number(rawPayload.avgOrderValue || 0)),
     lowStockCount: lowStockItems.length,
     outOfStockCount: outOfStockItems.length,
     lowStockItems,
@@ -2764,4 +3017,70 @@ export function computeShopRevenueAndInventoryStats(
     hourlyBreakdown,
     topSellingItems,
   };
+}
+
+/**
+ * Server-side shop order & inventory summary that avoids PostgREST's 1000-row
+ * `.select('*')` truncation by using the PostgreSQL aggregate RPC
+ * `get_shop_order_stats_summary` (or a paginated `.range(...)` aggregate scan
+ * when the RPC is not available on a mock client), without loading all
+ * historical order records into every `/api/orders` list response.
+ */
+export async function dbComputeShopRevenueAndInventoryStats(
+  shopId: string,
+  enrichedItems: CatalogItem[],
+  options?: {
+    preferPaginatedScan?: boolean;
+    now?: Date | string | number;
+    pageSize?: number;
+    maxPages?: number;
+  }
+): Promise<ReturnType<typeof computeShopRevenueAndInventoryStats>> {
+  if (!isOrderDbConfigured()) {
+    const shopOrders = await loadMergedOrders(shopId);
+    return computeShopRevenueAndInventoryStats(shopId, enrichedItems, shopOrders);
+  }
+
+  const sb = getActiveDbClient();
+  const rpcFn = (
+    sb as unknown as {
+      rpc?: (
+        fn: string,
+        args: Record<string, unknown>
+      ) => PromiseLike<{
+        data: unknown;
+        error: { code?: string; message?: string } | null;
+      }>;
+    }
+  ).rpc;
+
+  if (!options?.preferPaginatedScan && typeof rpcFn === 'function') {
+    const nowIso =
+      options?.now !== undefined
+        ? new Date(options.now).toISOString()
+        : new Date().toISOString();
+    const rpcRes = await rpcFn.call(sb, 'get_shop_order_stats_summary', {
+      p_shop_id: shopId,
+      p_now: nowIso,
+    });
+    if (!rpcRes.error && rpcRes.data && typeof rpcRes.data === 'object') {
+      return normalizeStatsFromRpcPayload(
+        rpcRes.data as Record<string, unknown>,
+        enrichedItems
+      );
+    }
+    if (rpcRes.error && !isMissingStatsRpcError(rpcRes.error)) {
+      throw new Error(rpcRes.error.message || 'DB_STATS_RPC_FAILED');
+    }
+  }
+
+  const allOrderRows = await fetchAllShopOrdersPaginatedForStats(shopId, sb, {
+    pageSize: options?.pageSize,
+    maxPages: options?.maxPages,
+  });
+  return computeShopRevenueAndInventoryStats(
+    shopId,
+    enrichedItems,
+    allOrderRows
+  );
 }

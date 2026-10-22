@@ -84,6 +84,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 007_shop_tables.sql
 008_mobile_push_tokens.sql
 009_table_service_requests.sql
+010_shop_order_stats_summary.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
@@ -131,7 +132,7 @@ Demo seed: `/s/pho-hoi-an`, `/s/linh-spa-nail`, `/s/dac-san-mien-trung`; thêm `
 
 Push `main` kích hoạt `.github/workflows/deploy.yml`: verify web/mobile + SQL + build → migration → SSH deploy đúng SHA → kiểm tra subscription orders. Workflow dùng PM2 và runtime env; đọc workflow trước khi sửa cổng hay deploy. Không push chỉ để cập nhật tài liệu nếu chưa có yêu cầu triển khai.
 
-Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng thái production cần kiểm chứng riêng. Web print ghi nhận yêu cầu in, không xác nhận đã ra giấy. Webhook nâng gói SaaS khác đối soát tiền khách trả cho merchant. Orders/statistics còn tải lịch sử đầy đủ khi refresh; audit/payment ledger cho chốt ca chưa hoàn chỉnh.
+Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng thái production cần kiểm chứng riêng. Web print ghi nhận yêu cầu in, không xác nhận đã ra giấy. Webhook nâng gói SaaS khác đối soát tiền khách trả cho merchant. Tổng hợp doanh thu/số lượng đơn của `GET /api/orders`, `dbGetShopAnalyticsSummary` và tab Tổng quan Mobile được tính phía server qua RPC `get_shop_order_stats_summary` (kèm fallback phân trang `.range()`) để không bị giới hạn 1000 dòng mặc định của PostgREST, trong khi danh sách `orders` trả về được giới hạn 1000 đơn gần nhất; audit/payment ledger cho chốt ca chưa hoàn chỉnh.
 
 ## Tài liệu
 

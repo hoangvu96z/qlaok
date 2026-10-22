@@ -5,99 +5,32 @@ import {
   formatVnd,
   MobileAnalyticsEvent,
   MobileCatalogItem,
-  MobileShopOrder,
+  MobileShopOrderStats,
 } from '../../lib/supabase';
+import { buildMobileOverviewMetrics } from '../../lib/overview-metrics';
 import { MobileThemePalette, styles } from '../../styles/mobileStyles';
 import { useMobileI18n } from '../MobileI18nProvider';
 
 interface OverviewTabProps {
-  orders: MobileShopOrder[];
+  stats?: MobileShopOrderStats | null;
   items: MobileCatalogItem[];
   events: MobileAnalyticsEvent[];
   primaryColor: string;
   theme: MobileThemePalette;
 }
 
-function getVnDateKey(dateInput: Date | string | number = new Date()): string {
-  const ts = new Date(dateInput).getTime();
-  if (Number.isNaN(ts)) {
-    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
-  }
-  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
-}
-
 export const OverviewTab = memo(function OverviewTab({
-  orders,
+  stats,
   items,
   events,
   primaryColor,
   theme,
 }: OverviewTabProps) {
   const { t } = useMobileI18n();
-  const metrics = useMemo(() => {
-    const newOrdersCount = orders.filter((o) => o.status === 'new').length;
-    const preparingOrdersCount = orders.filter(
-      (o) => o.status === 'preparing'
-    ).length;
-    const validOrders = orders.filter((o) => o.status !== 'cancelled');
-    const paidOrders = validOrders.filter((o) => o.payment_status === 'paid');
-    const todayPrefix = getVnDateKey();
-    const todayRevenue = paidOrders
-      .filter((o) => getVnDateKey(o.created_at) === todayPrefix)
-      .reduce((sum, o) => sum + o.total_amount, 0);
-    const totalRevenue = paidOrders.reduce(
-      (sum, o) => sum + o.total_amount,
-      0
-    );
-
-    const sevenDayBars = Array.from({ length: 7 }, (_, i) => {
-      const vnNow = new Date(Date.now() + 7 * 3600 * 1000);
-      vnNow.setUTCDate(vnNow.getUTCDate() - (6 - i));
-      const dateKey = vnNow.toISOString().slice(0, 10);
-      const label = `${vnNow.getUTCDate()}/${vnNow.getUTCMonth() + 1}`;
-      const dayRev = paidOrders
-        .filter((o) => getVnDateKey(o.created_at) === dateKey)
-        .reduce((s, o) => s + o.total_amount, 0);
-      return { dateKey, label, revenue: dayRev };
-    });
-    const maxDayRev = Math.max(...sevenDayBars.map((b) => b.revenue), 100000);
-
-    const lowStockCount = items.filter(
-      (i) =>
-        typeof i.stock_quantity === 'number' &&
-        i.stock_quantity > 0 &&
-        i.stock_quantity <= 5
-    ).length;
-    const outOfStockCount = items.filter(
-      (i) => !i.is_available || i.stock_quantity === 0
-    ).length;
-
-    const scanDoorCount = events.filter(
-      (e) => e.event_type === 'scan_door'
-    ).length;
-    const scanTableCount = events.filter(
-      (e) => e.event_type === 'scan_table'
-    ).length;
-
-    const topItems = [...items]
-      .sort((a, b) => (b.sold_count || 0) - (a.sold_count || 0))
-      .slice(0, 6);
-
-    return {
-      newOrdersCount,
-      preparingOrdersCount,
-      validOrdersCount: paidOrders.length,
-      todayRevenue,
-      totalRevenue,
-      sevenDayBars,
-      maxDayRev,
-      lowStockCount,
-      outOfStockCount,
-      scanDoorCount,
-      scanTableCount,
-      topItems,
-    };
-  }, [orders, items, events]);
+  const metrics = useMemo(
+    () => buildMobileOverviewMetrics({ stats, items, events }),
+    [stats, items, events]
+  );
 
   return (
     <View style={styles.sectionStack}>

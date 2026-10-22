@@ -5,6 +5,7 @@ import {
   MobileCatalogItem,
   MobileShopMembership,
   MobileShopOrder,
+  MobileShopOrderStats,
   supabase,
 } from '../lib/supabase';
 
@@ -28,6 +29,9 @@ export function useShopRealtimeOrders({
   onMembershipSynced,
 }: UseShopRealtimeOrdersOptions) {
   const [orders, setOrders] = useState<MobileShopOrder[]>([]);
+  const [orderStats, setOrderStats] = useState<MobileShopOrderStats | null>(
+    null
+  );
   const [liveOrderAlert, setLiveOrderAlert] = useState<LiveOrderAlert | null>(
     null
   );
@@ -95,6 +99,11 @@ export function useShopRealtimeOrders({
         setFetchError('');
         notifyIfBrandNewOrder(data.orders);
         setOrders(data.orders);
+        setOrderStats(
+          data.stats && typeof data.stats === 'object'
+            ? (data.stats as MobileShopOrderStats)
+            : null
+        );
         if (Array.isArray(data.items)) onItemsSyncedRef.current?.(data.items);
         if (data.membership) onMembershipSyncedRef.current?.(data.membership as MobileShopMembership);
       } catch (err) {
@@ -117,6 +126,7 @@ export function useShopRealtimeOrders({
     isFirstLoadRef.current = true;
     knownNewOrderIdsRef.current = new Set();
     setOrders([]);
+    setOrderStats(null);
     setLiveOrderAlert(null);
     setFetchError('');
     if (isLoggedIn && shopId) void fetchOrdersFromApi(shopId);
@@ -190,6 +200,8 @@ export function useShopRealtimeOrders({
   return {
     orders,
     setOrders,
+    orderStats,
+    setOrderStats,
     liveOrderAlert,
     setLiveOrderAlert,
     realtimeStatus,

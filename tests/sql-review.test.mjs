@@ -247,5 +247,19 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       /INVALID_SERVICE_REQUEST_TRANSITION/i
     );
 
+    // Verify 010_shop_order_stats_summary.sql: server-only execution and idempotent re-application
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false);");
+    await db.exec(fs.readFileSync('supabase/migrations/010_shop_order_stats_summary.sql', 'utf8'));
+    await db.exec('SET ROLE service_role');
+    const statsRes = (await db.query("SELECT public.get_shop_order_stats_summary('sql-shop') AS res")).rows[0].res;
+    assert.equal(typeof statsRes.totalRevenue, 'number');
+    assert.equal(Array.isArray(statsRes.dailyRevenue7d), true);
+    assert.equal(statsRes.dailyRevenue7d.length, 7);
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${staff}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`);
+    await assert.rejects(
+      db.query("SELECT public.get_shop_order_stats_summary('sql-shop')"),
+      /permission denied|Direct client execution/i
+    );
+
   } finally { await db.close(); }
 });

@@ -90,7 +90,7 @@ CodeGraph trả source và quan hệ để định vị, không chứng minh m�
 5. Bill theo table/session có thể gồm nhiều đơn. Payment idempotency không được áp lại vào lượt gọi món tiếp theo. Client gửi expected total để phát hiện số tiền đã thay đổi.
 6. In bếp/tạm tính/biên nhận có counter riêng. Web ghi nhận yêu cầu in qua browser; mobile preview không được giả lập thành công in phần cứng.
 
-Báo cáo doanh thu/tồn kho ở `computeShopRevenueAndInventoryStats`; thời gian kế toán dùng UTC+7. Không suy doanh thu từ sự kiện “đưa nhân viên xem”.
+Báo cáo doanh thu/tồn kho ở `computeShopRevenueAndInventoryStats` và `dbComputeShopRevenueAndInventoryStats` (ưu tiên RPC `public.get_shop_order_stats_summary` ở migration 010, kèm fallback phân trang `.range()` 1000 dòng/trang khi môi trường test không bật RPC); thời gian kế toán dùng UTC+7, không bị cắt ở ngưỡng 1000 dòng của PostgREST `.select('*')`, và tab Tổng quan Mobile đọc trực tiếp `stats` từ server thay vì tự cộng lại trên danh sách `orders` giới hạn 1000 dòng. Không suy doanh thu từ sự kiện “đưa nhân viên xem”.
 
 ## Xác thực và ranh giới dữ liệu
 
@@ -119,7 +119,7 @@ Chi tiết: [I18N_NOTES](I18N_NOTES.md). Gói Free/Basic/Premium hiện có maxL
 
 ## Schema và rollout
 
-Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`.
+Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`; 010 shop_order_stats_summary thêm index tổng hợp và RPC `public.get_shop_order_stats_summary` (chỉ server thực thi) tính doanh thu/số lượng đơn toàn lịch sử và cửa sổ 7 ngày theo giờ Việt Nam (`UTC+7`).
 
 Đọc SQL trực tiếp vì SQL không nằm trong graph hiện tại. Chạy `test:sql` trên PGlite để kiểm migration/RLS mà không sửa DB thật. Chuyển từ legacy local orders cần backup/đối chiếu dữ liệu; archive bank-ref không tự xác nhận giao dịch đúng/sai.
 
@@ -127,7 +127,7 @@ CI verify → migrate → deploy đúng SHA, sau restart kiểm subscription th�
 
 ## Những giới hạn cần giữ khi làm task tiếp
 
-- Lịch sử orders/statistics còn tải đầy đủ; pagination/SQL aggregates là hướng cần đánh giá khi dữ liệu tăng.
+- Tổng hợp doanh thu/số lượng đơn của `GET /api/orders`, `dbGetShopAnalyticsSummary` và Mobile Overview đã dùng RPC SQL `get_shop_order_stats_summary` (kèm fallback phân trang `.range()`), còn danh sách `orders` trả về trong `GET /api/orders` giữ giới hạn 1000 đơn gần nhất; các màn hình chi tiết lịch sử sâu hơn 1000 đơn trong một bảng cần bộ lọc/phân trang riêng khi dữ liệu tăng.
 - Thay đổi catalog độc lập chưa có luồng stream riêng; entry/manual refresh vẫn cần thiết.
 - Payment ledger/audit transaction hoàn chỉnh cho chốt ca chưa xong; không mô tả là hệ thống kế toán hoàn chỉnh.
 - Chưa chứng minh máy in, iOS/Android thật và đối soát ngân hàng qua test local.

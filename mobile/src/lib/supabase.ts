@@ -315,6 +315,45 @@ export interface MobileAnalyticsEvent {
   created_at: string;
 }
 
+export interface MobileDailyRevenuePoint {
+  date: string;
+  label: string;
+  revenue: number;
+  cashRevenue?: number;
+  vietqrRevenue?: number;
+  orders?: number;
+  ordersCount?: number;
+  orderCount?: number;
+}
+
+export interface MobileShopOrderStats {
+  todayRevenue?: number | null;
+  todayGrossOrderAmount?: number | null;
+  todayUnpaidAmount?: number | null;
+  todayRefundedAmount?: number | null;
+  totalRefundedAmount?: number | null;
+  totalRevenue?: number | null;
+  todayOrdersCount?: number;
+  todayPaidOrdersCount?: number | null;
+  paidOrdersCount?: number | null;
+  todayCompletedCount?: number;
+  completedOrdersCount?: number;
+  totalOrdersCount?: number;
+  newOrdersCount?: number;
+  preparingOrdersCount?: number;
+  avgOrderValue?: number | null;
+  lowStockCount?: number;
+  outOfStockCount?: number;
+  dailyRevenue7d?: MobileDailyRevenuePoint[];
+  topSellingItems?: Array<
+    MobileCatalogItem & {
+      name_vi?: string;
+      revenue?: number;
+      estimated_revenue?: number;
+    }
+  >;
+}
+
 export function formatVnd(amount: number): string {
   return `${Number(amount || 0).toLocaleString('vi-VN')}đ`;
 }

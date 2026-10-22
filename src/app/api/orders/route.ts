@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
-  computeShopRevenueAndInventoryStats,
+  dbComputeShopRevenueAndInventoryStats,
   dbCreateOrder,
   dbGetOrderById,
   dbGetShopOrders,
@@ -136,10 +136,9 @@ export async function GET(req: Request) {
       catalogItems = SEED_ITEMS.filter((i) => i.shop_id === shopId);
     }
 
-    const fullStats = computeShopRevenueAndInventoryStats(
+    const fullStats = await dbComputeShopRevenueAndInventoryStats(
       shopId,
-      catalogItems,
-      orders
+      catalogItems
     );
 
     const canViewReports = hasShopPermission(auth.membership, 'reports.view');
@@ -160,6 +159,7 @@ export async function GET(req: Request) {
           todayPaidOrdersCount: fullStats.todayPaidOrdersCount,
           todayCompletedCount: fullStats.todayCompletedCount,
           completedOrdersCount: fullStats.completedOrdersCount,
+          paidOrdersCount: fullStats.paidOrdersCount,
           totalOrdersCount: fullStats.totalOrdersCount,
           newOrdersCount: fullStats.newOrdersCount,
           preparingOrdersCount: fullStats.preparingOrdersCount,
@@ -182,10 +182,13 @@ export async function GET(req: Request) {
       membership: auth.membership,
     });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Lỗi khi tải danh sách đơn';
+    const code = extractOrderErrorCode(message);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : 'Lỗi khi tải danh sách đơn',
+        error: message,
+        ...(code ? { code } : {}),
       },
       { status: 500 }
     );
