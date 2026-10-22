@@ -20,12 +20,18 @@ import {
   Lock,
   X,
   Save,
+  Map,
+  LayoutList,
 } from 'lucide-react';
 import { Shop, ShopTable } from '@/types/qlaok';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { buildTableMenuUrl } from '@/lib/table-helpers';
 import { PrintableStandee } from '@/components/dashboard/PrintableStandee';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  ShopTableFloorPlanCanvas,
+  type ShopTableFloorPlanCanvasItem,
+} from '@/components/ShopTableFloorPlanCanvas';
 
 export interface ShopTableManagerProps {
   shop: Shop;
@@ -44,7 +50,7 @@ export function ShopTableManager({
   accentColor,
   onTablesChanged,
 }: ShopTableManagerProps) {
-  const { t, tx } = useAppI18n();
+  const { t, tx, locale } = useAppI18n();
 
   const [tables, setTables] = useState<ShopTable[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,10 +58,21 @@ export function ShopTableManager({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
+  // Floor plan data state (GET /api/tables/floor-plan?shopId=...)
+  const [floorTables, setFloorTables] = useState<ShopTableFloorPlanCanvasItem[]>([]);
+  const [floorLoading, setFloorLoading] = useState(true);
+  const [floorError, setFloorError] = useState<string | null>(null);
+
   // Filter tab: active + inactive vs archived
   const [viewFilter, setViewFilter] = useState<'current' | 'archived' | 'all'>(
     'current'
   );
+
+  // View mode: list vs map (archived forces list)
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
+
+  // Section filter: 'ALL' or specific section name
+  const [selectedSection, setSelectedSection] = useState<string>('ALL');
 
   // Create form state
   const [createName, setCreateName] = useState('');
@@ -78,9 +95,16 @@ export function ShopTableManager({
   );
   const [copiedTableId, setCopiedTableId] = useState<string | null>(null);
 
+  // Floor plan layout drag-save persistence state
+  const [savingLayoutTableId, setSavingLayoutTableId] = useState<string | null>(
+    null
+  );
+  const layoutSavingRef = useRef(false);
+
   // Stale response guard when switching shops
   const activeShopIdRef = useRef(shop.id);
   const requestSeqRef = useRef(0);
+  const floorSeqRef = useRef(0);
   const onTablesChangedRef = useRef(onTablesChanged);
   onTablesChangedRef.current = onTablesChanged;
 
@@ -88,12 +112,18 @@ export function ShopTableManager({
     if (activeShopIdRef.current !== shop.id) {
       activeShopIdRef.current = shop.id;
       setTables([]);
+      setFloorTables([]);
       setLoadError(null);
+      setFloorError(null);
       setActionError(null);
       setActionSuccess(null);
       setEditingTableId(null);
       setSelectedQrTableId(null);
+      setSavingLayoutTableId(null);
+      layoutSavingRef.current = false;
+      setSelectedSection('ALL');
       setLoading(true);
+      setFloorLoading(true);
     }
   }, [shop.id]);
 
@@ -179,9 +209,79 @@ export function ShopTableManager({
     }
   }, [shop.id, canManageTables, tx]);
 
+  const fetchFloorPlan = useCallback(async () => {
+    const currentShopId = shop.id;
+    const seq = ++floorSeqRef.current;
+    setFloorLoading(true);
+    setFloorError(null);
+
+    try {
+      const url = `/api/tables/floor-plan?shopId=${encodeURIComponent(currentShopId)}`;
+      const res = await fetch(url, {
+        headers: getAuthHeaders(),
+        cache: 'no-store',
+      });
+
+      if (
+        activeShopIdRef.current !== currentShopId ||
+        seq !== floorSeqRef.current
+      ) {
+        return;
+      }
+
+      const data = await res.json().catch(() => null);
+      if (
+        activeShopIdRef.current !== currentShopId ||
+        seq !== floorSeqRef.current
+      ) {
+        return;
+      }
+
+      if (!res.ok) {
+        setFloorError(
+          data?.error ||
+            tx(
+              'Không thể tải sơ đồ bàn. Vui lòng thử lại.',
+              'Failed to load floor plan. Please try again.'
+            )
+        );
+        setFloorLoading(false);
+        return;
+      }
+
+      const loaded: ShopTableFloorPlanCanvasItem[] = Array.isArray(data?.tables)
+        ? data.tables.filter(
+            (tb: ShopTableFloorPlanCanvasItem & { shop_id?: string }) =>
+              tb && (!tb.shop_id || tb.shop_id === currentShopId) && !tb.is_archived
+          )
+        : [];
+
+      setFloorTables(loaded);
+      setFloorLoading(false);
+    } catch {
+      if (
+        activeShopIdRef.current === currentShopId &&
+        seq === floorSeqRef.current
+      ) {
+        setFloorError(
+          tx(
+            'Lỗi kết nối khi tải sơ đồ bàn. Vui lòng kiểm tra mạng và thử lại.',
+            'Network error while loading floor plan. Please check connection and retry.'
+          )
+        );
+        setFloorLoading(false);
+      }
+    }
+  }, [shop.id, tx]);
+
+  const handleRefresh = useCallback(async () => {
+    await Promise.all([fetchTables(), fetchFloorPlan()]);
+  }, [fetchTables, fetchFloorPlan]);
+
   useEffect(() => {
     void fetchTables();
-  }, [fetchTables]);
+    void fetchFloorPlan();
+  }, [fetchTables, fetchFloorPlan]);
 
   const sortedTables = useMemo(() => {
     return [...tables].sort(
@@ -209,20 +309,52 @@ export function ShopTableManager({
     };
   }, [sortedTables]);
 
+  const availableSections = useMemo(() => {
+    const secSet = new Set<string>();
+    for (const tb of tables) {
+      const s = (tb.section || '').trim();
+      if (s) secSet.add(s);
+    }
+    for (const ft of floorTables) {
+      const s = (ft.section || '').trim();
+      if (s) secSet.add(s);
+    }
+    return Array.from(secSet).sort((a, b) => a.localeCompare(b, 'vi'));
+  }, [tables, floorTables]);
+
   const visibleTables = useMemo(() => {
+    let list = sortedTables;
     if (viewFilter === 'archived') {
-      return sortedTables.filter((tb) => tb.is_archived);
+      list = list.filter((tb) => tb.is_archived);
+    } else if (viewFilter === 'current') {
+      list = list.filter((tb) => !tb.is_archived);
     }
-    if (viewFilter === 'current') {
-      return sortedTables.filter((tb) => !tb.is_archived);
+    if (selectedSection && selectedSection !== 'ALL') {
+      list = list.filter((tb) => (tb.section || '').trim() === selectedSection);
     }
-    return sortedTables;
-  }, [sortedTables, viewFilter]);
+    return list;
+  }, [sortedTables, viewFilter, selectedSection]);
+
+  const visibleFloorTables = useMemo(() => {
+    let list = floorTables.filter((tb) => !tb.is_archived);
+    if (selectedSection && selectedSection !== 'ALL') {
+      list = list.filter((tb) => (tb.section || '').trim() === selectedSection);
+    }
+    return list;
+  }, [floorTables, selectedSection]);
 
   const selectedQrTable = useMemo(() => {
     if (!selectedQrTableId) return null;
-    return sortedTables.find((tb) => tb.id === selectedQrTableId) || null;
+    return sortedTables.find((tb) => tb.id === selectedQrTableId) ?? null;
   }, [sortedTables, selectedQrTableId]);
+
+  useEffect(() => {
+    if (viewMode === 'map' && visibleFloorTables.length > 0) {
+      if (!selectedQrTableId || !visibleFloorTables.some((t) => t.id === selectedQrTableId)) {
+        setSelectedQrTableId(visibleFloorTables[0].id);
+      }
+    }
+  }, [viewMode, visibleFloorTables, selectedQrTableId]);
 
   const handleCreateTable = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -285,6 +417,7 @@ export function ShopTableManager({
           `Created table "${createdTable.name}" with its unique QR code.`
         )
       );
+      void fetchFloorPlan();
     } catch {
       if (activeShopIdRef.current === currentShopId) {
         setActionError(
@@ -364,6 +497,7 @@ export function ShopTableManager({
           `Updated table "${updated.name}".`
         )
       );
+      void fetchFloorPlan();
     } catch {
       if (activeShopIdRef.current === currentShopId) {
         setActionError(
@@ -445,6 +579,7 @@ export function ShopTableManager({
               )
         );
       }
+      void fetchFloorPlan();
     } catch {
       if (activeShopIdRef.current === currentShopId) {
         setActionError(
@@ -460,6 +595,144 @@ export function ShopTableManager({
       }
     }
   };
+
+  const handleMoveTable = useCallback(
+    async (
+      table: ShopTableFloorPlanCanvasItem,
+      position: { x: number; y: number }
+    ) => {
+      if (!canManageTables) return;
+      if (
+        !position ||
+        !Number.isFinite(position.x) ||
+        !Number.isFinite(position.y)
+      ) {
+        return;
+      }
+      if (layoutSavingRef.current) {
+        return;
+      }
+
+      const currentShopId = shop.id;
+      const nextX = Math.round(position.x);
+      const nextY = Math.round(position.y);
+      if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) {
+        return;
+      }
+
+      const priorX = table.layout_x;
+      const priorY = table.layout_y;
+
+      layoutSavingRef.current = true;
+      setSavingLayoutTableId(table.id);
+
+      // Optimistically update only that table in floorTables
+      setFloorTables((prev) =>
+        prev.map((item) =>
+          item.id === table.id
+            ? { ...item, layout_x: nextX, layout_y: nextY }
+            : item
+        )
+      );
+
+      try {
+        const res = await fetch('/api/tables', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({
+            shop_id: currentShopId,
+            id: table.id,
+            layout_x: nextX,
+            layout_y: nextY,
+          }),
+        });
+
+        if (activeShopIdRef.current !== currentShopId) {
+          return;
+        }
+
+        const data = await res.json().catch(() => null);
+        if (activeShopIdRef.current !== currentShopId) {
+          return;
+        }
+
+        if (
+          !res.ok ||
+          !data ||
+          typeof data !== 'object' ||
+          !data.table ||
+          typeof data.table !== 'object' ||
+          data.table.id !== table.id
+        ) {
+          setFloorTables((prev) =>
+            prev.map((item) =>
+              item.id === table.id
+                ? { ...item, layout_x: priorX, layout_y: priorY }
+                : item
+            )
+          );
+          const errMsg =
+            typeof data?.error === 'string' && data.error.trim()
+              ? data.error
+              : tx(
+                  'Không thể lưu vị trí bàn. Đã hoàn tác vị trí.',
+                  'Could not save table position. Reverted to previous position.'
+                );
+          setActionError(errMsg);
+          return;
+        }
+
+        // Keep status/order/QR/business state unchanged
+        if (
+          typeof data.table.layout_x === 'number' ||
+          typeof data.table.layout_y === 'number'
+        ) {
+          setFloorTables((prev) =>
+            prev.map((item) =>
+              item.id === table.id
+                ? {
+                    ...item,
+                    layout_x:
+                      typeof data.table.layout_x === 'number'
+                        ? data.table.layout_x
+                        : item.layout_x,
+                    layout_y:
+                      typeof data.table.layout_y === 'number'
+                        ? data.table.layout_y
+                        : item.layout_y,
+                  }
+                : item
+            )
+          );
+        }
+      } catch {
+        if (activeShopIdRef.current === currentShopId) {
+          setFloorTables((prev) =>
+            prev.map((item) =>
+              item.id === table.id
+                ? { ...item, layout_x: priorX, layout_y: priorY }
+                : item
+            )
+          );
+          setActionError(
+            tx(
+              'Lỗi kết nối khi lưu vị trí bàn. Đã hoàn tác vị trí.',
+              'Network error while saving table position. Reverted to previous position.'
+            )
+          );
+        }
+      } finally {
+        layoutSavingRef.current = false;
+        if (activeShopIdRef.current === currentShopId) {
+          setSavingLayoutTableId(null);
+        }
+      }
+    },
+    [canManageTables, shop.id, tx]
+  );
 
   const handleCopyTableUrl = async (table: ShopTable) => {
     const url = buildTableMenuUrl(baseUrl, shop.slug, table.id, table.qr_sig);
@@ -518,12 +791,12 @@ export function ShopTableManager({
           </span>
           <button
             type="button"
-            onClick={() => void fetchTables()}
-            disabled={loading}
+            onClick={() => void handleRefresh()}
+            disabled={loading || floorLoading}
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
+              className={`h-3.5 w-3.5 ${loading || floorLoading ? 'animate-spin' : ''}`}
             />
             <span>{tx('Làm mới', 'Refresh')}</span>
           </button>
@@ -724,9 +997,10 @@ export function ShopTableManager({
         </div>
       )}
 
-      {/* Filter Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
+      {/* Filter Tabs, Section Filter & View Mode Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Left: View Filter (Current / Archived / All) */}
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => setViewFilter('current')}
@@ -743,7 +1017,10 @@ export function ShopTableManager({
           </button>
           <button
             type="button"
-            onClick={() => setViewFilter('archived')}
+            onClick={() => {
+              setViewFilter('archived');
+              setViewMode('list');
+            }}
             className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
               viewFilter === 'archived'
                 ? 'bg-slate-900 text-white dark:bg-emerald-500 dark:text-slate-950'
@@ -767,9 +1044,90 @@ export function ShopTableManager({
             {tx(`Tất cả (${counts.total})`, `All (${counts.total})`)}
           </button>
         </div>
+
+        {/* Right: Section Filter & List / Map Toggle */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Section Filter Dropdown */}
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="table-section-filter"
+              className="text-xs font-bold text-slate-500 dark:text-slate-400 sr-only sm:not-sr-only"
+            >
+              {tx('Khu vực:', 'Section:')}
+            </label>
+            <select
+              id="table-section-filter"
+              data-testid="table-section-filter"
+              value={selectedSection}
+              onChange={(e) => setSelectedSection(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 focus:border-emerald-500 focus:outline-none"
+            >
+              <option value="ALL">
+                {tx('Tất cả khu vực', 'All sections')}
+              </option>
+              {availableSections.map((sec) => (
+                <option key={sec} value={sec}>
+                  {sec}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* List / Map Toggle (Available in current/all views, disabled in archived view) */}
+          <div
+            role="group"
+            aria-label={tx('Chế độ xem', 'View mode')}
+            className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 p-0.5"
+          >
+            <button
+              type="button"
+              data-testid="table-view-mode-list"
+              aria-pressed={viewMode === 'list'}
+              onClick={() => setViewMode('list')}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                viewMode === 'list'
+                  ? 'bg-white text-slate-900 shadow-2xs dark:bg-slate-900 dark:text-white'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+              }`}
+            >
+              <LayoutList className="h-3.5 w-3.5" />
+              <span>{tx('Danh sách', 'List')}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="table-view-mode-map"
+              aria-pressed={viewMode === 'map'}
+              disabled={viewFilter === 'archived'}
+              onClick={() => {
+                if (viewFilter !== 'archived') {
+                  setViewMode('map');
+                }
+              }}
+              title={
+                viewFilter === 'archived'
+                  ? tx(
+                      'Kho lưu trữ chỉ xem dạng danh sách',
+                      'Archived view is list-only'
+                    )
+                  : tx('Xem sơ đồ bàn', 'View table floor plan map')
+              }
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                viewFilter === 'archived'
+                  ? 'opacity-40 cursor-not-allowed text-slate-400'
+                  : viewMode === 'map'
+                  ? 'bg-white text-slate-900 shadow-2xs dark:bg-slate-900 dark:text-white'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+              }`}
+            >
+              <Map className="h-3.5 w-3.5" />
+              <span>{tx('Sơ đồ', 'Map')}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Main Split Grid: Left Table List | Right Selected Table A6 Standee Preview */}
+      {/* Main Split Grid: Left Table List / Map Canvas | Right Selected Table A6 Standee Preview */}
       {loading ? (
         <div
           role="status"
@@ -781,7 +1139,7 @@ export function ShopTableManager({
             {tx('Đang tải dữ liệu sơ đồ bàn...', 'Loading shop tables data...')}
           </p>
         </div>
-      ) : visibleTables.length === 0 ? (
+      ) : visibleTables.length === 0 && viewMode === 'list' ? (
         <div
           data-testid="table-manager-empty"
           className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center space-y-2"
@@ -792,6 +1150,11 @@ export function ShopTableManager({
               ? tx(
                   'Chưa có bàn nào trong kho lưu trữ',
                   'No archived tables yet'
+                )
+              : selectedSection && selectedSection !== 'ALL'
+              ? tx(
+                  `Không có bàn nào thuộc khu vực "${selectedSection}" trong danh sách này`,
+                  `No tables found in section "${selectedSection}" in this view`
                 )
               : tx(
                   'Quán chưa có bàn nào trong danh sách này',
@@ -812,9 +1175,106 @@ export function ShopTableManager({
         </div>
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-          {/* Table Cards List */}
+          {/* Table Cards List or Floor Plan Canvas */}
           <div className="xl:col-span-7 space-y-3">
-            {visibleTables.map((tb) => {
+            {viewMode === 'map' ? (
+              floorLoading ? (
+                <div
+                  role="status"
+                  data-testid="floor-plan-loading"
+                  className="py-16 text-center space-y-3 rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 p-8"
+                >
+                  <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    {tx(
+                      'Đang tải sơ đồ bàn & trạng thái đơn hàng...',
+                      'Loading floor plan and order statuses...'
+                    )}
+                  </p>
+                </div>
+              ) : floorError ? (
+                <div
+                  role="alert"
+                  data-testid="floor-plan-error"
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border-2 border-rose-300 bg-rose-50 dark:border-rose-700/60 dark:bg-rose-950/50 p-4 text-rose-900 dark:text-rose-200"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <AlertTriangle className="h-5 w-5 shrink-0 text-rose-600 dark:text-rose-400" />
+                    <div>
+                      <p className="text-xs font-black">
+                        {tx('Không thể tải sơ đồ bàn', 'Could not load floor plan')}
+                      </p>
+                      <p className="text-xs font-medium">{floorError}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="floor-plan-retry-btn"
+                    onClick={() => void fetchFloorPlan()}
+                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-black text-white hover:bg-rose-500"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>{tx('Thử lại', 'Retry')}</span>
+                  </button>
+                </div>
+              ) : visibleFloorTables.length === 0 ? (
+                <div
+                  data-testid="floor-plan-empty"
+                  className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center space-y-2 bg-white dark:bg-slate-900/40"
+                >
+                  <MapPin className="mx-auto h-9 w-9 text-slate-400" />
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                    {selectedSection && selectedSection !== 'ALL'
+                      ? tx(
+                          `Không có bàn nào thuộc khu vực "${selectedSection}" trên sơ đồ`,
+                          `No tables found in section "${selectedSection}" on the floor plan`
+                        )
+                      : tx(
+                          'Chưa có dữ liệu sơ đồ bàn cho quán',
+                          'No table floor plan data available'
+                        )}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {canManageTables
+                      ? tx(
+                          'Tạo bàn mới ở biểu mẫu phía trên để hiển thị trên sơ đồ.',
+                          'Add new tables above to display them on the floor plan.'
+                        )
+                      : tx(
+                          'Liên hệ chủ quán để thiết lập danh sách bàn phục vụ.',
+                          'Ask the shop owner to configure tables.'
+                        )}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {savingLayoutTableId && (
+                    <div
+                      role="status"
+                      data-testid="floor-plan-saving-indicator"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-3 py-1 text-xs font-bold text-emerald-800 dark:text-emerald-300"
+                    >
+                      <RefreshCw className="h-3 w-3 animate-spin text-emerald-600 dark:text-emerald-400" />
+                      <span>
+                        {tx(
+                          'Đang lưu vị trí bàn...',
+                          'Saving table position...'
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  <ShopTableFloorPlanCanvas
+                    tables={visibleFloorTables}
+                    selectedTableId={selectedQrTableId}
+                    onSelectTable={(item) => setSelectedQrTableId(item.id)}
+                    onMoveTable={canManageTables ? handleMoveTable : undefined}
+                    locale={locale}
+                    className="rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs"
+                  />
+                </div>
+              )
+            ) : (
+              visibleTables.map((tb) => {
               const isEditing = editingTableId === tb.id;
               const isSelectedQr = selectedQrTable?.id === tb.id;
               const tableMenuUrl = buildTableMenuUrl(
@@ -1106,7 +1566,7 @@ export function ShopTableManager({
                   )}
                 </div>
               );
-            })}
+            }))}
           </div>
 
           {/* Selected Table PrintableStandee Preview */}

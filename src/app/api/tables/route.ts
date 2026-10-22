@@ -29,7 +29,8 @@ function mapTableErrorStatus(message: string): number {
     message.includes('MISSING_SHOP_ID') ||
     message.includes('MISSING_TABLE_IDENTITY') ||
     message.includes('TABLE_NAME_REQUIRED') ||
-    message.includes('TABLE_CODE_REQUIRED')
+    message.includes('TABLE_CODE_REQUIRED') ||
+    message.includes('INVALID_TABLE_LAYOUT_COORDINATE')
   ) {
     return 400;
   }
@@ -204,21 +205,48 @@ export async function PATCH(req: Request) {
     const auth = await requireShopOwnerOrAdmin(req, shopId);
     if (auth.errorResponse) return auth.errorResponse;
 
+    const resolveCoordinate = (value: unknown): number | null | undefined => {
+      if (value === undefined) return undefined;
+      if (value === null) return null;
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string' && value.trim() !== '') {
+        const num = Number(value);
+        if (Number.isFinite(num)) return num;
+      }
+      return value as number;
+    };
+
+    const hasLayoutX =
+      body !== null &&
+      typeof body === 'object' &&
+      Object.prototype.hasOwnProperty.call(body, 'layout_x');
+    const hasLayoutY =
+      body !== null &&
+      typeof body === 'object' &&
+      Object.prototype.hasOwnProperty.call(body, 'layout_y');
+
     const table = await dbUpdateShopTable({
       shop_id: shopId,
       id: tableId,
-      name: typeof body?.name === 'string' ? body.name : undefined,
-      table_code:
-        typeof body?.table_code === 'string' ? body.table_code : undefined,
-      section: typeof body?.section === 'string' ? body.section : undefined,
-      capacity:
-        body?.capacity !== undefined ? Number(body.capacity) : undefined,
-      sort_order:
-        body?.sort_order !== undefined ? Number(body.sort_order) : undefined,
-      is_active:
-        body?.is_active !== undefined ? Boolean(body.is_active) : undefined,
-      is_archived:
-        body?.is_archived !== undefined ? Boolean(body.is_archived) : undefined,
+      ...(typeof body?.name === 'string' ? { name: body.name } : {}),
+      ...(typeof body?.table_code === 'string'
+        ? { table_code: body.table_code }
+        : {}),
+      ...(typeof body?.section === 'string' ? { section: body.section } : {}),
+      ...(body?.capacity !== undefined
+        ? { capacity: Number(body.capacity) }
+        : {}),
+      ...(body?.sort_order !== undefined
+        ? { sort_order: Number(body.sort_order) }
+        : {}),
+      ...(body?.is_active !== undefined
+        ? { is_active: Boolean(body.is_active) }
+        : {}),
+      ...(body?.is_archived !== undefined
+        ? { is_archived: Boolean(body.is_archived) }
+        : {}),
+      ...(hasLayoutX ? { layout_x: resolveCoordinate(body.layout_x) } : {}),
+      ...(hasLayoutY ? { layout_y: resolveCoordinate(body.layout_y) } : {}),
     });
 
     return NextResponse.json({ table: withTableQrSignature(table) });

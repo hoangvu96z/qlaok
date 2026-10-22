@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
@@ -20,13 +21,19 @@ import {
   dbGetPublicShopTables,
   dbUpdateShopTable,
   setShopTablesDbClientForTests,
+  setShopTablesFileForTests,
   signTableQr,
   verifyTableQrSignature,
 } from '@/lib/shop-tables';
 import { PATCH as patchOrders, POST as postOrders } from '@/app/api/orders/route';
 import { GET as getShops } from '@/app/api/shops/route';
-import { GET as getTables, POST as postTables } from '@/app/api/tables/route';
+import {
+  GET as getTables,
+  PATCH as patchTables,
+  POST as postTables,
+} from '@/app/api/tables/route';
 import { issueSessionToken } from '@/lib/server-auth';
+import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
 import { localizeGuestOrderError } from '@/lib/i18n-helper';
 
 test('table mutations must not report persistence when the DB returns no written row', async () => {
@@ -872,6 +879,425 @@ test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATC
       delete process.env.SESSION_SECRET;
     } else {
       process.env.SESSION_SECRET = prevSecret;
+    }
+  }
+});
+
+test('dbUpdateShopTable narrow PATCH: captures only explicitly changed fields, preserves concurrent DB changes, and merges into local storage', async () => {
+  // 1 & 2. Supabase client mock capturing .update(...) payload on layout-only update,
+  // simulating a management field (is_active) changing after the preflight read.
+  {
+    const shopId = 'shop-narrow-patch-01';
+    const tableId = 'tbl-layout-01';
+
+    let currentRow: ShopTable = {
+      id: tableId,
+      shop_id: shopId,
+      table_code: 'T01',
+      name: 'Bàn 01',
+      section: 'Khu A',
+      capacity: 4,
+      sort_order: 1,
+      is_active: true,
+      is_archived: false,
+      archived_at: null,
+      layout_x: 10,
+      layout_y: 20,
+      created_at: '2026-03-01T00:00:00.000Z',
+      updated_at: '2026-03-01T00:00:00.000Z',
+    };
+
+    let capturedPayload: Record<string, unknown> | null = null;
+
+    const mockClient = {
+      from(table: string) {
+        assert.equal(table, 'shop_tables');
+        let isUpdate = false;
+        let updateData: Record<string, unknown> | null = null;
+        let isSingle = false;
+
+        const query = {
+          select(_cols?: string) {
+            return query;
+          },
+          eq(_col: string, _val: unknown) {
+            return query;
+          },
+          order(_col: string, _opts?: unknown) {
+            return query;
+          },
+          update(payload: Record<string, unknown>) {
+            isUpdate = true;
+            updateData = payload;
+            capturedPayload = payload;
+            // Requirement 2: Simulate a management field changing after the preflight read
+            // (e.g. existing is_active=true, then current database row becomes is_active=false before the layout update).
+            currentRow.is_active = false;
+            return query;
+          },
+          maybeSingle() {
+            isSingle = true;
+            return query;
+          },
+          then(resolve: (result: unknown) => unknown, reject: (err: unknown) => unknown) {
+            if (isUpdate && updateData) {
+              currentRow = {
+                ...currentRow,
+                ...updateData,
+              };
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            if (isSingle) {
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            return Promise.resolve({ data: [{ ...currentRow }], error: null }).then(resolve, reject);
+          },
+        };
+        return query;
+      },
+    };
+
+    setShopTablesDbClientForTests(mockClient, true);
+    try {
+      const result = await dbUpdateShopTable({
+        shop_id: shopId,
+        id: tableId,
+        layout_x: 75,
+        layout_y: 85,
+      });
+
+      assert.ok(capturedPayload, 'update payload must be captured');
+      const payload1 = capturedPayload as Record<string, unknown>;
+      assert.equal(payload1.layout_x, 75);
+      assert.equal(payload1.layout_y, 85);
+      assert.ok(typeof payload1.updated_at === 'string');
+
+      // Assert it omits name, table_code, section, capacity, sort_order, is_active, is_archived, and archived_at
+      const omittedKeys = [
+        'name',
+        'table_code',
+        'section',
+        'capacity',
+        'sort_order',
+        'is_active',
+        'is_archived',
+        'archived_at',
+      ];
+      for (const key of omittedKeys) {
+        assert.equal(
+          key in payload1,
+          false,
+          `Captured layout update payload must omit "${key}"`
+        );
+      }
+
+      // Assert the latest is_active=false value is preserved in the returned/current row
+      assert.equal(result.is_active, false, 'returned row must preserve latest is_active=false from database');
+      assert.equal(result.layout_x, 75);
+      assert.equal(result.layout_y, 85);
+      assert.equal(currentRow.is_active, false, 'current database row must retain is_active=false');
+    } finally {
+      setShopTablesDbClientForTests(null);
+    }
+  }
+
+  // 3. Cover one explicit management change, such as name, and verify that only
+  // explicitly changed fields plus updated_at are written.
+  // Verify archive=true still writes is_active=false, is_archived=true, and archived_at.
+  {
+    const shopId = 'shop-narrow-patch-02';
+    const tableId = 'tbl-mgmt-02';
+
+    let currentRow: ShopTable = {
+      id: tableId,
+      shop_id: shopId,
+      table_code: 'T02',
+      name: 'Bàn Gốc',
+      section: 'Khu B',
+      capacity: 6,
+      sort_order: 2,
+      is_active: true,
+      is_archived: false,
+      archived_at: null,
+      layout_x: 20,
+      layout_y: 30,
+      created_at: '2026-03-01T00:00:00.000Z',
+      updated_at: '2026-03-01T00:00:00.000Z',
+    };
+
+    let capturedPayload: Record<string, unknown> | null = null;
+
+    const mockClient = {
+      from(table: string) {
+        assert.equal(table, 'shop_tables');
+        let isUpdate = false;
+        let updateData: Record<string, unknown> | null = null;
+        let isSingle = false;
+
+        const query = {
+          select(_cols?: string) { return query; },
+          eq(_col: string, _val: unknown) { return query; },
+          order(_col: string, _opts?: unknown) { return query; },
+          update(payload: Record<string, unknown>) {
+            isUpdate = true;
+            updateData = payload;
+            capturedPayload = payload;
+            return query;
+          },
+          maybeSingle() {
+            isSingle = true;
+            return query;
+          },
+          then(resolve: (result: unknown) => unknown, reject: (err: unknown) => unknown) {
+            if (isUpdate && updateData) {
+              currentRow = { ...currentRow, ...updateData };
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            if (isSingle) {
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            return Promise.resolve({ data: [{ ...currentRow }], error: null }).then(resolve, reject);
+          },
+        };
+        return query;
+      },
+    };
+
+    setShopTablesDbClientForTests(mockClient, true);
+    try {
+      // 3a. Explicit management change: name
+      capturedPayload = null;
+      const resName = await dbUpdateShopTable({
+        shop_id: shopId,
+        id: tableId,
+        name: 'Bàn Đã Đổi Tên',
+      });
+
+      assert.ok(capturedPayload, 'name update payload must be captured');
+      const payloadName = capturedPayload as Record<string, unknown>;
+      assert.equal(payloadName.name, 'Bàn Đã Đổi Tên');
+      assert.ok(typeof payloadName.updated_at === 'string');
+      // Verify only explicitly changed fields plus updated_at are written
+      assert.deepEqual(
+        Object.keys(payloadName).sort(),
+        ['name', 'updated_at'].sort(),
+        'only name and updated_at should be in the update payload'
+      );
+      assert.equal(resName.name, 'Bàn Đã Đổi Tên');
+
+      // 3b. Verify archive=true still writes is_active=false, is_archived=true, and archived_at
+      capturedPayload = null;
+      const resArchive = await dbUpdateShopTable({
+        shop_id: shopId,
+        id: tableId,
+        is_archived: true,
+      });
+
+      assert.ok(capturedPayload, 'archive update payload must be captured');
+      const payloadArchive = capturedPayload as Record<string, unknown>;
+      assert.equal(payloadArchive.is_archived, true);
+      assert.equal(payloadArchive.is_active, false);
+      assert.ok(typeof payloadArchive.archived_at === 'string');
+      assert.ok(typeof payloadArchive.updated_at === 'string');
+      assert.deepEqual(
+        Object.keys(payloadArchive).sort(),
+        ['archived_at', 'is_active', 'is_archived', 'updated_at'].sort(),
+        'archive=true payload must contain exactly is_active, is_archived, archived_at, and updated_at'
+      );
+      assert.equal(resArchive.is_archived, true);
+      assert.equal(resArchive.is_active, false);
+      assert.ok(resArchive.archived_at !== null);
+    } finally {
+      setShopTablesDbClientForTests(null);
+    }
+  }
+
+  // 4. Local-path regression: uses existing setShopTablesDbClientForTests(null, false)
+  // and setShopTablesFileForTests(tempFile) to verify that a narrow patch merges into the latest row.
+  {
+    const tempFile = path.join(
+      os.tmpdir(),
+      `qlaok-test-narrow-patch-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    );
+    setShopTablesDbClientForTests(null, false);
+    setShopTablesFileForTests(tempFile);
+
+    try {
+      const shopId = 'shop-local-patch-01';
+      // Create initial table
+      const created = await dbCreateShopTable({
+        shop_id: shopId,
+        name: 'Bàn Local Ban Đầu',
+        table_code: 'LOC-01',
+        capacity: 4,
+      });
+
+      // Update is_active to false explicitly
+      await dbUpdateShopTable({
+        shop_id: shopId,
+        id: created.id,
+        is_active: false,
+      });
+
+      // 4a. Apply layout-only update on local store
+      const layoutUpdated = await dbUpdateShopTable({
+        shop_id: shopId,
+        id: created.id,
+        layout_x: 35,
+        layout_y: 65,
+      });
+
+      // Assert that layout coordinates updated while management fields (name, table_code, is_active=false) are preserved
+      assert.equal(layoutUpdated.layout_x, 35);
+      assert.equal(layoutUpdated.layout_y, 65);
+      assert.equal(layoutUpdated.is_active, false, 'local store must preserve is_active=false on layout-only update');
+      assert.equal(layoutUpdated.name, 'Bàn Local Ban Đầu');
+      assert.equal(layoutUpdated.table_code, 'LOC-01');
+
+      // Verify the persisted JSON file on disk has the merged state
+      const diskContent = JSON.parse(fs.readFileSync(tempFile, 'utf8')) as { tables: ShopTable[] };
+      const persistedRow = diskContent.tables.find((t) => t.id === created.id);
+      assert.ok(persistedRow);
+      assert.equal(persistedRow.layout_x, 35);
+      assert.equal(persistedRow.layout_y, 65);
+      assert.equal(persistedRow.is_active, false);
+      assert.equal(persistedRow.name, 'Bàn Local Ban Đầu');
+
+      // 4b. Concurrent/interleaved local store patch:
+      // Start a table with is_active=true, then simulate two concurrent updates:
+      // one deactivating the table (is_active: false), and one updating coordinates (layout_x: 88, layout_y: 99).
+      const t2 = await dbCreateShopTable({
+        shop_id: shopId,
+        name: 'Bàn Local Đua',
+        table_code: 'LOC-02',
+      });
+      assert.equal(t2.is_active, true);
+
+      await Promise.all([
+        dbUpdateShopTable({
+          shop_id: shopId,
+          id: t2.id,
+          is_active: false,
+        }),
+        dbUpdateShopTable({
+          shop_id: shopId,
+          id: t2.id,
+          layout_x: 88,
+          layout_y: 99,
+        }),
+      ]);
+
+      // Both returned rows and persisted store must have merged cleanly without wiping the deactivation
+      const diskAfterRace = JSON.parse(fs.readFileSync(tempFile, 'utf8')) as { tables: ShopTable[] };
+      const finalT2 = diskAfterRace.tables.find((t) => t.id === t2.id);
+      assert.ok(finalT2);
+      assert.equal(finalT2.is_active, false, 'interleaved local write must preserve is_active=false');
+      assert.equal(finalT2.layout_x, 88, 'interleaved local write must apply layout_x');
+      assert.equal(finalT2.layout_y, 99, 'interleaved local write must apply layout_y');
+    } finally {
+      setShopTablesDbClientForTests(null);
+      setShopTablesFileForTests(null);
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+    }
+  }
+
+  // 5. Verification through the HTTP PATCH /api/tables route handler
+  {
+    const shopId = 'shop-narrow-patch-route';
+    const tableId = 'tbl-route-01';
+
+    let currentRow: ShopTable = {
+      id: tableId,
+      shop_id: shopId,
+      table_code: 'T-RT',
+      name: 'Bàn Route',
+      section: '',
+      capacity: 4,
+      sort_order: 1,
+      is_active: false,
+      is_archived: false,
+      archived_at: null,
+      layout_x: 0,
+      layout_y: 0,
+      created_at: '2026-03-01T00:00:00.000Z',
+      updated_at: '2026-03-01T00:00:00.000Z',
+    };
+
+    let capturedPayload: Record<string, unknown> | null = null;
+    const mockClient = {
+      from(table: string) {
+        let isUpdate = false;
+        let updateData: Record<string, unknown> | null = null;
+        let isSingle = false;
+
+        const query = {
+          select(_cols?: string) { return query; },
+          eq(_col: string, _val: unknown) { return query; },
+          order(_col: string, _opts?: unknown) { return query; },
+          update(payload: Record<string, unknown>) {
+            isUpdate = true;
+            updateData = payload;
+            capturedPayload = payload;
+            return query;
+          },
+          maybeSingle() {
+            isSingle = true;
+            return query;
+          },
+          then(resolve: (result: unknown) => unknown, reject: (err: unknown) => unknown) {
+            if (isUpdate && updateData) {
+              currentRow = { ...currentRow, ...updateData };
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            if (isSingle) {
+              return Promise.resolve({ data: { ...currentRow }, error: null }).then(resolve, reject);
+            }
+            return Promise.resolve({ data: [{ ...currentRow }], error: null }).then(resolve, reject);
+          },
+        };
+        return query;
+      },
+    };
+
+    setShopTablesDbClientForTests(mockClient, true);
+    try {
+      const adminToken = issueSessionToken({
+        id: 'admin-tester',
+        email: SUPER_ADMIN_EMAIL,
+        role: 'admin',
+      });
+
+      const res = await patchTables(
+        new Request('http://localhost/api/tables', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            id: tableId,
+            shop_id: shopId,
+            layout_x: 44,
+            layout_y: 77,
+          }),
+        })
+      );
+
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as { table: ShopTable };
+      assert.ok(capturedPayload);
+      const payloadRoute = capturedPayload as Record<string, unknown>;
+      assert.equal(payloadRoute.layout_x, 44);
+      assert.equal(payloadRoute.layout_y, 77);
+      assert.equal('name' in payloadRoute, false);
+      assert.equal('is_active' in payloadRoute, false);
+      assert.equal(data.table.layout_x, 44);
+      assert.equal(data.table.layout_y, 77);
+      assert.equal(data.table.is_active, false);
+    } finally {
+      setShopTablesDbClientForTests(null);
     }
   }
 });

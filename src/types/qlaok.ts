@@ -241,6 +241,8 @@ export interface OrderLineItem {
   quick_tags?: string[];
 }
 
+export type TableFloorStatus = 'inactive' | 'free' | 'occupied' | 'waiting_payment';
+
 export interface ShopTable {
   id: string;
   shop_id: string;
@@ -251,10 +253,28 @@ export interface ShopTable {
   sort_order: number;
   is_active: boolean;
   is_archived: boolean;
+  layout_x?: number | null;
+  layout_y?: number | null;
   archived_at?: string | null;
   created_at?: string;
   updated_at?: string;
   qr_sig?: string;
+}
+
+export interface TableFloorPlanItem {
+  id: string;
+  shop_id: string;
+  name: string;
+  table_code: string;
+  section: string;
+  capacity: number;
+  is_active: boolean;
+  is_archived: boolean;
+  layout_x: number | null;
+  layout_y: number | null;
+  floor_status: TableFloorStatus;
+  open_order_count: number;
+  unpaid_amount: number;
 }
 
 export interface PublicShopTable {

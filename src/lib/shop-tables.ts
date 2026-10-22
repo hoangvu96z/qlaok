@@ -374,6 +374,40 @@ export function getLocalTablesFilePath(): string {
   return path.join(process.cwd(), '.local-db', 'shop-tables.json');
 }
 
+export function validateTableLayoutCoordinate(
+  field: 'layout_x' | 'layout_y',
+  value: unknown
+): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 100
+  ) {
+    throw new Error(
+      `INVALID_TABLE_LAYOUT_COORDINATE: Tọa độ ${field} phải là số nguyên từ 0 đến 100 (hoặc null).`
+    );
+  }
+  return value;
+}
+
+function normalizeTableLayoutCoordinate(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 100
+  ) {
+    return value;
+  }
+  return null;
+}
+
 export function normalizeShopTableRecord(raw: Partial<ShopTable>): ShopTable {
   const isArchived = Boolean(raw.is_archived);
   const isActive = isArchived ? false : raw.is_active !== false;
@@ -393,6 +427,8 @@ export function normalizeShopTableRecord(raw: Partial<ShopTable>): ShopTable {
     sort_order: !Number.isNaN(sortOrderNum) ? Math.floor(sortOrderNum) : 0,
     is_active: isActive,
     is_archived: isArchived,
+    layout_x: normalizeTableLayoutCoordinate(raw.layout_x),
+    layout_y: normalizeTableLayoutCoordinate(raw.layout_y),
     archived_at: isArchived
       ? raw.archived_at || new Date().toISOString()
       : null,
@@ -752,6 +788,8 @@ export async function dbCreateShopTable(input: {
   capacity?: number;
   sort_order?: number;
   is_active?: boolean;
+  layout_x?: number | null;
+  layout_y?: number | null;
 }): Promise<ShopTable> {
   const cleanShopId = (input.shop_id ?? '').trim();
   const cleanName = (input.name ?? '').trim();
@@ -763,6 +801,9 @@ export async function dbCreateShopTable(input: {
   if (!cleanName) {
     throw new Error('TABLE_NAME_REQUIRED: Tên bàn không được để trống.');
   }
+
+  const validLayoutX = validateTableLayoutCoordinate('layout_x', input.layout_x);
+  const validLayoutY = validateTableLayoutCoordinate('layout_y', input.layout_y);
 
   const existingTables = await dbGetShopTables(cleanShopId, {
     includeInactive: true,
@@ -812,6 +853,8 @@ export async function dbCreateShopTable(input: {
       input.sort_order !== undefined ? Number(input.sort_order) : maxSortOrder + 1,
     is_active: input.is_active !== false,
     is_archived: false,
+    layout_x: validLayoutX ?? null,
+    layout_y: validLayoutY ?? null,
     archived_at: null,
     created_at: nowIso,
     updated_at: nowIso,
@@ -831,6 +874,8 @@ export async function dbCreateShopTable(input: {
         sort_order: record.sort_order,
         is_active: record.is_active,
         is_archived: record.is_archived,
+        ...(validLayoutX !== undefined ? { layout_x: validLayoutX } : {}),
+        ...(validLayoutY !== undefined ? { layout_y: validLayoutY } : {}),
         archived_at: record.archived_at,
         created_at: record.created_at,
         updated_at: record.updated_at,
@@ -866,6 +911,8 @@ export async function dbUpdateShopTable(input: {
   sort_order?: number;
   is_active?: boolean;
   is_archived?: boolean;
+  layout_x?: number | null;
+  layout_y?: number | null;
 }): Promise<ShopTable> {
   const cleanShopId = (input.shop_id ?? '').trim();
   const cleanId = (input.id ?? '').trim();
@@ -873,6 +920,9 @@ export async function dbUpdateShopTable(input: {
   if (!cleanShopId || !cleanId) {
     throw new Error('MISSING_TABLE_IDENTITY: Thiếu shop_id hoặc id của bàn.');
   }
+
+  const validLayoutX = validateTableLayoutCoordinate('layout_x', input.layout_x);
+  const validLayoutY = validateTableLayoutCoordinate('layout_y', input.layout_y);
 
   const existing = await dbGetShopTableById(cleanId);
   if (!existing) {
@@ -907,6 +957,10 @@ export async function dbUpdateShopTable(input: {
     : input.is_active !== undefined
       ? Boolean(input.is_active)
       : existing.is_active;
+  const nextLayoutX =
+    validLayoutX !== undefined ? validLayoutX : (existing.layout_x ?? null);
+  const nextLayoutY =
+    validLayoutY !== undefined ? validLayoutY : (existing.layout_y ?? null);
 
   if (!nextName) {
     throw new Error('TABLE_NAME_REQUIRED: Tên bàn không được để trống.');
@@ -945,6 +999,16 @@ export async function dbUpdateShopTable(input: {
     }
   }
 
+  const hasName = input.name !== undefined;
+  const hasTableCode = input.table_code !== undefined;
+  const hasSection = input.section !== undefined;
+  const hasCapacity = input.capacity !== undefined;
+  const hasSortOrder = input.sort_order !== undefined;
+  const hasIsActive = input.is_active !== undefined;
+  const hasIsArchived = input.is_archived !== undefined;
+  const hasLayoutX = validLayoutX !== undefined;
+  const hasLayoutY = validLayoutY !== undefined;
+
   const nowIso = new Date().toISOString();
   const updated = normalizeShopTableRecord({
     ...existing,
@@ -955,25 +1019,37 @@ export async function dbUpdateShopTable(input: {
     sort_order: nextSortOrder,
     is_active: nextActive,
     is_archived: nextArchived,
+    layout_x: nextLayoutX,
+    layout_y: nextLayoutY,
     archived_at: nextArchived ? existing.archived_at || nowIso : null,
     updated_at: nowIso,
   });
+
+  const updatePayload: Record<string, unknown> = {
+    ...(hasName ? { name: updated.name } : {}),
+    ...(hasTableCode ? { table_code: updated.table_code } : {}),
+    ...(hasSection ? { section: updated.section } : {}),
+    ...(hasCapacity ? { capacity: updated.capacity } : {}),
+    ...(hasSortOrder ? { sort_order: updated.sort_order } : {}),
+    ...(hasIsActive || (hasIsArchived && updated.is_archived)
+      ? { is_active: updated.is_active }
+      : {}),
+    ...(hasIsArchived
+      ? {
+          is_archived: updated.is_archived,
+          archived_at: updated.archived_at,
+        }
+      : {}),
+    ...(hasLayoutX ? { layout_x: validLayoutX } : {}),
+    ...(hasLayoutY ? { layout_y: validLayoutY } : {}),
+    updated_at: updated.updated_at,
+  };
 
   if (isShopTablesDbAuthoritative()) {
     const sb = getActiveTablesDbClient();
     const { data, error } = await sb
       .from('shop_tables')
-      .update({
-        name: updated.name,
-        table_code: updated.table_code,
-        section: updated.section,
-        capacity: updated.capacity,
-        sort_order: updated.sort_order,
-        is_active: updated.is_active,
-        is_archived: updated.is_archived,
-        archived_at: updated.archived_at,
-        updated_at: updated.updated_at,
-      })
+      .update(updatePayload)
       .eq('id', cleanId)
       .eq('shop_id', cleanShopId)
       .select('*')
@@ -995,7 +1071,18 @@ export async function dbUpdateShopTable(input: {
   if (idx === -1) {
     throw new Error(`TABLE_NOT_FOUND: Không tìm thấy bàn "${cleanId}".`);
   }
-  allLocal[idx] = updated;
+  const currentLocal = allLocal[idx];
+  const mergedLocal = normalizeShopTableRecord({
+    ...currentLocal,
+    ...updatePayload,
+    ...(hasIsArchived && updated.is_archived
+      ? {
+          archived_at:
+            currentLocal.archived_at || existing.archived_at || nowIso,
+        }
+      : {}),
+  });
+  allLocal[idx] = mergedLocal;
   writeLocalTablesStore(allLocal);
-  return updated;
+  return mergedLocal;
 }
