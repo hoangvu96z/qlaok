@@ -4,6 +4,7 @@ import {
   dbCompletePaymentWebhook,
   ensureSupabaseReadyAndSeeded,
   requireSupabaseServiceRoleClient,
+  shouldAutoSeedDemoData,
 } from '@/lib/db';
 import {
   isSuperAdminEmail,
@@ -366,6 +367,7 @@ export async function GET(req: Request) {
         aiTextModel: process.env.AI_MODEL || 'combo1',
         aiVisionModel: process.env.AI_VISION_MODEL || 'combo2',
         r2Configured: Boolean(process.env.R2_ACCOUNT_ID),
+        demoReseedAllowed: shouldAutoSeedDemoData(),
         tableCounts: {
           profiles: profiles.length,
           shops: shops.length,
@@ -413,6 +415,17 @@ export async function POST(req: Request) {
         isPublished: body.isPublished,
       },
     });
+
+    if (action === 'reseed_demo_data' && !shouldAutoSeedDemoData()) {
+      return NextResponse.json(
+        {
+          error:
+            'Không được phép khôi phục dữ liệu mẫu (SEED_SHOPS) trên môi trường Production để bảo vệ dữ liệu thật.',
+          code: 'DEMO_RESEED_FORBIDDEN_IN_PRODUCTION',
+        },
+        { status: 403 }
+      );
+    }
 
     const sb = requireSupabaseServiceRoleClient(
       'Super Admin API (/api/admin)'
@@ -696,16 +709,67 @@ export async function POST(req: Request) {
       return NextResponse.json({ order: updated });
     }
 
-    // 9. Re-seed Demo Shops without affecting real user shops
+    // 9. Re-seed Demo Shops without affecting real user shops (non-production only)
     if (action === 'reseed_demo_data') {
-      await sb.from('profiles').upsert([SEED_PROFILE], { onConflict: 'id' });
-      await sb.from('shops').upsert(SEED_SHOPS, { onConflict: 'id' });
-      await sb.from('categories').upsert(SEED_CATEGORIES, { onConflict: 'id' });
-      await sb.from('items').upsert(SEED_ITEMS, { onConflict: 'id' });
-      await sb.from('posts').upsert(SEED_POSTS, { onConflict: 'id' });
-      await sb
-        .from('payment_transactions')
-        .upsert(SEED_TRANSACTIONS, { onConflict: 'id' });
+      if (!shouldAutoSeedDemoData()) {
+        return NextResponse.json(
+          {
+            error:
+              'Không được phép khôi phục dữ liệu mẫu (SEED_SHOPS) trên môi trường Production để bảo vệ dữ liệu thật.',
+            code: 'DEMO_RESEED_FORBIDDEN_IN_PRODUCTION',
+          },
+          { status: 403 }
+        );
+      }
+
+      const reseedSteps: Array<{
+        table: string;
+        run: () => PromiseLike<{ error?: { message?: string } | null }>;
+      }> = [
+        {
+          table: 'profiles',
+          run: () =>
+            sb.from('profiles').upsert([SEED_PROFILE], { onConflict: 'id' }),
+        },
+        {
+          table: 'shops',
+          run: () => sb.from('shops').upsert(SEED_SHOPS, { onConflict: 'id' }),
+        },
+        {
+          table: 'categories',
+          run: () =>
+            sb.from('categories').upsert(SEED_CATEGORIES, { onConflict: 'id' }),
+        },
+        {
+          table: 'items',
+          run: () => sb.from('items').upsert(SEED_ITEMS, { onConflict: 'id' }),
+        },
+        {
+          table: 'posts',
+          run: () => sb.from('posts').upsert(SEED_POSTS, { onConflict: 'id' }),
+        },
+        {
+          table: 'payment_transactions',
+          run: () =>
+            sb
+              .from('payment_transactions')
+              .upsert(SEED_TRANSACTIONS, { onConflict: 'id' }),
+        },
+      ];
+
+      for (const step of reseedSteps) {
+        const { error: stepErr } = await step.run();
+        if (stepErr) {
+          return NextResponse.json(
+            {
+              error: `Lỗi ghi dữ liệu mẫu bảng ${step.table}: ${stepErr.message || 'Ghi thất bại'}`,
+              code: 'RESEED_DEMO_DATA_FAILED',
+              table: step.table,
+            },
+            { status: 500 }
+          );
+        }
+      }
 
       return NextResponse.json({
         ok: true,

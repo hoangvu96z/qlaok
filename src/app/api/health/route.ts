@@ -6,7 +6,8 @@ import { getGeminiClient } from '@/lib/gemini';
 
 export async function GET() {
   const sbStatus = await ensureSupabaseReadyAndSeeded();
-  const sb = getSupabaseDbClient();
+  const isReady = Boolean(sbStatus.ready && !sbStatus.error);
+  const isSeeded = Boolean(isReady && sbStatus.seeded);
 
   let counts = {
     shops: 0,
@@ -17,7 +18,8 @@ export async function GET() {
     provinces: 34,
   };
 
-  if (sbStatus.ready) {
+  if (isReady) {
+    const sb = getSupabaseDbClient();
     const [shopsC, catsC, itemsC, postsC, analyticsC, provsC] =
       await Promise.all([
         sb.from('shops').select('*', { count: 'exact', head: true }),
@@ -38,20 +40,30 @@ export async function GET() {
     };
   }
 
-  return NextResponse.json({
-    status: 'ok',
-    service: 'qlaok-backend',
-    dataSource: 'supabase',
-    timestamp: new Date().toISOString(),
-    environment: {
-      supabaseConfigured: isSupabaseConfigured(),
-      supabaseTablesReady: sbStatus.ready,
-      supabaseMessage: sbStatus.error || 'Connected & seeded',
-      r2Configured: isR2Configured(),
-      geminiConfigured: Boolean(getGeminiClient()),
-      aiProvider: `9router (${getGeminiClient()?.baseUrl || 'https://vunph.click/v1'} • text: ${getGeminiClient()?.model || 'combo1'} • vision: ${getGeminiClient()?.visionModel || 'combo2'})`,
+  return NextResponse.json(
+    {
+      status: isReady ? 'ok' : 'degraded',
+      service: 'qlaok-backend',
+      dataSource: 'supabase',
+      timestamp: new Date().toISOString(),
+      environment: {
+        supabaseConfigured: isSupabaseConfigured(),
+        supabaseTablesReady: isReady,
+        supabaseSeeded: isSeeded,
+        supabaseMessage: sbStatus.error
+          ? sbStatus.error
+          : !isReady
+            ? 'Supabase not ready'
+            : isSeeded
+              ? 'Connected & seeded'
+              : 'Connected (schema ready)',
+        r2Configured: isR2Configured(),
+        geminiConfigured: Boolean(getGeminiClient()),
+        aiProvider: `9router (${getGeminiClient()?.baseUrl || 'https://vunph.click/v1'} • text: ${getGeminiClient()?.model || 'combo1'} • vision: ${getGeminiClient()?.visionModel || 'combo2'})`,
+      },
+      counts,
     },
-    counts,
-  });
+    { status: isReady ? 200 : 503 }
+  );
 }
 

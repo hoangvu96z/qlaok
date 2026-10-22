@@ -39,7 +39,7 @@ import {
 let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
 let testDbClientOverride: SupabaseClient | null = null;
-let seedingInProgress: Promise<boolean> | null = null;
+let seedingInProgress: Promise<{ ok: boolean; error?: string }> | null = null;
 
 export function setSupabaseDbClientForTests(client: unknown | null): void {
   testDbClientOverride = (client as SupabaseClient | null) ?? null;
@@ -155,16 +155,27 @@ export function requireSupabaseServiceRoleClient(
   return getSupabaseDbClient();
 }
 
+export function shouldAutoSeedDemoData(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}
+
 /**
- * Checks whether the Supabase schema (public.shops) has been created,
- * and automatically seeds the 3 demo shops if the tables exist and are empty.
+ * Checks whether the Supabase schema (public.shops) has been created.
+ * In local development/test environments, automatically seeds the 3 demo shops
+ * if the tables exist and are empty. In production, never auto-seeds demo data
+ * and returns `{ ready: true, seeded: false }` when `public.shops` is empty.
  */
 export async function ensureSupabaseReadyAndSeeded(): Promise<{
   ready: boolean;
+  seeded?: boolean;
   error?: string;
 }> {
   if (!testDbClientOverride && !isSupabaseConfigured()) {
-    return { ready: false, error: 'SUPABASE_NOT_CONFIGURED' };
+    return {
+      ready: false,
+      seeded: false,
+      error: 'SUPABASE_NOT_CONFIGURED',
+    };
   }
 
   const sb = getSupabaseDbClient();
@@ -178,43 +189,125 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
     if (error) {
       return {
         ready: false,
+        seeded: false,
         error: `${error.code || 'ERR'}: ${error.message}`,
       };
     }
 
     if (shops && shops.length > 0) {
-      return { ready: true };
+      return { ready: true, seeded: true };
+    }
+
+    if (!shouldAutoSeedDemoData()) {
+      return { ready: true, seeded: false };
     }
 
     if (!seedingInProgress) {
       seedingInProgress = (async () => {
         try {
-          await sb.from('profiles').upsert([SEED_PROFILE], { onConflict: 'id' });
-          await sb.from('shops').upsert(SEED_SHOPS, { onConflict: 'id' });
-          await sb.from('categories').upsert(SEED_CATEGORIES, { onConflict: 'id' });
-          await sb.from('items').upsert(SEED_ITEMS, { onConflict: 'id' });
-          await sb.from('posts').upsert(SEED_POSTS, { onConflict: 'id' });
-          await sb
-            .from('payment_transactions')
-            .upsert(SEED_TRANSACTIONS, { onConflict: 'id' });
+          const seedSteps: Array<{
+            table: string;
+            run: () => PromiseLike<
+              | { error?: { code?: string; message?: string } | null }
+              | null
+              | undefined
+            >;
+          }> = [
+            {
+              table: 'profiles',
+              run: () =>
+                sb
+                  .from('profiles')
+                  .upsert([SEED_PROFILE], { onConflict: 'id' }),
+            },
+            {
+              table: 'shops',
+              run: () =>
+                sb.from('shops').upsert(SEED_SHOPS, { onConflict: 'id' }),
+            },
+            {
+              table: 'categories',
+              run: () =>
+                sb
+                  .from('categories')
+                  .upsert(SEED_CATEGORIES, { onConflict: 'id' }),
+            },
+            {
+              table: 'items',
+              run: () =>
+                sb.from('items').upsert(SEED_ITEMS, { onConflict: 'id' }),
+            },
+            {
+              table: 'posts',
+              run: () =>
+                sb.from('posts').upsert(SEED_POSTS, { onConflict: 'id' }),
+            },
+            {
+              table: 'payment_transactions',
+              run: () =>
+                sb
+                  .from('payment_transactions')
+                  .upsert(SEED_TRANSACTIONS, { onConflict: 'id' }),
+            },
+            {
+              table: 'analytics_events',
+              run: () => {
+                const analyticsToInsert = SEED_ANALYTICS.map(
+                  ({ id: _id, ...rest }) => rest
+                );
+                return sb
+                  .from('analytics_events')
+                  .insert(analyticsToInsert);
+              },
+            },
+          ];
 
-          const analyticsToInsert = SEED_ANALYTICS.map(({ id: _id, ...rest }) => rest);
-          await sb.from('analytics_events').insert(analyticsToInsert);
-          return true;
+          for (const step of seedSteps) {
+            const stepRes = await step.run();
+            if (stepRes?.error) {
+              const code = stepRes.error.code || 'SEED_WRITE_FAILED';
+              const message =
+                stepRes.error.message ||
+                `Failed to write demo seed rows to ${step.table}.`;
+              return {
+                ok: false,
+                error: `SEED_FAILED (${step.table}): ${code}: ${message}`,
+              };
+            }
+          }
+
+          return { ok: true };
         } catch (seedErr) {
           console.error('Supabase auto-seed error:', seedErr);
-          return false;
+          const message =
+            seedErr instanceof Error
+              ? seedErr.message
+              : 'Unknown Supabase seed error';
+          return {
+            ok: false,
+            error: `SEED_FAILED: ${message}`,
+          };
         } finally {
           seedingInProgress = null;
         }
       })();
     }
 
-    await seedingInProgress;
-    return { ready: true };
+    const seedResult = await seedingInProgress;
+    if (!seedResult.ok) {
+      return {
+        ready: false,
+        seeded: false,
+        error:
+          seedResult.error || 'SEED_FAILED: Supabase demo seed failed.',
+      };
+    }
+
+    return { ready: true, seeded: true };
   } catch (err) {
     return {
       ready: false,
+      seeded: false,
       error: err instanceof Error ? err.message : 'Unknown Supabase error',
     };
   }
@@ -350,11 +443,13 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
         shopMap.set(hydrated.id, hydrated);
       }
 
-      for (const sid of extraShopIds) {
-        if (!shopMap.has(sid)) {
-          const seedShop = SEED_SHOPS.find((s) => s.id === sid);
-          if (seedShop) {
-            shopMap.set(seedShop.id, hydrateShopWithSeedDefaults(seedShop));
+      if (shouldAutoSeedDemoData()) {
+        for (const sid of extraShopIds) {
+          if (!shopMap.has(sid)) {
+            const seedShop = SEED_SHOPS.find((s) => s.id === sid);
+            if (seedShop) {
+              shopMap.set(seedShop.id, hydrateShopWithSeedDefaults(seedShop));
+            }
           }
         }
       }

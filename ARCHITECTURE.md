@@ -61,7 +61,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | Module | Nhiệm vụ và lưu ý |
 | --- | --- |
 | `src/types/qlaok.ts` | Contracts locale, catalog, đơn, membership, shop theme, payment |
-| `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, analytics, billing và seed |
+| `src/lib/db.ts` | Supabase client, CRUD shop/catalog/posts, analytics, billing và seed (chỉ tự seed dữ liệu demo ở môi trường non-production; trên `NODE_ENV=production` khi `public.shops` rỗng trả `{ ready: true, seeded: false }` mà không tự ghi demo shop) |
 | `src/lib/mpos-store.ts` | Orders, stock, giá canonical, transition, bill theo bàn/session và bộ đếm in |
 | `src/lib/shop-tables.ts` | Store bàn, kiểm tra bàn cùng quán/đang hoạt động, owner mutation và public DTO |
 | `src/lib/service-requests.ts` | Yêu cầu phục vụ tại bàn (`call_staff`, `request_bill`) xác thực chữ ký QR bàn, chống spam lặp theo bàn/loại và chuyển trạng thái `pending → acknowledged → resolved` |

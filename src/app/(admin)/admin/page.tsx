@@ -149,6 +149,7 @@ interface AdminDashboardData {
     aiTextModel: string;
     aiVisionModel: string;
     r2Configured: boolean;
+    demoReseedAllowed?: boolean;
     tableCounts: Record<string, number>;
     serverTime: string;
   };
@@ -395,11 +396,25 @@ export default function SuperAdminPortalPage() {
     }
   };
 
+  const canReseedDemoData =
+    process.env.NODE_ENV !== 'production' &&
+    data?.systemHealth?.demoReseedAllowed !== false;
+
   const runAdminAction = async (
     payload: Record<string, unknown>,
     successMsg: string
   ) => {
     if (!adminUser) return false;
+    if (payload.action === 'reseed_demo_data' && !canReseedDemoData) {
+      showToastMessage(
+        'error',
+        tx(
+          'Không được phép khôi phục dữ liệu mẫu trên môi trường Production.',
+          'Demo data restore is disabled in production.'
+        )
+      );
+      return false;
+    }
     setActionBusy(true);
     try {
       const res = await fetch('/api/admin', {
@@ -414,7 +429,11 @@ export default function SuperAdminPortalPage() {
         typeof json.error === 'string' && json.error.trim()
           ? json.error.trim()
           : null;
-      if (res.status === 401 || res.status === 403) {
+      if (
+        res.status === 401 ||
+        (res.status === 403 &&
+          json.code !== 'DEMO_RESEED_FORBIDDEN_IN_PRODUCTION')
+      ) {
         const authErrMsg =
           apiError ||
           tx(
@@ -2862,26 +2881,39 @@ export default function SuperAdminPortalPage() {
 
                   <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-3">
                     <span className="text-xs text-slate-400">
-                      {tx(
-                        'Khôi phục 3 cửa hàng Demo gốc (không xóa quán của khách)',
-                        'Restore 3 default demo shops (keeps customer shops)'
-                      )}
+                      {canReseedDemoData
+                        ? tx(
+                            'Khôi phục 3 cửa hàng Demo gốc (không xóa quán của khách)',
+                            'Restore 3 default demo shops (keeps customer shops)'
+                          )
+                        : tx(
+                            'Khôi phục dữ liệu mẫu bị khóa trên môi trường Production để bảo vệ dữ liệu thật',
+                            'Demo data restore is disabled in production to protect live shops'
+                          )}
                     </span>
                     <button
                       type="button"
-                      disabled={actionBusy}
-                      onClick={() =>
+                      data-testid="admin-reseed-demo-btn"
+                      disabled={actionBusy || !canReseedDemoData}
+                      aria-disabled={actionBusy || !canReseedDemoData}
+                      onClick={() => {
+                        if (!canReseedDemoData) return;
                         runAdminAction(
                           { action: 'reseed_demo_data' },
                           tx(
                             'Đã đồng bộ lại dữ liệu 3 cửa hàng Demo mẫu!',
                             'Restored 3 default demo shops!'
                           )
-                        )
-                      }
-                      className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"
+                        );
+                      }}
+                      className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {tx('Khôi phục dữ liệu mẫu', 'Restore Demo Data')}
+                      {canReseedDemoData
+                        ? tx('Khôi phục dữ liệu mẫu', 'Restore Demo Data')
+                        : tx(
+                            'Đã khóa trên Production',
+                            'Disabled in Production'
+                          )}
                     </button>
                   </div>
                 </div>

@@ -24,10 +24,13 @@ after(() => {
 });
 
 const {
+  dbCreateShop,
+  ensureSupabaseReadyAndSeeded,
   hasSupabaseServiceRoleKey,
   requireSupabaseServiceRoleClient,
   setSupabaseDbClientForTests,
 } = await import('@/lib/db');
+const { GET: healthGet } = await import('@/app/api/health/route');
 const {
   issueSessionToken,
   requireSuperAdmin,
@@ -626,4 +629,364 @@ test('existing Super Admin password still authenticates against the real profile
     assert.equal(body.isAdmin, true);
     assert.equal(readCredentials()[SUPER_ADMIN_EMAIL].passwordHash, passwordHash);
   } finally { setSupabaseDbClientForTests(null); }
+});
+
+test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in NODE_ENV=production when public.shops is empty while preserving non-production demo seeding', async () => {
+  const prevNodeEnv = process.env.NODE_ENV;
+  const writeOperations: Array<{
+    table: string;
+    op: 'upsert' | 'insert';
+    payload: unknown;
+  }> = [];
+  let shopsRows: Array<Record<string, unknown>> = [];
+  let profilesRows: Array<Record<string, unknown>> = [];
+  let failWriteOnTable: string | null = null;
+  let failWriteError: { code: string; message: string } | null = null;
+
+  const mockDbClient = {
+    from(table: string) {
+      const builder: Record<string, unknown> = {
+        select(_columns?: string, opts?: { count?: string; head?: boolean }) {
+          if (opts?.head) {
+            const count =
+              table === 'shops'
+                ? shopsRows.length
+                : table === 'provinces'
+                  ? 34
+                  : 0;
+            return Promise.resolve({ data: null, count, error: null });
+          }
+          const rows =
+            table === 'shops'
+              ? shopsRows
+              : table === 'profiles'
+                ? profilesRows
+                : [];
+          const selectChain: Record<string, unknown> = {
+            limit: (n: number) => {
+              const sliced = rows.slice(0, n);
+              return {
+                then: (resolve: (r: unknown) => unknown) =>
+                  Promise.resolve({ data: sliced, error: null }).then(resolve),
+                single: () =>
+                  Promise.resolve({
+                    data: sliced[0] ?? null,
+                    error: null,
+                  }),
+              };
+            },
+            eq: (col: string, val: unknown) => {
+              const filtered = rows.filter((r) => r[col] === val);
+              return {
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: filtered[0] ?? null,
+                    error: null,
+                  }),
+                single: () =>
+                  Promise.resolve({
+                    data: filtered[0] ?? null,
+                    error: null,
+                  }),
+                order: () =>
+                  Promise.resolve({ data: filtered, error: null }),
+              };
+            },
+            order: () => Promise.resolve({ data: rows, error: null }),
+          };
+          return selectChain;
+        },
+        upsert(payload: unknown) {
+          writeOperations.push({ table, op: 'upsert', payload });
+          if (failWriteOnTable === table && failWriteError) {
+            return Promise.resolve({ data: null, error: failWriteError });
+          }
+          if (table === 'profiles') {
+            const items = Array.isArray(payload) ? payload : [payload];
+            for (const item of items) {
+              if (item && typeof item === 'object') {
+                profilesRows.push(item as Record<string, unknown>);
+              }
+            }
+          }
+          if (table === 'shops' && Array.isArray(payload)) {
+            shopsRows.push(
+              ...(payload as Array<Record<string, unknown>>)
+            );
+          }
+          return Promise.resolve({ data: payload, error: null });
+        },
+        insert(payload: unknown) {
+          writeOperations.push({ table, op: 'insert', payload });
+          if (failWriteOnTable === table && failWriteError) {
+            return Promise.resolve({ data: null, error: failWriteError });
+          }
+          if (table === 'shops' && payload && typeof payload === 'object') {
+            const shopRow = payload as Record<string, unknown>;
+            shopsRows.push(shopRow);
+            return {
+              select: () => ({
+                single: () =>
+                  Promise.resolve({ data: shopRow, error: null }),
+              }),
+            };
+          }
+          return Promise.resolve({ data: payload, error: null });
+        },
+      };
+      return builder;
+    },
+  };
+
+  setSupabaseDbClientForTests(mockDbClient as never);
+  try {
+    // 1. In production with an empty public.shops table: zero seed writes occur and schema is reported ready
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    const prodReady = await ensureSupabaseReadyAndSeeded();
+    assert.equal(prodReady.ready, true);
+    assert.equal(prodReady.seeded, false);
+    assert.equal(
+      writeOperations.length,
+      0,
+      'ensureSupabaseReadyAndSeeded must not write any demo records in production'
+    );
+
+    const healthRes = await healthGet();
+    assert.equal(healthRes.status, 200);
+    const healthBody = await healthRes.json();
+    assert.equal(healthBody.status, 'ok');
+    assert.equal(healthBody.environment.supabaseTablesReady, true);
+    assert.equal(healthBody.counts.shops, 0);
+    assert.equal(
+      writeOperations.length,
+      0,
+      'GET /api/health must not trigger demo seed writes in production'
+    );
+
+    // 2. A real owner can create the first shop on the empty production DB without triggering demo seeding
+    const createdShop = await dbCreateShop(
+      {
+        slug: 'quan-that-01',
+        name: 'Quán Thật Đầu Tiên',
+        vertical: 'fnb',
+        tagline_i18n: { vi: 'Quán thật' },
+        description_i18n: { vi: 'Mô tả' },
+        logo_url: '',
+        cover_urls: [],
+        address: '1 Nguyễn Huệ',
+        city: 'Đà Nẵng',
+        google_maps_url: '',
+        google_review_url: '',
+        phone_contact: '0912345678',
+        zalo_phone: '0912345678',
+        wifi_info: { ssid: '', password: '' },
+        opening_hours: {
+          mon: { open: '07:00', close: '22:00', closed: false },
+          tue: { open: '07:00', close: '22:00', closed: false },
+          wed: { open: '07:00', close: '22:00', closed: false },
+          thu: { open: '07:00', close: '22:00', closed: false },
+          fri: { open: '07:00', close: '22:00', closed: false },
+          sat: { open: '07:00', close: '22:00', closed: false },
+          sun: { open: '07:00', close: '22:00', closed: false },
+        },
+        supported_langs: ['vi', 'en'],
+        currency: 'VND',
+        theme_config: { primaryColor: '#10b981', layout: 'list' },
+        is_published: true,
+      },
+      'real-owner-001'
+    );
+    assert.equal(createdShop.slug, 'quan-that-01');
+    assert.equal(createdShop.owner_id, 'real-owner-001');
+    assert.equal(shopsRows.length, 1);
+    assert.equal(shopsRows[0].id, createdShop.id);
+    assert.equal(
+      writeOperations.some(
+        (w) =>
+          w.table === 'categories' ||
+          w.table === 'items' ||
+          w.table === 'posts' ||
+          w.table === 'payment_transactions' ||
+          w.table === 'analytics_events'
+      ),
+      false,
+      'creating the first real shop in production must never seed demo catalog/posts/transactions/analytics'
+    );
+
+    // 3. In non-production, if any upsert/insert returns a PostgREST { error } object (without throwing),
+    // ensureSupabaseReadyAndSeeded and /api/health must NOT report ready/seeded success
+    shopsRows = [];
+    profilesRows = [];
+    writeOperations.length = 0;
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'test';
+    failWriteOnTable = 'items';
+    failWriteError = {
+      code: '42501',
+      message: 'new row violates row-level security policy for table "items"',
+    };
+
+    const failedSeedStatus = await ensureSupabaseReadyAndSeeded();
+    assert.equal(failedSeedStatus.ready, false);
+    assert.equal(failedSeedStatus.seeded, false);
+    assert.match(
+      failedSeedStatus.error || '',
+      /SEED_FAILED \(items\): 42501: new row violates row-level security policy/i
+    );
+
+    // Reset shopsRows so /api/health also hits the failed seed path
+    shopsRows = [];
+    profilesRows = [];
+    const failedHealthRes = await healthGet();
+    assert.equal(failedHealthRes.status, 503);
+    const failedHealthBody = await failedHealthRes.json();
+    assert.equal(failedHealthBody.status, 'degraded');
+    assert.equal(failedHealthBody.environment.supabaseTablesReady, false);
+    assert.equal(failedHealthBody.environment.supabaseSeeded, false);
+    assert.match(
+      failedHealthBody.environment.supabaseMessage,
+      /SEED_FAILED \(items\)/i
+    );
+
+    // Also verify analytics_events insert error (does not throw) is caught
+    shopsRows = [];
+    profilesRows = [];
+    failWriteOnTable = 'analytics_events';
+    failWriteError = {
+      code: '23503',
+      message: 'insert or update on table "analytics_events" violates foreign key constraint',
+    };
+    const failedAnalyticsSeed = await ensureSupabaseReadyAndSeeded();
+    assert.equal(failedAnalyticsSeed.ready, false);
+    assert.equal(failedAnalyticsSeed.seeded, false);
+    assert.match(
+      failedAnalyticsSeed.error || '',
+      /SEED_FAILED \(analytics_events\): 23503/i
+    );
+
+    // 4. In non-production with an empty public.shops table and healthy writes, existing auto-seed behavior succeeds
+    shopsRows = [];
+    profilesRows = [];
+    writeOperations.length = 0;
+    failWriteOnTable = null;
+    failWriteError = null;
+
+    const devReady = await ensureSupabaseReadyAndSeeded();
+    assert.equal(devReady.ready, true);
+    assert.equal(devReady.seeded, true);
+    assert.ok(
+      writeOperations.some((w) => w.table === 'shops' && w.op === 'upsert'),
+      'non-production environment still auto-seeds demo shops when public.shops is empty'
+    );
+    assert.equal(shopsRows.length, 3);
+
+    // 5. POST /api/admin action reseed_demo_data is rejected in NODE_ENV=production before any DB write
+    const prevSessionSecret = process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET = 'prod-test-session-secret-32-chars-minimum!';
+    try {
+      const prodAdminToken = issueSessionToken({
+        id: SUPER_ADMIN_ID,
+        email: SUPER_ADMIN_EMAIL,
+        role: 'admin',
+        is_admin: true,
+      });
+
+      writeOperations.length = 0;
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        'production';
+
+      const prodReseedRes = await adminPost(
+        new Request('http://localhost/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${prodAdminToken}`,
+          },
+          body: JSON.stringify({ action: 'reseed_demo_data' }),
+        })
+      );
+      assert.equal(prodReseedRes.status, 403);
+      const prodReseedBody = await prodReseedRes.json();
+      assert.equal(
+        prodReseedBody.code,
+        'DEMO_RESEED_FORBIDDEN_IN_PRODUCTION'
+      );
+      assert.equal(
+        writeOperations.length,
+        0,
+        'POST /api/admin reseed_demo_data in production must make zero Supabase writes'
+      );
+
+      // 6. In dev/test, POST /api/admin reseed_demo_data still works and checks PostgREST write errors
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'test';
+      writeOperations.length = 0;
+      failWriteOnTable = 'categories';
+      failWriteError = {
+        code: '42501',
+        message: 'permission denied for table categories',
+      };
+
+      const failedReseedRes = await adminPost(
+        new Request('http://localhost/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${prodAdminToken}`,
+          },
+          body: JSON.stringify({ action: 'reseed_demo_data' }),
+        })
+      );
+      assert.equal(failedReseedRes.status, 500);
+      const failedReseedBody = await failedReseedRes.json();
+      assert.equal(failedReseedBody.code, 'RESEED_DEMO_DATA_FAILED');
+      assert.equal(failedReseedBody.table, 'categories');
+
+      failWriteOnTable = null;
+      failWriteError = null;
+      writeOperations.length = 0;
+
+      const devReseedRes = await adminPost(
+        new Request('http://localhost/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${prodAdminToken}`,
+          },
+          body: JSON.stringify({ action: 'reseed_demo_data' }),
+        })
+      );
+      assert.equal(devReseedRes.status, 200);
+      const devReseedBody = await devReseedRes.json();
+      assert.equal(devReseedBody.ok, true);
+      assert.equal(
+        writeOperations.length,
+        6,
+        'dev/test reseed_demo_data upserts profiles, shops, categories, items, posts, and payment_transactions'
+      );
+    } finally {
+      if (prevSessionSecret === undefined) {
+        delete process.env.SESSION_SECRET;
+      } else {
+        process.env.SESSION_SECRET = prevSessionSecret;
+      }
+    }
+
+    // 7. Admin UI source disables the reseed button in production and when systemHealth.demoReseedAllowed is false
+    const adminPageSource = fs.readFileSync(
+      path.join(originalCwd, 'src/app/(admin)/admin/page.tsx'),
+      'utf8'
+    );
+    assert.match(
+      adminPageSource,
+      /const canReseedDemoData =\s*process\.env\.NODE_ENV !== 'production' &&\s*data\?\.systemHealth\?\.demoReseedAllowed !== false/,
+      'Admin UI must gate demo reseed on non-production NODE_ENV and systemHealth.demoReseedAllowed'
+    );
+    assert.match(
+      adminPageSource,
+      /disabled=\{actionBusy \|\| !canReseedDemoData\}/,
+      'Admin UI reseed button must be disabled when canReseedDemoData is false'
+    );
+  } finally {
+    (process.env as Record<string, string | undefined>).NODE_ENV = prevNodeEnv;
+    setSupabaseDbClientForTests(null);
+  }
 });
