@@ -48,6 +48,7 @@ import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { ShopMembersManager } from '@/components/dashboard/ShopMembersManager';
+import { ShopSePayWebhookManager } from '@/components/dashboard/ShopSePayWebhookManager';
 import { WeeklyOpeningHoursPicker } from '@/components/ui/TimeSchedulePicker';
 import { uploadCompressedImage } from '@/lib/upload-helper';
 import {
@@ -1211,6 +1212,9 @@ export default function DashboardSettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* 1b. Owner-only SePay VietQR Automatic Order Reconciliation */}
+      <ShopSePayWebhookManager />
 
       {/* 2. Basic Store Identity, Logo & Cover Image */}
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">

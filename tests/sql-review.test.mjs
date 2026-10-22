@@ -261,5 +261,152 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       /permission denied|Direct client execution/i
     );
 
+    // Verify 011_sepay_order_reconciliation.sql: private config RLS, theme_config secret guard, idempotent event ledger, and atomic reconciliation RPC
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false);");
+    await db.exec(fs.readFileSync('supabase/migrations/011_sepay_order_reconciliation.sql', 'utf8'));
+    // Verify migration 011 is idempotent when re-applied
+    await db.exec(fs.readFileSync('supabase/migrations/011_sepay_order_reconciliation.sql', 'utf8'));
+    await db.exec('SET ROLE service_role');
+
+    await db.query(`INSERT INTO shop_sepay_configs (shop_id, enabled, secret_ciphertext, secret_iv, secret_auth_tag, updated_by)
+      VALUES ('sql-shop', true, 'cipher-abc', 'iv-123456789012', 'tag-1234567890123456', '${owner}')`);
+
+    // Block storing SePay secrets inside public.shops.theme_config
+    await assert.rejects(
+      db.query(`UPDATE shops SET theme_config = '{"sepaySecret":"leaked"}'::jsonb WHERE id = 'sql-shop'`),
+      /FORBIDDEN_PUBLIC_SEPAY_SECRET/i
+    );
+    await assert.rejects(
+      db.query(`UPDATE shops SET theme_config = '{"paymentConfig":{"webhookSecret":"leaked"}}'::jsonb WHERE id = 'sql-shop'`),
+      /FORBIDDEN_PUBLIC_SEPAY_SECRET/i
+    );
+
+    // Direct client access (even as shop owner) is blocked on shop_sepay_configs, sepay_webhook_events, and reconcile_sepay_order_payment_atomic
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`);
+    await assert.rejects(
+      db.query("SELECT * FROM shop_sepay_configs WHERE shop_id = 'sql-shop'"),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query("INSERT INTO shop_sepay_configs (shop_id, enabled, secret_ciphertext, secret_iv, secret_auth_tag) VALUES ('sql-pub-shop', true, 'c', 'i', 't')"),
+      /permission denied|FORBIDDEN_SEPAY_CONFIG_DIRECT_ACCESS/i
+    );
+    await assert.rejects(
+      db.query("SELECT * FROM sepay_webhook_events WHERE shop_id = 'sql-shop'"),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query("SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', 'tx-client', 'hash-1', 'in', 50000)"),
+      /permission denied|Direct client execution/i
+    );
+
+    // Service role atomic reconciliation preserves fulfillment status and handles replay/conflict/mismatch invariants
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role");
+    await db.query(`INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items)
+      VALUES ('ord-sepay-1', 'ORD-901', 'sql-shop', 'Bàn 01', 'preparing', 'vietqr', 'unpaid', 85000, 85000, '[]'::jsonb),
+             ('ord-sepay-cash', 'ORD-902', 'sql-shop', 'Bàn 02', 'new', 'cash', 'unpaid', 40000, 40000, '[]'::jsonb)`);
+
+    // Wrong amount rejected without marking paid
+    const wrongAmtRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9000', 'hash-wrong-amt', 'in', 84000, '0905123456', 'FT-WRONG', 'ORD-901', 'ord-sepay-1', NULL, '{}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(wrongAmtRes.reconciled, false);
+    assert.equal(wrongAmtRes.reason_code, 'AMOUNT_MISMATCH');
+    const unpaidCheck = (await db.query("SELECT status, payment_status FROM orders WHERE id = 'ord-sepay-1'")).rows[0];
+    assert.equal(unpaidCheck.payment_status, 'unpaid');
+    assert.equal(unpaidCheck.status, 'preparing');
+
+    // Cash order rejected without marking paid
+    const cashRejRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9000-cash', 'hash-cash', 'in', 40000, '0905123456', 'FT-CASH', 'ORD-902', 'ord-sepay-cash', NULL, '{}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(cashRejRes.reconciled, false);
+    assert.equal(cashRejRes.reason_code, 'PAYMENT_METHOD_NOT_VIETQR');
+
+    // Exact match reconciles payment while preserving status = 'preparing'
+    const okRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9001', 'hash-ok-9001', 'in', 85000, '0905123456', 'FT-9001', 'ORD-901', 'ord-sepay-1', NULL, '{"id":9001}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(okRes.reconciled, true);
+    assert.equal(okRes.duplicate, false);
+    assert.equal(okRes.reason_code, 'OK');
+    assert.equal(okRes.order.payment_status, 'paid');
+    assert.equal(okRes.order.status, 'preparing', 'payment reconciliation must never alter fulfillment status');
+    assert.equal(okRes.order.payment_idempotency_key, 'sepay:sql-shop:9001');
+
+    // Identical replay returns duplicate=true, reconciled=true without duplicate effects
+    const dupRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9001', 'hash-ok-9001', 'in', 85000, '0905123456', 'FT-9001', 'ORD-901', 'ord-sepay-1', NULL, '{"id":9001}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(dupRes.reconciled, true);
+    assert.equal(dupRes.duplicate, true);
+    assert.equal(dupRes.delivery_count, 2);
+
+    // Conflicting reuse of same sepay_transaction_id with different payload_hash is rejected and recorded
+    const conflictRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9001', 'hash-tampered-9001', 'in', 999000, '0905123456', 'FT-9001', 'ORD-901', 'ord-sepay-1', NULL, '{"id":9001,"transferAmount":999000}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(conflictRes.reconciled, false);
+    assert.equal(conflictRes.outcome, 'conflict');
+    assert.equal(conflictRes.reason_code, 'CONFLICTING_WEBHOOK_EVENT');
+    assert.equal(conflictRes.conflict_count, 1);
+
+    // Conflicting reuse of same bank reference_code with a different transaction ID is rejected
+    const refConflictRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9002', 'hash-9002', 'in', 85000, '0905123456', 'FT-9001', 'ORD-901', 'ord-sepay-1', NULL, '{"id":9002}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(refConflictRes.reconciled, false);
+    assert.equal(refConflictRes.outcome, 'conflict');
+    assert.equal(refConflictRes.reason_code, 'CONFLICTING_BANK_REFERENCE');
+
+    // Recoverable rejection: payment arrives before order exists (ORDER_NOT_FOUND), then order is created and identical retry reconciles once
+    const earlyRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9003', 'hash-9003', 'in', 115000, '0905123456', 'FT-9003', 'ORD-903', NULL, NULL, '{"id":9003}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(earlyRes.reconciled, false);
+    assert.equal(earlyRes.duplicate, false);
+    assert.equal(earlyRes.reason_code, 'ORDER_NOT_FOUND');
+    assert.equal(earlyRes.delivery_count, 1);
+
+    await db.query(`INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items)
+      VALUES ('ord-sepay-late', 'ORD-903', 'sql-shop', 'Bàn 03', 'new', 'vietqr', 'unpaid', 115000, 115000, '[]'::jsonb)`);
+
+    const recoveredRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9003', 'hash-9003', 'in', 115000, '0905123456', 'FT-9003', 'ORD-903', 'ord-sepay-late', NULL, '{"id":9003}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(recoveredRes.reconciled, true);
+    assert.equal(recoveredRes.duplicate, false);
+    assert.equal(recoveredRes.reason_code, 'OK');
+    assert.equal(recoveredRes.delivery_count, 2);
+    assert.equal(recoveredRes.order.payment_status, 'paid');
+
+    const postRecoverDupRes = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9003', 'hash-9003', 'in', 115000, '0905123456', 'FT-9003', 'ORD-903', 'ord-sepay-late', NULL, '{"id":9003}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(postRecoverDupRes.reconciled, true);
+    assert.equal(postRecoverDupRes.duplicate, true);
+    assert.equal(postRecoverDupRes.delivery_count, 3);
+
+    // Cross-shop duplicate order_code on same receiving account and prefix fails closed (AMBIGUOUS_ORDER_CODE)
+    await db.query(`UPDATE shops SET theme_config = '{"paymentConfig":{"mode":"vietqr_auto","bankId":"MB","accountNumber":"0905123456","transferPrefix":"QLAOK"}}'::jsonb WHERE id IN ('sql-shop', 'sql-pub-shop')`);
+    await db.query(`INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items)
+      VALUES ('ord-collide-a', 'ORD-COLLIDE-1', 'sql-shop', 'Bàn A', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb),
+             ('ord-collide-b', 'ORD-COLLIDE-1', 'sql-pub-shop', 'Bàn B', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb)`);
+
+    const collideResA = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9004', 'hash-9004-a', 'in', 60000, '0905123456', 'FT-9004', 'ORD-COLLIDE-1', 'ord-collide-a', NULL, '{"id":9004}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(collideResA.reconciled, false);
+    assert.equal(collideResA.reason_code, 'AMBIGUOUS_ORDER_CODE');
+
+    const collideResB = (await db.query(
+      `SELECT public.reconcile_sepay_order_payment_atomic('sql-pub-shop', '9004', 'hash-9004-b', 'in', 60000, '0905123456', 'FT-9004', 'ORD-COLLIDE-1', 'ord-collide-b', NULL, '{"id":9004}'::jsonb) AS res`
+    )).rows[0].res;
+    assert.equal(collideResB.reconciled, false);
+    assert.equal(collideResB.reason_code, 'AMBIGUOUS_ORDER_CODE');
+
+    const collideOrders = (await db.query("SELECT id, payment_status FROM orders WHERE id IN ('ord-collide-a', 'ord-collide-b')")).rows;
+    assert.equal(collideOrders.every((r) => r.payment_status === 'unpaid'), true);
+
   } finally { await db.close(); }
 });

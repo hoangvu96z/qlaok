@@ -20,6 +20,12 @@ import {
   dbUpsertShopMembership,
   hasShopPermission,
 } from '@/lib/shop-permissions';
+import {
+  assertNoSePaySecretInThemeConfig,
+  dbDeleteShopSePayConfig,
+  dbGetRedactedShopSePayConfig,
+  dbUpsertShopSePayConfig,
+} from '@/lib/sepay-reconciliation';
 import { verifyTableQrSignature } from '@/lib/shop-tables';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
@@ -47,6 +53,27 @@ export async function GET(req: Request) {
   const memberFlag = searchParams.get('member');
   const action = searchParams.get('action');
   const sessionUser = await verifyRequestUser(req);
+
+  if (action === 'sepay_config' && shopId) {
+    const auth = await requireShopOwnerOrAdmin(req, shopId);
+    if (auth.errorResponse) return auth.errorResponse;
+    try {
+      const origin = new URL(req.url, 'http://localhost:3000').origin;
+      const sepayConfig = await dbGetRedactedShopSePayConfig(shopId, {
+        baseOrigin: origin,
+      });
+      return NextResponse.json({ sepayConfig });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Không thể tải cấu hình SePay.';
+      return NextResponse.json(
+        { error: message },
+        { status: message.startsWith('SHOP_NOT_FOUND') ? 404 : 400 }
+      );
+    }
+  }
 
   if (action === 'memberships' && shopId) {
     const auth = await requireShopPermission(req, shopId, 'orders.view');
@@ -276,8 +303,52 @@ export async function POST(req: Request) {
       return NextResponse.json({ deleted });
     }
 
+    if (body?.action === 'upsert_sepay_config') {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      try {
+        const origin = new URL(req.url, 'http://localhost:3000').origin;
+        const sepayConfig = await dbUpsertShopSePayConfig({
+          shopId: targetShopId,
+          secret: typeof body.secret === 'string' ? body.secret : undefined,
+          enabled:
+            body.enabled !== undefined ? Boolean(body.enabled) : undefined,
+          updatedBy: auth.user.sub,
+          baseOrigin: origin,
+        });
+        return NextResponse.json({ sepayConfig });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Không thể lưu cấu hình SePay.';
+        const status = message.startsWith('SEPAY_ENCRYPTION_NOT_CONFIGURED')
+          ? 503
+          : message.startsWith('SHOP_NOT_FOUND')
+            ? 404
+            : 400;
+        return NextResponse.json({ error: message }, { status });
+      }
+    }
+
+    if (body?.action === 'delete_sepay_config') {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const origin = new URL(req.url, 'http://localhost:3000').origin;
+      const sepayConfig = await dbDeleteShopSePayConfig(targetShopId, {
+        baseOrigin: origin,
+      });
+      return NextResponse.json({ sepayConfig });
+    }
+
     const auth = await requireAuthenticatedUser(req);
     if (auth.errorResponse) return auth.errorResponse;
+
+    assertNoSePaySecretInThemeConfig(body?.theme_config);
 
     const effectiveOwnerId =
       auth.user.role === 'admin' && body.owner_id
@@ -321,6 +392,7 @@ export async function PATCH(req: Request) {
     if (patch.theme_config !== undefined && (!incomingTheme || typeof incomingTheme !== 'object' || Array.isArray(incomingTheme))) {
       return NextResponse.json({ error: 'theme_config phải là object' }, { status: 400 });
     }
+    assertNoSePaySecretInThemeConfig(incomingTheme);
     const bankKeys = ['paymentQr', 'paymentConfig'];
     const promoKeys = ['promoBanner', 'welcomePopup', 'flashSale'];
     for (const key of Object.keys(incomingTheme || {})) {

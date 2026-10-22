@@ -4521,3 +4521,104 @@ describe('Suite 14: Kitchen Display System (kitchen-display.ts, KitchenTicketCar
     }
   });
 });
+
+// ============================================================================
+// SUITE 24: SEPAY VIETQR ORDER RECONCILIATION HELPERS
+// ============================================================================
+describe('Suite 24: SePay VietQR order reconciliation helpers', () => {
+  test('24.1 verifySePayWebhookSignature verifies HMAC-SHA256 over exact {timestamp}.{raw_body} bytes', async () => {
+    const { signSePayWebhookPayload, verifySePayWebhookSignature } =
+      await import('@/lib/sepay-reconciliation');
+
+    const rawBody =
+      '{"id":92704,"accountNumber":"0123499999","content":"QLAOK ORD-7788","transferType":"in","transferAmount":120000}';
+    const timestamp = '1761123456';
+    const secret = 'sepay_unit_test_hmac_secret_2026';
+
+    const validSig = signSePayWebhookPayload(rawBody, timestamp, secret);
+    assert.match(validSig, /^sha256=[0-9a-f]{64}$/);
+
+    const okResult = verifySePayWebhookSignature({
+      rawBody: Buffer.from(rawBody, 'utf8'),
+      signatureHeader: validSig,
+      timestampHeader: timestamp,
+      secret,
+    });
+    assert.equal(okResult.valid, true);
+
+    // 1-byte difference in raw body fails signature check even if JSON is semantically identical
+    const whitespaceChanged =
+      '{"id": 92704,"accountNumber":"0123499999","content":"QLAOK ORD-7788","transferType":"in","transferAmount":120000}';
+    const tamperedResult = verifySePayWebhookSignature({
+      rawBody: Buffer.from(whitespaceChanged, 'utf8'),
+      signatureHeader: validSig,
+      timestampHeader: timestamp,
+      secret,
+    });
+    assert.equal(tamperedResult.valid, false);
+    if (!tamperedResult.valid) {
+      assert.equal(tamperedResult.code, 'INVALID_WEBHOOK_SIGNATURE');
+    }
+  });
+
+  test('24.2 correlateSePayOrderFromTransfer requires configured transfer prefix and exact single order_code match', async () => {
+    const { correlateSePayOrderFromTransfer } = await import(
+      '@/lib/sepay-reconciliation'
+    );
+
+    const mockOrderA = {
+      id: 'ord-unit-a',
+      shop_id: 'shop-fnb-001',
+      order_code: 'ORD-5050',
+      table_label: 'Bàn 1',
+      status: 'new' as const,
+      payment_status: 'unpaid' as const,
+      payment_method: 'vietqr' as const,
+      source: 'qr_table' as const,
+      visitor_lang: 'vi' as const,
+      items: [],
+      subtotal_amount: 95000,
+      discount_amount: 0,
+      total_amount: 95000,
+      created_at: '2026-10-22T10:00:00Z',
+      updated_at: '2026-10-22T10:00:00Z',
+    };
+
+    // Compact bank content where space between prefix and order_code is stripped by bank
+    const compactMatch = correlateSePayOrderFromTransfer({
+      transferPrefix: 'QLAOK',
+      content: 'MBVCB.12345.QLAOKORD5050.CT tu KHACH',
+      code: null,
+      shopOrders: [mockOrderA],
+    });
+    assert.equal(compactMatch.status, 'matched');
+    if (compactMatch.status === 'matched') {
+      assert.equal(compactMatch.order.id, 'ord-unit-a');
+      assert.equal(compactMatch.extractedOrderCode, 'ORD-5050');
+    }
+
+    // Missing prefix is rejected even if ORD-5050 appears
+    const missingPrefix = correlateSePayOrderFromTransfer({
+      transferPrefix: 'QLAOK',
+      content: 'THANH TOAN ORD-5050',
+      code: null,
+      shopOrders: [mockOrderA],
+    });
+    assert.equal(missingPrefix.status, 'rejected');
+    if (missingPrefix.status === 'rejected') {
+      assert.equal(missingPrefix.reasonCode, 'ORDER_CODE_MISSING');
+    }
+
+    // Mentioning two distinct order codes is rejected as ambiguous
+    const ambiguous = correlateSePayOrderFromTransfer({
+      transferPrefix: 'QLAOK',
+      content: 'QLAOK ORD-5050 ORD-6060',
+      code: null,
+      shopOrders: [mockOrderA],
+    });
+    assert.equal(ambiguous.status, 'rejected');
+    if (ambiguous.status === 'rejected') {
+      assert.equal(ambiguous.reasonCode, 'AMBIGUOUS_ORDER_CODE');
+    }
+  });
+});

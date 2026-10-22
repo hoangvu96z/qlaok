@@ -97,6 +97,21 @@ export function resetMposStoreForTests() {
   fs.writeFileSync(targetFile, JSON.stringify(initial, null, 2), 'utf8');
 }
 
+export function dbSetOrderCodeForTests(
+  orderId: string,
+  orderCode: string
+): ShopOrder | null {
+  const store = readStore();
+  const idx = store.orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) return null;
+  store.orders[idx] = {
+    ...store.orders[idx],
+    order_code: orderCode.trim(),
+  };
+  writeStore(store);
+  return normalizeOrderRecord(store.orders[idx]);
+}
+
 export function setMposDbClientForTests(
   client: unknown | null,
   forceDbMode?: boolean
@@ -696,7 +711,7 @@ const VALID_PAYMENT_STATUSES = new Set<OrderPaymentStatus>([
   'refunded',
 ]);
 
-function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
+export function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
   const items: OrderLineItem[] = Array.isArray(raw.items)
     ? raw.items.map((line) => ({
         ...line,
@@ -1581,6 +1596,177 @@ export async function dbGetOrderById(
   return localFound ? normalizeOrderRecord(localFound) : null;
 }
 
+/**
+ * Loads all orders for a shop for SePay payment reconciliation.
+ * In DB mode, paginates with `.range()` so orders beyond 1000 rows are never missed.
+ */
+export async function dbGetShopOrdersForReconciliation(
+  shopId: string,
+  clientOverride?: SupabaseClient
+): Promise<ShopOrder[]> {
+  const cleanShopId = (shopId ?? '').trim();
+  if (!cleanShopId) return [];
+
+  if (clientOverride !== undefined || isOrderDbConfigured()) {
+    const sb = clientOverride ?? getActiveDbClient();
+    const seenById = new Map<string, ShopOrder>();
+    const pageSize = STATS_ORDER_PAGE_SIZE;
+    const maxPages = STATS_ORDER_MAX_PAGES;
+
+    let exhausted = false;
+
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      let query = sb
+        .from('orders')
+        .select('*')
+        .eq('shop_id', cleanShopId)
+        .order('created_at', { ascending: false });
+
+      const rangeFn = (
+        query as unknown as {
+          range?: (start: number, end: number) => typeof query;
+        }
+      ).range;
+      const supportsRange = typeof rangeFn === 'function';
+      if (supportsRange) {
+        query = rangeFn.call(query, from, to);
+      }
+
+      const { data, error } = await query;
+      if (error || !Array.isArray(data)) {
+        throw new Error(error?.message || 'DB_READ_FAILED');
+      }
+
+      for (const row of data) {
+        const normalized = normalizeOrderRecord(row as Partial<ShopOrder>);
+        if (normalized.shop_id === cleanShopId && !seenById.has(normalized.id)) {
+          seenById.set(normalized.id, normalized);
+        }
+      }
+
+      if (data.length < pageSize) {
+        exhausted = true;
+        break;
+      }
+
+      if (!supportsRange) {
+        throw new Error(
+          'ORDER_RECONCILIATION_PAGINATION_UNSUPPORTED: Truy vấn đơn hàng đạt giới hạn trang nhưng client không hỗ trợ phân trang .range().'
+        );
+      }
+    }
+
+    if (!exhausted) {
+      throw new Error(
+        `ORDER_RECONCILIATION_PAGE_CAP_EXCEEDED: Số lượng đơn hàng vượt quá giới hạn phân trang an toàn (${maxPages} trang).`
+      );
+    }
+
+    return Array.from(seenById.values());
+  }
+
+  const allOrders = await loadMergedOrders(cleanShopId);
+  return allOrders.filter((o) => o.shop_id === cleanShopId);
+}
+
+/**
+ * Marks a single unpaid VietQR order as paid in the local store (when DB mode is off)
+ * or via `update_order_with_inventory` (if RPC fallback is used), strictly preserving
+ * fulfillment status, items, discounts, totals, and inventory.
+ */
+export async function dbMarkOrderPaidViaSePayInStore(params: {
+  shopId: string;
+  orderId: string;
+  expectedAmount: number;
+  paymentIdempotencyKey: string;
+  paidBy: string;
+  nowIso?: string;
+}): Promise<
+  | { ok: true; order: ShopOrder; previousStatus: OrderStatus }
+  | {
+      ok: false;
+      reasonCode:
+        | 'ORDER_NOT_FOUND'
+        | 'ORDER_CANCELLED'
+        | 'PAYMENT_METHOD_NOT_VIETQR'
+        | 'ORDER_ALREADY_PAID'
+        | 'AMOUNT_MISMATCH'
+        | 'CONFLICTING_BANK_REFERENCE';
+      order?: ShopOrder;
+    }
+> {
+  const store = readStore();
+  const idx = store.orders.findIndex(
+    (o) => o.id === params.orderId && o.shop_id === params.shopId
+  );
+  if (idx === -1) {
+    return { ok: false, reasonCode: 'ORDER_NOT_FOUND' };
+  }
+
+  const existing = normalizeOrderRecord(store.orders[idx]);
+  if (existing.status === 'cancelled') {
+    return { ok: false, reasonCode: 'ORDER_CANCELLED', order: existing };
+  }
+  if (existing.payment_method !== 'vietqr') {
+    return {
+      ok: false,
+      reasonCode: 'PAYMENT_METHOD_NOT_VIETQR',
+      order: existing,
+    };
+  }
+  if (existing.payment_status !== 'unpaid') {
+    return { ok: false, reasonCode: 'ORDER_ALREADY_PAID', order: existing };
+  }
+  if (
+    !Number.isFinite(params.expectedAmount) ||
+    params.expectedAmount <= 0 ||
+    Math.round(Number(existing.total_amount)) !==
+      Math.round(params.expectedAmount)
+  ) {
+    return { ok: false, reasonCode: 'AMOUNT_MISMATCH', order: existing };
+  }
+
+  const duplicateKeyOrder = store.orders.find(
+    (o) =>
+      o.id !== existing.id &&
+      o.payment_idempotency_key === params.paymentIdempotencyKey
+  );
+  if (duplicateKeyOrder) {
+    return {
+      ok: false,
+      reasonCode: 'CONFLICTING_BANK_REFERENCE',
+      order: existing,
+    };
+  }
+
+  const nowIso = params.nowIso || new Date().toISOString();
+  const updated: ShopOrder = {
+    ...existing,
+    // Strictly preserve fulfillment status, items, discounts, and totals:
+    status: existing.status,
+    items: existing.items,
+    subtotal_amount: existing.subtotal_amount,
+    discount_amount: existing.discount_amount,
+    promo_discount_amount: existing.promo_discount_amount,
+    manual_discount_amount: existing.manual_discount_amount,
+    total_amount: existing.total_amount,
+    bill_version: existing.bill_version,
+    payment_method: 'vietqr',
+    payment_status: 'paid',
+    payment_idempotency_key: params.paymentIdempotencyKey,
+    paid_at: nowIso,
+    paid_by: params.paidBy,
+    updated_at: nowIso,
+  };
+
+  store.orders[idx] = updated;
+  writeStore(store);
+
+  return { ok: true, order: updated, previousStatus: existing.status };
+}
+
 export async function dbCreateOrder(params: {
   shop_id: string;
   table_id?: string | null;
@@ -1690,7 +1876,60 @@ export async function dbCreateOrder(params: {
       itemMap
     );
 
-    // 3. Deduct aggregated stock & increment sold_count atomically under lock
+    // 3. Shared server quote/discount/checkout calculation
+    const shouldApplyShopPromotions =
+      Boolean(params.apply_shop_promotions) ||
+      Boolean(params.discount_code) ||
+      params.themeConfigOverride !== undefined;
+
+    const quote = computeSharedOrderQuote({
+      lines: validatedItems,
+      themeConfig,
+      applyShopPromotions: shouldApplyShopPromotions,
+      discountCode: params.discount_code,
+      manualOrderDiscountAmount: params.discount_amount,
+      canApplyManualDiscount: canApplyDiscount,
+    });
+
+    // 4. Resolve a globally unique order_code BEFORE mutating inventory or committing
+    const nowIso = new Date().toISOString();
+    const existingCodes = new Set(
+      store.orders.map((o) => String(o.order_code || '').trim().toUpperCase())
+    );
+    let resolvedOrderCode: string | null = null;
+    let randomCode = Math.floor(100 + Math.random() * 900);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const candidateCode = `ORD-${randomCode}`;
+      let existsInDb = false;
+      if (isOrderDbConfigured()) {
+        const sb = getActiveDbClient();
+        const { data: existingRows, error: lookupError } = await sb
+          .from('orders')
+          .select('id')
+          .eq('order_code', candidateCode);
+        if (lookupError || !Array.isArray(existingRows)) {
+          throw new Error(
+            `ORDER_CODE_LOOKUP_FAILED: ${lookupError?.message || 'Không thể kiểm tra mã đơn hàng trên cơ sở dữ liệu.'}`
+          );
+        }
+        existsInDb = existingRows.length > 0;
+      }
+      if (!existingCodes.has(candidateCode) && !existsInDb) {
+        resolvedOrderCode = candidateCode;
+        break;
+      }
+      randomCode =
+        attempt < 10
+          ? Math.floor(100 + Math.random() * 900)
+          : Math.floor(1000 + Math.random() * 90000);
+    }
+    if (!resolvedOrderCode) {
+      throw new Error(
+        'ORDER_CODE_EXHAUSTED: Không thể sinh mã đơn hàng duy nhất sau tối đa số lần thử cho phép.'
+      );
+    }
+
+    // 5. Deduct aggregated stock & increment sold_count atomically under lock
     const zeroedItemIds: string[] = [];
     for (const [itemId, totalQty] of demandByItem.entries()) {
       const dbItem = itemMap.get(itemId);
@@ -1714,23 +1953,6 @@ export async function dbCreateOrder(params: {
       }
     }
 
-    // 4. Shared server quote/discount/checkout calculation
-    const shouldApplyShopPromotions =
-      Boolean(params.apply_shop_promotions) ||
-      Boolean(params.discount_code) ||
-      params.themeConfigOverride !== undefined;
-
-    const quote = computeSharedOrderQuote({
-      lines: validatedItems,
-      themeConfig,
-      applyShopPromotions: shouldApplyShopPromotions,
-      discountCode: params.discount_code,
-      manualOrderDiscountAmount: params.discount_amount,
-      canApplyManualDiscount: canApplyDiscount,
-    });
-
-    const nowIso = new Date().toISOString();
-    const randomCode = Math.floor(100 + Math.random() * 900);
     const trackingToken = `trk_${randomUUID()}`;
 
     const markCompleted = isStaff && Boolean(params.markCompletedImmediately);
@@ -1764,7 +1986,7 @@ export async function dbCreateOrder(params: {
 
     const newOrder: ShopOrder = {
       id: `ord-${randomUUID()}`,
-      order_code: `ORD-${randomCode}`,
+      order_code: resolvedOrderCode,
       shop_id: params.shop_id,
       table_id: resolvedTableId,
       table_label: normalizedTableLabel,

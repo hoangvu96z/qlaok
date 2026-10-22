@@ -14,7 +14,7 @@ Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào 
 
 - QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn, theo dõi bằng token riêng và 2 nút hỗ trợ nhanh tại bàn đã xác thực QR (**Gọi phục vụ** / **Xin hóa đơn**).
 - Dashboard: tổng quan, đơn hàng/POS, màn hình bếp (KDS `/dashboard/kitchen`), catalog/tồn kho, báo cáo, bài viết, OCR, QR Studio, settings và billing. Onboarding (`/onboarding`) giữ lại quán nháp đã lưu khi bước nhập thực đơn đầu tiên gặp lỗi và dùng ID ổn định (`onboarding:<shopId>:first-category`, `onboarding:<shopId>:first-item`) để thử nhập lại danh mục/món đầu tiên an toàn mà không tạo trùng quán hay món.
-- mPOS & KDS: tạo/sửa đơn, màn hình bếp KDS (`/dashboard/kitchen` lọc đơn đang hoạt động `new/preparing` ưu tiên đơn cũ nhất trước, cảnh báo quá 15 phút và thao tác chạm `new → preparing → completed` chỉ bật cho thành viên có `orders.fulfill`), phục vụ, thu/hoàn tiền, giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in, nhận chuông/thông báo và tiếp nhận/hoàn tất yêu cầu phục vụ từ QR bàn (`pending → acknowledged → resolved`). Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` và yêu cầu xin hóa đơn độc lập hoàn toàn với payment `unpaid/paid/refunded`.
+- mPOS & KDS: tạo/sửa đơn, màn hình bếp KDS (`/dashboard/kitchen` lọc đơn đang hoạt động `new/preparing` ưu tiên đơn cũ nhất trước, cảnh báo quá 15 phút và thao tác chạm `new → preparing → completed` chỉ bật cho thành viên có `orders.fulfill`), phục vụ, thu/hoàn tiền thủ công hoặc đối soát tự động VietQR cho đơn hàng khách qua SePay (`/api/webhooks/sepay/[shopId]`, tách biệt hoàn toàn với nâng cấp gói SaaS `/api/webhooks/payment`), giảm giá, hóa đơn theo bàn/session, ghi nhận yêu cầu in, nhận chuông/thông báo và tiếp nhận/hoàn tất yêu cầu phục vụ từ QR bàn (`pending → acknowledged → resolved`). Server định giá từ catalog; fulfillment `new/preparing/completed/cancelled` và yêu cầu xin hóa đơn độc lập hoàn toàn với payment `unpaid/paid/refunded`. Xem [hướng dẫn đối soát SePay](docs/SEPAY_WEBHOOK_SETUP.md).
 - Quản lý bàn trên web tại `/dashboard/qr-studio`: tạo/sửa tên, mã bàn, khu vực, sức chứa, bật/tắt và lưu trữ; mỗi bàn có QR riêng tự chọn bàn khi mở menu. Báo cáo có tab **Theo bàn**; đơn cũ giữ tên bàn lịch sử và được phân biệt với bàn quản lý/Mang về. Xem [hướng dẫn bàn](docs/TABLE_MANAGEMENT.md).
 - Membership theo shop: `owner`, `cashier`, `staff`, kiểm quyền ở API. Super Admin tại `/admin` dùng kiểm tra quyền server.
 - Storefront hỗ trợ **8 ngôn ngữ**: `vi/en/ko/ja/zh/es/it/ru`, giới hạn theo gói và cấu hình quán; bộ chuyển ngôn ngữ trên storefront tôn trọng đúng danh sách `supported_langs` đã cấu hình của quán (chuẩn hóa qua `normalizeShopSupportedLangs`, giới hạn theo gói của chủ quán). Giao diện quản trị, marketing, auth và mobile hỗ trợ **VI/EN**, mặc định VI; đây là hai miền ngôn ngữ riêng.
@@ -59,7 +59,8 @@ Sao chép mẫu, không commit giá trị thật.
 | Supabase public | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | URL và public key |
 | Backend | `SUPABASE_SERVICE_ROLE_KEY` | DB đặc quyền/RPC/admin và realtime server; chỉ server |
 | Phiên/khởi tạo | `SESSION_SECRET`, `INITIAL_SUPER_ADMIN_PASSWORD` | Secret ký phiên; mật khẩu khởi tạo admin chỉ khi cấu hình rõ |
-| Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS (header `x-webhook-secret`/`Authorization: Apikey …` hoặc HMAC `x-webhook-signature`). **Bắt buộc**: không có giá trị mặc định; nếu thiếu, mọi webhook bị từ chối (503) |
+| Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS (`/api/webhooks/payment`, header `x-webhook-secret`/`Authorization: Apikey …` hoặc HMAC `x-webhook-signature`). **Bắt buộc**: không có giá trị mặc định; nếu thiếu, mọi webhook bị từ chối (503) |
+| SePay đơn hàng quán | `SEPAY_SECRET_ENCRYPTION_KEY` | Khóa chủ AES-256-GCM (tối thiểu 32 ký tự) để mã hóa tại chỗ khóa HMAC SePay của từng cửa hàng trong `public.shop_sepay_configs` cho `/api/webhooks/sepay/[shopId]`. **Bắt buộc** cho tính năng đối soát tự động đơn khách: không có mặc định; thiếu hoặc `< 32` ký tự → lưu cấu hình và nhận webhook trả 503 |
 | Billing dev | `PAYMENT_DEV_SIMULATE` | Tùy chọn, chỉ ngoài production: `true` cho phép chủ quán giả lập webhook (`simulateWebhook`) cho đơn của chính mình. Super Admin luôn giả lập được |
 | Billing VietQR (public) | `NEXT_PUBLIC_SAAS_BANK_BIN`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME`, `NEXT_PUBLIC_SAAS_BANK_NAME` | Tài khoản nhận tiền gói SaaS hiển thị QR ở `/dashboard/billing` (BIN/mã VietQR, số TK, tên chủ TK, tên NH). Thiếu BIN/số TK → trang hiện "chưa cấu hình thanh toán, liên hệ hỗ trợ" thay vì QR giả |
 | Migration | `SUPABASE_ACCESS_TOKEN` | PAT dùng Management API; không cần cho client |
@@ -85,6 +86,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 008_mobile_push_tokens.sql
 009_table_service_requests.sql
 010_shop_order_stats_summary.sql
+011_sepay_order_reconciliation.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
@@ -137,6 +139,7 @@ Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng th
 ## Tài liệu
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): bản đồ code và luồng nghiệp vụ hiện tại.
+- [docs/SEPAY_WEBHOOK_SETUP.md](docs/SEPAY_WEBHOOK_SETUP.md): đối soát tự động VietQR cho đơn hàng khách qua SePay (`/api/webhooks/sepay/[shopId]`), mã hóa secret AES-256-GCM và migration 011.
 - [docs/TABLE_MANAGEMENT.md](docs/TABLE_MANAGEMENT.md): quản lý bàn, QR từng bàn, báo cáo và migration 007.
 - [docs/CODEX_TABLES_REVIEW.md](docs/CODEX_TABLES_REVIEW.md): kết quả kiểm tra độc lập và giới hạn của bản bàn/theme/UI.
 - [docs/APP_REVIEW.md](docs/APP_REVIEW.md): kết quả rà soát, chênh lệch tài liệu và điểm cần theo dõi.

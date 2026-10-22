@@ -471,6 +471,48 @@ export class OrderEventsBroker {
     }
   }
 
+  public notifyOrderChange(shopId: string, orderId?: string): void {
+    const cleanShopId = pickNonEmptyString(shopId);
+    const cleanOrderId = pickNonEmptyString(orderId);
+    if (!cleanShopId && !cleanOrderId) return;
+
+    if (cleanOrderId && cleanShopId) {
+      this.rememberOrderShop(cleanOrderId, cleanShopId);
+    }
+
+    const minimalEvent: OrderSseEvent = {
+      type: 'change',
+      ...(cleanOrderId ? { orderId: cleanOrderId } : {}),
+      ...(cleanShopId ? { shopId: cleanShopId } : {}),
+    };
+
+    const notified = new Set<InternalSubscriber>();
+    if (cleanShopId) {
+      const shopSet = this.shopSubscribers.get(cleanShopId);
+      if (shopSet) {
+        for (const sub of shopSet) {
+          notified.add(sub);
+        }
+      }
+    }
+    if (cleanOrderId) {
+      const orderSet = this.orderSubscribers.get(cleanOrderId);
+      if (orderSet) {
+        for (const sub of orderSet) {
+          notified.add(sub);
+        }
+      }
+    }
+
+    for (const sub of notified) {
+      try {
+        sub.onEvent(minimalEvent);
+      } catch {
+        // ignore individual stream failure
+      }
+    }
+  }
+
   private handlePostgresChange(payload: PostgresOrderChangePayload): void {
     const nextRow =
       payload?.new && typeof payload.new === 'object' ? payload.new : null;
