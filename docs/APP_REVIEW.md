@@ -1,4 +1,4 @@
-> Báo cáo nền của lượt rà soát tài liệu ban đầu (18/10/2026, giữ nguyên tính lịch sử bên dưới). Xem thêm phần **Cập nhật rà soát và đóng lỗi — 22/10/2026** ở cuối tài liệu, [kết quả kiểm thử bàn/theme](CODEX_TABLES_REVIEW.md) và [hướng dẫn quản lý bàn](TABLE_MANAGEMENT.md).
+> Báo cáo nền của lượt rà soát tài liệu ban đầu (18/10/2026, giữ nguyên tính lịch sử bên dưới). Xem thêm phần **Cập nhật rà soát và đóng lỗi — 23/10/2026** ở cuối tài liệu, [kết quả kiểm thử bàn/theme](CODEX_TABLES_REVIEW.md) và [hướng dẫn quản lý bàn](TABLE_MANAGEMENT.md).
 
 # Rà soát app và tài liệu — 18/10/2026 (Lịch sử)
 
@@ -25,7 +25,7 @@ Rà soát cấu trúc và các luồng chính qua CodeGraph explore/node, status
 ## Điểm cần theo dõi cho task tiếp
 
 1. **Webhook SaaS (ghi nhận ngày 18/10/2026 — đã đóng ngày 22/10/2026):** Thời điểm 18/10, `verifyWebhookSignatureOrSecret` còn secret fallback trong source khi không cấu hình env. *Cập nhật hiện trạng 22/10/2026:* `getConfiguredWebhookSecret` và `verifyWebhookSignatureOrSecret` tại `src/app/api/webhooks/payment/route.ts` đã bỏ hoàn toàn secret mặc định; khi thiếu hoặc để trống `PAYMENT_WEBHOOK_SECRET`, endpoint từ chối mọi callback với HTTP `503`.
-2. **Health:** `GET /api/health` gọi seed và vẫn trả `status: ok` dù readiness false; không dùng HTTP 200 làm bằng chứng mọi dịch vụ hoạt động.
+2. **Health (ghi nhận ngày 18/10/2026 — đã đóng/đối chiếu ngày 23/10/2026):** Thời điểm 18/10 ghi nhận `GET /api/health` gọi seed và vẫn trả `status: ok` dù readiness false. *Cập nhật hiện trạng 23/10/2026:* Code hiện tại (`src/app/api/health/route.ts`) và test hồi quy (`tests/admin-review.test.ts`) xác nhận khi readiness thất bại, endpoint trả `status: 'degraded'` và HTTP `503`. Vẫn giữ lưu ý: HTTP 200 đơn thuần không làm bằng chứng mọi dịch vụ hoặc provider tùy chọn đều hoạt động.
 3. **Khả năng mở rộng:** order reload/statistics còn dựa lịch sử đầy đủ; catalog không có stream riêng.
 4. **Tooling:** root `lint` dùng `next lint`, thiếu cấu hình/dependency ESLint; không khẳng định lint pass. CodeGraph status cảnh báo index từ engine cũ; graph không thay compiler/test.
 5. **Tài chính/vận hành:** cần đối chiếu legacy bank-ref archive và local-only orders trước rollout tương ứng; chốt ca/ledger và kiểm thử thiết bị/máy in còn giới hạn trong notes hiện có.
@@ -66,11 +66,12 @@ Node cảnh báo MODULE_TYPELESS_PACKAGE_JSON ở các test TypeScript; suite v�
 5. **Kiểm tra gói và quyền AI OCR (`src/app/api/ai/ocr-menu/route.ts`, `src/app/api/ai/_lib/guard.ts`):** `requireAiOcrPlan` xác định đúng chủ sở hữu của quán đang chọn mà người gọi được phép truy cập để kiểm tra gói có `allowAiOcr` (`403 PLAN_FEATURE_LOCKED` nếu gói không mở), đồng thời bắt buộc nhân viên/thu ngân phải có quyền chuẩn `catalog.manage` (`403 INSUFFICIENT_SHOP_PERMISSION`).
 6. **Lý do hoàn tiền và hủy đơn trên Mobile & Server (`mobile/src/lib/order-actions.ts`, `mobile/src/components/tabs/OrdersTab.tsx`, `mobile/App.tsx`, `src/app/api/orders/route.ts`):** Mobile mở hộp thoại yêu cầu nhập lý do theo ngôn ngữ VI/EN đang chọn trước khi gửi yêu cầu hủy đơn hoặc hoàn tiền (và chặn hủy trực tiếp đơn đã thu tiền khi chưa hoàn tiền); server kiểm tra bắt buộc lý do không rỗng, tối đa 500 ký tự (`CANCEL_REASON_REQUIRED`, `REFUND_REASON_REQUIRED`, `REASON_TOO_LONG`) và lưu `cancelled_reason` / `refund_reason` vào đơn cùng bản ghi audit.
 7. **Bảo lưu bí danh đường dẫn (Slug Aliases) cho QR đã in (`supabase/migrations/014_shop_slug_aliases.sql`, `src/lib/db.ts`, `src/lib/table-helpers.ts`, `src/app/api/shops/route.ts`, `src/app/api/admin/route.ts`, `/s/[slug]`, `/s/[slug]/menu`):** Khi chủ quán hoặc Super Admin đổi `slug`, đường dẫn cũ được lưu bền vững vào `public.shop_slug_aliases` (ngăn đụng độ với quán khác, hỗ trợ đổi nhiều lần hoặc hoàn nguyên về slug cũ của chính quán và không bao giờ che khuất slug canonical đang hoạt động). Truy vấn qua slug cũ phân giải về đúng quán (tôn trọng `is_published` và quyền owner/member/admin), xác thực chữ ký HMAC của QR bàn (`tableQrVerified`) theo `shop.id` và chuyển hướng (`router.replace`) sang URL canonical hiện tại với đầy đủ tham số truy vấn (`src`, `tableId`, `sig`, `table`, `lang`).
+8. **Phản hồi trạng thái degraded của Health Check (`src/app/api/health/route.ts`, `tests/admin-review.test.ts`):** `GET /api/health` khi readiness thất bại (hoặc bảng/seed gặp lỗi) trả `status: 'degraded'` cùng mã HTTP `503` (thay vì trả `status: ok`), đồng thời không auto-seed dữ liệu mẫu trên môi trường `NODE_ENV=production`. Giữ nguyên lưu ý vận hành: mã HTTP `200` từ health check chỉ chứng minh Supabase đã sẵn sàng/kết nối, không chứng minh mọi dịch vụ hoặc nhà cung cấp tùy chọn bên ngoài (như Cloudflare R2, Gemini/AI) đều hoạt động.
 
 ### Kết quả kiểm chứng tại root (23/10/2026)
 
 - Web/mobile typecheck: **pass** (`npm run typecheck`, `npm run typecheck --prefix mobile`).
-- Unit tests: **107/107** pass (`npm run test:unit`).
+- Unit tests: **108/108** pass (`npm run test:unit`).
 - Review tests: **120/120** pass (`npm run test:review`).
 - SQL tests: **1/1** pass (`npm run test:sql`).
 - Mobile tests: **40/40** pass (`npm test --prefix mobile`).
