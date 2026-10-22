@@ -1,18 +1,228 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
+import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   dbCompletePaymentWebhook,
   dbCreatePaymentOrder,
   dbGetBillingData,
   dbSetProfilePlan,
+  getSupabaseDbClient,
+  isSupabaseDbClientOverriddenForTests,
   OFFICIAL_PLAN_PRICES_VND,
 } from '@/lib/db';
+import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
 import {
   requireAuthenticatedUser,
+  requireShopOwnerOrAdmin,
   requireSuperAdmin,
   verifyRequestUser,
+  type VerifiedSessionUser,
 } from '@/lib/server-auth';
-import type { PlanTier } from '@/types/qlaok';
+import { dbGetUserShopMemberships } from '@/lib/shop-permissions';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+import type { PlanTier, ShopRole } from '@/types/qlaok';
+
+function isVerifiedSuperAdmin(
+  user: VerifiedSessionUser | null | undefined
+): boolean {
+  return Boolean(
+    user && user.role === 'admin' && isSuperAdminEmail(user.email)
+  );
+}
+
+interface BillingShopRow {
+  id: string;
+  owner_id: string;
+}
+
+interface BillingMembershipRow {
+  role: ShopRole;
+  is_active: boolean;
+}
+
+interface BillingProfileRow {
+  id: string;
+  email?: string | null;
+  plan?: PlanTier | null;
+}
+
+function forbiddenBillingPermissionResponse(): NextResponse {
+  return NextResponse.json(
+    {
+      error:
+        'Chỉ chủ cửa hàng hoặc Super Admin mới có quyền tạo giao dịch nâng cấp gói.',
+      code: 'INSUFFICIENT_BILLING_PERMISSION',
+    },
+    { status: 403 }
+  );
+}
+
+async function requireBillingOrderAuthority(
+  req: Request,
+  body: Record<string, unknown>
+): Promise<
+  | { user: VerifiedSessionUser; targetOwnerId: string; errorResponse?: undefined }
+  | { user?: undefined; targetOwnerId?: undefined; errorResponse: NextResponse }
+> {
+  const auth = await requireAuthenticatedUser(req);
+  if (auth.errorResponse) return auth;
+  const { user } = auth;
+  const isAdminCaller = isVerifiedSuperAdmin(user);
+
+  const rawOwnerId = body.ownerId ?? body.owner_id;
+  if (
+    rawOwnerId !== undefined &&
+    rawOwnerId !== null &&
+    typeof rawOwnerId !== 'string'
+  ) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error: 'Mã chủ quán (ownerId) không hợp lệ.',
+          code: 'INVALID_OWNER_ID',
+        },
+        { status: isAdminCaller ? 400 : 403 }
+      ),
+    };
+  }
+  const requestedOwnerId =
+    typeof rawOwnerId === 'string' ? rawOwnerId.trim() : '';
+
+  if (!isAdminCaller && requestedOwnerId && requestedOwnerId !== user.sub) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Chỉ Super Admin mới được phép tạo giao dịch nâng cấp gói cho tài khoản chủ quán khác.',
+          code: 'FORBIDDEN_OWNER_TARGET',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (isAdminCaller) {
+    return {
+      user,
+      targetOwnerId: requestedOwnerId || user.sub,
+    };
+  }
+
+  if (user.role === 'cashier' || user.role === 'staff') {
+    return { errorResponse: forbiddenBillingPermissionResponse() };
+  }
+
+  const rawShopId = body.shopId ?? body.shop_id;
+  if (
+    rawShopId !== undefined &&
+    rawShopId !== null &&
+    typeof rawShopId !== 'string'
+  ) {
+    return {
+      errorResponse: NextResponse.json(
+        { error: 'Mã cửa hàng (shopId) không hợp lệ.' },
+        { status: 400 }
+      ),
+    };
+  }
+  const requestedShopId =
+    typeof rawShopId === 'string' ? rawShopId.trim() : '';
+  if (requestedShopId) {
+    const shopOwnerAuth = await requireShopOwnerOrAdmin(req, requestedShopId);
+    if (shopOwnerAuth.errorResponse) {
+      return { errorResponse: shopOwnerAuth.errorResponse };
+    }
+  }
+
+  const activeRoles = new Set<ShopRole>();
+  let ownsShop = false;
+  let hasOwnerProfile = false;
+  const dbActive =
+    isSupabaseDbClientOverriddenForTests() || isSupabaseConfigured();
+
+  if (dbActive) {
+    try {
+      const sb = getSupabaseDbClient();
+      const [shopsRes, membershipsRes, profileRes] = await Promise.all([
+        sb
+          .from('shops')
+          .select('id, owner_id')
+          .eq('owner_id', user.sub)
+          .limit(1)
+          .maybeSingle<BillingShopRow>(),
+        sb
+          .from('shop_memberships')
+          .select<string, BillingMembershipRow>('role, is_active')
+          .eq('user_id', user.sub)
+          .eq('is_active', true),
+        sb
+          .from('profiles')
+          .select('id, email, plan')
+          .eq('id', user.sub)
+          .maybeSingle<BillingProfileRow>(),
+      ]);
+
+      if (shopsRes.error || membershipsRes.error || profileRes.error) {
+        return {
+          errorResponse: NextResponse.json(
+            {
+              error:
+                'Không thể xác minh quyền chủ cửa hàng cho giao dịch nâng cấp gói.',
+              code: 'BILLING_AUTH_CHECK_FAILED',
+            },
+            { status: 403 }
+          ),
+        };
+      }
+
+      ownsShop = Boolean(
+        shopsRes.data?.id && shopsRes.data.owner_id === user.sub
+      );
+      hasOwnerProfile = profileRes.data?.id === user.sub;
+      for (const row of membershipsRes.data ?? []) {
+        if (row.is_active) {
+          activeRoles.add(row.role);
+        }
+      }
+    } catch {
+      return {
+        errorResponse: NextResponse.json(
+          {
+            error:
+              'Không thể xác minh quyền chủ cửa hàng cho giao dịch nâng cấp gói.',
+            code: 'BILLING_AUTH_CHECK_FAILED',
+          },
+          { status: 403 }
+        ),
+      };
+    }
+  } else if (process.env.NODE_ENV !== 'production') {
+    for (const mem of await dbGetUserShopMemberships(user.sub)) {
+      if (mem.is_active) {
+        activeRoles.add(mem.role);
+      }
+    }
+    ownsShop = SEED_SHOPS.some((s) => s.owner_id === user.sub);
+    hasOwnerProfile = user.sub === SEED_PROFILE.id;
+  }
+
+  const hasOwnerMembership = activeRoles.has('owner');
+  const hasStaffOrCashierMembership =
+    activeRoles.has('cashier') || activeRoles.has('staff');
+
+  if (hasStaffOrCashierMembership && !ownsShop && !hasOwnerMembership) {
+    return { errorResponse: forbiddenBillingPermissionResponse() };
+  }
+
+  if (!ownsShop && !hasOwnerMembership && !hasOwnerProfile) {
+    return { errorResponse: forbiddenBillingPermissionResponse() };
+  }
+
+  return {
+    user,
+    targetOwnerId: user.sub,
+  };
+}
 
 /**
  * Returns the configured webhook secret, or null when it is missing/blank.
@@ -82,7 +292,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const requestedOwnerId = searchParams.get('ownerId');
   const resolvedOwnerId =
-    auth.user.role === 'admin' && requestedOwnerId
+    isVerifiedSuperAdmin(auth.user) && requestedOwnerId
       ? requestedOwnerId
       : auth.user.sub;
 
@@ -96,27 +306,30 @@ export async function POST(req: Request) {
     const body = rawBody ? JSON.parse(rawBody) : {};
     const { action, ownerId } = body;
 
-    // 1. Authenticated Shop Owner creates a pending payment order (server decides price)
+    // 1. Authenticated Shop/Profile Owner or Verified Super Admin creates a pending payment order (server decides price)
     if (action === 'create_order') {
-      const auth = await requireAuthenticatedUser(req);
+      const auth = await requireBillingOrderAuthority(req, body);
       if (auth.errorResponse) return auth.errorResponse;
 
-      const targetPlan: PlanTier = body.targetPlan || 'premium';
+      const targetPlan: PlanTier =
+        body.targetPlan === undefined ? 'premium' : body.targetPlan;
       if (targetPlan !== 'basic' && targetPlan !== 'premium') {
         return NextResponse.json(
-          { error: 'Gói nâng cấp không hợp lệ (chỉ hỗ trợ basic hoặc premium).' },
+          {
+            error:
+              'Gói nâng cấp không hợp lệ (chỉ hỗ trợ basic hoặc premium).',
+            code: 'INVALID_TARGET_PLAN',
+          },
           { status: 400 }
         );
       }
 
-      const targetOwnerId =
-        auth.user.role === 'admin' && ownerId ? ownerId : auth.user.sub;
       const authoritativeAmount = OFFICIAL_PLAN_PRICES_VND[targetPlan];
 
       const transaction = await dbCreatePaymentOrder(
         targetPlan,
         authoritativeAmount,
-        targetOwnerId
+        auth.targetOwnerId
       );
       return NextResponse.json({ transaction }, { status: 201 });
     }
@@ -140,7 +353,7 @@ export async function POST(req: Request) {
 
     // 3. SePay / PayOS Webhook completion
     const sessionUser = await verifyRequestUser(req);
-    const isSuperAdminCaller = sessionUser?.role === 'admin';
+    const isSuperAdminCaller = isVerifiedSuperAdmin(sessionUser);
     // Non-admin sandbox simulation is only possible outside production AND
     // when explicitly enabled via PAYMENT_DEV_SIMULATE=true. It is further
     // restricted below to the caller's own pending orders.
@@ -149,7 +362,9 @@ export async function POST(req: Request) {
       process.env.NODE_ENV !== 'production' &&
       process.env.PAYMENT_DEV_SIMULATE === 'true' &&
       body.simulateWebhook === true &&
-      Boolean(sessionUser);
+      Boolean(sessionUser) &&
+      sessionUser?.role !== 'cashier' &&
+      sessionUser?.role !== 'staff';
 
     if (!isSuperAdminCaller && !isDevSandboxSimulator) {
       const verification = verifyWebhookSignatureOrSecret(req, rawBody);
@@ -196,10 +411,14 @@ export async function POST(req: Request) {
           ? Number(body.amount)
           : undefined;
 
+    const webhookFallbackOwnerId = isSuperAdminCaller
+      ? ownerId
+      : sessionUser?.sub;
+
     const result = await dbCompletePaymentWebhook(
       orderCode,
       body.referenceCode || body.bankRefId,
-      ownerId,
+      webhookFallbackOwnerId,
       { verifiedTransferAmount }
     );
     return NextResponse.json({

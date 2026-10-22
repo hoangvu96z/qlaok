@@ -16,7 +16,7 @@ const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export interface VerifiedSessionUser {
   sub: string;
   email: string;
-  role: 'admin' | 'owner';
+  role: 'admin' | 'owner' | 'cashier' | 'staff';
   iat: number;
   exp: number;
 }
@@ -53,7 +53,7 @@ function signBase64Url(input: string, secret: string): string {
 
 export function issueSessionToken(
   user: Pick<Profile, 'id' | 'email'> & {
-    role?: 'admin' | 'owner';
+    role?: 'admin' | 'owner' | 'cashier' | 'staff';
     is_admin?: boolean;
   },
   ttlSeconds = DEFAULT_TTL_SECONDS
@@ -65,10 +65,16 @@ export function issueSessionToken(
     user.role === 'admin' ||
     isSuperAdminEmail(emailLower);
 
+  const resolvedRole: VerifiedSessionUser['role'] = isAdmin
+    ? 'admin'
+    : user.role === 'cashier' || user.role === 'staff'
+      ? user.role
+      : 'owner';
+
   const payload: VerifiedSessionUser = {
     sub: user.id,
     email: emailLower,
-    role: isAdmin ? 'admin' : 'owner',
+    role: resolvedRole,
     iat: nowSec,
     exp: nowSec + ttlSeconds,
   };
@@ -117,10 +123,12 @@ export function verifySessionToken(token?: string | null): VerifiedSessionUser |
     }
 
     // Re-verify admin claim server-side: only authoritative super admin email or DB admin can hold role=admin
-    const resolvedRole: 'admin' | 'owner' =
+    const resolvedRole: VerifiedSessionUser['role'] =
       decoded.role === 'admin' && isSuperAdminEmail(decoded.email)
         ? 'admin'
-        : 'owner';
+        : decoded.role === 'cashier' || decoded.role === 'staff'
+          ? decoded.role
+          : 'owner';
 
     return {
       ...decoded,

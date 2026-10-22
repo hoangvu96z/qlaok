@@ -1090,7 +1090,7 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     );
   });
 
-  test('8.5 (P0 #5) Payment API blocks public switch_plan_direct and rejects unsigned or unknown webhooks', async () => {
+  test('8.5 (P0 #5) Payment API blocks public switch_plan_direct, enforces owner/admin authority on create_order, and rejects unsigned or unknown webhooks', async () => {
     // Public switch_plan_direct without Super Admin token -> 403
     const switchReq = new Request(
       'http://localhost:3000/api/webhooks/payment',
@@ -1105,6 +1105,62 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     );
     const switchRes = await paymentPost(switchReq);
     assert.equal(switchRes.status, 403);
+
+    // Anonymous create_order -> 401
+    const anonCreateOrderRes = await paymentPost(
+      new Request('http://localhost:3000/api/webhooks/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_order',
+          targetPlan: 'premium',
+        }),
+      })
+    );
+    assert.equal(anonCreateOrderRes.status, 401);
+
+    // Seeded cashier/staff create_order -> 403
+    const seededCashierToken = issueSessionToken({
+      id: 'cashier-demo-001',
+      email: 'thungan@qlaok.vn',
+      role: 'owner',
+    });
+    const cashierCreateOrderRes = await paymentPost(
+      new Request('http://localhost:3000/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${seededCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'create_order',
+          targetPlan: 'basic',
+        }),
+      })
+    );
+    assert.equal(cashierCreateOrderRes.status, 403);
+
+    // Non-admin owner attempting to spoof another ownerId on create_order -> 403
+    const demoOwnerToken = issueSessionToken({
+      id: SEED_PROFILE.id,
+      email: SEED_PROFILE.email,
+      role: 'owner',
+    });
+    const spoofOwnerCreateRes = await paymentPost(
+      new Request('http://localhost:3000/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${demoOwnerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'create_order',
+          targetPlan: 'premium',
+          ownerId: 'owner-other-victim',
+        }),
+      })
+    );
+    assert.equal(spoofOwnerCreateRes.status, 403);
 
     // No hardcoded fallback secret exists any more: configure one explicitly for this test.
     // (<16 chars so it never becomes the session signing secret fallback.)
