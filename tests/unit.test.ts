@@ -120,8 +120,11 @@ import {
 } from '@/lib/onboarding-flow';
 import {
   dbBulkImportCatalog,
+  dbGetShopCatalog,
+  dbUpsertItem,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
+import { GET as catalogGet } from '@/app/api/catalog/route';
 import { execFileSync } from 'node:child_process';
 import { canAccessDashboardHref } from '@/lib/dashboard-nav';
 import {
@@ -3331,28 +3334,61 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     let failItemWrite = true;
     let shopPostCalls = 0;
 
+    const shopsStore: Record<string, { owner_id: string }> = {
+      'shop-onboard-idempotent-1': { owner_id: 'owner-onboard-01' },
+    };
+    const profilesStore: Record<string, { plan: string }> = {
+      'owner-onboard-01': { plan: 'premium' },
+    };
+
     const mockSupabaseClient = {
       from(table: string) {
         if (table === 'shops') {
           return {
-            select() {
+            select(_cols?: string) {
               return {
                 limit: async () => ({
                   data: [{ id: 'shop-onboard-idempotent-1' }],
                   error: null,
                 }),
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (col === 'id' && shopsStore[val]) {
+                        return {
+                          data: { owner_id: shopsStore[val].owner_id },
+                          error: null,
+                        };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
               };
             },
           };
         }
         if (table === 'profiles') {
           return {
-            select() {
+            select(_cols?: string) {
               return {
                 limit: async () => ({
                   data: [{ plan: 'premium' }],
                   error: null,
                 }),
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (col === 'id' && profilesStore[val]) {
+                        return {
+                          data: { plan: profilesStore[val].plan },
+                          error: null,
+                        };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
               };
             },
           };
@@ -4620,5 +4656,1056 @@ describe('Suite 24: SePay VietQR order reconciliation helpers', () => {
     if (ambiguous.status === 'rejected') {
       assert.equal(ambiguous.reasonCode, 'AMBIGUOUS_ORDER_CODE');
     }
+  });
+});
+
+// ============================================================================
+// SUITE 25: CATALOG OWNER QUOTA & DBUPSERTITEM PLAN LIMITS
+// ============================================================================
+describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
+  interface MockDbUpsertItemOptions {
+    shops?: Record<string, { id?: string; owner_id?: string | null } | null>;
+    profiles?: Record<string, { id?: string; plan?: string } | null>;
+    categories?: Record<string, { id?: string; shop_id: string } | null>;
+    items?: Record<
+      string,
+      Partial<CatalogItem> & { id: string; shop_id: string; category_id?: string }
+    >;
+    itemCounts?: Record<string, number>;
+    errors?: {
+      shop?: { message: string };
+      profile?: { message: string };
+      category?: { message: string };
+      itemLookup?: { message: string };
+      itemCount?: { message: string };
+      itemInsert?: { message: string };
+      itemUpdate?: { message: string };
+    };
+  }
+
+  function createMockSupabaseForUpsertItem(opts: MockDbUpsertItemOptions) {
+    const itemsStore: Record<
+      string,
+      Partial<CatalogItem> & { id: string; shop_id: string }
+    > = {
+      ...(opts.items || {}),
+    };
+
+    return {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select(_cols?: string) {
+              return {
+                limit: async () => ({
+                  data: [{ id: 'shop-init' }],
+                  error: null,
+                }),
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (opts.errors?.shop) {
+                        return { data: null, error: opts.errors.shop };
+                      }
+                      if (col === 'id') {
+                        const shop = opts.shops?.[val];
+                        if (shop === undefined || shop === null) {
+                          return { data: null, error: null };
+                        }
+                        return { data: shop, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            select(_cols?: string) {
+              return {
+                limit: async () => ({
+                  data: [{ id: 'unrelated-first-profile', plan: 'premium' }],
+                  error: null,
+                }),
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (opts.errors?.profile) {
+                        return { data: null, error: opts.errors.profile };
+                      }
+                      if (col === 'id') {
+                        const profile = opts.profiles?.[val];
+                        if (profile === undefined || profile === null) {
+                          return { data: null, error: null };
+                        }
+                        return { data: profile, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'categories') {
+          return {
+            select(_cols?: string) {
+              return {
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (opts.errors?.category) {
+                        return { data: null, error: opts.errors.category };
+                      }
+                      if (col === 'id') {
+                        const cat = opts.categories?.[val];
+                        if (cat === undefined || cat === null) {
+                          return { data: null, error: null };
+                        }
+                        return { data: cat, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'items') {
+          return {
+            select(
+              _cols?: string,
+              selectOpts?: { count?: string; head?: boolean }
+            ) {
+              return {
+                eq(col: string, val: string) {
+                  if (selectOpts?.head) {
+                    if (opts.errors?.itemCount) {
+                      return Promise.resolve({
+                        count: null,
+                        data: null,
+                        error: opts.errors.itemCount,
+                      });
+                    }
+                    const count =
+                      col === 'shop_id' && opts.itemCounts?.[val] !== undefined
+                        ? opts.itemCounts[val]
+                        : Object.values(itemsStore).filter(
+                            (i) => i.shop_id === val
+                          ).length;
+                    return Promise.resolve({ count, data: null, error: null });
+                  }
+                  return {
+                    maybeSingle: async () => {
+                      if (opts.errors?.itemLookup) {
+                        return { data: null, error: opts.errors.itemLookup };
+                      }
+                      if (col === 'id') {
+                        const item = itemsStore[val];
+                        if (!item) return { data: null, error: null };
+                        return { data: item, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            update(patch: Partial<CatalogItem>) {
+              return {
+                eq(col: string, val: string) {
+                  return {
+                    select() {
+                      return {
+                        single: async () => {
+                          if (opts.errors?.itemUpdate) {
+                            return { data: null, error: opts.errors.itemUpdate };
+                          }
+                          if (col === 'id') {
+                            const existing = itemsStore[val];
+                            if (!existing) {
+                              return {
+                                data: null,
+                                error: { message: 'Item not found' },
+                              };
+                            }
+                            const updated = { ...existing, ...patch };
+                            itemsStore[val] = updated;
+                            return { data: updated, error: null };
+                          }
+                          return {
+                            data: null,
+                            error: { message: 'Item not found' },
+                          };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            insert(payload: CatalogItem) {
+              return {
+                select() {
+                  return {
+                    single: async () => {
+                      if (opts.errors?.itemInsert) {
+                        return { data: null, error: opts.errors.itemInsert };
+                      }
+                      itemsStore[payload.id] = payload;
+                      return { data: payload, error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        throw new Error(`Unexpected table in test mock: ${table}`);
+      },
+    };
+  }
+
+  test('25.1 an owner on Free or Basic at cap is rejected even when an unrelated profile is Premium', async () => {
+    // 1. Free plan at cap
+    const freeCap = PLAN_CONFIGS.free.maxItems;
+    const mockFreeDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-free-1': { id: 'shop-free-1', owner_id: 'owner-free-1' },
+      },
+      profiles: {
+        'owner-free-1': { id: 'owner-free-1', plan: 'free' },
+        'unrelated-premium-user': { id: 'unrelated-premium-user', plan: 'premium' },
+      },
+      categories: {
+        'cat-free-1': { id: 'cat-free-1', shop_id: 'shop-free-1' },
+      },
+      itemCounts: {
+        'shop-free-1': freeCap,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockFreeDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-free-1',
+            category_id: 'cat-free-1',
+            name_i18n: { vi: 'Món thứ 6' },
+            price: 25000,
+          });
+        },
+        (err: Error) => {
+          assert.match(err.message, /PLAN_LIMIT_REACHED/);
+          assert.match(err.message, new RegExp(String(freeCap)));
+          return true;
+        }
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 2. Basic plan at cap
+    const basicCap = PLAN_CONFIGS.basic.maxItems;
+    const mockBasicDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-basic-1': { id: 'shop-basic-1', owner_id: 'owner-basic-1' },
+      },
+      profiles: {
+        'owner-basic-1': { id: 'owner-basic-1', plan: 'basic' },
+        'unrelated-premium-user': { id: 'unrelated-premium-user', plan: 'premium' },
+      },
+      categories: {
+        'cat-basic-1': { id: 'cat-basic-1', shop_id: 'shop-basic-1' },
+      },
+      itemCounts: {
+        'shop-basic-1': basicCap,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockBasicDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-basic-1',
+            category_id: 'cat-basic-1',
+            name_i18n: { vi: 'Món thứ 26' },
+            price: 35000,
+          });
+        },
+        (err: Error) => {
+          assert.match(err.message, /PLAN_LIMIT_REACHED/);
+          assert.match(err.message, new RegExp(String(basicCap)));
+          return true;
+        }
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.2 a Premium owner can create items above the Basic cap', async () => {
+    const basicCap = PLAN_CONFIGS.basic.maxItems;
+    const mockPremiumDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-prem-1': { id: 'shop-prem-1', owner_id: 'owner-prem-1' },
+      },
+      profiles: {
+        'owner-prem-1': { id: 'owner-prem-1', plan: 'premium' },
+        'unrelated-free-user': { id: 'unrelated-free-user', plan: 'free' },
+      },
+      categories: {
+        'cat-prem-1': { id: 'cat-prem-1', shop_id: 'shop-prem-1' },
+      },
+      itemCounts: {
+        'shop-prem-1': basicCap + 5,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockPremiumDb);
+      const created = await dbUpsertItem({
+        shop_id: 'shop-prem-1',
+        category_id: 'cat-prem-1',
+        name_i18n: { vi: 'Món Premium trên mức Basic' },
+        price: 89000,
+      });
+
+      assert.ok(created.id);
+      assert.equal(created.shop_id, 'shop-prem-1');
+      assert.equal(created.category_id, 'cat-prem-1');
+      assert.equal(created.name_i18n.vi, 'Món Premium trên mức Basic');
+      assert.equal(created.price, 89000);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.3 updating an existing item at cap stays allowed', async () => {
+    const freeCap = PLAN_CONFIGS.free.maxItems;
+    const mockCappedDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-cap-1': { id: 'shop-cap-1', owner_id: 'owner-cap-1' },
+      },
+      profiles: {
+        'owner-cap-1': { id: 'owner-cap-1', plan: 'free' },
+      },
+      categories: {
+        'cat-cap-1': { id: 'cat-cap-1', shop_id: 'shop-cap-1' },
+      },
+      items: {
+        'item-existing-cap': {
+          id: 'item-existing-cap',
+          shop_id: 'shop-cap-1',
+          category_id: 'cat-cap-1',
+          name_i18n: { vi: 'Tên món cũ' },
+          price: 20000,
+        },
+      },
+      itemCounts: {
+        'shop-cap-1': freeCap,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockCappedDb);
+      const updated = await dbUpsertItem({
+        id: 'item-existing-cap',
+        shop_id: 'shop-cap-1',
+        category_id: 'cat-cap-1',
+        name_i18n: { vi: 'Tên món đã cập nhật' },
+        price: 32000,
+      });
+
+      assert.equal(updated.id, 'item-existing-cap');
+      assert.equal(updated.name_i18n.vi, 'Tên món đã cập nhật');
+      assert.equal(updated.price, 32000);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.4 missing shop and missing owner profile fail closed', async () => {
+    // 1. Missing shop entirely
+    const mockMissingShopDb = createMockSupabaseForUpsertItem({
+      shops: {},
+      categories: {
+        'cat-orphan': { id: 'cat-orphan', shop_id: 'shop-missing' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockMissingShopDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-missing',
+            category_id: 'cat-orphan',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /SHOP_NOT_FOUND/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 2. Shop exists but has null/empty owner_id
+    const mockShopWithoutOwnerDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-no-owner': { id: 'shop-no-owner', owner_id: null },
+      },
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-no-owner' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockShopWithoutOwnerDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-no-owner',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /OWNER_PROFILE_NOT_FOUND/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 3. Shop has owner_id but profile does not exist
+    const mockMissingProfileDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-with-ghost-owner': {
+          id: 'shop-with-ghost-owner',
+          owner_id: 'owner-ghost',
+        },
+      },
+      profiles: {},
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-with-ghost-owner' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockMissingProfileDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-with-ghost-owner',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /OWNER_PROFILE_NOT_FOUND/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.5 database lookup errors fail closed (shop, profile, item count, category, item lookup)', async () => {
+    // 1. Shop lookup error fails closed
+    const mockShopErrorDb = createMockSupabaseForUpsertItem({
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-err' },
+      },
+      errors: {
+        shop: { message: 'SHOPS_QUERY_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockShopErrorDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-err',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /SHOPS_QUERY_FAILED/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 2. Profile lookup error fails closed
+    const mockProfileErrorDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-err': { id: 'shop-err', owner_id: 'owner-err' },
+      },
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-err' },
+      },
+      errors: {
+        profile: { message: 'PROFILES_QUERY_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockProfileErrorDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-err',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /PROFILES_QUERY_FAILED/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 3. Item count query error fails closed
+    const mockCountErrorDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-err': { id: 'shop-err', owner_id: 'owner-err' },
+      },
+      profiles: {
+        'owner-err': { id: 'owner-err', plan: 'premium' },
+      },
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-err' },
+      },
+      errors: {
+        itemCount: { message: 'ITEMS_COUNT_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockCountErrorDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-err',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /ITEMS_COUNT_FAILED/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 4. Category lookup error fails closed
+    const mockCatErrorDb = createMockSupabaseForUpsertItem({
+      errors: {
+        category: { message: 'CATEGORY_QUERY_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockCatErrorDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-err',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món mới' },
+          });
+        },
+        /CATEGORY_QUERY_FAILED/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 5. Existing item lookup error fails closed
+    const mockItemLookupErrorDb = createMockSupabaseForUpsertItem({
+      categories: {
+        'cat-1': { id: 'cat-1', shop_id: 'shop-err' },
+      },
+      errors: {
+        itemLookup: { message: 'ITEM_LOOKUP_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockItemLookupErrorDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            id: 'item-existing-test',
+            shop_id: 'shop-err',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Món cập nhật' },
+          });
+        },
+        /ITEM_LOOKUP_FAILED/
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.6 owner profile with missing or invalid plan falls back to free cap and rejects creation at cap', async () => {
+    const freeCap = PLAN_CONFIGS.free.maxItems;
+
+    // 1. Invalid plan string falls back to Free cap even though legacy limit profile is Premium
+    const mockInvalidPlanDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-invalid-plan': { id: 'shop-invalid-plan', owner_id: 'owner-invalid-plan' },
+      },
+      profiles: {
+        'owner-invalid-plan': { id: 'owner-invalid-plan', plan: 'enterprise_invalid' },
+      },
+      categories: {
+        'cat-invalid': { id: 'cat-invalid', shop_id: 'shop-invalid-plan' },
+      },
+      itemCounts: {
+        'shop-invalid-plan': freeCap,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockInvalidPlanDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-invalid-plan',
+            category_id: 'cat-invalid',
+            name_i18n: { vi: 'Món thứ 6 với plan không hợp lệ' },
+            price: 25000,
+          });
+        },
+        (err: Error) => {
+          assert.match(err.message, /PLAN_LIMIT_REACHED/);
+          assert.match(err.message, new RegExp(String(freeCap)));
+          return true;
+        }
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 2. Missing/undefined plan falls back to Free cap even though legacy limit profile is Premium
+    const mockMissingPlanDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-missing-plan': { id: 'shop-missing-plan', owner_id: 'owner-missing-plan' },
+      },
+      profiles: {
+        'owner-missing-plan': { id: 'owner-missing-plan' },
+      },
+      categories: {
+        'cat-missing': { id: 'cat-missing', shop_id: 'shop-missing-plan' },
+      },
+      itemCounts: {
+        'shop-missing-plan': freeCap,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockMissingPlanDb);
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-missing-plan',
+            category_id: 'cat-missing',
+            name_i18n: { vi: 'Món thứ 6 khi thiếu plan' },
+            price: 25000,
+          });
+        },
+        (err: Error) => {
+          assert.match(err.message, /PLAN_LIMIT_REACHED/);
+          assert.match(err.message, new RegExp(String(freeCap)));
+          return true;
+        }
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  interface MockDbGetShopCatalogOptions {
+    shops?: Record<string, { id: string; owner_id?: string | null; name?: string }>;
+    profiles?: Record<string, { id?: string; plan?: unknown } | null>;
+    firstProfile?: { id?: string; plan?: unknown };
+    categories?: Record<string, Category[]>;
+    items?: Record<string, Partial<CatalogItem>[]>;
+    recordedColumns?: { profiles?: string[] };
+    errors?: {
+      shop?: { message: string };
+      ownerProfile?: { message: string };
+      categories?: { message: string };
+      items?: { message: string };
+    };
+  }
+
+  function createMockSupabaseForGetShopCatalog(opts: MockDbGetShopCatalogOptions) {
+    return {
+      from(table: string) {
+        if (table === 'shops') {
+          let selectedCols: string | undefined;
+          let filterShopId: string | undefined;
+          const chain = {
+            order(_col?: string, _opts?: { ascending: boolean }) {
+              return chain;
+            },
+            eq(col: string, val: string) {
+              if (col === 'id') filterShopId = val;
+              return chain;
+            },
+            limit: async (count: number) => {
+              if (opts.errors?.shop) {
+                return { data: null, error: opts.errors.shop };
+              }
+              if (filterShopId) {
+                const found = opts.shops?.[filterShopId];
+                return { data: found ? [found] : [], error: null };
+              }
+              if (selectedCols?.trim() === 'id') {
+                const all = Object.values(opts.shops || {});
+                const probeRow = all[0] ? { id: all[0].id } : { id: 'disposable-seed-probe-shop' };
+                return { data: [probeRow].slice(0, count), error: null };
+              }
+              const all = Object.values(opts.shops || {});
+              return { data: all.slice(0, count), error: null };
+            },
+          };
+          return {
+            select(cols?: string) {
+              selectedCols = cols;
+              return chain;
+            },
+          };
+        }
+
+        if (table === 'categories') {
+          let filterShopId: string | undefined;
+          return {
+            select(_cols?: string) {
+              const chain = {
+                eq(col: string, val: string) {
+                  if (col === 'shop_id') filterShopId = val;
+                  return chain;
+                },
+                order: async (_col?: string, _opts?: { ascending: boolean }) => {
+                  if (opts.errors?.categories) {
+                    return { data: null, error: opts.errors.categories };
+                  }
+                  const list = filterShopId ? (opts.categories?.[filterShopId] || []) : [];
+                  return { data: list, error: null };
+                },
+              };
+              return chain;
+            },
+          };
+        }
+
+        if (table === 'items') {
+          let filterShopId: string | undefined;
+          return {
+            select(_cols?: string) {
+              const chain = {
+                eq(col: string, val: string) {
+                  if (col === 'shop_id') filterShopId = val;
+                  return chain;
+                },
+                order: async (_col?: string, _opts?: { ascending: boolean }) => {
+                  if (opts.errors?.items) {
+                    return { data: null, error: opts.errors.items };
+                  }
+                  const list = filterShopId ? (opts.items?.[filterShopId] || []) : [];
+                  return { data: list, error: null };
+                },
+              };
+              return chain;
+            },
+          };
+        }
+
+        if (table === 'profiles') {
+          return {
+            select(cols?: string) {
+              if (opts.recordedColumns?.profiles && cols) {
+                opts.recordedColumns.profiles.push(cols);
+              }
+              return {
+                limit: async () => ({
+                  data: [
+                    opts.firstProfile || {
+                      id: 'unrelated-first-profile',
+                      plan: 'premium',
+                    },
+                  ],
+                  error: null,
+                }),
+                eq(col: string, val: string) {
+                  return {
+                    maybeSingle: async () => {
+                      if (opts.errors?.ownerProfile) {
+                        return { data: null, error: opts.errors.ownerProfile };
+                      }
+                      if (col === 'id') {
+                        const prof = opts.profiles?.[val];
+                        if (prof === undefined || prof === null) {
+                          return { data: null, error: null };
+                        }
+                        return { data: prof, error: null };
+                      }
+                      return { data: null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+
+        throw new Error(`Unexpected table in mock: ${table}`);
+      },
+    };
+  }
+
+  test('25.7 dbGetShopCatalog returns ownerPlan derived from shop owner_id even when unrelated profile has different plan', async () => {
+    const recordedColumns: { profiles: string[] } = { profiles: [] };
+    const mockDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        'shop-owner-basic': {
+          id: 'shop-owner-basic',
+          owner_id: 'owner-basic-01',
+          name: 'Quán Basic',
+        },
+        'shop-owner-free': {
+          id: 'shop-owner-free',
+          owner_id: 'owner-free-01',
+          name: 'Quán Free',
+        },
+        'shop-owner-premium': {
+          id: 'shop-owner-premium',
+          owner_id: 'owner-prem-01',
+          name: 'Quán Premium',
+        },
+      },
+      profiles: {
+        'owner-basic-01': { id: 'owner-basic-01', plan: 'basic' },
+        'owner-free-01': { id: 'owner-free-01', plan: 'free' },
+        'owner-prem-01': { id: 'owner-prem-01', plan: 'premium' },
+      },
+      // The unrelated profile returned by profiles.select('*').limit(1) has plan 'premium'
+      firstProfile: { id: 'unrelated-first-profile', plan: 'premium' },
+      recordedColumns,
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockDb);
+
+      // 1. Basic owner returns ownerPlan: 'basic' even though unrelated first profile is 'premium'
+      const catalogBasic = await dbGetShopCatalog('shop-owner-basic');
+      assert.equal(catalogBasic.ownerPlan, 'basic');
+      assert.equal(catalogBasic.profile.plan, 'premium', 'Preserves existing legacy profile field');
+      assert.equal(catalogBasic.shop.id, 'shop-owner-basic');
+      assert.ok(Array.isArray(catalogBasic.categories));
+      assert.ok(Array.isArray(catalogBasic.items));
+
+      // 2. Free owner returns ownerPlan: 'free' even though unrelated first profile is 'premium'
+      const catalogFree = await dbGetShopCatalog('shop-owner-free');
+      assert.equal(catalogFree.ownerPlan, 'free');
+
+      // 3. Premium owner returns ownerPlan: 'premium'
+      const catalogPrem = await dbGetShopCatalog('shop-owner-premium');
+      assert.equal(catalogPrem.ownerPlan, 'premium');
+
+      // 4. Exact column selection check: Verify that only 'plan' column was selected from profiles for ownerPlan
+      assert.ok(
+        recordedColumns.profiles.includes('plan'),
+        'Must select only the "plan" column for ownerPlan lookup'
+      );
+      // Ensure ownerPlan is a scalar string and never serialized the full owner profile
+      assert.equal(typeof catalogBasic.ownerPlan, 'string');
+      assert.equal(typeof catalogFree.ownerPlan, 'string');
+      assert.equal(typeof catalogPrem.ownerPlan, 'string');
+
+      // 5. GET /api/catalog passes through ownerPlan to client response
+      const apiRes = await catalogGet(
+        new Request('http://localhost:3000/api/catalog?shopId=shop-owner-basic')
+      );
+      assert.equal(apiRes.status, 200);
+      const apiBody = await apiRes.json();
+      assert.equal(apiBody.ownerPlan, 'basic');
+      assert.equal(apiBody.shop.id, 'shop-owner-basic');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.8 dbGetShopCatalog normalizes ownerPlan safely and falls back to free on missing, invalid, or query error', async () => {
+    // 1. Missing owner profile falls back to free
+    const mockMissingProfileDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        'shop-missing-owner': {
+          id: 'shop-missing-owner',
+          owner_id: 'non-existent-owner',
+        },
+      },
+      profiles: {},
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockMissingProfileDb);
+      const catalog = await dbGetShopCatalog('shop-missing-owner');
+      assert.equal(catalog.ownerPlan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 2. Shop without owner_id falls back to free
+    const mockNullOwnerDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        'shop-null-owner': {
+          id: 'shop-null-owner',
+          owner_id: null,
+        },
+      },
+      profiles: {},
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockNullOwnerDb);
+      const catalog = await dbGetShopCatalog('shop-null-owner');
+      assert.equal(catalog.ownerPlan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 3. Invalid plan string (e.g. 'enterprise', 'vip', '') falls back to free and never grants Premium
+    const mockInvalidPlanDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        'shop-invalid-plan': {
+          id: 'shop-invalid-plan',
+          owner_id: 'owner-invalid',
+        },
+      },
+      profiles: {
+        'owner-invalid': { id: 'owner-invalid', plan: 'enterprise_custom' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockInvalidPlanDb);
+      const catalog = await dbGetShopCatalog('shop-invalid-plan');
+      assert.equal(catalog.ownerPlan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 4. Query failure on owner profile lookup falls back to free and never grants Premium
+    const mockProfileErrorDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        'shop-err': { id: 'shop-err', owner_id: 'owner-err' },
+      },
+      errors: {
+        ownerProfile: { message: 'PROFILES_QUERY_FAILED' },
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockProfileErrorDb);
+      const catalog = await dbGetShopCatalog('shop-err');
+      assert.equal(catalog.ownerPlan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // 5. Missing shop returns fallback seed with ownerPlan: 'free'
+    const mockEmptyShopDb = createMockSupabaseForGetShopCatalog({
+      shops: {},
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockEmptyShopDb);
+      const catalog = await dbGetShopCatalog('shop-nonexistent');
+      assert.equal(catalog.ownerPlan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.9 DashboardCatalogPage UI quota display uses ownerPlan and ignores useDashboard profile.plan', () => {
+    const ssrScript = `
+      import { registerHooks } from "node:module";
+      import React from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      registerHooks({
+        load(url, context, next) {
+          if (url.includes("dashboard-context")) {
+            return {
+              format: "module",
+              shortCircuit: true,
+              source: "export function useDashboard() { return { activeShop: { id: 'shop-test-ui', name: 'UI Shop', vertical: 'fnb' }, profile: { id: 'owner-unrelated', plan: 'premium' } }; }",
+            };
+          }
+          return next(url, context);
+        }
+      });
+
+      const { default: CatalogPage } = await import("./src/app/(dashboard)/dashboard/catalog/page.tsx");
+      const html = renderToStaticMarkup(React.createElement(CatalogPage));
+      console.log(JSON.stringify({
+        hasPremium: html.includes("Gói Cao Cấp (Premium)"),
+        hasFree: html.includes("Gói Khởi Đầu (Free)"),
+        hasUnlimited: html.includes("Không giới hạn"),
+        hasFreeCap: html.includes("5 món"),
+      }));
+    `;
+
+    const rawOut = execFileSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--import',
+        './tests/register-ts.mjs',
+        '--import',
+        './tests/tsx-review-loader.mjs',
+        '--input-type=module',
+        '-e',
+        ssrScript,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 30000 }
+    );
+
+    const { hasPremium, hasFree, hasUnlimited, hasFreeCap } = JSON.parse(rawOut.trim()) as {
+      hasPremium: boolean;
+      hasFree: boolean;
+      hasUnlimited: boolean;
+      hasFreeCap: boolean;
+    };
+
+    assert.equal(
+      hasPremium,
+      false,
+      'DashboardCatalogPage must never show Premium from useDashboard().profile.plan'
+    );
+    assert.equal(
+      hasUnlimited,
+      false,
+      'DashboardCatalogPage must not show unlimited items when ownerPlan is not premium'
+    );
+    assert.equal(
+      hasFree,
+      true,
+      'DashboardCatalogPage must display Free ownerPlan quota label'
+    );
+    assert.equal(
+      hasFreeCap,
+      true,
+      'DashboardCatalogPage must display Free 5-item quota limit'
+    );
   });
 });

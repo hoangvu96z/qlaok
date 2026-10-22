@@ -805,10 +805,11 @@ export async function dbGetShopCatalog(shopId?: string) {
       categories: [],
       items: [],
       profile: SEED_PROFILE,
+      ownerPlan: 'free' as PlanTier,
     };
   }
 
-  const [{ data: categories }, { data: items }, { data: profiles }] =
+  const [{ data: categories }, { data: items }, { data: profiles }, ownerProfileRes] =
     await Promise.all([
       sb
         .from('categories')
@@ -821,7 +822,27 @@ export async function dbGetShopCatalog(shopId?: string) {
         .eq('shop_id', shop.id)
         .order('sort_order', { ascending: true }),
       sb.from('profiles').select('*').limit(1),
+      (async () => {
+        if (!shop.owner_id) return { data: null, error: null };
+        try {
+          return await sb
+            .from('profiles')
+            .select('plan')
+            .eq('id', shop.owner_id)
+            .maybeSingle();
+        } catch (err) {
+          return { data: null, error: err };
+        }
+      })(),
     ]);
+
+  let ownerPlan: PlanTier = 'free';
+  if (ownerProfileRes && !ownerProfileRes.error && ownerProfileRes.data) {
+    const rawPlan = (ownerProfileRes.data as { plan?: unknown }).plan;
+    if (rawPlan === 'basic' || rawPlan === 'premium') {
+      ownerPlan = rawPlan;
+    }
+  }
 
   const normalizedItems = (items || []).map((i) => ({
     ...i,
@@ -837,6 +858,7 @@ export async function dbGetShopCatalog(shopId?: string) {
     categories: (categories || []) as Category[],
     items: enrichItemsWithInventory(normalizedItems),
     profile: (profiles?.[0] as Profile) || SEED_PROFILE,
+    ownerPlan,
   };
 }
 
@@ -968,15 +990,43 @@ export async function dbUpsertItem(
     }
   }
 
-  const [{ count }, { data: profiles }] = await Promise.all([
-    sb
-      .from('items')
-      .select('*', { count: 'exact', head: true })
-      .eq('shop_id', item.shop_id),
-    sb.from('profiles').select('plan').limit(1),
-  ]);
+  const [{ count, error: countError }, { data: shop, error: shopError }] =
+    await Promise.all([
+      sb
+        .from('items')
+        .select('*', { count: 'exact', head: true })
+        .eq('shop_id', item.shop_id),
+      sb
+        .from('shops')
+        .select('owner_id')
+        .eq('id', item.shop_id)
+        .maybeSingle(),
+    ]);
 
-  const currentPlan = (profiles?.[0]?.plan as PlanTier) || 'premium';
+  if (shopError) throw new Error(shopError.message);
+  if (!shop) {
+    throw new Error('SHOP_NOT_FOUND: Cửa hàng không tồn tại.');
+  }
+  if (!shop.owner_id) {
+    throw new Error('OWNER_PROFILE_NOT_FOUND: Không tìm thấy thông tin chủ cửa hàng.');
+  }
+
+  const { data: ownerProfile, error: profileError } = await sb
+    .from('profiles')
+    .select('plan')
+    .eq('id', shop.owner_id)
+    .maybeSingle();
+
+  if (profileError) throw new Error(profileError.message);
+  if (!ownerProfile) {
+    throw new Error('OWNER_PROFILE_NOT_FOUND: Không tìm thấy thông tin chủ cửa hàng.');
+  }
+
+  if (countError) throw new Error(countError.message);
+
+  const rawPlan = ownerProfile.plan;
+  const currentPlan: PlanTier =
+    rawPlan === 'basic' || rawPlan === 'premium' ? rawPlan : 'free';
   const check = canAddMoreItems(currentPlan, count || 0);
   if (!check.allowed) {
     throw new Error(check.reason || 'PLAN_LIMIT_REACHED');

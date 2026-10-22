@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
-import { CatalogItem, Category } from '@/types/qlaok';
+import { CatalogItem, Category, PlanTier } from '@/types/qlaok';
 import { PLAN_CONFIGS, formatPlanLimitError } from '@/lib/plan-limits';
 import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
 import { TranslationEditorModal } from '@/components/dashboard/TranslationEditorModal';
@@ -29,7 +29,7 @@ interface CatalogMutationError {
 }
 
 export default function DashboardCatalogPage() {
-  const { activeShop, profile } = useDashboard();
+  const { activeShop } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
@@ -38,6 +38,7 @@ export default function DashboardCatalogPage() {
   const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
+  const [ownerPlan, setOwnerPlan] = useState<PlanTier>('free');
   const [loading, setLoading] = useState(true);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
     'all'
@@ -62,6 +63,10 @@ export default function DashboardCatalogPage() {
         const data = await res.json();
         setCategories(data.categories || []);
         setItems(data.items || []);
+        const rawPlan = data?.ownerPlan;
+        setOwnerPlan(
+          rawPlan === 'basic' || rawPlan === 'premium' ? rawPlan : 'free'
+        );
       } catch {
         // ignore network errors
       } finally {
@@ -75,6 +80,7 @@ export default function DashboardCatalogPage() {
     setCategories([]);
     setItems([]);
     setSelectedCategoryId('all');
+    setOwnerPlan('free');
     void loadCatalog(false);
   }, [loadCatalog]);
 
@@ -417,7 +423,7 @@ export default function DashboardCatalogPage() {
     );
   }
 
-  const planTier = profile?.plan || 'free';
+  const planTier = ownerPlan;
   const planCfg = PLAN_CONFIGS[planTier];
   const itemLimitReached = items.length >= planCfg.maxItems;
   const planLabel =
