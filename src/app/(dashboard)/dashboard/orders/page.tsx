@@ -1931,17 +1931,13 @@ export default function CounterOrdersPage() {
                       type="button"
                       disabled={updatingId === qrOrderModal.id}
                       onClick={async () => {
-                        const targetOrder = qrOrderModal;
-                        setQrOrderModal(null);
-                        await handleUpdateOrder(
-                          targetOrder.id,
-                          {
-                            payment_status: 'paid',
-                            payment_method: 'vietqr',
-                          },
-                          true,
-                          'pay'
-                        );
+                        const updated = await requestMarkPaid(qrOrderModal, {
+                          method: 'vietqr',
+                          forcePrint: true,
+                        });
+                        if (updated) {
+                          setQrOrderModal(null);
+                        }
                       }}
                       className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
                     >

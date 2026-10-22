@@ -31,6 +31,17 @@ test('orders page guards destructive actions and handles expired sessions', () =
   );
   assert.match(src, /cancelled_reason: result\.reason/);
   assert.match(src, /refund_reason: result\.reason/);
+  const qrModalMatch = src.match(
+    /\{\/\* VietQR \/ Custom QR Table Bill Payment Modal \*\/\}[\s\S]*?\{\/\* Chime Sound & Volume Booster Settings Modal/
+  );
+  assert.ok(qrModalMatch, 'QR payment modal block should exist in orders page');
+  const qrModalSrc = qrModalMatch[0];
+  assert.match(
+    qrModalSrc,
+    /const updated = await requestMarkPaid\(qrOrderModal,\s*\{\s*method:\s*'vietqr',\s*forcePrint:\s*true,?\s*\}\);\s*if\s*\(updated\)\s*\{\s*setQrOrderModal\(null\);\s*\}/
+  );
+  assert.doesNotMatch(qrModalSrc, /handleUpdateOrder\(/);
+  assert.doesNotMatch(qrModalSrc, /payment_status:\s*'paid'/);
 });
 
 test('catalog and posts pages confirm deletes and check res.ok', () => {
