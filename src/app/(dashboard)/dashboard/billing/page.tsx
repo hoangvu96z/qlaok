@@ -16,6 +16,10 @@ import { PLAN_CONFIGS } from '@/lib/plan-limits';
 import { getPlanCopy as localizedPlanCopy } from '@/lib/plan-copy';
 import { PaymentTransaction, PlanTier } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
+import {
+  canReopenPaymentTransaction,
+  buildBillingColumns,
+} from '@/lib/billing-table';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import {
   AppDataTable,
@@ -363,86 +367,25 @@ export default function DashboardBillingPage() {
     }
   };
 
+  const handleReopenPendingOrder = useCallback(
+    (transaction: PaymentTransaction) => {
+      if (!canReopenPaymentTransaction(transaction, canManageBilling)) return;
+      setErrorMsg('');
+      setPollTimedOut(false);
+      setShowBankNotConfigured(false);
+      setActiveOrder({ ...transaction });
+    },
+    [canManageBilling]
+  );
+
   const billingColumns = useMemo<TableColumn<PaymentTransaction>[]>(
-    () => [
-      {
-        id: 'order_code',
-        name: tx('Mã giao dịch', 'Order code'),
-        sortable: true,
-        selector: (item) => item.order_code,
-        minWidth: '150px',
-        cell: (item) => (
-          <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
-            {item.order_code}
-          </span>
-        ),
-      },
-      {
-        id: 'target_plan',
-        name: tx('Gói nâng cấp', 'Target plan'),
-        sortable: true,
-        selector: (item) => item.target_plan,
-        minWidth: '130px',
-        cell: (item) => (
-          <span className="uppercase font-bold text-slate-700 dark:text-slate-200">
-            {item.target_plan}
-          </span>
-        ),
-      },
-      {
-        id: 'amount',
-        name: tx('Số tiền', 'Amount'),
-        sortable: true,
-        right: true,
-        selector: (item) => item.amount,
-        sortFunction: (a, b) => Number(a.amount || 0) - Number(b.amount || 0),
-        minWidth: '130px',
-        cell: (item) => (
-          <span className="font-bold text-slate-900 dark:text-slate-100">
-            {formatCurrency(item.amount)}
-          </span>
-        ),
-      },
-      {
-        id: 'status',
-        name: tx('Trạng thái', 'Status'),
-        sortable: true,
-        selector: (item) => item.status,
-        minWidth: '140px',
-        cell: (item) => (
-          <span
-            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
-              item.status === 'completed'
-                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
-                : item.status === 'pending'
-                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
-                  : 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300'
-            }`}
-          >
-            {item.status === 'completed'
-              ? tx('Thành công', 'Completed')
-              : item.status === 'pending'
-                ? tx('Đang chờ', 'Pending')
-                : item.status === 'failed'
-                  ? tx('Thất bại', 'Failed')
-                  : item.status}
-          </span>
-        ),
-      },
-      {
-        id: 'bank_ref_id',
-        name: tx('Mã tham chiếu NH', 'Bank reference'),
-        sortable: true,
-        selector: (item) => item.bank_ref_id || '',
-        minWidth: '160px',
-        cell: (item) => (
-          <span className="font-mono text-slate-500 dark:text-slate-400">
-            {item.bank_ref_id || '—'}
-          </span>
-        ),
-      },
-    ],
-    [tx]
+    () =>
+      buildBillingColumns({
+        tx,
+        canManageBilling,
+        onReopenPendingOrder: handleReopenPendingOrder,
+      }),
+    [canManageBilling, handleReopenPendingOrder, tx]
   );
 
   return (

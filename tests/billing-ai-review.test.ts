@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, beforeEach, test } from 'node:test';
+import React from 'react';
+import type { PaymentTransaction } from '@/types/qlaok';
 
 // Isolated: never use credentials or AI keys from a developer shell.
 for (const key of [
@@ -47,6 +49,9 @@ const {
   isMembershipAllowedForCatalogAi,
 } = await import('@/app/api/ai/_lib/guard');
 const { POST: paymentPost } = await import('@/app/api/webhooks/payment/route');
+const { canReopenPaymentTransaction, buildBillingColumns } = await import(
+  '@/lib/billing-table'
+);
 
 let profilePlan: string | null = 'free';
 let mockShops: Array<{ id: string; owner_id: string }> = [
@@ -1451,4 +1456,201 @@ test('POST /api/webhooks/payment create_order allows verified Super Admin to tar
     assert.equal(badPlanBody.code, 'INVALID_TARGET_PLAN');
   }
   assert.equal(insertedTransactions.length, 1);
+});
+
+test('billing history action visibility is owner/admin-only and completed/failed rows have no action', () => {
+  const pendingTx: PaymentTransaction = {
+    id: 'tx-pending-01',
+    user_id: 'user-01',
+    order_code: 'QLAOKP12345',
+    target_plan: 'basic',
+    amount: 39000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+  };
+  const completedTx: PaymentTransaction = {
+    ...pendingTx,
+    id: 'tx-completed-01',
+    order_code: 'QLAOKP12346',
+    status: 'completed',
+    completed_at: new Date().toISOString(),
+  };
+  const failedTx: PaymentTransaction = {
+    ...pendingTx,
+    id: 'tx-failed-01',
+    order_code: 'QLAOKP12347',
+    status: 'failed',
+  };
+
+  const viTx = (vi: string, _en?: string | null) => vi;
+  const enTx = (_vi: string, en?: string | null) => en || _vi;
+
+  // 1. Predicate unit verification: owner/admin can reopen pending, completed/failed and staff cannot
+  assert.equal(canReopenPaymentTransaction(pendingTx, true), true, 'Owner/admin can reopen pending transaction');
+  assert.equal(canReopenPaymentTransaction(completedTx, true), false, 'Completed transaction cannot be reopened');
+  assert.equal(canReopenPaymentTransaction(failedTx, true), false, 'Failed transaction cannot be reopened');
+  assert.equal(canReopenPaymentTransaction(pendingTx, false), false, 'Staff/cashier cannot reopen pending transaction');
+  assert.equal(canReopenPaymentTransaction(completedTx, false), false, 'Staff/cashier cannot reopen completed transaction');
+  assert.equal(canReopenPaymentTransaction(failedTx, false), false, 'Staff/cashier cannot reopen failed transaction');
+  assert.equal(canReopenPaymentTransaction(null, true), false, 'Null transaction cannot be reopened');
+
+  // 2. Staff columns (canManageBilling: false) must NOT show the action column
+  const staffCols = buildBillingColumns({ tx: viTx, canManageBilling: false });
+  assert.equal(
+    staffCols.some((col) => col.id === 'action'),
+    false,
+    'Staff table columns must not have action column'
+  );
+
+  // 3. Owner columns (canManageBilling: true) have localized action for pending row only
+  let reopenedOrder: PaymentTransaction | null = null;
+  const ownerColsVi = buildBillingColumns({
+    tx: viTx,
+    canManageBilling: true,
+    onReopenPendingOrder: (order) => {
+      reopenedOrder = order;
+    },
+  });
+  const actionColVi = ownerColsVi.find((col) => col.id === 'action');
+  assert.ok(actionColVi, 'Owner columns must include action column');
+  assert.equal(actionColVi.name, 'Thao tác');
+  assert.ok(actionColVi.cell, 'Action column must have cell renderer');
+
+  // Pending row renders action button in Vietnamese
+  const viActionElement = actionColVi.cell(
+    pendingTx,
+    0,
+    actionColVi,
+    'action'
+  ) as React.ReactElement<{
+    children: React.ReactNode[];
+    onClick: () => void;
+  }>;
+  assert.ok(viActionElement, 'Pending row renders action element');
+  assert.equal(viActionElement.type, 'button');
+  assert.match(JSON.stringify(viActionElement.props), /Xem QR/);
+
+  // Completed & failed rows return null (no action)
+  assert.equal(
+    actionColVi.cell(completedTx, 1, actionColVi, 'action'),
+    null,
+    'Completed row has no action element'
+  );
+  assert.equal(
+    actionColVi.cell(failedTx, 2, actionColVi, 'action'),
+    null,
+    'Failed row has no action element'
+  );
+
+  // English localization
+  const ownerColsEn = buildBillingColumns({
+    tx: enTx,
+    canManageBilling: true,
+    onReopenPendingOrder: (order) => {
+      reopenedOrder = order;
+    },
+  });
+  const actionColEn = ownerColsEn.find((col) => col.id === 'action')!;
+  assert.equal(actionColEn.name, 'Action');
+  assert.ok(actionColEn.cell, 'English action column must have cell renderer');
+  const enActionElement = actionColEn.cell(
+    pendingTx,
+    0,
+    actionColEn,
+    'action'
+  ) as React.ReactElement<{
+    children: React.ReactNode[];
+    onClick: () => void;
+  }>;
+  assert.match(JSON.stringify(enActionElement.props), /View QR/);
+});
+
+test('reopening a pending billing transaction re-opens the exact existing order without creating another transaction or calling create_order', () => {
+  const existingPendingTx: PaymentTransaction = {
+    id: 'tx-existing-reopen-001',
+    user_id: 'review-ai-owner',
+    order_code: 'QLAOKP88888',
+    target_plan: 'premium',
+    amount: 69000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: '2026-10-22T10:00:00.000Z',
+    completed_at: null,
+  };
+
+  let reopenCallCount = 0;
+  let reopenedOrder: PaymentTransaction | null = null;
+
+  const mockOnReopen = (order: PaymentTransaction) => {
+    reopenCallCount += 1;
+    reopenedOrder = order;
+  };
+
+  const columns = buildBillingColumns({
+    tx: (vi) => vi,
+    canManageBilling: true,
+    onReopenPendingOrder: mockOnReopen,
+  });
+
+  const actionCol = columns.find((c) => c.id === 'action')!;
+  assert.ok(actionCol.cell, 'Action column must have cell renderer');
+  const actionButton = actionCol.cell(
+    existingPendingTx,
+    0,
+    actionCol,
+    'action'
+  ) as React.ReactElement<{
+    onClick: () => void;
+  }>;
+
+  // Simulate clicking "Xem QR"
+  actionButton.props.onClick();
+
+  assert.equal(reopenCallCount, 1, 'Reopen callback invoked exactly once');
+  assert.ok(reopenedOrder, 'Reopen callback was called');
+  assert.equal(
+    reopenedOrder,
+    existingPendingTx,
+    'Reopen callback received the exact existing transaction object'
+  );
+  assert.equal((reopenedOrder as PaymentTransaction).id, existingPendingTx.id);
+  assert.equal((reopenedOrder as PaymentTransaction).order_code, 'QLAOKP88888');
+  assert.equal((reopenedOrder as PaymentTransaction).amount, 69000);
+  assert.equal((reopenedOrder as PaymentTransaction).target_plan, 'premium');
+
+  // Verify DashboardBillingPage source invariants:
+  // 1. handleReopenPendingOrder clears stale errors and timeout, sets activeOrder to existing transaction
+  // 2. Does NOT invoke create_order or network POST
+  // 3. Guards with canManageBilling / canReopenPaymentTransaction
+  const pageSrc = fs.readFileSync(
+    path.resolve(originalCwd, 'src/app/(dashboard)/dashboard/billing/page.tsx'),
+    'utf8'
+  );
+  assert.match(
+    pageSrc,
+    /handleReopenPendingOrder[\s\S]*?canReopenPaymentTransaction/,
+    'Reopen handler must guard with canReopenPaymentTransaction'
+  );
+  assert.match(
+    pageSrc,
+    /handleReopenPendingOrder[\s\S]*?setErrorMsg\(''\)/,
+    'Reopen handler must clear stale error message'
+  );
+  assert.match(
+    pageSrc,
+    /handleReopenPendingOrder[\s\S]*?setPollTimedOut\(false\)/,
+    'Reopen handler must clear stale poll timeout'
+  );
+  assert.match(
+    pageSrc,
+    /handleReopenPendingOrder[\s\S]*?setActiveOrder\(/,
+    'Reopen handler must set activeOrder to existing transaction'
+  );
+  assert.doesNotMatch(
+    pageSrc,
+    /handleReopenPendingOrder[\s\S]*?create_order/,
+    'Reopen handler must never call create_order'
+  );
 });
