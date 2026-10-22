@@ -235,27 +235,19 @@ export interface MobileShop {
   is_published: boolean;
 }
 
+export type {
+  MobileAnalyticsEvent,
+  MobileCatalogItem,
+  MobileDailyRevenuePoint,
+  MobileShopOrderStats,
+} from './overview-metrics';
+
 export interface MobileCategory {
   id: string;
   shop_id: string;
   sort_order: number;
   name_i18n: Record<string, string>;
   is_active: boolean;
-}
-
-export interface MobileCatalogItem {
-  id: string;
-  shop_id: string;
-  category_id: string;
-  sort_order: number;
-  price: number;
-  is_available: boolean;
-  is_featured: boolean;
-  stock_quantity?: number | null;
-  sold_count?: number;
-  name_i18n: Record<string, string>;
-  desc_i18n: Record<string, string>;
-  view_count: number;
 }
 
 export interface MobileOrderLineItem {
@@ -299,59 +291,6 @@ export interface MobileShopOrder {
   source?: 'qr_table' | 'counter_pos';
   created_at: string;
   updated_at: string;
-}
-
-export interface MobileAnalyticsEvent {
-  id: number;
-  shop_id: string;
-  event_type:
-    | 'scan_door'
-    | 'scan_table'
-    | 'item_view'
-    | 'show_to_staff'
-    | 'wifi_copy';
-  item_id?: string | null;
-  visitor_lang: string;
-  created_at: string;
-}
-
-export interface MobileDailyRevenuePoint {
-  date: string;
-  label: string;
-  revenue: number;
-  cashRevenue?: number;
-  vietqrRevenue?: number;
-  orders?: number;
-  ordersCount?: number;
-  orderCount?: number;
-}
-
-export interface MobileShopOrderStats {
-  todayRevenue?: number | null;
-  todayGrossOrderAmount?: number | null;
-  todayUnpaidAmount?: number | null;
-  todayRefundedAmount?: number | null;
-  totalRefundedAmount?: number | null;
-  totalRevenue?: number | null;
-  todayOrdersCount?: number;
-  todayPaidOrdersCount?: number | null;
-  paidOrdersCount?: number | null;
-  todayCompletedCount?: number;
-  completedOrdersCount?: number;
-  totalOrdersCount?: number;
-  newOrdersCount?: number;
-  preparingOrdersCount?: number;
-  avgOrderValue?: number | null;
-  lowStockCount?: number;
-  outOfStockCount?: number;
-  dailyRevenue7d?: MobileDailyRevenuePoint[];
-  topSellingItems?: Array<
-    MobileCatalogItem & {
-      name_vi?: string;
-      revenue?: number;
-      estimated_revenue?: number;
-    }
-  >;
 }
 
 export function formatVnd(amount: number): string {

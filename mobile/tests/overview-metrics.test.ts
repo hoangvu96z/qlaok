@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildMobileOverviewMetrics } from '../src/lib/overview-metrics.ts';
-import type {
-  MobileAnalyticsEvent,
-  MobileCatalogItem,
-  MobileShopOrderStats,
-} from '../src/lib/supabase.ts';
+import {
+  buildMobileOverviewMetrics,
+  type MobileAnalyticsEvent,
+  type MobileCatalogItem,
+  type MobileShopOrderStats,
+} from '../src/lib/overview-metrics.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
