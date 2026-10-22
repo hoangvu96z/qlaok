@@ -79,6 +79,10 @@ const VI_MOBILE_DICTIONARY = {
 
   'alert.networkErrorTitle': 'Lỗi kết nối mạng',
   'alert.loadShopErrorDesc': 'Không thể tải dữ liệu cửa hàng',
+  'alert.notificationShopUnavailableTitle':
+    'Không thể mở cửa hàng từ thông báo',
+  'alert.notificationShopUnavailableDesc':
+    'Cửa hàng trong thông báo không còn khả dụng hoặc tài khoản không có quyền xem đơn của quán này. Vui lòng chọn cửa hàng khác.',
   'alert.invalidOrderResponse': 'Máy chủ trả về đơn hàng không hợp lệ',
   'alert.updateOrderFailed': 'Không thể cập nhật đơn. Vui lòng thử lại',
   'alert.permissionDeniedTitle': 'Không đủ quyền',
@@ -304,6 +308,10 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
 
   'alert.networkErrorTitle': 'Connection error',
   'alert.loadShopErrorDesc': 'Unable to load store data',
+  'alert.notificationShopUnavailableTitle':
+    'Store from notification unavailable',
+  'alert.notificationShopUnavailableDesc':
+    'The store from this notification is unavailable or your account cannot view its orders. Please select an available store.',
   'alert.invalidOrderResponse': 'Invalid order response from server',
   'alert.updateOrderFailed': 'Unable to update order. Please try again',
   'alert.permissionDeniedTitle': 'Permission denied',

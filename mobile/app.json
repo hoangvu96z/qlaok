@@ -22,9 +22,22 @@
       },
       "package": "vn.qlaok.owner"
     },
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    },
     "plugins": [
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/q-menu.png",
+          "color": "#10b981",
+          "defaultChannel": "qlaok-orders"
+        }
+      ]
     ]
   }
 }

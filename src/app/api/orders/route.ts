@@ -9,11 +9,13 @@ import {
   dbSettleTableBill,
   dbUpdateOrderStatus,
   quoteOrderPricing,
+  wasOrderNewlyCreated,
 } from '@/lib/mpos-store';
 import {
   dbGetShopCatalog,
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
+import { sendNewGuestOrderPushNotifications } from '@/lib/push-notifications';
 import {
   getRequestShopMembership,
   recordOrderAuditLog,
@@ -494,28 +496,44 @@ export async function POST(req: Request) {
       items,
     });
 
-    recordOrderAuditLog({
-      shopId: shop_id,
-      orderId: order.id,
-      actorId: sessionUser?.sub || 'customer_qr',
-      actorRole: membership?.role || 'customer',
-      action: 'create_order',
-      after: {
-        status: order.status,
-        payment_status: order.payment_status,
-        subtotal_amount: order.subtotal_amount,
-        discount_amount: order.discount_amount,
-        total_amount: order.total_amount,
-        source: order.source,
-      },
-    });
+    const isOrderReplay = !wasOrderNewlyCreated(order);
 
-    // Record analytics event for table order submission
-    dbRecordAnalyticsEvent({
-      shop_id,
-      event_type: 'show_to_staff',
-      visitor_lang,
-    }).catch(() => {});
+    if (!isOrderReplay) {
+      recordOrderAuditLog({
+        shopId: shop_id,
+        orderId: order.id,
+        actorId: sessionUser?.sub || 'customer_qr',
+        actorRole: membership?.role || 'customer',
+        action: 'create_order',
+        after: {
+          status: order.status,
+          payment_status: order.payment_status,
+          subtotal_amount: order.subtotal_amount,
+          discount_amount: order.discount_amount,
+          total_amount: order.total_amount,
+          source: order.source,
+        },
+      });
+
+      // Record analytics event for table order submission
+      dbRecordAnalyticsEvent({
+        shop_id,
+        event_type: 'show_to_staff',
+        visitor_lang,
+      }).catch(() => {});
+    }
+
+    // Dispatch localized mobile push notifications to shop owner and active members with orders.view
+    // after guest QR order creation. Provider/network errors never fail the created order.
+    const isGuestQrOrder =
+      source !== 'counter_pos' && order.source === 'qr_table';
+    if (isGuestQrOrder) {
+      await sendNewGuestOrderPushNotifications({
+        order,
+        isGuestOrder: true,
+        isReplay: isOrderReplay,
+      }).catch(() => {});
+    }
 
     return NextResponse.json({ order }, { status: 201 });
   } catch (error) {

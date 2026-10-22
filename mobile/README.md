@@ -1,12 +1,13 @@
 # Qlaok Mobile — Expo Owner / Cashier / Staff
 
-Cập nhật 18/10/2026. Expo SDK 52, React 18, React Native 0.76; kết nối Supabase Auth và backend được cấu hình trong môi trường. Dùng CodeGraph từ repo root trước khi sửa code theo [AGENTS.md](../AGENTS.md) và [workflow](../docs/CODEGRAPH_WORKFLOW.md).
+Cập nhật 22/10/2026. Expo SDK 52, React 18, React Native 0.76; kết nối Supabase Auth và backend được cấu hình trong môi trường. Dùng CodeGraph từ repo root trước khi sửa code theo [AGENTS.md](../AGENTS.md) và [workflow](../docs/CODEGRAPH_WORKFLOW.md).
 
 ## Chức năng hiện tại
 
 - Tổng quan doanh thu đơn hàng và analytics QR; không coi Show to Staff là doanh thu thực thu.
 - Catalog: tình trạng món, giá và tồn kho theo quyền server.
 - Đơn mPOS: nhận/phục vụ, thu tiền và thao tác theo membership; realtime Postgres Changes với JWT, canonical reload qua API, fallback 30 giây khi lỗi.
+- Thông báo đẩy (Push Notifications): dùng `expo-notifications` (kênh Android `qlaok-orders`, phát âm báo cả khi mở app). Xin quyền và lấy Expo push token khi có `EXPO_PUBLIC_EAS_PROJECT_ID` (hoặc `extra.eas.projectId`), đăng ký qua `POST /api/push-tokens` khi đăng nhập/đổi quán (yêu cầu quyền `orders.view`, tự thử lại khi lỗi mạng tạm thời), thử hủy best-effort qua `DELETE /api/push-tokens` trước khi xóa phiên đăng nhập local cả khi đăng xuất chủ động lẫn khi API trả HTTP 401 (chặn đệ quy 401; nếu access token đã hết hạn/không hợp lệ nên `DELETE /api/push-tokens` cũng bị từ chối thì vẫn xóa phiên local bình thường), và mở đúng quán + tab Đơn khi chạm thông báo đơn QR mới (nếu quán đích không còn khả dụng hoặc mất quyền `orders.view`, báo lỗi rõ và không tự chuyển sang quán khác). Để gửi tới thiết bị iOS/Android thật cần cấu hình EAS project ID và chứng chỉ APNs/FCM trên EAS.
 - Khuyến mãi và settings theo quyền shop; chuyển cửa hàng theo membership owner/cashier/staff.
 - VI/EN mặc định VI, locale native lưu SecureStore; catalog/khách hàng có miền 8 ngôn ngữ riêng theo gói.
 - Biên nhận trên mobile là preview/mô phỏng, chưa xác nhận in phần cứng.

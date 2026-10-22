@@ -154,5 +154,37 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal((await db.query("SELECT payment_status FROM orders WHERE id='atomic-order'")).rows[0].payment_status, 'unpaid', 'archived table order with same label must remain unpaid');
     assert.equal((await db.query("SELECT payment_status FROM orders WHERE id='atomic-order-reused'")).rows[0].payment_status, 'paid');
 
+    // Verify 008_mobile_push_tokens.sql: server-only reads/writes and restrictive RLS
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false);");
+    await db.exec(fs.readFileSync('supabase/migrations/008_mobile_push_tokens.sql', 'utf8'));
+    await db.exec('SET ROLE service_role');
+    await db.query(`INSERT INTO mobile_push_tokens (id, user_id, shop_id, expo_push_token, locale, platform)
+      VALUES ('push-1', '${owner}', 'sql-shop', 'ExponentPushToken[ownerToken123]', 'vi', 'ios')`);
+    assert.equal((await db.query("SELECT * FROM mobile_push_tokens WHERE shop_id='sql-shop'")).rows.length, 1);
+
+    await assert.rejects(
+      db.query(`INSERT INTO mobile_push_tokens (id, user_id, shop_id, expo_push_token)
+        VALUES ('push-bad', '${owner}', 'sql-shop', 'invalid-token-format')`),
+      /mobile_push_tokens_token_format_check/i
+    );
+
+    // Authenticated client cannot read or mutate mobile_push_tokens directly (server-only)
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`);
+    await assert.rejects(
+      db.query("SELECT * FROM mobile_push_tokens"),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(`INSERT INTO mobile_push_tokens (id, user_id, shop_id, expo_push_token)
+        VALUES ('push-client', '${owner}', 'sql-shop', 'ExponentPushToken[clientToken]')`),
+      /permission denied|FORBIDDEN_PUSH_TOKEN_DIRECT_ACCESS/i
+    );
+
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', 'anon', false); SET ROLE anon`);
+    await assert.rejects(
+      db.query("SELECT * FROM mobile_push_tokens"),
+      /permission denied/i
+    );
+
   } finally { await db.close(); }
 });

@@ -1605,7 +1605,11 @@ export async function dbCreateOrder(params: {
     if (isOrderDbConfigured()) {
       const committed = await orderRpc('commit_order_with_inventory', { p_order: newOrder,
         p_inventory_deltas: Array.from(demandByItem, ([item_id, delta]) => ({ item_id, delta })) });
-      return normalizeOrderRecord(committed as ShopOrder);
+      const normalizedCommitted = normalizeOrderRecord(committed as ShopOrder);
+      if (normalizedCommitted.id === newOrder.id) {
+        newlyCreatedOrders.add(normalizedCommitted);
+      }
+      return normalizedCommitted;
     }
 
     store.orders.unshift(newOrder);
@@ -1638,8 +1642,22 @@ export async function dbCreateOrder(params: {
       // ignore if offline or 002 migration not yet run
     }
 
+    newlyCreatedOrders.add(newOrder);
     return newOrder;
   });
+}
+
+const newlyCreatedOrders = new WeakSet<ShopOrder>();
+
+/**
+ * Returns true only when the returned `ShopOrder` instance was freshly created
+ * during `dbCreateOrder` (and false when returned from an idempotency_key replay).
+ */
+export function wasOrderNewlyCreated(
+  order: ShopOrder | null | undefined
+): boolean {
+  if (!order) return false;
+  return newlyCreatedOrders.has(order);
 }
 
 export async function dbUpdateOrderStatus(

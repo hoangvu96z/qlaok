@@ -48,7 +48,7 @@ flowchart TD
 
 Các đường `/posts`, `/settings` trong bảng là hậu tố của `/dashboard`, không phải route root.
 
-API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
+API hiện có: `/api/auth`, `/admin`, `/shops`, `/tables`, `/catalog`, `/posts`, `/orders`, `/orders/events`, `/push-tokens`, `/analytics/track`, `/ai/translate`, `/ai/ocr-menu`, `/upload`, `/webhooks/payment`, `/health` (các hậu tố sau mục đầu đều dưới `/api`). Không có `/api/items`; tài liệu cũ từng liệt kê route này sai với cây source hiện tại.
 
 `/api/ai/translate` và `/api/ai/ocr-menu` yêu cầu phiên đăng nhập (`requireAuthenticatedUser`) và giới hạn tần suất in-memory theo user (translate 30 req/10 phút, OCR 10 req/10 phút → 429). OCR thật (không phải `useDemo`) chỉ cho gói có `allowAiOcr` (Premium) hoặc Super Admin, trả `403 PLAN_FEATURE_LOCKED`. `/api/webhooks/payment` không có secret mặc định: thiếu `PAYMENT_WEBHOOK_SECRET` thì mọi webhook từ nhà cung cấp bị từ chối (503).
 
@@ -73,6 +73,7 @@ Bảng dữ liệu web dùng `react-data-table-component` qua `src/components/ui
 | `src/lib/order-events.ts` | Broker một upstream privileged subscription cho SSE đã được cấp quyền |
 | `src/lib/order-live-sync.ts` | Fetch SSE, refresh, debounce, fallback và lifecycle trên web |
 | `src/lib/order-chime.ts` | Cấu hình và phát âm báo đơn |
+| `src/lib/push-notifications.ts` | Lưu/xóa Expo push token theo user + shop (`orders.view`), gửi push VI/EN cho chủ quán và nhân sự `orders.view` khi có đơn QR khách mới (chống lặp theo replay đơn/in-memory sau khi có ticket `ok`, chỉ đếm ticket `status === 'ok'` và tự dọn token `DeviceNotRegistered`); mobile hủy token best-effort trước `signOut` cả khi đăng xuất và khi gặp HTTP 401 (không lặp 401 đệ quy, không chặn xóa phiên local nếu token đã hết hạn) |
 | `src/lib/payment-qr.ts` | Cấu hình/URL QR thanh toán merchant |
 | `src/lib/plan-limits.ts`, `plan-copy.ts` | Quota/feature/giá hiển thị; billing server vẫn định giá độc lập |
 | `src/lib/app-i18n.ts`, `i18n-helper.ts` | Miền ngôn ngữ quản trị và miền nội dung khách |
@@ -117,7 +118,7 @@ Chi tiết: [I18N_NOTES](I18N_NOTES.md). Gói Free/Basic/Premium hiện có maxL
 
 ## Schema và rollout
 
-Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn.
+Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only.
 
 Đọc SQL trực tiếp vì SQL không nằm trong graph hiện tại. Chạy `test:sql` trên PGlite để kiểm migration/RLS mà không sửa DB thật. Chuyển từ legacy local orders cần backup/đối chiếu dữ liệu; archive bank-ref không tự xác nhận giao dịch đúng/sai.
 

@@ -1,11 +1,42 @@
+export interface ApiClientUnauthorizedContext {
+  /**
+   * Executes a best-effort authenticated request (such as `DELETE /api/push-tokens`)
+   * before local credentials are cleared, without recursively triggering
+   * `onUnauthorized` if the cleanup request itself fails with HTTP 401.
+   */
+  requestWithoutUnauthorizedHandler: (
+    path: string,
+    init?: RequestInit
+  ) => Promise<Response>;
+}
+
+function isPushTokenUnregisterRequest(
+  path: string,
+  init?: RequestInit
+): boolean {
+  const method = (init?.method || 'GET').toUpperCase();
+  return (
+    method === 'DELETE' &&
+    (path === '/api/push-tokens' || path.startsWith('/api/push-tokens?'))
+  );
+}
+
 /** One configured backend per request. Never replay mutations against another host. */
 export function createApiClient(
   baseUrl: string,
   getAccessToken: () => Promise<string | null>,
   fetchRequest: typeof fetch = fetch,
-  onUnauthorized?: () => void | Promise<void>,
+  onUnauthorized?: (
+    context: ApiClientUnauthorizedContext
+  ) => void | Promise<void>,
 ) {
-  return async (path: string, init: RequestInit = {}): Promise<Response> => {
+  let isHandlingUnauthorized = false;
+
+  const sendRequest = async (
+    path: string,
+    init: RequestInit = {},
+    allowUnauthorizedHandler = true
+  ): Promise<Response> => {
     if (!path.startsWith('/api/')) throw new Error('Đường dẫn API không hợp lệ');
     const token = await getAccessToken();
     if (!token) throw new Error('Vui lòng đăng nhập lại');
@@ -26,11 +57,24 @@ export function createApiClient(
       init.signal?.removeEventListener('abort', abort);
     }
     if (!response.ok) {
-      if (response.status === 401) {
+      if (
+        response.status === 401 &&
+        allowUnauthorizedHandler &&
+        !isHandlingUnauthorized &&
+        !isPushTokenUnregisterRequest(path, init)
+      ) {
+        isHandlingUnauthorized = true;
         try {
-          await onUnauthorized?.();
+          await onUnauthorized?.({
+            requestWithoutUnauthorizedHandler: (
+              cleanupPath: string,
+              cleanupInit: RequestInit = {}
+            ) => sendRequest(cleanupPath, cleanupInit, false),
+          });
         } catch {
-          // ignore local sign-out errors
+          // ignore cleanup / local sign-out errors
+        } finally {
+          isHandlingUnauthorized = false;
         }
       }
       const data = await response.json().catch(() => null);
@@ -38,4 +82,7 @@ export function createApiClient(
     }
     return response;
   };
+
+  return (path: string, init: RequestInit = {}): Promise<Response> =>
+    sendRequest(path, init, true);
 }

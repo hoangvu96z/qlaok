@@ -36,8 +36,9 @@ export interface PostLoginPayload {
 }
 
 /**
- * Admin → /admin. Owner or member of any shop → `next` (if safe) or
- * /dashboard. Only users with zero owned AND zero member shops → /onboarding.
+ * Admin → /admin. Owner of any shop → `next` (if safe) or /dashboard.
+ * Member-only (zero owned shops, ≥1 memberShops) → `next` (if safe) or
+ * /dashboard/orders. Users with zero owned AND zero member shops → /onboarding.
  */
 export function resolvePostLoginRoute(
   payload: PostLoginPayload,
@@ -52,9 +53,10 @@ export function resolvePostLoginRoute(
   if (!firstShop) {
     return { path: '/onboarding', activeShopId: null };
   }
+  const defaultPath = owned.length > 0 ? '/dashboard' : '/dashboard/orders';
   const safeNext = sanitizeNextPath(nextParam);
   return {
-    path: safeNext && !safeNext.startsWith('/admin') ? safeNext : '/dashboard',
+    path: safeNext && !safeNext.startsWith('/admin') ? safeNext : defaultPath,
     activeShopId: firstShop.id,
   };
 }

@@ -19,7 +19,7 @@ Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào 
 - Membership theo shop: `owner`, `cashier`, `staff`, kiểm quyền ở API. Super Admin tại `/admin` dùng kiểm tra quyền server.
 - Storefront hỗ trợ **8 ngôn ngữ**: `vi/en/ko/ja/zh/es/it/ru`, giới hạn theo gói và cấu hình quán. Giao diện quản trị, marketing, auth và mobile hỗ trợ **VI/EN**, mặc định VI; đây là hai miền ngôn ngữ riêng.
 - AI dịch/OCR qua gateway OpenAI-compatible cấu hình `AI_*`, kết hợp Tesseract; upload ảnh qua R2. Nội dung AI/OCR cần được merchant kiểm tra trước khi lưu.
-- Mobile Expo có các tab tổng quan, catalog, đơn, khuyến mãi và settings; dùng Supabase Auth thật và API có Bearer token. In mobile hiện là preview/mô phỏng.
+- Mobile Expo có các tab tổng quan, catalog, đơn, khuyến mãi và settings; dùng Supabase Auth thật và API có Bearer token. Khi có cấu hình `EXPO_PUBLIC_EAS_PROJECT_ID` (hoặc `extra.eas.projectId`) và chứng chỉ APNs/FCM trên EAS, ứng dụng đăng ký Expo push token theo shop đang xem (cần quyền `orders.view`, tự thử lại khi lỗi mạng tạm thời), nhận thông báo đơn QR mới có âm báo và chạm mở đúng tab Đơn của quán đó (nếu quán không khả dụng hoặc không còn quyền `orders.view` sẽ báo lỗi rõ ràng, không tự chuyển sang quán khác); khi đăng xuất chủ động hoặc tự thoát phiên do HTTP 401 đều thử hủy token best-effort qua API xác thực trước khi xóa phiên local (nếu access token đã hết hạn/không hợp lệ khiến `DELETE /api/push-tokens` trả 401 thì không lặp đệ quy và vẫn xóa phiên local). In mobile hiện là preview/mô phỏng.
 
 | Gói | Giá cấu hình/tháng | Món tối đa | Ngôn ngữ tối đa | OCR | Theme |
 | --- | ---: | ---: | ---: | --- | --- |
@@ -65,7 +65,7 @@ Sao chép mẫu, không commit giá trị thật.
 | Migration | `SUPABASE_ACCESS_TOKEN` | PAT dùng Management API; không cần cho client |
 | AI | `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`, `AI_VISION_MODEL` | Gateway text/vision |
 | R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `NEXT_PUBLIC_R2_PUBLIC_URL` | Upload và URL ảnh công khai |
-| Mobile | Theo `mobile/.env.example` | Chỉ URL/public key; không chứa backend secret |
+| Mobile | Theo `mobile/.env.example` (`EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_KEY`, `EXPO_PUBLIC_API_URL`, tùy chọn `EXPO_PUBLIC_EAS_PROJECT_ID`) | Chỉ URL/public key và EAS project ID; không chứa backend secret. Push thiết bị thật cần EAS project ID + APNs/FCM credentials |
 
 Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không dựa vào giá trị mặc định trong code cho deployment thật. Không chép service-role vào biến `NEXT_PUBLIC_*`/`EXPO_PUBLIC_*`.
 
@@ -82,6 +82,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 005_order_commit.sql
 006_orders_realtime_publication.sql
 007_shop_tables.sql
+008_mobile_push_tokens.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.

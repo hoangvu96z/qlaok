@@ -2223,7 +2223,11 @@ describe('Suite 9B: Staff login routing, role-based nav, inventory.adjust & memb
     assert.equal(resolvePostLoginRoute({ isAdmin: true, shops: [{ id: 'a' }] }).path, '/admin');
     assert.equal(resolvePostLoginRoute({ shops: [], memberShops: [] }).path, '/onboarding');
     const member = resolvePostLoginRoute({ shops: [], memberShops: [{ id: 'm1' }] });
-    assert.equal(member.path, '/dashboard', 'Staff with a membership must NOT be sent to onboarding');
+    assert.equal(
+      member.path,
+      '/dashboard/orders',
+      'Staff with a membership must route directly to /dashboard/orders and NOT onboarding'
+    );
     assert.equal(member.activeShopId, 'm1');
     assert.equal(
       resolvePostLoginRoute({ shops: [{ id: 'o1' }] }, '/dashboard/orders?tab=new').path,
@@ -2242,6 +2246,10 @@ describe('Suite 9B: Staff login routing, role-based nav, inventory.adjust & memb
       assert.equal(
         resolvePostLoginRoute({ shops: [{ id: 'o1' }] }, bad).path,
         '/dashboard'
+      );
+      assert.equal(
+        resolvePostLoginRoute({ shops: [], memberShops: [{ id: 'm1' }] }, bad).path,
+        '/dashboard/orders'
       );
     }
   });

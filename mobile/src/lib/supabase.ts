@@ -2,6 +2,10 @@ import { createClient } from '@supabase/supabase-js';
 import { NativeModules, Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { createApiClient } from './api-client';
+import {
+  getSharedMobilePushRegistrationState,
+  unregisterPushOnLogout,
+} from './push-notifications';
 
 export const SUPABASE_URL =
   process.env.EXPO_PUBLIC_SUPABASE_URL ||
@@ -102,8 +106,12 @@ export const fetchApi = createApiClient(
     return data.session?.access_token ?? null;
   },
   fetch,
-  async () => {
-    await supabase.auth.signOut({ scope: 'local' });
+  async ({ requestWithoutUnauthorizedHandler }) => {
+    await unregisterPushOnLogout({
+      state: getSharedMobilePushRegistrationState(),
+      apiCall: requestWithoutUnauthorizedHandler,
+      signOut: () => supabase.auth.signOut({ scope: 'local' }),
+    });
   }
 );
 

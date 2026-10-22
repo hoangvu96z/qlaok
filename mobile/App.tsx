@@ -4,6 +4,7 @@ import {
   AppState,
   Alert,
   Linking,
+  Platform,
   RefreshControl,
   SafeAreaView,
   ScrollView,
@@ -32,7 +33,12 @@ import {
   PRODUCTION_API_URL,
   supabase,
 } from './src/lib/supabase';
+import {
+  type NotificationTapRoute,
+  resolveNotificationTapTargetShop,
+} from './src/lib/push-notifications';
 import { MobileThemePalette, styles } from './src/styles/mobileStyles';
+import { useMobilePushNotifications } from './src/hooks/useMobilePushNotifications';
 import { useShopRealtimeOrders } from './src/hooks/useShopRealtimeOrders';
 import { useTabNavigation } from './src/hooks/useTabNavigation';
 import { AuthScreen } from './src/components/AuthScreen';
@@ -89,7 +95,7 @@ function formatLocalIsoDate(date: Date = new Date()): string {
 }
 
 function Workspace({ userId }: { userId: string }) {
-  const { t } = useMobileI18n();
+  const { locale, t } = useMobileI18n();
   // Localized request errors must not make changing language reload shop data/drafts.
   const translateRef = useRef(t);
   translateRef.current = t;
@@ -109,8 +115,12 @@ function Workspace({ userId }: { userId: string }) {
   const [memberships, setMemberships] = useState<
     Record<string, MobileShopMembership>
   >({});
+  const membershipsRef = useRef<Record<string, MobileShopMembership>>({});
+  membershipsRef.current = memberships;
   const [activeShopId, setActiveShopId] = useState<string>('');
-  useEffect(() => { setOrderError(''); }, [activeShopId]);
+  useEffect(() => {
+    if (activeShopId) setOrderError('');
+  }, [activeShopId]);
   const [categories, setCategories] = useState<MobileCategory[]>([]);
   const [items, setItems] = useState<MobileCatalogItem[]>([]);
   const [events, setEvents] = useState<MobileAnalyticsEvent[]>([]);
@@ -169,7 +179,7 @@ function Workspace({ userId }: { userId: string }) {
   });
 
   const activeShop = useMemo(
-    () => shops.find((s) => s.id === activeShopId) || shops[0] || null,
+    () => shops.find((s) => s.id === activeShopId) || null,
     [shops, activeShopId]
   );
 
@@ -193,6 +203,7 @@ function Workspace({ userId }: { userId: string }) {
     [activeShop, activeMembership, userId]
   );
 
+  const canViewOrders = hasPerm('orders.view') || hasPerm('order.view');
   const canCollectPayment = hasPerm('payment.collect');
   const canRefundOrder = hasPerm('payment.refund') || hasPerm('order.refund');
   const canViewReports = hasPerm('reports.view');
@@ -363,14 +374,22 @@ function Workspace({ userId }: { userId: string }) {
   );
 
   const loadShopsAndData = useCallback(
-    async (targetShopId?: string) => {
+    async (
+      targetShopId?: string,
+      options?: { fromNotificationTap?: boolean }
+    ) => {
       const generation = ++loadGeneration.current;
+      const isNotificationTap = Boolean(options?.fromNotificationTap);
       const requestedShopId = targetShopId || scopeRef.current;
-      scopeRef.current = requestedShopId;
-      if (targetShopId) setActiveShopId(targetShopId);
+      if (!isNotificationTap) {
+        scopeRef.current = requestedShopId;
+        if (targetShopId) setActiveShopId(targetShopId);
+      }
       setLoading(true);
       setPrintingOrder(null);
-      setOrderFilter('active');
+      if (!isNotificationTap) {
+        setOrderFilter('active');
+      }
       setCategories([]); setItems([]); setEvents([]); setOrders([]);
       try {
         let loadedShops: MobileShop[] = [];
@@ -403,13 +422,52 @@ function Workspace({ userId }: { userId: string }) {
 
         if (generation !== loadGeneration.current) return;
         setShops(loadedShops);
+        const mergedMemberships: Record<string, MobileShopMembership> = {
+          ...membershipsRef.current,
+          ...loadedMemberships,
+        };
         if (Object.keys(loadedMemberships).length > 0) {
-          setMemberships((prev) => ({ ...prev, ...loadedMemberships }));
+          setMemberships(mergedMemberships);
         }
 
-        const currentShop =
-          loadedShops.find((s) => s.id === requestedShopId) ||
-          loadedShops[0];
+        let currentShop: MobileShop | null = null;
+        if (isNotificationTap) {
+          const tapResolution = resolveNotificationTapTargetShop({
+            route: { shopId: targetShopId || '', tab: 'orders' },
+            shops: loadedShops,
+            memberships: mergedMemberships,
+            userId,
+          });
+          if (!tapResolution.ok) {
+            // Never silently fall back to another shop when notification target is unavailable
+            scopeRef.current = '';
+            setActiveShopId('');
+            setLiveOrderAlert(null);
+            const unavailableMsg = translateRef.current(
+              'alert.notificationShopUnavailableDesc'
+            );
+            setOrderError(unavailableMsg);
+            Alert.alert(
+              translateRef.current('alert.notificationShopUnavailableTitle'),
+              unavailableMsg
+            );
+            return;
+          }
+          currentShop = tapResolution.shop;
+          navigateTab('orders');
+          setOrderFilter('active');
+          setLiveOrderAlert(null);
+          setOrderError('');
+        } else {
+          currentShop =
+            loadedShops.find((s) => s.id === requestedShopId) ||
+            loadedShops[0] ||
+            null;
+          if (!currentShop) {
+            scopeRef.current = '';
+            setActiveShopId('');
+          }
+        }
 
         if (currentShop) {
           scopeRef.current = currentShop.id;
@@ -420,7 +478,7 @@ function Workspace({ userId }: { userId: string }) {
           setEditWifiSsid(currentShop.wifi_info?.ssid || '');
           setEditWifiPass(currentShop.wifi_info?.password || '');
 
-          const shopMembership = loadedMemberships[currentShop.id];
+          const shopMembership = mergedMemberships[currentShop.id];
           const canReadAnalytics = shopMembership
             ? shopMembership.permissions.includes('reports.view')
             : currentShop.owner_id === userId;
@@ -471,7 +529,14 @@ function Workspace({ userId }: { userId: string }) {
         setRefreshing(false);
       }
     },
-    [userId, setOrders, fetchOrdersFromApi, hydrateThemeAndPromoState]
+    [
+      userId,
+      setOrders,
+      setLiveOrderAlert,
+      navigateTab,
+      fetchOrdersFromApi,
+      hydrateThemeAndPromoState,
+    ]
   );
 
   useEffect(() => {
@@ -479,6 +544,67 @@ function Workspace({ userId }: { userId: string }) {
       loadShopsAndData();
     }
   }, [isLoggedIn, loadShopsAndData]);
+
+  const handleNotificationTapOrder = useCallback(
+    (route: NotificationTapRoute) => {
+      if (!route?.shopId) return;
+      void loadShopsAndData(route.shopId, { fromNotificationTap: true });
+    },
+    [loadShopsAndData]
+  );
+
+  const { unregisterPushOnLogout } = useMobilePushNotifications({
+    isLoggedIn,
+    userId,
+    activeShopId: activeShop?.id,
+    canViewOrders,
+    locale,
+    onNotificationTapOrder: handleNotificationTapOrder,
+  });
+
+  const handleConfirmLogout = useCallback(async () => {
+    const result = await unregisterPushOnLogout(() =>
+      supabase.auth.signOut({
+        scope: 'local',
+      })
+    );
+    if (result.signOutError) {
+      Alert.alert(t('shell.logoutErrorTitle'), result.signOutError);
+    }
+  }, [unregisterPushOnLogout, t]);
+
+  const handleRequestLogout = useCallback(() => {
+    if (Platform.OS === 'web') {
+      const confirmFn = (
+        globalThis as { confirm?: (message: string) => boolean }
+      ).confirm;
+      const confirmed =
+        typeof confirmFn === 'function'
+          ? confirmFn(
+              `${t('shell.logoutConfirmTitle')}\n${t('shell.logoutConfirmDesc')}`
+            )
+          : true;
+      if (confirmed) {
+        void handleConfirmLogout();
+      }
+      return;
+    }
+
+    Alert.alert(
+      t('shell.logoutConfirmTitle'),
+      t('shell.logoutConfirmDesc'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('shell.logout'),
+          style: 'destructive',
+          onPress: () => {
+            void handleConfirmLogout();
+          },
+        },
+      ]
+    );
+  }, [handleConfirmLogout, t]);
 
   const handleUpdateOrderStatus = useCallback(
     async (
@@ -766,26 +892,7 @@ function Workspace({ userId }: { userId: string }) {
               accessibilityRole="button"
               accessibilityLabel={t('shell.logout')}
               style={[styles.logoutBtn, { backgroundColor: theme.subCard }]}
-              onPress={() => {
-                Alert.alert(
-                  t('shell.logoutConfirmTitle'),
-                  t('shell.logoutConfirmDesc'),
-                  [
-                    { text: t('common.cancel'), style: 'cancel' },
-                    {
-                      text: t('shell.logout'),
-                      style: 'destructive',
-                      onPress: async () => {
-                        const { error } = await supabase.auth.signOut({
-                          scope: 'local',
-                        });
-                        if (error)
-                          Alert.alert(t('shell.logoutErrorTitle'), error.message);
-                      },
-                    },
-                  ]
-                );
-              }}
+              onPress={handleRequestLogout}
             >
               <Ionicons name="log-out-outline" size={18} color={theme.subText} />
             </TouchableOpacity>
@@ -964,6 +1071,47 @@ function Workspace({ userId }: { userId: string }) {
                 {t('shell.refreshStores')}
               </Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      ) : !activeShop ? (
+        <View style={[styles.centerBox, { padding: 24 }]}>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: theme.card,
+                borderColor: theme.border,
+                width: '100%',
+                alignItems: 'center',
+              },
+            ]}
+          >
+            <Ionicons
+              name="alert-circle-outline"
+              size={36}
+              color="#f59e0b"
+              style={{ marginBottom: 10 }}
+            />
+            <Text
+              style={[
+                styles.cardHeading,
+                { color: theme.text, textAlign: 'center' },
+              ]}
+            >
+              {t('alert.notificationShopUnavailableTitle')}
+            </Text>
+            <Text
+              style={[
+                styles.itemSub,
+                {
+                  color: theme.subText,
+                  textAlign: 'center',
+                  marginBottom: 8,
+                },
+              ]}
+            >
+              {orderError || t('alert.notificationShopUnavailableDesc')}
+            </Text>
           </View>
         </View>
       ) : (
