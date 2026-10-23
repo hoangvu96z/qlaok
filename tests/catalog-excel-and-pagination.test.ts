@@ -1350,3 +1350,1169 @@ test('POST /api/catalog bulk_update_price_stock enforces integer-VND rule and re
     setSupabaseDbClientForTests(null);
   }
 });
+
+// ==========================================
+// Suite 4: Bulk Move Category & Bulk Delete Items API
+// ==========================================
+
+function createBulkCatalogMockHarness(options?: {
+  failUpdateError?: string;
+  overrideUpdateCount?: number;
+  failDeleteError?: string;
+  overrideDeleteCount?: number;
+}) {
+  const categoriesStore: Category[] = [
+    {
+      id: 'cat-fnb-001',
+      shop_id: 'shop-fnb-001',
+      name_i18n: { vi: 'Món chính', en: 'Main Dishes' },
+      sort_order: 1,
+      is_active: true,
+    },
+    {
+      id: 'cat-fnb-002',
+      shop_id: 'shop-fnb-001',
+      name_i18n: { vi: 'Đồ uống', en: 'Drinks' },
+      sort_order: 2,
+      is_active: true,
+    },
+    {
+      id: 'cat-foreign-999',
+      shop_id: 'shop-secret-foreign-id',
+      name_i18n: { vi: 'Danh mục quán khác', en: 'Foreign Category' },
+      sort_order: 1,
+      is_active: true,
+    },
+  ];
+
+  const itemsStore: CatalogItem[] = [
+    {
+      id: 'item-fnb-001',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-001',
+      name_i18n: { vi: 'Phở bò tái nạm', en: 'Beef Pho' },
+      desc_i18n: { vi: 'Nước dùng đậm đà', en: 'Rich broth' },
+      price: 55000,
+      compare_at_price: 65000,
+      stock_quantity: 15,
+      is_available: true,
+      is_featured: true,
+      options_json: [
+        {
+          id: 'opt-1',
+          name_i18n: { vi: 'Thêm quẩy' },
+          required: false,
+          choices: [
+            { id: 'c-1', label_i18n: { vi: '1 đĩa' }, extra_price: 5000 },
+          ],
+        },
+      ],
+      view_count: 120,
+      sold_count: 45,
+      sort_order: 1,
+    },
+    {
+      id: 'item-fnb-002',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-001',
+      name_i18n: { vi: 'Trà đá', en: 'Iced Tea' },
+      desc_i18n: { vi: 'Mát lạnh', en: 'Cold' },
+      price: 5000,
+      compare_at_price: null,
+      stock_quantity: null,
+      is_available: true,
+      is_featured: false,
+      options_json: [],
+      view_count: 30,
+      sold_count: 80,
+      sort_order: 2,
+    },
+    {
+      id: 'item-fnb-003',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-002',
+      name_i18n: { vi: 'Cà phê sữa', en: 'Milk Coffee' },
+      desc_i18n: { vi: 'Đậm vị', en: 'Bold' },
+      price: 29000,
+      compare_at_price: null,
+      stock_quantity: 0,
+      is_available: false,
+      is_featured: false,
+      options_json: [],
+      view_count: 15,
+      sold_count: 10,
+      sort_order: 3,
+    },
+    {
+      id: 'item-foreign-999',
+      shop_id: 'shop-secret-foreign-id',
+      category_id: 'cat-foreign-999',
+      name_i18n: { vi: 'Món quán khác', en: 'Foreign Item' },
+      desc_i18n: { vi: '', en: '' },
+      price: 99000,
+      compare_at_price: null,
+      stock_quantity: 10,
+      is_available: true,
+      is_featured: false,
+      options_json: [],
+      view_count: 1,
+      sold_count: 1,
+      sort_order: 1,
+    },
+  ];
+
+  const shopsStore = [
+    { id: 'shop-fnb-001', owner_id: 'owner-demo-001' },
+    { id: 'shop-other-002', owner_id: 'owner-other-002' },
+    { id: 'shop-secret-foreign-id', owner_id: 'owner-foreign-999' },
+  ];
+
+  const membershipsStore = [
+    {
+      id: 'mem-staff-no-catalog-manage',
+      shop_id: 'shop-fnb-001',
+      user_id: 'staff-inventory-only',
+      email: 'staff@qlaok.vn',
+      full_name: 'Staff Inventory Only',
+      role: 'staff',
+      permissions: ['catalog.view', 'inventory.adjust', 'orders.view'],
+      is_active: true,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+    },
+    {
+      id: 'mem-cashier-catalog-manage',
+      shop_id: 'shop-fnb-001',
+      user_id: 'cashier-catalog-manager',
+      email: 'cashier@qlaok.vn',
+      full_name: 'Cashier Manager',
+      role: 'cashier',
+      permissions: ['catalog.view', 'catalog.manage', 'orders.view'],
+      is_active: true,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+    },
+  ];
+
+  const categorySelectCalls: Array<{
+    eqFilters: Record<string, unknown>;
+    eqOrder: string[];
+  }> = [];
+
+  const itemSelectCalls: Array<{
+    eqFilters: Record<string, unknown>;
+    inFilters: Record<string, unknown[]>;
+    filterOrder: string[];
+  }> = [];
+
+  const updateCalls: Array<{
+    patch: Record<string, unknown>;
+    eqFilters: Record<string, unknown>;
+    inFilters: Record<string, unknown[]>;
+  }> = [];
+
+  const deleteCalls: Array<{
+    eqFilters: Record<string, unknown>;
+    inFilters: Record<string, unknown[]>;
+  }> = [];
+
+  const mockDbClient = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select(_fields = '*') {
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const found = shopsStore.find(
+                      (s) => (s as Record<string, unknown>)[field] === val
+                    );
+                    return { data: found ? { ...found } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+
+      if (table === 'shop_memberships') {
+        return {
+          select(_fields = '*') {
+            const filters: Array<[string, unknown]> = [];
+            const builder = {
+              eq(field: string, val: unknown) {
+                filters.push([field, val]);
+                return builder;
+              },
+              order() {
+                return builder;
+              },
+              then(
+                onFulfilled: (v: {
+                  data: typeof membershipsStore;
+                  error: null;
+                }) => unknown,
+                onRejected?: (e: unknown) => unknown
+              ) {
+                const matched = membershipsStore.filter((m) =>
+                  filters.every(
+                    ([k, v]) => (m as Record<string, unknown>)[k] === v
+                  )
+                );
+                return Promise.resolve({
+                  data: matched.map((m) => ({ ...m })),
+                  error: null,
+                }).then(onFulfilled, onRejected);
+              },
+            };
+            return builder;
+          },
+        };
+      }
+
+      if (table === 'categories') {
+        return {
+          select(_fields = '*') {
+            const eqFilters: Record<string, unknown> = {};
+            const eqOrder: string[] = [];
+            const builder = {
+              eq(field: string, val: unknown) {
+                eqFilters[field] = val;
+                eqOrder.push(field);
+                return builder;
+              },
+              async maybeSingle() {
+                categorySelectCalls.push({
+                  eqFilters: { ...eqFilters },
+                  eqOrder: [...eqOrder],
+                });
+                const found = categoriesStore.find((c) =>
+                  Object.entries(eqFilters).every(
+                    ([k, v]) =>
+                      (c as unknown as Record<string, unknown>)[k] === v
+                  )
+                );
+                return { data: found ? { ...found } : null, error: null };
+              },
+            };
+            return builder;
+          },
+        };
+      }
+
+      if (table === 'items') {
+        return {
+          select(_fields = '*') {
+            const eqFilters: Record<string, unknown> = {};
+            const inFilters: Record<string, unknown[]> = {};
+            const filterOrder: string[] = [];
+            const builder = {
+              eq(field: string, val: unknown) {
+                eqFilters[field] = val;
+                filterOrder.push(`eq:${field}`);
+                return builder;
+              },
+              async maybeSingle() {
+                itemSelectCalls.push({
+                  eqFilters: { ...eqFilters },
+                  inFilters: { ...inFilters },
+                  filterOrder: [...filterOrder],
+                });
+                const found = itemsStore.find((item) =>
+                  Object.entries(eqFilters).every(
+                    ([k, v]) =>
+                      (item as unknown as Record<string, unknown>)[k] === v
+                  )
+                );
+                return { data: found ? { ...found } : null, error: null };
+              },
+              async in(field: string, values: unknown[]) {
+                inFilters[field] = [...values];
+                filterOrder.push(`in:${field}`);
+                itemSelectCalls.push({
+                  eqFilters: { ...eqFilters },
+                  inFilters: { ...inFilters },
+                  filterOrder: [...filterOrder],
+                });
+                const valSet = new Set(values);
+                const matched = itemsStore.filter(
+                  (item) =>
+                    Object.entries(eqFilters).every(
+                      ([k, v]) =>
+                        (item as unknown as Record<string, unknown>)[k] === v
+                    ) &&
+                    valSet.has(
+                      (item as unknown as Record<string, unknown>)[field]
+                    )
+                );
+                return {
+                  data: matched.map((i) => ({ ...i })),
+                  error: null,
+                };
+              },
+            };
+            return builder;
+          },
+
+          update(
+            patch: Record<string, unknown>,
+            _opts?: { count?: 'exact' | 'planned' | 'estimated' }
+          ) {
+            const eqFilters: Record<string, unknown> = {};
+            const inFilters: Record<string, unknown[]> = {};
+            const executeUpdate = () => {
+              updateCalls.push({
+                patch: { ...patch },
+                eqFilters: { ...eqFilters },
+                inFilters: { ...inFilters },
+              });
+              if (options?.failUpdateError) {
+                return {
+                  data: null,
+                  error: { message: options.failUpdateError },
+                  count: null,
+                };
+              }
+              const updated: CatalogItem[] = [];
+              for (let i = 0; i < itemsStore.length; i++) {
+                const item = itemsStore[i] as unknown as Record<string, unknown>;
+                const eqMatch = Object.entries(eqFilters).every(
+                  ([k, v]) => item[k] === v
+                );
+                const inMatch = Object.entries(inFilters).every(([k, vals]) =>
+                  vals.includes(item[k])
+                );
+                if (eqMatch && inMatch) {
+                  itemsStore[i] = { ...itemsStore[i], ...patch };
+                  updated.push({ ...itemsStore[i] });
+                }
+              }
+              const finalCount =
+                options?.overrideUpdateCount !== undefined
+                  ? options.overrideUpdateCount
+                  : updated.length;
+              return {
+                data: updated,
+                error: null,
+                count: finalCount,
+              };
+            };
+
+            const builder = {
+              eq(field: string, val: unknown) {
+                eqFilters[field] = val;
+                return builder;
+              },
+              in(field: string, vals: unknown[]) {
+                inFilters[field] = [...vals];
+                return builder;
+              },
+              then(
+                onFulfilled: (v: ReturnType<typeof executeUpdate>) => unknown,
+                onRejected?: (e: unknown) => unknown
+              ) {
+                return Promise.resolve(executeUpdate()).then(
+                  onFulfilled,
+                  onRejected
+                );
+              },
+            };
+            return builder;
+          },
+
+          delete(_opts?: { count?: 'exact' | 'planned' | 'estimated' }) {
+            const eqFilters: Record<string, unknown> = {};
+            const inFilters: Record<string, unknown[]> = {};
+            const executeDelete = () => {
+              deleteCalls.push({
+                eqFilters: { ...eqFilters },
+                inFilters: { ...inFilters },
+              });
+              if (options?.failDeleteError) {
+                return {
+                  data: null,
+                  error: { message: options.failDeleteError },
+                  count: null,
+                };
+              }
+              const removed: CatalogItem[] = [];
+              for (let i = itemsStore.length - 1; i >= 0; i--) {
+                const item = itemsStore[i] as unknown as Record<string, unknown>;
+                const eqMatch = Object.entries(eqFilters).every(
+                  ([k, v]) => item[k] === v
+                );
+                const inMatch = Object.entries(inFilters).every(([k, vals]) =>
+                  vals.includes(item[k])
+                );
+                if (eqMatch && inMatch) {
+                  removed.push(...itemsStore.splice(i, 1));
+                }
+              }
+              const finalCount =
+                options?.overrideDeleteCount !== undefined
+                  ? options.overrideDeleteCount
+                  : removed.length;
+              return {
+                data: removed,
+                error: null,
+                count: finalCount,
+              };
+            };
+
+            const builder = {
+              eq(field: string, val: unknown) {
+                eqFilters[field] = val;
+                return builder;
+              },
+              in(field: string, vals: unknown[]) {
+                inFilters[field] = [...vals];
+                return builder;
+              },
+              then(
+                onFulfilled: (v: ReturnType<typeof executeDelete>) => unknown,
+                onRejected?: (e: unknown) => unknown
+              ) {
+                return Promise.resolve(executeDelete()).then(
+                  onFulfilled,
+                  onRejected
+                );
+              },
+            };
+            return builder;
+          },
+        };
+      }
+
+      return {};
+    },
+  };
+
+  return {
+    mockDbClient,
+    itemsStore,
+    categoriesStore,
+    categorySelectCalls,
+    itemSelectCalls,
+    updateCalls,
+    deleteCalls,
+  };
+}
+
+test('POST /api/catalog bulk_move_items moves items with a single category-only update and preserves all other fields', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const {
+    mockDbClient,
+    itemsStore,
+    categorySelectCalls,
+    itemSelectCalls,
+    updateCalls,
+  } = createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    const beforeItem1 = structuredClone(
+      itemsStore.find((i) => i.id === 'item-fnb-001')!
+    );
+    const beforeItem2 = structuredClone(
+      itemsStore.find((i) => i.id === 'item-fnb-002')!
+    );
+
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: [' item-fnb-001 ', 'item-fnb-002'],
+          categoryId: 'cat-fnb-002',
+          // Extra fields in body must never leak into the item update patch
+          price: 0,
+          is_available: false,
+        }),
+      })
+    );
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    assert.equal(data.updatedCount, 2);
+    assert.equal(data.movedCount, 2);
+    assert.equal(data.unchangedCount, 0);
+    assert.equal(data.unchanged, false);
+    assert.equal(data.categoryId, 'cat-fnb-002');
+    assert.deepEqual(data.itemIds, ['item-fnb-001', 'item-fnb-002']);
+
+    // Category lookup filters by both category ID and authorized shop ID
+    assert.equal(categorySelectCalls.length, 1);
+    assert.deepEqual(categorySelectCalls[0].eqFilters, {
+      id: 'cat-fnb-002',
+      shop_id: 'shop-fnb-001',
+    });
+
+    // Item lookup filters shop_id = authorized shopId before filtering requested IDs
+    assert.equal(itemSelectCalls.length, 1);
+    assert.deepEqual(itemSelectCalls[0].eqFilters, {
+      shop_id: 'shop-fnb-001',
+    });
+    assert.deepEqual(itemSelectCalls[0].inFilters, {
+      id: ['item-fnb-001', 'item-fnb-002'],
+    });
+    assert.deepEqual(itemSelectCalls[0].filterOrder, ['eq:shop_id', 'in:id']);
+
+    // Exactly one scoped update call that touches ONLY category_id
+    assert.equal(updateCalls.length, 1);
+    assert.deepEqual(updateCalls[0].patch, { category_id: 'cat-fnb-002' });
+    assert.deepEqual(Object.keys(updateCalls[0].patch), ['category_id']);
+    assert.equal(updateCalls[0].eqFilters.shop_id, 'shop-fnb-001');
+    assert.deepEqual(updateCalls[0].inFilters.id, [
+      'item-fnb-001',
+      'item-fnb-002',
+    ]);
+
+    const afterItem1 = itemsStore.find((i) => i.id === 'item-fnb-001')!;
+    const afterItem2 = itemsStore.find((i) => i.id === 'item-fnb-002')!;
+    assert.equal(afterItem1.category_id, 'cat-fnb-002');
+    assert.equal(afterItem2.category_id, 'cat-fnb-002');
+
+    // Every other field must remain byte-for-byte identical
+    assert.deepEqual(
+      { ...afterItem1, category_id: beforeItem1.category_id },
+      beforeItem1
+    );
+    assert.deepEqual(
+      { ...afterItem2, category_id: beforeItem2.category_id },
+      beforeItem2
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_move_items reports unchanged (not updated) when all items already have target category', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const { mockDbClient, updateCalls } = createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    // Both item-fnb-001 and item-fnb-002 are already in cat-fnb-001
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          categoryId: 'cat-fnb-001',
+        }),
+      })
+    );
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    assert.equal(data.updatedCount, 0);
+    assert.equal(data.movedCount, 0);
+    assert.equal(data.unchangedCount, 2);
+    assert.equal(data.unchanged, true);
+    assert.equal(updateCalls.length, 0);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_move_items and bulk_delete_items reject wrong/missing shop and insufficient permissions', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+
+  const otherShopOwnerToken = issueSessionToken({
+    id: 'owner-other-002',
+    email: 'other@qlaok.vn',
+    role: 'owner',
+  });
+
+  const inventoryOnlyStaffToken = issueSessionToken({
+    id: 'staff-inventory-only',
+    email: 'staff@qlaok.vn',
+    role: 'staff',
+  });
+
+  const { mockDbClient, updateCalls, deleteCalls } =
+    createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+  setShopMembershipDbClientForTest(
+    mockDbClient as unknown as Parameters<
+      typeof setShopMembershipDbClientForTest
+    >[0]
+  );
+
+  try {
+    // 1. Missing shopId
+    for (const action of ['bulk_move_items', 'bulk_delete_items'] as const) {
+      const resMissingShop = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${otherShopOwnerToken}`,
+          },
+          body: JSON.stringify({
+            action,
+            shopId: '   ',
+            itemIds: ['item-fnb-001'],
+            categoryId: 'cat-fnb-002',
+          }),
+        })
+      );
+      assert.equal(resMissingShop.status, 400);
+      const bodyMissingShop = await resMissingShop.json();
+      assert.equal(bodyMissingShop.success, false);
+    }
+
+    // 2. Non-existent shop
+    for (const action of ['bulk_move_items', 'bulk_delete_items'] as const) {
+      const resUnknownShop = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${otherShopOwnerToken}`,
+          },
+          body: JSON.stringify({
+            action,
+            shopId: 'shop-does-not-exist',
+            itemIds: ['item-fnb-001'],
+            categoryId: 'cat-fnb-002',
+          }),
+        })
+      );
+      assert.equal(resUnknownShop.status, 404);
+    }
+
+    // 3. Wrong shop (owner of shop-other-002 targeting shop-fnb-001)
+    for (const action of ['bulk_move_items', 'bulk_delete_items'] as const) {
+      const resWrongShop = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${otherShopOwnerToken}`,
+          },
+          body: JSON.stringify({
+            action,
+            shopId: 'shop-fnb-001',
+            itemIds: ['item-fnb-001'],
+            categoryId: 'cat-fnb-002',
+          }),
+        })
+      );
+      assert.equal(resWrongShop.status, 403);
+    }
+
+    // 4. Insufficient permission (staff with inventory.adjust but without catalog.manage)
+    for (const action of ['bulk_move_items', 'bulk_delete_items'] as const) {
+      const resForbidden = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${inventoryOnlyStaffToken}`,
+          },
+          body: JSON.stringify({
+            action,
+            shopId: 'shop-fnb-001',
+            itemIds: ['item-fnb-001'],
+            categoryId: 'cat-fnb-002',
+          }),
+        })
+      );
+      assert.equal(resForbidden.status, 403);
+      const dataForbidden = await resForbidden.json();
+      assert.equal(dataForbidden.code, 'INSUFFICIENT_SHOP_PERMISSION');
+      assert.deepEqual(dataForbidden.requiredPermissions, ['catalog.manage']);
+    }
+
+    assert.equal(updateCalls.length, 0);
+    assert.equal(deleteCalls.length, 0);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_move_items and bulk_delete_items reject missing, duplicate, malformed, or >2000 IDs without silent dedupe', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const { mockDbClient, updateCalls, deleteCalls } =
+    createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    const invalidIdPayloads: Array<{ itemIds: unknown; expectedCode: string }> =
+      [
+        { itemIds: [], expectedCode: 'INVALID_ITEM_IDS' },
+        { itemIds: 'item-fnb-001', expectedCode: 'INVALID_ITEM_IDS' },
+        { itemIds: null, expectedCode: 'INVALID_ITEM_IDS' },
+        { itemIds: ['item-fnb-001', ''], expectedCode: 'MALFORMED_ITEM_ID' },
+        { itemIds: ['item-fnb-001', '   '], expectedCode: 'MALFORMED_ITEM_ID' },
+        { itemIds: ['item-fnb-001', null], expectedCode: 'MALFORMED_ITEM_ID' },
+        { itemIds: ['item-fnb-001', 123], expectedCode: 'MALFORMED_ITEM_ID' },
+        {
+          itemIds: ['item-fnb-001', 'item-fnb-001'],
+          expectedCode: 'DUPLICATE_ITEM_ID',
+        },
+        {
+          itemIds: ['item-fnb-001', '  item-fnb-001  '],
+          expectedCode: 'DUPLICATE_ITEM_ID',
+        },
+        {
+          itemIds: Array.from({ length: 2001 }, (_, i) => `item-${i}`),
+          expectedCode: 'TOO_MANY_ITEMS',
+        },
+      ];
+
+    for (const { itemIds, expectedCode } of invalidIdPayloads) {
+      for (const action of ['bulk_move_items', 'bulk_delete_items'] as const) {
+        const res = await POST(
+          new Request('http://localhost:3000/api/catalog', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${ownerToken}`,
+            },
+            body: JSON.stringify({
+              action,
+              shopId: 'shop-fnb-001',
+              itemIds,
+              categoryId: 'cat-fnb-002',
+            }),
+          })
+        );
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.success, false);
+        assert.equal(data.code, expectedCode);
+      }
+    }
+
+    // Missing or malformed categoryId for bulk_move_items
+    for (const badCat of ['', '   ', null, 999]) {
+      const resBadCat = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'bulk_move_items',
+            shopId: 'shop-fnb-001',
+            itemIds: ['item-fnb-001'],
+            categoryId: badCat,
+          }),
+        })
+      );
+      assert.equal(resBadCat.status, 400);
+      const dataBadCat = await resBadCat.json();
+      assert.equal(dataBadCat.success, false);
+      assert.equal(dataBadCat.code, 'INVALID_CATEGORY_ID');
+    }
+
+    assert.equal(updateCalls.length, 0);
+    assert.equal(deleteCalls.length, 0);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_move_items and bulk_delete_items reject missing or cross-shop items/categories before write without exposing foreign shop IDs', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const {
+    mockDbClient,
+    itemsStore,
+    categorySelectCalls,
+    itemSelectCalls,
+    updateCalls,
+    deleteCalls,
+  } = createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    // 1. Item from another shop in bulk_move_items -> rejects entire batch before write
+    const resMoveCrossItem = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-foreign-999'],
+          categoryId: 'cat-fnb-002',
+        }),
+      })
+    );
+    assert.equal(resMoveCrossItem.status, 400);
+    const dataMoveCrossItem = await resMoveCrossItem.json();
+    assert.equal(dataMoveCrossItem.success, false);
+    assert.equal(dataMoveCrossItem.code, 'ITEM_NOT_IN_SHOP');
+    assert.equal(
+      JSON.stringify(dataMoveCrossItem).includes('shop-secret-foreign-id'),
+      false,
+      'Must never expose foreign shop_id'
+    );
+    assert.deepEqual(itemSelectCalls[0].eqFilters, { shop_id: 'shop-fnb-001' });
+    assert.deepEqual(itemSelectCalls[0].filterOrder, ['eq:shop_id', 'in:id']);
+
+    // 2. Missing item in bulk_move_items -> rejects entire batch before write
+    const resMoveMissingItem = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-nonexistent-404'],
+          categoryId: 'cat-fnb-002',
+        }),
+      })
+    );
+    assert.equal(resMoveMissingItem.status, 400);
+    const dataMoveMissingItem = await resMoveMissingItem.json();
+    assert.equal(dataMoveMissingItem.success, false);
+    assert.equal(dataMoveMissingItem.code, 'ITEM_NOT_IN_SHOP');
+
+    // 3. Foreign-shop category in bulk_move_items -> rejects before write without exposing foreign shop_id
+    const resMoveForeignCat = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001'],
+          categoryId: 'cat-foreign-999',
+        }),
+      })
+    );
+    assert.equal(resMoveForeignCat.status, 400);
+    const dataMoveForeignCat = await resMoveForeignCat.json();
+    assert.equal(dataMoveForeignCat.success, false);
+    assert.equal(dataMoveForeignCat.code, 'CATEGORY_NOT_IN_SHOP');
+    assert.equal(
+      JSON.stringify(dataMoveForeignCat).includes('shop-secret-foreign-id'),
+      false,
+      'Must never expose foreign shop_id'
+    );
+    assert.deepEqual(categorySelectCalls[2].eqFilters, {
+      id: 'cat-foreign-999',
+      shop_id: 'shop-fnb-001',
+    });
+
+    // 4. Item from another shop in bulk_delete_items -> rejects entire batch before write
+    const resDeleteCrossItem = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_delete_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-foreign-999'],
+        }),
+      })
+    );
+    assert.equal(resDeleteCrossItem.status, 400);
+    const dataDeleteCrossItem = await resDeleteCrossItem.json();
+    assert.equal(dataDeleteCrossItem.success, false);
+    assert.equal(dataDeleteCrossItem.code, 'ITEM_NOT_IN_SHOP');
+    assert.equal(
+      JSON.stringify(dataDeleteCrossItem).includes('shop-secret-foreign-id'),
+      false,
+      'Must never expose foreign shop_id'
+    );
+    assert.deepEqual(itemSelectCalls[2].eqFilters, { shop_id: 'shop-fnb-001' });
+    assert.deepEqual(itemSelectCalls[2].filterOrder, ['eq:shop_id', 'in:id']);
+
+    // Verify zero writes occurred and item-fnb-001 is still in cat-fnb-001 and present
+    assert.equal(updateCalls.length, 0);
+    assert.equal(deleteCalls.length, 0);
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.category_id,
+      'cat-fnb-001'
+    );
+    assert.equal(itemsStore.length, 4);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_delete_items performs one atomic shop-scoped delete and preserves legacy single-item DELETE', async () => {
+  const { POST, DELETE } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const { mockDbClient, itemsStore, itemSelectCalls, deleteCalls } =
+    createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_delete_items',
+          shopId: 'shop-fnb-001',
+          itemIds: [' item-fnb-001 ', 'item-fnb-002'],
+        }),
+      })
+    );
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    assert.equal(data.deletedCount, 2);
+    assert.equal(data.count, 2);
+    assert.deepEqual(data.itemIds, ['item-fnb-001', 'item-fnb-002']);
+
+    assert.equal(itemSelectCalls.length, 1);
+    assert.deepEqual(itemSelectCalls[0].eqFilters, {
+      shop_id: 'shop-fnb-001',
+    });
+    assert.deepEqual(itemSelectCalls[0].inFilters, {
+      id: ['item-fnb-001', 'item-fnb-002'],
+    });
+    assert.deepEqual(itemSelectCalls[0].filterOrder, ['eq:shop_id', 'in:id']);
+
+    // One atomic shop-scoped delete call
+    assert.equal(deleteCalls.length, 1);
+    assert.equal(deleteCalls[0].eqFilters.shop_id, 'shop-fnb-001');
+    assert.deepEqual(deleteCalls[0].inFilters.id, [
+      'item-fnb-001',
+      'item-fnb-002',
+    ]);
+
+    assert.deepEqual(
+      itemsStore.map((i) => i.id),
+      ['item-fnb-003', 'item-foreign-999']
+    );
+
+    // Legacy single-item DELETE remains intact
+    const resLegacyDelete = await DELETE(
+      new Request(
+        'http://localhost:3000/api/catalog?itemId=item-fnb-003',
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+          },
+        }
+      )
+    );
+    assert.equal(resLegacyDelete.status, 200);
+    const dataLegacy = await resLegacyDelete.json();
+    assert.equal(dataLegacy.deleted, true);
+    assert.deepEqual(
+      itemsStore.map((i) => i.id),
+      ['item-foreign-999']
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_move_items and bulk_delete_items return non-success on DB errors or affected count mismatch', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  // 1. DB update error during bulk_move_items
+  const moveErrHarness = createBulkCatalogMockHarness({
+    failUpdateError: 'Simulated DB update failure',
+  });
+  setSupabaseDbClientForTests(moveErrHarness.mockDbClient);
+  try {
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          categoryId: 'cat-fnb-002',
+        }),
+      })
+    );
+    assert.equal(res.status, 500);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.code, 'DB_UPDATE_FAILED');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  // 2. Affected count mismatch during bulk_move_items
+  const moveMismatchHarness = createBulkCatalogMockHarness({
+    overrideUpdateCount: 1,
+  });
+  setSupabaseDbClientForTests(moveMismatchHarness.mockDbClient);
+  try {
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          categoryId: 'cat-fnb-002',
+        }),
+      })
+    );
+    assert.equal(res.status, 409);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.code, 'BULK_MOVE_COUNT_MISMATCH');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  // 3. DB/FK delete error during bulk_delete_items
+  const deleteErrHarness = createBulkCatalogMockHarness({
+    failDeleteError: 'Simulated DB foreign key constraint error',
+  });
+  setSupabaseDbClientForTests(deleteErrHarness.mockDbClient);
+  try {
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_delete_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+        }),
+      })
+    );
+    assert.equal(res.status, 500);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.deletedCount, 0);
+    assert.equal(data.code, 'DB_DELETE_FAILED');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  // 4. Affected count mismatch during bulk_delete_items
+  const deleteMismatchHarness = createBulkCatalogMockHarness({
+    overrideDeleteCount: 1,
+  });
+  setSupabaseDbClientForTests(deleteMismatchHarness.mockDbClient);
+  try {
+    const res = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_delete_items',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+        }),
+      })
+    );
+    assert.equal(res.status, 409);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.deletedCount, 0);
+    assert.equal(data.code, 'BULK_DELETE_COUNT_MISMATCH');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});

@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit --incremental false",
     "db:migrate": "node scripts/migrate-supabase.mjs",
+    "agy": "node scripts/agy-runner.mjs",
+    "test:agy-runner": "node --test tests/agy-runner.test.mjs",
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts",
     "test:e2e": "node --test tests/e2e.test.mjs",
     "test": "npm run test:unit && npm run test:e2e",

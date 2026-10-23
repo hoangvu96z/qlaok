@@ -20,6 +20,134 @@ import {
   parseCatalogStockValue,
 } from '@/lib/catalog-excel';
 
+const MAX_BULK_CATALOG_ITEMS = 2000;
+const BULK_SELECT_CHUNK_SIZE = 1000;
+
+function validateBulkCatalogItemIds(
+  rawItemIds: unknown
+):
+  | { valid: true; itemIds: string[] }
+  | { valid: false; code: string; error: string } {
+  if (!Array.isArray(rawItemIds) || rawItemIds.length === 0) {
+    return {
+      valid: false,
+      code: 'INVALID_ITEM_IDS',
+      error: 'Danh sách mã món (itemIds) phải là mảng không rỗng.',
+    };
+  }
+
+  if (rawItemIds.length > MAX_BULK_CATALOG_ITEMS) {
+    return {
+      valid: false,
+      code: 'TOO_MANY_ITEMS',
+      error: `Vượt quá giới hạn ${MAX_BULK_CATALOG_ITEMS.toLocaleString('en-US')} món mỗi lần thao tác.`,
+    };
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < rawItemIds.length; i++) {
+    const entry = rawItemIds[i];
+    if (typeof entry !== 'string') {
+      return {
+        valid: false,
+        code: 'MALFORMED_ITEM_ID',
+        error: `Mã món tại vị trí ${i + 1} không hợp lệ (phải là chuỗi).`,
+      };
+    }
+
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return {
+        valid: false,
+        code: 'MALFORMED_ITEM_ID',
+        error: `Mã món tại vị trí ${i + 1} không được để trống.`,
+      };
+    }
+
+    if (seen.has(trimmed)) {
+      return {
+        valid: false,
+        code: 'DUPLICATE_ITEM_ID',
+        error: `Mã món "${trimmed}" bị trùng lặp trong yêu cầu.`,
+      };
+    }
+
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+
+  return { valid: true, itemIds: normalized };
+}
+
+async function fetchAndVerifyShopItems(
+  sb: ReturnType<typeof getSupabaseDbClient>,
+  shopId: string,
+  itemIds: string[]
+): Promise<
+  | {
+      ok: true;
+      itemsById: Map<
+        string,
+        { id: string; shop_id: string; category_id: string }
+      >;
+    }
+  | { ok: false; status: number; code: string; error: string }
+> {
+  const itemsById = new Map<
+    string,
+    { id: string; shop_id: string; category_id: string }
+  >();
+
+  for (
+    let offset = 0;
+    offset < itemIds.length;
+    offset += BULK_SELECT_CHUNK_SIZE
+  ) {
+    const chunk = itemIds.slice(offset, offset + BULK_SELECT_CHUNK_SIZE);
+    const { data: rows, error: selectErr } = await sb
+      .from('items')
+      .select('id, shop_id, category_id')
+      .eq('shop_id', shopId)
+      .in('id', chunk);
+
+    if (selectErr) {
+      return {
+        ok: false,
+        status: 500,
+        code: 'DB_ITEM_LOOKUP_FAILED',
+        error: selectErr.message || 'Không thể kiểm tra danh sách món.',
+      };
+    }
+
+    for (const row of rows || []) {
+      if (row && typeof row.id === 'string' && row.shop_id === shopId) {
+        itemsById.set(row.id, {
+          id: row.id,
+          shop_id: row.shop_id,
+          category_id:
+            typeof row.category_id === 'string' ? row.category_id : '',
+        });
+      }
+    }
+  }
+
+  for (const requestedId of itemIds) {
+    const found = itemsById.get(requestedId);
+    if (!found || found.shop_id !== shopId) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'ITEM_NOT_IN_SHOP',
+        error: 'Một hoặc nhiều món không tồn tại hoặc không thuộc cửa hàng này.',
+      };
+    }
+  }
+
+  return { ok: true, itemsById };
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const shopId = searchParams.get('shopId') || undefined;
@@ -328,11 +456,271 @@ export async function POST(req: Request) {
       });
     }
 
+    if (action === 'bulk_move_items') {
+      const targetShopId =
+        typeof body.shopId === 'string' ? body.shopId.trim() : '';
+      if (!targetShopId) {
+        return NextResponse.json(
+          { success: false, code: 'INVALID_SHOP_ID', error: 'Missing shopId' },
+          { status: 400 }
+        );
+      }
+
+      const auth = await requireShopPermission(
+        req,
+        targetShopId,
+        'catalog.manage'
+      );
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const targetCategoryId =
+        typeof body.categoryId === 'string' ? body.categoryId.trim() : '';
+      if (!targetCategoryId) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'INVALID_CATEGORY_ID',
+            error: 'Danh mục đích (categoryId) không hợp lệ hoặc bị trống.',
+          },
+          { status: 400 }
+        );
+      }
+
+      const parsedIds = validateBulkCatalogItemIds(body.itemIds);
+      if (!parsedIds.valid) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: parsedIds.code,
+            error: parsedIds.error,
+          },
+          { status: 400 }
+        );
+      }
+      const normalizedItemIds = parsedIds.itemIds;
+
+      const sb = getSupabaseDbClient();
+
+      const { data: targetCategory, error: categoryErr } = await sb
+        .from('categories')
+        .select('id, shop_id')
+        .eq('id', targetCategoryId)
+        .eq('shop_id', targetShopId)
+        .maybeSingle();
+
+      if (categoryErr) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'DB_CATEGORY_LOOKUP_FAILED',
+            error: categoryErr.message || 'Không thể kiểm tra danh mục đích.',
+          },
+          { status: 500 }
+        );
+      }
+
+      if (!targetCategory || targetCategory.shop_id !== targetShopId) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'CATEGORY_NOT_IN_SHOP',
+            error: 'Danh mục đích không tồn tại hoặc không thuộc cửa hàng này.',
+          },
+          { status: 400 }
+        );
+      }
+
+      const verifiedItems = await fetchAndVerifyShopItems(
+        sb,
+        targetShopId,
+        normalizedItemIds
+      );
+      if (!verifiedItems.ok) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: verifiedItems.code,
+            error: verifiedItems.error,
+          },
+          { status: verifiedItems.status }
+        );
+      }
+
+      const itemsToMoveIds = normalizedItemIds.filter(
+        (id) => verifiedItems.itemsById.get(id)?.category_id !== targetCategoryId
+      );
+      const unchangedCount = normalizedItemIds.length - itemsToMoveIds.length;
+
+      if (itemsToMoveIds.length === 0) {
+        return NextResponse.json({
+          success: true,
+          updatedCount: 0,
+          movedCount: 0,
+          unchangedCount,
+          unchanged: true,
+          categoryId: targetCategoryId,
+          itemIds: normalizedItemIds,
+        });
+      }
+
+      const {
+        data: updatedRows,
+        error: updateErr,
+        count: updateCount,
+      } = await sb
+        .from('items')
+        .update({ category_id: targetCategoryId }, { count: 'exact' })
+        .eq('shop_id', targetShopId)
+        .in('id', itemsToMoveIds);
+
+      if (updateErr) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'DB_UPDATE_FAILED',
+            error:
+              updateErr.message ||
+              'Không thể chuyển danh mục cho các món đã chọn.',
+          },
+          { status: 500 }
+        );
+      }
+
+      const rawUpdatedRows = updatedRows as unknown;
+      const affectedCount =
+        typeof updateCount === 'number'
+          ? updateCount
+          : Array.isArray(rawUpdatedRows)
+            ? rawUpdatedRows.length
+            : null;
+
+      if (affectedCount === null || affectedCount !== itemsToMoveIds.length) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'BULK_MOVE_COUNT_MISMATCH',
+            error: 'Số lượng món được cập nhật không khớp với yêu cầu.',
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        updatedCount: affectedCount,
+        movedCount: affectedCount,
+        unchangedCount,
+        unchanged: false,
+        categoryId: targetCategoryId,
+        itemIds: normalizedItemIds,
+      });
+    }
+
+    if (action === 'bulk_delete_items') {
+      const targetShopId =
+        typeof body.shopId === 'string' ? body.shopId.trim() : '';
+      if (!targetShopId) {
+        return NextResponse.json(
+          { success: false, code: 'INVALID_SHOP_ID', error: 'Missing shopId' },
+          { status: 400 }
+        );
+      }
+
+      const auth = await requireShopPermission(
+        req,
+        targetShopId,
+        'catalog.manage'
+      );
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const parsedIds = validateBulkCatalogItemIds(body.itemIds);
+      if (!parsedIds.valid) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: parsedIds.code,
+            error: parsedIds.error,
+          },
+          { status: 400 }
+        );
+      }
+      const normalizedItemIds = parsedIds.itemIds;
+
+      const sb = getSupabaseDbClient();
+
+      const verifiedItems = await fetchAndVerifyShopItems(
+        sb,
+        targetShopId,
+        normalizedItemIds
+      );
+      if (!verifiedItems.ok) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: verifiedItems.code,
+            error: verifiedItems.error,
+          },
+          { status: verifiedItems.status }
+        );
+      }
+
+      const {
+        data: deletedRows,
+        error: deleteErr,
+        count: deleteCount,
+      } = await sb
+        .from('items')
+        .delete({ count: 'exact' })
+        .eq('shop_id', targetShopId)
+        .in('id', normalizedItemIds);
+
+      if (deleteErr) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'DB_DELETE_FAILED',
+            deletedCount: 0,
+            count: 0,
+            error: deleteErr.message || 'Không thể xóa các món đã chọn.',
+          },
+          { status: 500 }
+        );
+      }
+
+      const rawDeletedRows = deletedRows as unknown;
+      const affectedCount =
+        typeof deleteCount === 'number'
+          ? deleteCount
+          : Array.isArray(rawDeletedRows)
+            ? rawDeletedRows.length
+            : null;
+
+      if (affectedCount === null || affectedCount !== normalizedItemIds.length) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'BULK_DELETE_COUNT_MISMATCH',
+            deletedCount: 0,
+            count: 0,
+            error: 'Số lượng món đã xóa không khớp với yêu cầu.',
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        deletedCount: affectedCount,
+        count: affectedCount,
+        itemIds: normalizedItemIds,
+      });
+    }
+
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Catalog operation failed';
-    return NextResponse.json({ error: message }, { status: 400 });
+    return NextResponse.json({ success: false, error: message }, { status: 400 });
   }
 }
 

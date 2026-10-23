@@ -6,3 +6,4 @@ node_modules
 mobile/.env
 mobile/.env.local
 .local-db
+.agy-runs/
