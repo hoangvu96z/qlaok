@@ -30,7 +30,6 @@ import {
   getSaasPublicBankConfigs,
   selectSaasPublicBankConfig,
   buildSaasVietQrUrl,
-  type SaasPublicBankConfig,
 } from '@/lib/saas-bank-accounts';
 
 /** Poll interval and max duration while waiting for the bank webhook. */

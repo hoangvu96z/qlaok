@@ -4,7 +4,6 @@ import React, { useEffect } from 'react';
 import {
   Smartphone,
   ChevronRight,
-  ChevronLeft,
   ExternalLink,
   Eye,
   PanelRightClose,

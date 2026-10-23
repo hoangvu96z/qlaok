@@ -63,7 +63,6 @@ const { canReopenPaymentTransaction, buildBillingColumns } = await import(
 );
 const {
   getConfiguredSaasReceivingAccounts,
-  normalizeReceivingAccount,
   parseSaasPublicBankAccounts,
   getSaasPublicBankConfigs,
   getSaasBankConfig,
@@ -91,7 +90,7 @@ let mockProfiles: Record<
 let mockTableErrors: Partial<Record<string, { code?: string; message: string }>> = {};
 const selectedProjections: Array<{ table: string; columns: string }> = [];
 const insertedTransactions: Array<Record<string, unknown>> = [];
-let mockRpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+const mockRpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
 let mockRpcHandler:
   | ((
       name: string,
@@ -2027,12 +2026,12 @@ test('billing history action visibility is owner/admin-only and completed/failed
   );
 
   // 3. Owner columns (canManageBilling: true) have localized action for pending row only
-  let reopenedOrder: PaymentTransaction | null = null;
+  let _reopenedOrder: PaymentTransaction | null = null;
   const ownerColsVi = buildBillingColumns({
     tx: viTx,
     canManageBilling: true,
     onReopenPendingOrder: (order) => {
-      reopenedOrder = order;
+      _reopenedOrder = order;
     },
   });
   const actionColVi = ownerColsVi.find((col) => col.id === 'action');
@@ -2071,7 +2070,7 @@ test('billing history action visibility is owner/admin-only and completed/failed
     tx: enTx,
     canManageBilling: true,
     onReopenPendingOrder: (order) => {
-      reopenedOrder = order;
+      _reopenedOrder = order;
     },
   });
   const actionColEn = ownerColsEn.find((col) => col.id === 'action')!;
@@ -3760,7 +3759,7 @@ test('payment webhook: multiple allowlisted receiving accounts proceed, unlisted
   try {
     // 1. Configure multiple accounts via SAAS_BANK_ACCOUNTS
     const acct1 = '111222333';
-    const acct2 = '444555666';
+    const _acct2 = '444555666';
     const acct3 = '777888999';
     process.env.SAAS_BANK_ACCOUNTS = JSON.stringify([
       acct1,

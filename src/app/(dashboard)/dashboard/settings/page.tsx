@@ -38,7 +38,7 @@ import {
   ShopThemeConfig,
   SupportedLocale,
 } from '@/types/qlaok';
-import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+import { ALL_LOCALES } from '@/lib/i18n-helper';
 import {
   applyOpeningHoursConfirmationToggle,
   applyOpeningHoursScheduleChange,

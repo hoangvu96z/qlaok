@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   computeTableFloorPlanSummaries,
   aggregateTableFloorPlan,
-  type TableFloorPlanSummary,
 } from '@/lib/table-floor-plan';
 import type { ShopOrder, ShopTable } from '@/types/qlaok';
 

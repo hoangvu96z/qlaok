@@ -55,10 +55,8 @@ import {
 } from '@/lib/mpos-store';
 import {
   DEFAULT_ROLE_PERMISSIONS,
-  hasShopPermission,
   dbUpsertShopMembership,
   dbDeleteShopMembership,
-  resolveUserShopMembership,
 } from '@/lib/shop-permissions';
 import { computeSharedOrderQuote } from '@/lib/order-pricing';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';

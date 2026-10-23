@@ -32,7 +32,7 @@ for (const mode of ['connected', 'fallback', 'unauthorized'] as const) {
       init.signal?.addEventListener('abort', () => { try { streamController.error(new DOMException('Aborted', 'AbortError')); } catch {} }, { once: true });
       return new Response(stream);
     } });
-    let stop: (() => void) | undefined;
+    let stop: (() => void) | undefined = undefined;
     t.after(() => {
       stop?.();
       for (const [key, descriptor] of Object.entries(descriptors)) {
@@ -200,7 +200,7 @@ test('live sync unauthorized recovers when reconnect is called after session res
     },
   });
 
-  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined = undefined;
   t.after(() => {
     stop?.();
     for (const [key, descriptor] of Object.entries(descriptors)) {
@@ -269,7 +269,7 @@ test('live sync handles 403 Forbidden as unauthorized and halts reconnect until 
     },
   });
 
-  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined = undefined;
   t.after(() => {
     stop?.();
     for (const [key, descriptor] of Object.entries(descriptors)) {
@@ -363,7 +363,7 @@ test('healthy live sync is not torn down or reopened when ready event triggers o
     },
   });
 
-  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined = undefined;
   t.after(() => {
     stop?.();
     for (const [key, descriptor] of Object.entries(descriptors)) {

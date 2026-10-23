@@ -36,8 +36,8 @@ export function serializeCsv(dataset: ExportDataset): string {
 
 /** Real OOXML workbook. Dynamic import keeps the writer out of the initial page bundle. */
 export async function buildXlsx(dataset: ExportDataset): Promise<Uint8Array> {
-  const module = await import('exceljs');
-  const Workbook = module.default?.Workbook ?? module.Workbook;
+  const excelModule = await import('exceljs');
+  const Workbook = excelModule.default?.Workbook ?? excelModule.Workbook;
   const workbook = new Workbook();
   workbook.creator = 'Qlaok';
   workbook.title = dataset.title;

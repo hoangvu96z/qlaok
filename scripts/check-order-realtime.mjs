@@ -12,7 +12,7 @@ const channel = client.channel('qlaok-deploy-realtime-check');
 try {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Realtime subscription timed out')), 15000);
-    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {}).subscribe((status, error) => {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {}).subscribe((status, _error) => {
       if (status === 'SUBSCRIBED') { clearTimeout(timer); resolve(); }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') { clearTimeout(timer); reject(new Error(`Realtime subscription failed (${status})`)); }
     });

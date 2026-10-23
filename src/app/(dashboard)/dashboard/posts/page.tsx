@@ -18,7 +18,6 @@ import {
   Save,
   Percent,
   Banknote,
-  Clock,
   ShoppingBag,
   Smartphone,
 } from 'lucide-react';

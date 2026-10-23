@@ -32,7 +32,6 @@ import { GET as getShops, PATCH as patchShops } from '@/app/api/shops/route';
 import {
   GET as getTables,
   PATCH as patchTables,
-  POST as postTables,
 } from '@/app/api/tables/route';
 import { issueSessionToken } from '@/lib/server-auth';
 import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
@@ -1229,7 +1228,7 @@ test('dbUpdateShopTable narrow PATCH: captures only explicitly changed fields, p
 
     let capturedPayload: Record<string, unknown> | null = null;
     const mockClient = {
-      from(table: string) {
+      from(_table: string) {
         let isUpdate = false;
         let updateData: Record<string, unknown> | null = null;
         let isSingle = false;

@@ -682,7 +682,7 @@ export async function PATCH(req: Request) {
       );
     }
 
-    const { user: sessionUser, membership } = await getRequestShopMembership(
+    const { membership } = await getRequestShopMembership(
       req,
       existingOrder.shop_id
     );

@@ -6,7 +6,7 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit --incremental false",
     "db:migrate": "node scripts/migrate-supabase.mjs",
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts",
@@ -37,10 +37,13 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",
+    "@eslint/eslintrc": "^3.3.7",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.1.6",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2"

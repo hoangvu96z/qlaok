@@ -108,6 +108,7 @@ Bảng web thống nhất qua `react-data-table-component`; export báo cáo dù
 ## Kiểm tra
 
 ```bash
+npm run lint
 npm run typecheck
 npm run typecheck --prefix mobile
 npm run test:unit
@@ -119,7 +120,7 @@ npm run build
 
 `test:sql` dùng PGlite cô lập, gồm migration bàn và ranh giới RLS; review tests gồm auth, quyền/RLS, giá, đơn, admin, realtime và i18n. Không đóng đinh tổng số test: lấy kết quả của lần chạy thực tế.
 
-`npm test` root còn chạy `test:e2e`, có ghi dữ liệu qua server; chỉ dùng server/DB test dùng một lần, không trỏ production. Các fixture `tests/*-ui-fixture.mjs` chỉ phục vụ kiểm tra UI local. Script `lint` hiện là `next lint` và chưa có ESLint trong devDependencies; không coi đây là gate lint đã hoạt động trên Next 15.
+`npm test` root còn chạy `test:e2e`, có ghi dữ liệu qua server; chỉ dùng server/DB test dùng một lần, không trỏ production. Các fixture `tests/*-ui-fixture.mjs` chỉ phục vụ kiểm tra UI local. Script `lint` chạy qua ESLint CLI chuẩn (`eslint .`) dùng flat config `eslint.config.mjs` với `next/core-web-vitals` và `next/typescript` qua `@eslint/eslintrc` `FlatCompat` trên cặp phiên bản tương thích Next.js 15 (`eslint@^9.39.5`, `eslint-config-next@^15.1.6`, `@eslint/eslintrc@^3.3.7`), bảo đảm non-interactive, tất định và pass sạch (0 errors, 38 warnings được giữ nguyên để theo dõi). Lưu ý: ESLint 9 hiện đã chạm mốc upstream EOL (hết hỗ trợ chính thức từ upstream ESLint); cấu hình này là giải pháp tương thích hoạt động ổn định trên runtime Next.js 15 hiện tại và cần được rà soát/nâng cấp đồng bộ khi dự án thực hiện nâng cấp framework Next.js trong tương lai, không khẳng định toolchain lint đang ở phiên bản upstream còn được hỗ trợ.
 
 ## Cấu trúc và đường dẫn
 

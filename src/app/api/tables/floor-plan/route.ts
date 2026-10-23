@@ -10,7 +10,6 @@ import type {
   OrderPaymentStatus,
   OrderStatus,
   TableFloorPlanItem,
-  TableFloorStatus,
 } from '@/types/qlaok';
 
 export type { TableFloorPlanItem };
