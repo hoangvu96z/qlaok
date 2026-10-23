@@ -240,3 +240,64 @@ test('resolveNextCatalogData preserves current data on failure and updates on su
   assert.equal(updated.items[0].id, 'item-2');
   assert.equal(updated.ownerPlan, 'premium');
 });
+
+test('catalog pagination clamps page correctly when items change or are deleted', async () => {
+  const { clampCatalogPage, calculateCatalogTotalPages, getCatalogPaginationRange } =
+    await import('@/lib/catalog-pagination');
+
+  // Suppose there are 41 items and pageSize 20 -> 3 pages. User is on page 3 (showing item 41).
+  let totalItems = 41;
+  const pageSize = 20;
+  let currentPage = 3;
+  assert.equal(calculateCatalogTotalPages(totalItems, pageSize), 3);
+  assert.equal(clampCatalogPage(currentPage, totalItems, pageSize), 3);
+
+  // User deletes item 41 -> now totalItems is 40 -> totalPages becomes 2.
+  totalItems = 40;
+  currentPage = clampCatalogPage(currentPage, totalItems, pageSize);
+  assert.equal(calculateCatalogTotalPages(totalItems, pageSize), 2);
+  assert.equal(currentPage, 2, 'Page must clamp to 2 when page 3 no longer exists');
+
+  // Verify pagination range on clamped page
+  const range = getCatalogPaginationRange(currentPage, pageSize, totalItems);
+  assert.equal(range.page, 2);
+  assert.equal(range.totalPages, 2);
+  assert.equal(range.start, 21);
+  assert.equal(range.end, 40);
+  assert.equal(range.hasNext, false);
+  assert.equal(range.hasPrev, true);
+
+  // Direct assertions for out-of-range current pages after item-count and page-size changes:
+  // When count drops from 40 to 15 (e.g. rows disappear), out-of-range page 2 clamps to 1
+  assert.equal(
+    clampCatalogPage(2, 15, 20),
+    1,
+    'Out-of-range page 2 must clamp to 1 when item count drops to 15'
+  );
+
+  // When search or category changes and resets page to 1, clamping preserves page 1
+  assert.equal(
+    clampCatalogPage(1, 15, 20),
+    1,
+    'Resetting to page 1 on filter/search change must be preserved'
+  );
+  assert.equal(
+    clampCatalogPage(1, 0, 20),
+    1,
+    'Empty search results must preserve page 1'
+  );
+
+  // When pageSize changes (e.g. 20 to 50 with 45 items), out-of-range page 3 clamps to 1
+  assert.equal(
+    clampCatalogPage(3, 45, 50),
+    1,
+    'Out-of-range page 3 must clamp to 1 when pageSize expands to 50'
+  );
+
+  // When currentPage is already within valid bounds, page remains untouched
+  assert.equal(
+    clampCatalogPage(2, 35, 20),
+    2,
+    'In-bounds page must remain untouched'
+  );
+});

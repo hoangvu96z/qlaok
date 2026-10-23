@@ -14,6 +14,10 @@ import {
   X,
   AlertCircle,
   RefreshCw,
+  Download,
+  FileSpreadsheet,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
@@ -23,6 +27,15 @@ import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
 import { TranslationEditorModal } from '@/components/dashboard/TranslationEditorModal';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
+import {
+  CATALOG_PAGE_SIZES,
+  CatalogPageSize,
+  clampCatalogPage,
+  paginateCatalogItems,
+  getCatalogPaginationRange,
+} from '@/lib/catalog-pagination';
+import { downloadCatalogXlsx } from '@/lib/catalog-excel';
+import { CatalogExcelImportModal } from '@/components/dashboard/CatalogExcelImportModal';
 import {
   parseCatalogApiResponse,
   resolveNextCatalogData,
@@ -61,6 +74,11 @@ export default function DashboardCatalogPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<CatalogItem | null>(null);
   const [toastMsg, setToastMsg] = useState('');
+
+  const [pageSize, setPageSize] = useState<CatalogPageSize>(20);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
 
   const loadCatalog = useCallback(
     async (silent = false) => {
@@ -101,6 +119,7 @@ export default function DashboardCatalogPage() {
     setCategories([]);
     setItems([]);
     setSelectedCategoryId('all');
+    setCurrentPage(1);
     setOwnerPlan('free');
     setLoadError(false);
     setHasLoaded(false);
@@ -435,6 +454,25 @@ export default function DashboardCatalogPage() {
     }
   };
 
+  const filteredItems = items.filter((item) => {
+    const matchCat =
+      selectedCategoryId === 'all' || item.category_id === selectedCategoryId;
+    const q = searchQuery.trim().toLowerCase();
+    const matchSearch =
+      !q ||
+      item.name_i18n.vi.toLowerCase().includes(q) ||
+      (item.name_i18n.en || '').toLowerCase().includes(q);
+    return matchCat && matchSearch;
+  });
+
+  // Synchronize currentPage state to valid bounds whenever the filtered item count or pageSize changes.
+  useEffect(() => {
+    setCurrentPage((prev) => {
+      const clamped = clampCatalogPage(prev, filteredItems.length, pageSize);
+      return prev === clamped ? prev : clamped;
+    });
+  }, [filteredItems.length, pageSize]);
+
   if (!activeShop) {
     return (
       <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center space-y-3 shadow-2xs">
@@ -455,16 +493,50 @@ export default function DashboardCatalogPage() {
       : planTier === 'basic'
         ? tx('Gói Cơ Bản (Basic)', 'Basic Plan')
         : tx('Gói Khởi Đầu (Free)', 'Starter Plan (Free)');
-  const filteredItems = items.filter((item) => {
-    const matchCat =
-      selectedCategoryId === 'all' || item.category_id === selectedCategoryId;
-    const q = searchQuery.trim().toLowerCase();
-    const matchSearch =
-      !q ||
-      item.name_i18n.vi.toLowerCase().includes(q) ||
-      (item.name_i18n.en || '').toLowerCase().includes(q);
-    return matchCat && matchSearch;
-  });
+
+  const pagination = getCatalogPaginationRange(
+    currentPage,
+    pageSize,
+    filteredItems.length
+  );
+  const pagedItems = paginateCatalogItems(
+    filteredItems,
+    pagination.page,
+    pageSize
+  );
+
+  const handlePageSizeChange = (newSize: CatalogPageSize) => {
+    setPageSize(newSize);
+    setCurrentPage((prev) =>
+      clampCatalogPage(prev, filteredItems.length, newSize)
+    );
+  };
+
+  const handleExportCatalog = async () => {
+    if (!activeShop || exportingExcel) return;
+    setExportingExcel(true);
+    try {
+      const filename = activeShop.slug
+        ? `Thuc-don-${activeShop.slug}`
+        : `Thuc-don-${activeShop.name}`;
+      await downloadCatalogXlsx(items, categories, filename);
+      showToast(
+        tx(
+          'Đã xuất file Excel thực đơn thành công!',
+          'Successfully exported catalog to Excel!'
+        )
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(
+        tx('Không thể xuất file: {msg}', 'Could not export file: {msg}', {
+          msg,
+        })
+      );
+    } finally {
+      setExportingExcel(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -547,7 +619,38 @@ export default function DashboardCatalogPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={handleExportCatalog}
+            disabled={exportingExcel || items.length === 0}
+            title={tx(
+              'Xuất file Excel (.xlsx) để chỉnh sửa giá & tồn kho hàng loạt',
+              'Export Excel (.xlsx) file to edit price & stock in bulk'
+            )}
+            className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {exportingExcel ? (
+              <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
+            ) : (
+              <Download className="h-4 w-4 text-emerald-600" />
+            )}
+            <span>{tx('Xuất Excel', 'Export Excel')}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsExcelModalOpen(true)}
+            title={tx(
+              'Nhập file Excel (.xlsx) để cập nhật giá & tồn kho hàng loạt',
+              'Import Excel (.xlsx) file to bulk update price & stock'
+            )}
+            className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+          >
+            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+            <span>{tx('Nhập Excel', 'Import Excel')}</span>
+          </button>
+
           <Link
             href="/dashboard/ai-scanner"
             className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
@@ -660,7 +763,10 @@ export default function DashboardCatalogPage() {
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1">
           <button
             type="button"
-            onClick={() => setSelectedCategoryId('all')}
+            onClick={() => {
+              setSelectedCategoryId('all');
+              setCurrentPage(1);
+            }}
             className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
               selectedCategoryId === 'all'
                 ? 'bg-emerald-600 text-white'
@@ -684,7 +790,10 @@ export default function DashboardCatalogPage() {
               >
                 <button
                   type="button"
-                  onClick={() => setSelectedCategoryId(cat.id)}
+                  onClick={() => {
+                    setSelectedCategoryId(cat.id);
+                    setCurrentPage(1);
+                  }}
                 >
                   {cat.name_i18n.vi} ({count})
                 </button>
@@ -712,7 +821,10 @@ export default function DashboardCatalogPage() {
         <input
           type="text"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setCurrentPage(1);
+          }}
           placeholder={tx(
             'Tìm nhanh món hoặc dịch vụ để đổi trạng thái, sửa giá...',
             'Search items or services to toggle stock or edit price...'
@@ -799,23 +911,102 @@ export default function DashboardCatalogPage() {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
-          {filteredItems.map((item) => (
-            <QuickItemRow
-              key={item.id}
-              item={item}
-              onToggleAvailable={handleToggleAvailable}
-              onUpdatePrice={handleUpdatePrice}
-              onUpdateStock={handleUpdateStock}
-              onUpdateImage={handleUpdateImage}
-              onToggleFeatured={handleToggleFeatured}
-              onEditTranslations={(target) => {
-                setEditingItem(target);
-                setIsModalOpen(true);
-              }}
-              onDelete={handleDeleteItem}
-            />
-          ))}
+        <div className="space-y-3">
+          <div className="space-y-2">
+            {pagedItems.map((item) => (
+              <QuickItemRow
+                key={item.id}
+                item={item}
+                onToggleAvailable={handleToggleAvailable}
+                onUpdatePrice={handleUpdatePrice}
+                onUpdateStock={handleUpdateStock}
+                onUpdateImage={handleUpdateImage}
+                onToggleFeatured={handleToggleFeatured}
+                onEditTranslations={(target) => {
+                  setEditingItem(target);
+                  setIsModalOpen(true);
+                }}
+                onDelete={handleDeleteItem}
+              />
+            ))}
+          </div>
+
+          {/* Pagination Controls Bar */}
+          {filteredItems.length > 0 && (
+            <div
+              data-testid="catalog-pagination-bar"
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 text-xs shadow-2xs"
+            >
+              <div className="text-slate-500 font-medium">
+                {tx(
+                  'Hiển thị {start} – {end} trong số {total} món',
+                  'Showing {start} – {end} of {total} items',
+                  {
+                    start: pagination.start,
+                    end: pagination.end,
+                    total: pagination.totalItems,
+                  }
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap justify-between sm:justify-end">
+                {/* Page Size Selector */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">
+                    {tx('Số món / trang:', 'Per page:')}
+                  </span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) =>
+                      handlePageSizeChange(
+                        Number(e.target.value) as CatalogPageSize
+                      )
+                    }
+                    aria-label={tx('Số món mỗi trang', 'Items per page')}
+                    className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1 font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
+                  >
+                    {CATALOG_PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Page Prev / Next */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!pagination.hasPrev}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    aria-label={tx('Trang trước', 'Previous page')}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+
+                  <span className="px-2 font-bold text-slate-700">
+                    {tx('Trang {current} / {total}', 'Page {current} of {total}', {
+                      current: pagination.page,
+                      total: pagination.totalPages,
+                    })}
+                  </span>
+
+                  <button
+                    type="button"
+                    disabled={!pagination.hasNext}
+                    onClick={() =>
+                      setCurrentPage((p) => Math.min(pagination.totalPages, p + 1))
+                    }
+                    aria-label={tx('Trang sau', 'Next page')}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -836,6 +1027,27 @@ export default function DashboardCatalogPage() {
             tx(
               'Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!',
               'Saved item and updated 8-language translations!'
+            )
+          );
+        }}
+      />
+
+      {/* Excel Bulk Import Modal */}
+      <CatalogExcelImportModal
+        isOpen={isExcelModalOpen}
+        onClose={() => setIsExcelModalOpen(false)}
+        shopId={activeShop.id}
+        shopName={activeShop.name}
+        currentItems={items}
+        categories={categories}
+        onSuccess={(count) => {
+          void loadCatalog(true);
+          notifyRealtime();
+          showToast(
+            tx(
+              'Đã cập nhật thành công {count} món từ file Excel!',
+              'Successfully updated {count} items from Excel!',
+              { count }
             )
           );
         }}
