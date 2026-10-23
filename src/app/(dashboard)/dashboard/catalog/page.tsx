@@ -12,6 +12,8 @@ import {
   Loader2,
   UtensilsCrossed,
   X,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
@@ -21,6 +23,13 @@ import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
 import { TranslationEditorModal } from '@/components/dashboard/TranslationEditorModal';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
+import {
+  parseCatalogApiResponse,
+  resolveNextCatalogData,
+  shouldShowCatalogEmptyState,
+  shouldShowCatalogLoadErrorBanner,
+  shouldShowCatalogLoadErrorState,
+} from '@/lib/dashboard-catalog';
 
 interface CatalogMutationError {
   message: string;
@@ -35,6 +44,8 @@ export default function DashboardCatalogPage() {
   const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
     null
   );
+  const [loadError, setLoadError] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
@@ -60,15 +71,25 @@ export default function DashboardCatalogPage() {
           headers: getAuthHeaders(),
           cache: 'no-store',
         });
-        const data = await res.json();
-        setCategories(data.categories || []);
-        setItems(data.items || []);
-        const rawPlan = data?.ownerPlan;
-        setOwnerPlan(
-          rawPlan === 'basic' || rawPlan === 'premium' ? rawPlan : 'free'
+        const data = await res.json().catch(() => null);
+        const parsed = parseCatalogApiResponse(res.ok, data);
+        setCategories((prev) =>
+          resolveNextCatalogData({ categories: prev, items: [], ownerPlan: 'free' }, parsed).categories
         );
+        setItems((prev) =>
+          resolveNextCatalogData({ categories: [], items: prev, ownerPlan: 'free' }, parsed).items
+        );
+        setOwnerPlan((prev) =>
+          resolveNextCatalogData({ categories: [], items: [], ownerPlan: prev }, parsed).ownerPlan
+        );
+        if (parsed.ok) {
+          setLoadError(false);
+          setHasLoaded(true);
+        } else {
+          setLoadError(true);
+        }
       } catch {
-        // ignore network errors
+        setLoadError(true);
       } finally {
         if (!silent) setLoading(false);
       }
@@ -81,6 +102,8 @@ export default function DashboardCatalogPage() {
     setItems([]);
     setSelectedCategoryId('all');
     setOwnerPlan('free');
+    setLoadError(false);
+    setHasLoaded(false);
     void loadCatalog(false);
   }, [loadCatalog]);
 
@@ -475,6 +498,34 @@ export default function DashboardCatalogPage() {
         </div>
       )}
 
+      {/* Catalog Load Error Alert Banner (silent refresh failure) */}
+      {shouldShowCatalogLoadErrorBanner({ hasLoaded, loadError }) && (
+        <div
+          role="alert"
+          data-testid="catalog-load-error"
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border-2 border-rose-300 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-800 shadow-2xs"
+        >
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
+            <span data-testid="catalog-load-error-message">
+              {tx(
+                'Không thể tải dữ liệu thực đơn & tồn kho. Vui lòng thử lại.',
+                'Could not load menu & inventory data. Please try again.'
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            data-testid="catalog-load-error-retry"
+            onClick={() => void loadCatalog(true)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3.5 py-1.5 text-xs font-black text-rose-800 hover:bg-rose-100 shrink-0"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {toastMsg && (
         <div className="fixed bottom-20 md:bottom-6 right-4 z-50 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-bold text-white shadow-xl border border-slate-700">
@@ -670,7 +721,7 @@ export default function DashboardCatalogPage() {
         />
       </div>
 
-      {/* Quick Item List / Loading / Empty State */}
+      {/* Quick Item List / Loading / Error State / Empty State */}
       {loading ? (
         <div
           role="status"
@@ -688,7 +739,40 @@ export default function DashboardCatalogPage() {
             {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
           </p>
         </div>
-      ) : filteredItems.length === 0 ? (
+      ) : shouldShowCatalogLoadErrorState({ hasLoaded, loadError, loading }) ? (
+        <div
+          role="alert"
+          data-testid="catalog-load-error-state"
+          className="rounded-3xl border border-dashed border-rose-300 bg-white p-12 text-center space-y-4 shadow-2xs"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
+            <AlertCircle className="h-6 w-6" aria-hidden="true" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-bold text-slate-800">
+              {tx(
+                'Không thể tải dữ liệu thực đơn & tồn kho. Vui lòng thử lại.',
+                'Could not load menu & inventory data. Please try again.'
+              )}
+            </p>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              {tx(
+                'Không thể tải dữ liệu thực đơn do lỗi kết nối hoặc máy chủ. Vui lòng bấm thử lại.',
+                'Failed to load menu data due to a connection or server error. Please try again.'
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="catalog-load-error-state-retry"
+            onClick={() => void loadCatalog(false)}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      ) : shouldShowCatalogEmptyState({ hasLoaded, loadError, filteredCount: filteredItems.length, loading }) ? (
         <div
           data-testid="catalog-empty-state"
           className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center space-y-3 shadow-2xs"
