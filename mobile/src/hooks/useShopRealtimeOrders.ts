@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, Vibration } from 'react-native';
+import { AppState, AppStateStatus, Platform, Vibration } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import {
   fetchApi,
   MobileCatalogItem,
@@ -8,6 +9,22 @@ import {
   MobileShopOrderStats,
   supabase,
 } from '../lib/supabase';
+import {
+  detectBrandNewOrder,
+  handleBrandNewOrderNotifications,
+  type DetectBrandNewOrderResult,
+  type HandleBrandNewOrderNotificationsResult,
+} from '../lib/realtime-orders';
+import {
+  type LocalOrderChimePayload,
+} from '../lib/push-notifications';
+
+export {
+  detectBrandNewOrder,
+  handleBrandNewOrderNotifications,
+  type DetectBrandNewOrderResult,
+  type HandleBrandNewOrderNotificationsResult,
+};
 
 export interface LiveOrderAlert {
   orderCode: string;
@@ -15,11 +32,62 @@ export interface LiveOrderAlert {
   totalAmount: number;
 }
 
+export interface OrchestrateRealtimeOrderNotificationsParams {
+  nextOrders: readonly MobileShopOrder[];
+  knownNewOrderIdsRef: { current: Set<string> };
+  isFirstLoadRef: { current: boolean };
+  setLiveOrderAlert?: (alert: LiveOrderAlert | null) => void;
+  onVibrate?: () => void;
+  scheduleNotificationAsync?: (
+    request: LocalOrderChimePayload
+  ) => Promise<unknown> | unknown;
+}
+
+/**
+ * Synchronous orchestration helper called by useShopRealtimeOrders (and testable directly).
+ * Synchronously advances known order IDs and first-load state via callback before invoking scheduling.
+ * Never awaits native scheduling; catches scheduling errors without breaking dedupe or LiveOrderAlert.
+ */
+export function orchestrateRealtimeOrderNotifications({
+  nextOrders,
+  knownNewOrderIdsRef,
+  isFirstLoadRef,
+  setLiveOrderAlert,
+  onVibrate,
+  scheduleNotificationAsync,
+}: OrchestrateRealtimeOrderNotificationsParams): HandleBrandNewOrderNotificationsResult {
+  return handleBrandNewOrderNotifications({
+    nextOrders,
+    knownNewOrderIds: knownNewOrderIdsRef.current,
+    isFirstLoad: isFirstLoadRef.current,
+    onAdvanceKnownOrderIds: (nextKnownNewOrderIds) => {
+      knownNewOrderIdsRef.current = nextKnownNewOrderIds;
+      isFirstLoadRef.current = false;
+    },
+    onAlert: (alert) => {
+      setLiveOrderAlert?.(alert);
+    },
+    onVibrate:
+      onVibrate ??
+      (() => {
+        try {
+          Vibration.vibrate([0, 300, 150, 300]);
+        } catch {
+          // ignore vibration error on web/simulator
+        }
+      }),
+    scheduleNotificationAsync,
+  });
+}
+
 interface UseShopRealtimeOrdersOptions {
   isLoggedIn: boolean;
   shopId?: string;
   onItemsSynced?: (items: MobileCatalogItem[]) => void;
   onMembershipSynced?: (membership: MobileShopMembership) => void;
+  scheduleNotificationAsync?: (
+    request: LocalOrderChimePayload
+  ) => Promise<unknown> | unknown;
 }
 
 export function useShopRealtimeOrders({
@@ -27,6 +95,7 @@ export function useShopRealtimeOrders({
   shopId,
   onItemsSynced,
   onMembershipSynced,
+  scheduleNotificationAsync,
 }: UseShopRealtimeOrdersOptions) {
   const [orders, setOrders] = useState<MobileShopOrder[]>([]);
   const [orderStats, setOrderStats] = useState<MobileShopOrderStats | null>(
@@ -46,31 +115,32 @@ export function useShopRealtimeOrders({
   onItemsSyncedRef.current = onItemsSynced;
   const onMembershipSyncedRef = useRef(onMembershipSynced);
   onMembershipSyncedRef.current = onMembershipSynced;
+  const scheduleNotificationAsyncRef = useRef(scheduleNotificationAsync);
+  scheduleNotificationAsyncRef.current = scheduleNotificationAsync;
 
-  const notifyIfBrandNewOrder = useCallback((nextOrders: MobileShopOrder[]) => {
-    const newList = nextOrders.filter((o) => o.status === 'new');
-
-    if (!isFirstLoadRef.current) {
-      const brandNew = newList.find(
-        (o) => !knownNewOrderIdsRef.current.has(o.id)
-      );
-      if (brandNew) {
-        try {
-          Vibration.vibrate([0, 300, 150, 300]);
-        } catch {
-          // ignore vibration error on web/simulator
-        }
-        setLiveOrderAlert({
-          orderCode: brandNew.order_code,
-          tableLabel: brandNew.table_label,
-          totalAmount: brandNew.total_amount,
-        });
-      }
-    }
-
-    knownNewOrderIdsRef.current = new Set(newList.map((o) => o.id));
-    isFirstLoadRef.current = false;
-  }, []);
+  const notifyIfBrandNewOrder = useCallback(
+    (nextOrders: MobileShopOrder[]) => {
+      return orchestrateRealtimeOrderNotifications({
+        nextOrders,
+        knownNewOrderIdsRef,
+        isFirstLoadRef,
+        setLiveOrderAlert,
+        scheduleNotificationAsync: (payload) => {
+          const customSchedule = scheduleNotificationAsyncRef.current;
+          if (typeof customSchedule === 'function') {
+            return customSchedule(payload);
+          }
+          if (
+            Platform.OS !== 'web' &&
+            typeof Notifications.scheduleNotificationAsync === 'function'
+          ) {
+            return Notifications.scheduleNotificationAsync(payload);
+          }
+        },
+      });
+    },
+    []
+  );
 
   const scopeRef = useRef({ shopId, isLoggedIn, generation: 0 });
   if (scopeRef.current.shopId !== shopId || scopeRef.current.isLoggedIn !== isLoggedIn) {
@@ -140,7 +210,7 @@ export function useShopRealtimeOrders({
 
     let disposed = false;
     let connected = false;
-    let changeTimer: ReturnType<typeof setTimeout> | undefined;
+    let changeTimer: NodeJS.Timeout | number | undefined;
     const channel = supabase
       .channel(`qlaok-orders-ws-${shopId}`)
       .on(
@@ -207,5 +277,6 @@ export function useShopRealtimeOrders({
     realtimeStatus,
     fetchError,
     fetchOrdersFromApi,
+    notifyIfBrandNewOrder,
   };
 }

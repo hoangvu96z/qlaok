@@ -475,3 +475,295 @@ export function extractNotificationTapRoute(
     tab: 'orders',
   };
 }
+
+export interface ForegroundNotificationBehavior {
+  shouldShowAlert: boolean;
+  shouldPlaySound: boolean;
+  shouldSetBadge: boolean;
+}
+
+/**
+ * Extracts notification data payload safely from an incoming notification or response object.
+ */
+export function extractNotificationData(
+  notification: unknown
+): Record<string, unknown> | null {
+  if (!notification || typeof notification !== 'object') return null;
+  const n = notification as Record<string, unknown>;
+  const req = (n.request ??
+    (n.notification as Record<string, unknown> | undefined)?.request) as
+    | Record<string, unknown>
+    | undefined;
+  const content = req?.content as Record<string, unknown> | undefined;
+  const data = (content?.data ?? n.data) as Record<string, unknown> | undefined;
+  if (!data || typeof data !== 'object') return null;
+  return data;
+}
+
+export const LOCAL_ORDER_CHIME_TYPE = 'local_order_chime';
+
+export interface LocalOrderChimePayload {
+  content: {
+    title: string;
+    body: string;
+    sound: 'default';
+    data: {
+      type: typeof LOCAL_ORDER_CHIME_TYPE;
+      orderId: string;
+      orderCode: string;
+      shopId: string;
+    };
+  };
+  trigger: { channelId: string } | null;
+}
+
+/**
+ * Builds the notification payload for the local foreground chime triggered by the realtime stream.
+ * Adheres to Expo SDK 52 scheduleNotificationAsync contract:
+ * - content: title, body, sound: 'default', and distinct data.type === 'local_order_chime'.
+ * - trigger: { channelId: MOBILE_ORDERS_CHANNEL_ID } for Android channel routing (immediate trigger).
+ */
+export function buildLocalOrderChimeNotification(order: {
+  id: string;
+  order_code: string;
+  table_label?: string | null;
+  shop_id?: string | null;
+}): LocalOrderChimePayload {
+  const tableLabel = order.table_label ? ` • ${order.table_label}` : '';
+  return {
+    content: {
+      title: '🔔 Đơn hàng mới',
+      body: `Mã đơn #${order.order_code}${tableLabel}`,
+      sound: 'default',
+      data: {
+        type: LOCAL_ORDER_CHIME_TYPE,
+        orderId: order.id,
+        orderCode: order.order_code,
+        shopId: order.shop_id || '',
+      },
+    },
+    trigger: { channelId: MOBILE_ORDERS_CHANNEL_ID },
+  };
+}
+
+export interface LocalNotificationSchedulerAdapter {
+  scheduleNotificationAsync: (
+    request: LocalOrderChimePayload
+  ) => Promise<string | unknown>;
+}
+
+export const ORDER_NOTIFICATION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export const ORDER_NOTIFICATION_REGISTRY_MAX_SIZE = 1000;
+
+const orderNotificationRegistry = new Map<string, number>();
+
+/**
+ * Prunes expired entries and enforces max size on the order notification registry.
+ */
+function pruneOrderNotificationRegistry(
+  now: number = Date.now(),
+  ttlMs: number = ORDER_NOTIFICATION_TTL_MS,
+  maxSize: number = ORDER_NOTIFICATION_REGISTRY_MAX_SIZE
+): void {
+  for (const [id, timestamp] of orderNotificationRegistry.entries()) {
+    if (now - timestamp > ttlMs) {
+      orderNotificationRegistry.delete(id);
+    }
+  }
+  while (orderNotificationRegistry.size >= maxSize) {
+    const oldestKey = orderNotificationRegistry.keys().next().value;
+    if (oldestKey !== undefined) {
+      orderNotificationRegistry.delete(oldestKey);
+    } else {
+      break;
+    }
+  }
+}
+
+/**
+ * Records that a notification (local chime or remote push) has been initiated/presented
+ * for the given orderId.
+ */
+export function recordOrderNotification(
+  orderId: string,
+  options?: { now?: number; ttlMs?: number; maxSize?: number }
+): boolean {
+  const trimmed = typeof orderId === 'string' ? orderId.trim() : '';
+  if (!trimmed) return false;
+
+  const now = options?.now ?? Date.now();
+  const ttlMs = options?.ttlMs ?? ORDER_NOTIFICATION_TTL_MS;
+  const maxSize = options?.maxSize ?? ORDER_NOTIFICATION_REGISTRY_MAX_SIZE;
+
+  pruneOrderNotificationRegistry(now, ttlMs, maxSize);
+  orderNotificationRegistry.set(trimmed, now);
+  return true;
+}
+
+/**
+ * Checks if an order notification has already been recorded and has not expired.
+ */
+export function isOrderNotificationRecorded(
+  orderId: string,
+  options?: { now?: number; ttlMs?: number }
+): boolean {
+  const trimmed = typeof orderId === 'string' ? orderId.trim() : '';
+  if (!trimmed) return false;
+
+  const recordedAt = orderNotificationRegistry.get(trimmed);
+  if (recordedAt === undefined) return false;
+
+  const now = options?.now ?? Date.now();
+  const ttlMs = options?.ttlMs ?? ORDER_NOTIFICATION_TTL_MS;
+
+  if (now - recordedAt > ttlMs) {
+    orderNotificationRegistry.delete(trimmed);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Releases the recorded notification for an order (e.g. if local chime scheduling fails).
+ */
+export function releaseOrderNotification(orderId: string): void {
+  const trimmed = typeof orderId === 'string' ? orderId.trim() : '';
+  if (!trimmed) return;
+  orderNotificationRegistry.delete(trimmed);
+}
+
+/**
+ * Resets the shared in-memory order notification registry (for test isolation).
+ */
+export function resetOrderNotificationRegistry(): void {
+  orderNotificationRegistry.clear();
+}
+
+/**
+ * Returns current size of order notification registry (for diagnostics and tests).
+ */
+export function getOrderNotificationRegistrySize(): number {
+  return orderNotificationRegistry.size;
+}
+
+/**
+ * Schedules the local order chime notification using the provided scheduler adapter.
+ * Catches errors safely for environments where notification scheduling may fail (e.g. web/simulator).
+ * Marks the local chime in the registry before scheduling to close races with remote pushes,
+ * and releases the claim if native scheduling fails.
+ */
+export async function scheduleLocalOrderChime(
+  order: {
+    id: string;
+    order_code: string;
+    table_label?: string | null;
+    shop_id?: string | null;
+  },
+  scheduler: LocalNotificationSchedulerAdapter
+): Promise<boolean> {
+  if (!scheduler || typeof scheduler.scheduleNotificationAsync !== 'function') {
+    return false;
+  }
+  const orderId = typeof order.id === 'string' ? order.id.trim() : '';
+  if (orderId) {
+    recordOrderNotification(orderId);
+  }
+  try {
+    const payload = buildLocalOrderChimeNotification(order);
+    await scheduler.scheduleNotificationAsync(payload);
+    return true;
+  } catch {
+    if (orderId) {
+      releaseOrderNotification(orderId);
+    }
+    return false;
+  }
+}
+
+/**
+ * Checks if an incoming notification payload is a local order chime ('local_order_chime').
+ */
+export function isLocalOrderChimeNotification(notification: unknown): boolean {
+  const data = extractNotificationData(notification);
+  return data?.type === LOCAL_ORDER_CHIME_TYPE;
+}
+
+/**
+ * Checks if an incoming notification is for a genuinely new customer order (type === 'new_qr_order').
+ */
+export function isNewOrderNotification(notification: unknown): boolean {
+  const data = extractNotificationData(notification);
+  return data?.type === 'new_qr_order';
+}
+
+/**
+ * Resolves the foreground presentation behavior for an incoming notification:
+ * - Local order chime ('local_order_chime'): plays native sound without OS banner
+ *   (shouldShowAlert: false, shouldPlaySound: true), because in-app LiveOrderAlert
+ *   banner and vibration are already handled by useShopRealtimeOrders.
+ * - Remote new order push ('new_qr_order'):
+ *   - If orderId is missing: preserves normal foreground notification behavior
+ *     (shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false).
+ *   - If order was already notified (via local chime or previous remote push):
+ *     suppresses both sound and OS banner (shouldShowAlert: false, shouldPlaySound: false).
+ *   - If order was NOT yet notified (e.g. realtime disconnected, delayed, or unavailable):
+ *     shows normal foreground banner and sound as fallback, and records the order so
+ *     later duplicates or local chime are suppressed.
+ * - Non-order notifications (e.g. table service requests): preserves the pre-existing
+ *   non-order foreground behavior exactly (shows OS alert banner and plays sound:
+ *   shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false).
+ */
+export function resolveForegroundNotificationBehavior(
+  notification: unknown,
+  options?: { now?: number; ttlMs?: number }
+): ForegroundNotificationBehavior {
+  if (isLocalOrderChimeNotification(notification)) {
+    const data = extractNotificationData(notification);
+    const rawOrderId = data?.orderId ?? data?.order_id;
+    const orderId = typeof rawOrderId === 'string' ? rawOrderId.trim() : '';
+    if (orderId) {
+      recordOrderNotification(orderId, options);
+    }
+    return {
+      shouldShowAlert: false,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    };
+  }
+
+  if (isNewOrderNotification(notification)) {
+    const data = extractNotificationData(notification);
+    const rawOrderId = data?.orderId ?? data?.order_id;
+    const orderId = typeof rawOrderId === 'string' ? rawOrderId.trim() : '';
+
+    if (!orderId) {
+      return {
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+      };
+    }
+
+    if (isOrderNotificationRecorded(orderId, options)) {
+      return {
+        shouldShowAlert: false,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      };
+    }
+
+    recordOrderNotification(orderId, options);
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    };
+  }
+
+  return {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  };
+}

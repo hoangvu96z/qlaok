@@ -2,12 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   acquireMobileExpoPushToken,
+  buildLocalOrderChimeNotification,
   createMobilePushRegistrationState,
+  extractNotificationData,
   extractNotificationTapRoute,
+  getOrderNotificationRegistrySize,
+  isLocalOrderChimeNotification,
+  isNewOrderNotification,
+  isOrderNotificationRecorded,
+  LOCAL_ORDER_CHIME_TYPE,
   MOBILE_ORDERS_CHANNEL_ID,
+  ORDER_NOTIFICATION_REGISTRY_MAX_SIZE,
+  ORDER_NOTIFICATION_TTL_MS,
+  recordOrderNotification,
   registerShopPushTokenWithApi,
+  releaseOrderNotification,
+  resetOrderNotificationRegistry,
   resolveConfiguredEasProjectId,
+  resolveForegroundNotificationBehavior,
   resolveNotificationTapTargetShop,
+  scheduleLocalOrderChime,
   syncMobilePushRegistration,
   unregisterPushOnLogout,
   unregisterPushTokenWithApi,
@@ -394,4 +408,384 @@ test('resolveNotificationTapTargetShop never falls back to another shop when tar
     orderId: 'ord-777',
     orderCode: 'ORD-777',
   });
+});
+
+test('isNewOrderNotification identifies new customer order push payloads and rejects non-order payloads', () => {
+  // Standard Expo push notification with request.content.data
+  const orderNotification = {
+    request: {
+      content: {
+        title: '🔔 Đơn hàng mới #ORD-101 • Bàn 5',
+        body: 'Tổng đơn: 150.000đ',
+        data: {
+          type: 'new_qr_order',
+          shopId: 'shop-123',
+          orderId: 'order-xyz',
+          orderCode: 'ORD-101',
+          tableLabel: 'Bàn 5',
+          tab: 'orders',
+        },
+      },
+    },
+  };
+  assert.equal(isNewOrderNotification(orderNotification), true);
+
+  // Top-level data fallback
+  const topLevelDataNotification = {
+    data: {
+      type: 'new_qr_order',
+      shopId: 'shop-123',
+    },
+  };
+  assert.equal(isNewOrderNotification(topLevelDataNotification), true);
+
+  // Table service request push (non-order)
+  const serviceRequestNotification = {
+    request: {
+      content: {
+        title: '🔔 Khách gọi phục vụ • Bàn 2',
+        body: 'Bàn 2 đang gọi nhân viên hỗ trợ tại bàn.',
+        data: {
+          type: 'table_service_request',
+          shopId: 'shop-123',
+          serviceRequestId: 'req-456',
+          tableId: 'tbl-2',
+          tableLabel: 'Bàn 2',
+          requestType: 'call_staff',
+        },
+      },
+    },
+  };
+  assert.equal(isNewOrderNotification(serviceRequestNotification), false);
+
+  // Bill request push (non-order)
+  const billRequestNotification = {
+    request: {
+      content: {
+        title: '🧾 Khách xin hóa đơn • Bàn 3',
+        body: 'Bàn 3 yêu cầu kiểm tra hóa đơn.',
+        data: {
+          type: 'table_service_request',
+          shopId: 'shop-123',
+          serviceRequestId: 'req-789',
+          tableId: 'tbl-3',
+          tableLabel: 'Bàn 3',
+          requestType: 'request_bill',
+        },
+      },
+    },
+  };
+  assert.equal(isNewOrderNotification(billRequestNotification), false);
+
+  // Promotional or generic push (non-order)
+  const promoNotification = {
+    request: {
+      content: {
+        title: 'Khuyến mãi đặc biệt',
+        data: {
+          type: 'promotional_announcement',
+          promoId: 'promo-1',
+        },
+      },
+    },
+  };
+  assert.equal(isNewOrderNotification(promoNotification), false);
+
+  // Missing data, empty data, or invalid types
+  assert.equal(isNewOrderNotification({ request: { content: {} } }), false);
+  assert.equal(isNewOrderNotification({}), false);
+  assert.equal(isNewOrderNotification(null), false);
+  assert.equal(isNewOrderNotification(undefined), false);
+  assert.equal(isNewOrderNotification('not-an-object'), false);
+});
+
+test('isLocalOrderChimeNotification identifies local order chime payloads and rejects remote pushes or non-order payloads', () => {
+  // Nested request.content.data
+  const nestedLocalChime = {
+    request: {
+      content: {
+        title: '🔔 Đơn hàng mới',
+        data: {
+          type: LOCAL_ORDER_CHIME_TYPE,
+          orderId: 'ord-1',
+          orderCode: 'ORD-101',
+        },
+      },
+    },
+  };
+  assert.equal(isLocalOrderChimeNotification(nestedLocalChime), true);
+
+  // Top-level data fallback
+  const topLevelLocalChime = {
+    data: {
+      type: LOCAL_ORDER_CHIME_TYPE,
+      orderId: 'ord-2',
+    },
+  };
+  assert.equal(isLocalOrderChimeNotification(topLevelLocalChime), true);
+
+  // Remote new order push payload (not a local chime)
+  const remotePush = {
+    data: {
+      type: 'new_qr_order',
+      orderId: 'ord-3',
+    },
+  };
+  assert.equal(isLocalOrderChimeNotification(remotePush), false);
+
+  // Table service request (not a local chime)
+  const serviceRequest = {
+    data: {
+      type: 'table_service_request',
+      serviceRequestId: 'req-1',
+    },
+  };
+  assert.equal(isLocalOrderChimeNotification(serviceRequest), false);
+
+  // Missing data, empty data, or invalid types
+  assert.equal(isLocalOrderChimeNotification({ request: { content: {} } }), false);
+  assert.equal(isLocalOrderChimeNotification({}), false);
+  assert.equal(isLocalOrderChimeNotification(null), false);
+  assert.equal(isLocalOrderChimeNotification(undefined), false);
+  assert.equal(isLocalOrderChimeNotification('not-an-object'), false);
+});
+
+test('resolveForegroundNotificationBehavior handles local-first, remote-first, repeated remote pushes, different orders, missing orderId, local chime, and baseline', () => {
+  resetOrderNotificationRegistry();
+
+  // Helper to create remote order push notification payload
+  const createRemotePush = (orderId?: string | null, orderCode = 'ORD-001') => ({
+    request: {
+      content: {
+        title: `🔔 Đơn hàng mới #${orderCode} • Bàn 1`,
+        body: 'Tổng đơn: 250.000đ',
+        sound: 'default',
+        data: {
+          type: 'new_qr_order',
+          shopId: 'shop-1',
+          ...(orderId !== undefined ? { orderId } : {}),
+          orderCode,
+          tableLabel: 'Bàn 1',
+          tab: 'orders',
+        },
+      },
+    },
+  });
+
+  // Helper to create local order chime payload
+  const createLocalChime = (orderId: string, orderCode = 'ORD-001') => ({
+    request: {
+      content: {
+        title: '🔔 Đơn hàng mới',
+        body: `Mã đơn #${orderCode} • Bàn 1`,
+        sound: 'default',
+        data: {
+          type: LOCAL_ORDER_CHIME_TYPE,
+          orderId,
+          orderCode,
+          shopId: 'shop-1',
+        },
+      },
+    },
+  });
+
+  // A) Local chime arrives first:
+  // 1. Local chime is presented: hidden banner, audible sound
+  const chimeBehavior = resolveForegroundNotificationBehavior(createLocalChime('ord-A', 'ORD-A'));
+  assert.deepEqual(chimeBehavior, {
+    shouldShowAlert: false,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+  // 2. Later remote push for same ord-A is hidden and silent (duplicate suppressed)
+  const remoteAfterChime = resolveForegroundNotificationBehavior(createRemotePush('ord-A', 'ORD-A'));
+  assert.deepEqual(remoteAfterChime, {
+    shouldShowAlert: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  });
+
+  // B) Remote push arrives first (fallback):
+  // 1. First remote push for ord-B shows normal foreground banner and sound as fallback
+  const firstRemoteB = resolveForegroundNotificationBehavior(createRemotePush('ord-B', 'ORD-B'));
+  assert.deepEqual(firstRemoteB, {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+  // 2. Repeated remote push for same ord-B is suppressed (hidden and silent)
+  const secondRemoteB = resolveForegroundNotificationBehavior(createRemotePush('ord-B', 'ORD-B'));
+  assert.deepEqual(secondRemoteB, {
+    shouldShowAlert: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  });
+
+  // C) Different / unseen order IDs:
+  // Remote push for unseen ord-C remains visible and audible; no blanket suppression
+  const remoteC = resolveForegroundNotificationBehavior(createRemotePush('ord-C', 'ORD-C'));
+  assert.deepEqual(remoteC, {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+
+  // Missing or whitespace-only orderId preserves normal foreground notification behavior
+  const missingOrderIdPush = resolveForegroundNotificationBehavior(createRemotePush(undefined, 'ORD-NO-ID'));
+  assert.deepEqual(missingOrderIdPush, {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+
+  const emptyOrderIdPush = resolveForegroundNotificationBehavior(createRemotePush('   ', 'ORD-EMPTY'));
+  assert.deepEqual(emptyOrderIdPush, {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+
+  // D) Non-order baseline notifications:
+  // Service request notification preserves banner and sound
+  const serviceNotification = {
+    request: {
+      content: {
+        title: '🔔 Khách gọi phục vụ',
+        data: {
+          type: 'table_service_request',
+          shopId: 'shop-1',
+          serviceRequestId: 'req-1',
+        },
+      },
+    },
+  };
+  const serviceBehavior = resolveForegroundNotificationBehavior(serviceNotification);
+  assert.deepEqual(serviceBehavior, {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+
+  // Unknown, empty, null, undefined notification payloads preserve baseline banner and sound
+  assert.deepEqual(resolveForegroundNotificationBehavior({}), {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+  assert.deepEqual(resolveForegroundNotificationBehavior(null), {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+  assert.deepEqual(resolveForegroundNotificationBehavior(undefined), {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+});
+
+test('order notification registry supports bounded capacity and TTL expiration', () => {
+  resetOrderNotificationRegistry();
+
+  const now = 1000000;
+  const ttlMs = 5 * 60 * 1000; // 5 minutes
+
+  // Record order at time 'now'
+  assert.equal(recordOrderNotification('ord-ttl-1', { now, ttlMs }), true);
+  assert.equal(isOrderNotificationRecorded('ord-ttl-1', { now, ttlMs }), true);
+
+  // Still valid after 4 minutes (now + 240_000)
+  assert.equal(isOrderNotificationRecorded('ord-ttl-1', { now: now + 240_000, ttlMs }), true);
+
+  // Expired after 5 minutes + 1ms (now + 300_001)
+  assert.equal(isOrderNotificationRecorded('ord-ttl-1', { now: now + 300_001, ttlMs }), false);
+
+  // After expiration, resolveForegroundNotificationBehavior treats it as new fallback
+  const remotePush = {
+    request: {
+      content: {
+        data: { type: 'new_qr_order', orderId: 'ord-ttl-1' },
+      },
+    },
+  };
+  // First seen at now -> fallback
+  assert.deepEqual(resolveForegroundNotificationBehavior(remotePush, { now, ttlMs }), {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+  // Seen again within TTL -> suppressed
+  assert.deepEqual(resolveForegroundNotificationBehavior(remotePush, { now: now + 60_000, ttlMs }), {
+    shouldShowAlert: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  });
+  // Seen after TTL -> acts as fallback again
+  assert.deepEqual(resolveForegroundNotificationBehavior(remotePush, { now: now + 300_001, ttlMs }), {
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+
+  // Bounded size eviction
+  resetOrderNotificationRegistry();
+  const maxSize = 3;
+  recordOrderNotification('order-1', { now, maxSize });
+  recordOrderNotification('order-2', { now, maxSize });
+  recordOrderNotification('order-3', { now, maxSize });
+  assert.equal(getOrderNotificationRegistrySize(), 3);
+
+  // Adding 4th order evicts oldest (order-1)
+  recordOrderNotification('order-4', { now, maxSize });
+  assert.equal(getOrderNotificationRegistrySize(), 3);
+  assert.equal(isOrderNotificationRecorded('order-1', { now }), false);
+  assert.equal(isOrderNotificationRecorded('order-2', { now }), true);
+  assert.equal(isOrderNotificationRecorded('order-3', { now }), true);
+  assert.equal(isOrderNotificationRecorded('order-4', { now }), true);
+
+  // Releasing order
+  releaseOrderNotification('order-2');
+  assert.equal(isOrderNotificationRecorded('order-2', { now }), false);
+  assert.equal(getOrderNotificationRegistrySize(), 2);
+});
+
+test('buildLocalOrderChimeNotification and scheduleLocalOrderChime adhere to Expo SDK 52 contract', async () => {
+  resetOrderNotificationRegistry();
+  const order = {
+    id: 'ord-100',
+    order_code: 'ORD-100',
+    table_label: 'Bàn 5',
+    shop_id: 'shop-abc',
+  };
+
+  const payload = buildLocalOrderChimeNotification(order);
+  assert.equal(payload.content.sound, 'default');
+  assert.equal(payload.content.data.type, LOCAL_ORDER_CHIME_TYPE);
+  assert.equal(payload.content.data.orderId, 'ord-100');
+  assert.equal(payload.content.data.orderCode, 'ORD-100');
+  assert.equal(payload.content.data.shopId, 'shop-abc');
+  assert.deepEqual(payload.trigger, { channelId: MOBILE_ORDERS_CHANNEL_ID });
+
+  const scheduledCalls: unknown[] = [];
+  const success = await scheduleLocalOrderChime(order, {
+    scheduleNotificationAsync: async (req) => {
+      scheduledCalls.push(req);
+      return 'notif-scheduled-id';
+    },
+  });
+  assert.equal(success, true);
+  assert.equal(scheduledCalls.length, 1);
+  assert.deepEqual(scheduledCalls[0], payload);
+  // Claim is recorded when scheduleLocalOrderChime succeeds
+  assert.equal(isOrderNotificationRecorded('ord-100'), true);
+
+  // Gracefully handles scheduling errors without throwing and releases claim
+  const failed = await scheduleLocalOrderChime(order, {
+    scheduleNotificationAsync: async () => {
+      throw new Error('Native scheduler unavailable');
+    },
+  });
+  assert.equal(failed, false);
+  // Claim is released when scheduling throws
+  assert.equal(isOrderNotificationRecorded('ord-100'), false);
 });

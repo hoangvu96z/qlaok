@@ -6,24 +6,40 @@ import type { MobileLocale } from '../lib/mobile-i18n';
 import {
   extractNotificationTapRoute,
   getSharedMobilePushRegistrationState,
+  MOBILE_ORDERS_CHANNEL_ID,
   type NotificationTapRoute,
   resolveConfiguredEasProjectId,
+  resolveForegroundNotificationBehavior,
   syncMobilePushRegistration,
   unregisterPushOnLogout,
 } from '../lib/push-notifications';
 import { fetchApi } from '../lib/supabase';
 
-// Configure foreground notifications to show alert with sound enabled
+// Configure foreground notification presentation handler:
+// - Plays native sound without OS banner for local order chime ('local_order_chime')
+// - Suppresses both sound and OS banner for duplicate remote order push ('new_qr_order') when already notified
+// - Shows OS banner and plays sound for unseen remote order push (fallback) and non-order notifications
 try {
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    }),
+    handleNotification: async (notification) =>
+      resolveForegroundNotificationBehavior(notification),
   });
 } catch {
   // ignore in environments where native notification module is unavailable
+}
+
+if (Platform.OS === 'android') {
+  try {
+    void Notifications.setNotificationChannelAsync(MOBILE_ORDERS_CHANNEL_ID, {
+      name: 'Đơn hàng mới (Qlaok)',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+      vibrationPattern: [0, 300, 150, 300],
+      lightColor: '#10b981',
+    }).catch(() => {});
+  } catch {
+    // ignore in environments where native notification module is unavailable
+  }
 }
 
 function getRuntimeEasProjectId(): string | null {
