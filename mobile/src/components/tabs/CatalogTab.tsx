@@ -61,7 +61,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const res = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -72,6 +72,14 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+      if (!res.ok) {
+        Alert.alert(
+          t('catalog.errUpdateTitle'),
+          t('common.tryAgain')
+        );
+        onReloadShopData(activeShop?.id);
+        return;
+      }
     } catch (error) {
       Alert.alert(
         t('catalog.errUpdateTitle'),
@@ -92,7 +100,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const res = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -103,6 +111,14 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+      if (!res.ok) {
+        Alert.alert(
+          t('catalog.errPriceTitle'),
+          t('common.tryAgain')
+        );
+        onReloadShopData(activeShop?.id);
+        return;
+      }
     } catch (error) {
       Alert.alert(
         t('catalog.errPriceTitle'),
@@ -133,7 +149,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const res = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -145,6 +161,14 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+      if (!res.ok) {
+        Alert.alert(
+          t('catalog.errStockTitle'),
+          t('common.tryAgain')
+        );
+        onReloadShopData(activeShop?.id);
+        return;
+      }
     } catch (error) {
       Alert.alert(
         t('catalog.errStockTitle'),
@@ -217,6 +241,10 @@ export const CatalogTab = memo(function CatalogTab({
         setNewItemStock('');
         return;
       }
+      Alert.alert(
+        t('catalog.errAddItemTitle'),
+        t('common.tryAgain')
+      );
     } catch (error) {
       Alert.alert(
         t('catalog.errAddItemTitle'),
