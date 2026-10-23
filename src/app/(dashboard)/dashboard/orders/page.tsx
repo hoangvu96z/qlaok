@@ -25,7 +25,7 @@ import {
   Loader2,
   LogIn,
 } from 'lucide-react';
-import { startOrderLiveSync, type OrderLiveStatus } from '@/lib/order-live-sync';
+import { startOrderLiveSync, type OrderLiveStatus, type OrderLiveSyncHandle } from '@/lib/order-live-sync';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -139,6 +139,7 @@ export default function CounterOrdersPage() {
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [updatingAction, setUpdatingAction] = useState<string | null>(null);
   const updatingRef = useRef<string | null>(null);
+  const liveSyncRef = useRef<OrderLiveSyncHandle | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [actionToast, setActionToast] = useState<{
     kind: 'error' | 'success';
@@ -254,10 +255,11 @@ export default function CounterOrdersPage() {
         ]);
 
         if (disposedRef.current || scopeRef.current !== scope) return;
-        if (ordersRes.status === 401) {
+        if (ordersRes.status === 401 || ordersRes.status === 403) {
           setSessionExpired(true);
         } else if (ordersRes.ok) {
           setSessionExpired(false);
+          liveSyncRef.current?.reconnect?.();
         }
         if (ordersRes.ok) {
           const data = await ordersRes.json();
@@ -418,16 +420,18 @@ export default function CounterOrdersPage() {
       };
     }
 
-    const stopSync = startOrderLiveSync({
+    const sync = startOrderLiveSync({
       query: new URLSearchParams({ shopId: activeShop.id }).toString(),
       headers: getAuthHeaders,
       onChange: () => { void fetchOrdersAndCatalog(true); },
       onStatus: setLiveStatus,
     });
+    liveSyncRef.current = sync;
 
     return () => {
       if (bc) bc.close();
-      stopSync();
+      sync();
+      if (liveSyncRef.current === sync) liveSyncRef.current = null;
     };
   }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name, activeShop?.currency]);
 
@@ -480,7 +484,7 @@ export default function CounterOrdersPage() {
           status,
         }),
       });
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         setSessionExpired(true);
       }
       const data = await res.json().catch(() => null);
@@ -572,14 +576,14 @@ export default function CounterOrdersPage() {
         }
         return updatedOrder;
       }
-      if (res.status === 401) setSessionExpired(true);
+      if (res.status === 401 || res.status === 403) setSessionExpired(true);
       const error = await res.json().catch(() => null);
       showActionToast(
         'error',
-        res.status === 401
+        res.status === 401 || res.status === 403
           ? tx(
-              'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
-              'Your session has expired. Please sign in again.'
+              'Phiên đăng nhập đã hết hạn hoặc không có quyền. Vui lòng đăng nhập lại.',
+              'Your session has expired or permission denied. Please sign in again.'
             )
           : error?.error || fallbackError
       );
@@ -985,13 +989,23 @@ export default function CounterOrdersPage() {
               )}
             </span>
           </div>
-          <Link
-            href="/login?next=/dashboard/orders"
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white hover:bg-rose-500"
-          >
-            <LogIn className="h-4 w-4" aria-hidden="true" />
-            <span>{tx('Đăng nhập lại', 'Sign in again')}</span>
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void fetchOrdersAndCatalog(false)}
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3.5 py-2 text-xs font-black text-rose-800 hover:bg-rose-100"
+            >
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{tx('Thử lại', 'Retry')}</span>
+            </button>
+            <Link
+              href="/login?next=/dashboard/orders"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white hover:bg-rose-500"
+            >
+              <LogIn className="h-4 w-4" aria-hidden="true" />
+              <span>{tx('Đăng nhập lại', 'Sign in again')}</span>
+            </Link>
+          </div>
         </div>
       )}
 

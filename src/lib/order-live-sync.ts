@@ -1,5 +1,10 @@
 export type OrderLiveStatus = 'connecting' | 'connected' | 'fallback' | 'unauthorized';
 
+export interface OrderLiveSyncHandle {
+  (): void;
+  reconnect: () => void;
+}
+
 /** SSE frames may span network chunks; never assume one chunk is one event. */
 export async function readOrderEvents(stream: ReadableStream<Uint8Array>, onEvent: (event: { type: string }) => void) {
   const reader = stream.getReader();
@@ -100,11 +105,23 @@ export function startOrderLiveSync(options: {
   document.addEventListener('visibilitychange', resume);
   window.addEventListener('online', resume);
   void connect();
-  return () => {
+  const stop = (() => {
     stopped = true; generation++;
     controller?.abort();
     clearTimeout(retry); clearTimeout(debounce); clearInterval(fallback);
     document.removeEventListener('visibilitychange', resume);
     window.removeEventListener('online', resume);
+  }) as OrderLiveSyncHandle;
+  stop.reconnect = () => {
+    if (stopped) return;
+    unauthorized = false;
+    retryDelay = 1000;
+    if (visible()) {
+      generation++;
+      controller?.abort();
+      controller = null;
+      void connect();
+    }
   };
+  return stop;
 }

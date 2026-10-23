@@ -165,3 +165,186 @@ test('DashboardShell gates order sync effect, teardown, and reminder chimes by r
     /if\s*\(isOrdersDashboardRoute\(pathname\)\s*\|\|\s*newOrdersCount\s*===\s*0\)\s*return;/
   );
 });
+
+test('live sync unauthorized recovers when reconnect is called after session restoration', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const descriptors = Object.fromEntries(
+    ['document', 'window', 'fetch'].map((k) => [
+      k,
+      Object.getOwnPropertyDescriptor(globalThis, k),
+    ])
+  );
+  const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+  const win = new EventTarget();
+  let statusResult: string | undefined;
+  let authValid = false;
+  let refreshes = 0;
+  let fetchAttempts = 0;
+
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: win });
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (_url: unknown, init: RequestInit) => {
+      fetchAttempts++;
+      if (!authValid) {
+        return new Response('{}', { status: 401 });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
+        },
+      });
+      init.signal?.addEventListener('abort', () => {});
+      return new Response(stream);
+    },
+  });
+
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  t.after(() => {
+    stop?.();
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  stop = startOrderLiveSync({
+    query: 'shopId=fixture',
+    headers: () => ({ Authorization: authValid ? 'Bearer valid' : 'Bearer expired' }),
+    onChange: () => {
+      refreshes++;
+    },
+    onStatus: (s) => {
+      statusResult = s;
+    },
+  });
+
+  await settle();
+  assert.equal(statusResult, 'unauthorized', 'initial 401 transitions live sync to unauthorized');
+  assert.equal(refreshes, 0, 'no refreshes while unauthorized');
+  assert.equal(fetchAttempts, 1);
+
+  // While unauthorized, fallback intervals and visibility changes must not loop
+  t.mock.timers.tick(60000);
+  await settle();
+  doc.dispatchEvent(new Event('visibilitychange'));
+  await settle();
+  assert.equal(fetchAttempts, 1, 'unauthorized state suppresses retries and polling');
+
+  // Simulate user re-authenticating and triggering recovery via reconnect
+  authValid = true;
+  stop.reconnect();
+  await settle();
+  t.mock.timers.tick(200);
+  await settle();
+
+  assert.equal(statusResult, 'connected', 'reconnect transitions live sync to connected');
+  assert.equal(refreshes, 1, 'fires onChange upon ready event on reconnected stream');
+  assert.equal(fetchAttempts, 2, 'reconnect initiates exactly one fresh connection');
+
+  stop();
+});
+
+test('live sync handles 403 Forbidden as unauthorized and halts reconnect until reconnect is invoked', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const descriptors = Object.fromEntries(
+    ['document', 'window', 'fetch'].map((k) => [
+      k,
+      Object.getOwnPropertyDescriptor(globalThis, k),
+    ])
+  );
+  const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+  const win = new EventTarget();
+  let statusResult: string | undefined;
+  let fetchCount = 0;
+
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: win });
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => {
+      fetchCount++;
+      return new Response('{}', { status: 403 });
+    },
+  });
+
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  t.after(() => {
+    stop?.();
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  stop = startOrderLiveSync({
+    query: 'shopId=fixture',
+    onChange: () => {},
+    onStatus: (s) => {
+      statusResult = s;
+    },
+  });
+
+  await settle();
+  assert.equal(statusResult, 'unauthorized', 'HTTP 403 maps directly to unauthorized status');
+  assert.equal(fetchCount, 1);
+
+  // Must not poll or retry on 403
+  t.mock.timers.tick(60000);
+  await settle();
+  doc.dispatchEvent(new Event('visibilitychange'));
+  await settle();
+  assert.equal(fetchCount, 1, 'does not loop on 403');
+
+  stop();
+});
+
+test('CounterOrdersPage enforces 401/403 session expiration, displays actionable alert with retry and login cta, and reconnects live sync on recovery', async () => {
+  const fsMod = await import('node:fs');
+  const pathMod = await import('node:path');
+  const ordersPageSource = fsMod.readFileSync(
+    pathMod.join(
+      process.cwd(),
+      'src/app/(dashboard)/dashboard/orders/page.tsx'
+    ),
+    'utf8'
+  );
+
+  // 1. fetchOrdersAndCatalog checks both 401 AND 403
+  assert.match(
+    ordersPageSource,
+    /if\s*\(\s*ordersRes\.status\s*===\s*401\s*\|\|\s*ordersRes\.status\s*===\s*403\s*\)\s*\{\s*setSessionExpired\(true\);/
+  );
+
+  // 2. fetchOrdersAndCatalog clears sessionExpired and reconnects live sync on successful fetch
+  assert.match(
+    ordersPageSource,
+    /else\s+if\s*\(\s*ordersRes\.ok\s*\)\s*\{\s*setSessionExpired\(false\);\s*liveSyncRef\.current\?\.reconnect\?\.?\(\);/
+  );
+
+  // 3. handleUpdateServiceRequestStatus checks 401 and 403
+  assert.match(
+    ordersPageSource,
+    /if\s*\(\s*res\.status\s*===\s*401\s*\|\|\s*res\.status\s*===\s*403\s*\)\s*\{\s*setSessionExpired\(true\);/
+  );
+
+  // 4. handleUpdateOrder checks 401 and 403
+  assert.match(
+    ordersPageSource,
+    /if\s*\(\s*res\.status\s*===\s*401\s*\|\|\s*res\.status\s*===\s*403\s*\)\s*setSessionExpired\(true\);/
+  );
+
+  // 5. Session expired banner renders role="alert", testid, actionable Retry button, and Sign In link
+  assert.match(ordersPageSource, /data-testid="orders-session-expired-banner"/);
+  assert.match(ordersPageSource, /role="alert"/);
+  assert.match(
+    ordersPageSource,
+    /<button[^>]*onClick=\{\s*\(\)\s*=>\s*void\s+fetchOrdersAndCatalog\(false\)[\s\S]*?\{tx\(\s*['"]Thử lại['"]\s*,\s*['"]Retry['"]\s*\)\}/
+  );
+  assert.match(
+    ordersPageSource,
+    /href="\/login\?next=\/dashboard\/orders"/
+  );
+});
+
