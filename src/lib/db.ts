@@ -838,6 +838,7 @@ export async function dbGetStorefrontBundle(
     { data: items },
     postsRes,
     tables,
+    ownerProfileRes,
   ] = await Promise.all([
     sb
       .from('categories')
@@ -859,8 +860,37 @@ export async function dbGetStorefrontBundle(
           .order('is_pinned', { ascending: false })
       : Promise.resolve({ data: [] as Post[] }),
     dbGetPublicShopTables(shop.id),
+    (async () => {
+      if (!shop.owner_id) return { data: null, error: null };
+      try {
+        const query = sb
+          .from('profiles')
+          .select('plan')
+          .eq('id', shop.owner_id);
+        const fetchFn =
+          typeof query.maybeSingle === 'function'
+            ? query.maybeSingle
+            : typeof query.single === 'function'
+              ? query.single
+              : undefined;
+        if (typeof fetchFn === 'function') {
+          return await fetchFn.call(query);
+        }
+        return { data: null, error: null };
+      } catch (err) {
+        return { data: null, error: err };
+      }
+    })(),
   ]);
   const posts = postsRes?.data;
+
+  let ownerPlan: PlanTier = 'free';
+  if (ownerProfileRes && !ownerProfileRes.error && ownerProfileRes.data) {
+    const rawPlan = (ownerProfileRes.data as { plan?: unknown }).plan;
+    if (rawPlan === 'basic' || rawPlan === 'premium') {
+      ownerPlan = rawPlan;
+    }
+  }
 
   const normalizedCategories = ((categories || []) as Category[]).map((c) => {
     const seedCat = SEED_CATEGORIES.find((sc) => sc.id === c.id);
@@ -927,7 +957,7 @@ export async function dbGetStorefrontBundle(
     items: enrichItemsWithInventory(normalizedItems),
     posts: normalizedPosts,
     tables,
-    ownerPlan: 'premium' as PlanTier,
+    ownerPlan,
   };
 }
 
