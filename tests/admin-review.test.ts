@@ -990,3 +990,348 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     setSupabaseDbClientForTests(null);
   }
 });
+
+test('POST /api/admin approve_transaction validates payment amount and maps RPC/DB payment error statuses', async () => {
+  function createMockAdminPaymentDb(options?: {
+    tx?: {
+      id?: string;
+      order_code: string;
+      user_id: string;
+      amount: number;
+      status: string;
+      target_plan?: string;
+      bank_ref_id?: string;
+    } | null;
+    paymentLookupError?: { message: string } | null;
+    rpcError?: { message: string } | null;
+  }) {
+    const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+
+    const client = {
+      rpc: async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (options?.rpcError) {
+          return { data: null, error: options.rpcError };
+        }
+        return {
+          data: {
+            status: 'completed',
+            owner_id: options?.tx?.user_id || 'owner-mock-001',
+            target_plan: options?.tx?.target_plan || 'premium',
+          },
+          error: null,
+        };
+      },
+      from: (table: string) => {
+        const chain: Record<string, unknown> = {};
+        const resolveData = () => {
+          if (table === 'shops') {
+            return [{ id: 'shop-mock-001', owner_id: 'owner-mock-001' }];
+          }
+          if (table === 'profiles') {
+            return [
+              {
+                id: 'owner-mock-001',
+                email: 'owner@mock.test',
+                plan: 'premium',
+              },
+            ];
+          }
+          if (table === 'payment_transactions') {
+            if (options?.paymentLookupError) {
+              return null;
+            }
+            return options?.tx ? [options.tx] : [];
+          }
+          return [];
+        };
+
+        for (const m of ['select', 'eq', 'neq', 'ilike', 'order', 'limit']) {
+          chain[m] = () => chain;
+        }
+
+        chain.maybeSingle = async () => {
+          if (table === 'payment_transactions' && options?.paymentLookupError) {
+            return { data: null, error: options.paymentLookupError };
+          }
+          const rows = resolveData();
+          return {
+            data: rows && rows.length > 0 ? rows[0] : null,
+            error: null,
+          };
+        };
+
+        chain.single = async () => {
+          const rows = resolveData();
+          return {
+            data: rows && rows.length > 0 ? rows[0] : null,
+            error: null,
+          };
+        };
+
+        chain.then = (
+          onFulfilled: (val: { data: unknown; error: unknown }) => unknown,
+          onRejected?: (err: unknown) => unknown
+        ) => {
+          if (table === 'payment_transactions' && options?.paymentLookupError) {
+            return Promise.resolve({
+              data: null,
+              error: options.paymentLookupError,
+            }).then(onFulfilled, onRejected);
+          }
+          const data = resolveData();
+          return Promise.resolve({ data, error: null }).then(
+            onFulfilled,
+            onRejected
+          );
+        };
+
+        return chain;
+      },
+    };
+
+    return { client, rpcCalls };
+  }
+
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+
+  const sendApprove = async (body: Record<string, unknown>) => {
+    return adminPost(
+      new Request('http://localhost/api/admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({ action: 'approve_transaction', ...body }),
+      })
+    );
+  };
+
+  // 1. Missing amounts must return 400 PAYMENT_AMOUNT_REQUIRED and NOT call the RPC
+  {
+    const { client, rpcCalls } = createMockAdminPaymentDb();
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res1 = await sendApprove({ orderCode: 'ORD-TEST-001' });
+      assert.equal(res1.status, 400);
+      const body1 = await res1.json();
+      assert.equal(body1.code, 'PAYMENT_AMOUNT_REQUIRED');
+
+      const res2 = await sendApprove({
+        orderCode: 'ORD-TEST-001',
+        amount: null,
+      });
+      assert.equal(res2.status, 400);
+      const body2 = await res2.json();
+      assert.equal(body2.code, 'PAYMENT_AMOUNT_REQUIRED');
+
+      const res3 = await sendApprove({
+        orderCode: 'ORD-TEST-001',
+        transferAmount: null,
+      });
+      assert.equal(res3.status, 400);
+      const body3 = await res3.json();
+      assert.equal(body3.code, 'PAYMENT_AMOUNT_REQUIRED');
+
+      assert.equal(
+        rpcCalls.length,
+        0,
+        'RPC must not be called when amount is missing'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 2. Invalid/zero/negative amounts must return 400 INVALID_PAYMENT_AMOUNT and NOT call the RPC
+  {
+    const { client, rpcCalls } = createMockAdminPaymentDb();
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const invalidAmounts = [
+        0,
+        -50000,
+        'invalid',
+        '',
+        '   ',
+        true,
+        false,
+        {},
+        [],
+      ];
+      for (const amount of invalidAmounts) {
+        const res = await sendApprove({ orderCode: 'ORD-TEST-001', amount });
+        assert.equal(
+          res.status,
+          400,
+          `Expected status 400 for invalid amount: ${JSON.stringify(amount)}`
+        );
+        const body = await res.json();
+        assert.equal(
+          body.code,
+          'INVALID_PAYMENT_AMOUNT',
+          `Expected INVALID_PAYMENT_AMOUNT for: ${JSON.stringify(amount)}`
+        );
+      }
+      assert.equal(
+        rpcCalls.length,
+        0,
+        'RPC must not be called when amount is invalid'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 3. Valid amount passes through to RPC with allowUnverifiedAmount: false, respecting transferAmount precedence
+  {
+    const sampleTx = {
+      id: 'tx-001',
+      order_code: 'ORD-TEST-001',
+      user_id: 'owner-mock-001',
+      amount: 50000,
+      status: 'pending',
+      target_plan: 'premium',
+    };
+    const { client, rpcCalls } = createMockAdminPaymentDb({ tx: sampleTx });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      // JSON number
+      const res1 = await sendApprove({
+        orderCode: 'ORD-TEST-001',
+        amount: 50000,
+      });
+      assert.equal(res1.status, 200);
+      const body1 = await res1.json();
+      assert.equal(body1.ok, true);
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(rpcCalls[0].fn, 'complete_payment_webhook_atomic');
+      assert.equal(rpcCalls[0].args.p_order_code, 'ORD-TEST-001');
+      assert.equal(rpcCalls[0].args.p_verified_transfer_amount, 50000);
+      assert.equal(rpcCalls[0].args.p_allow_unverified_amount, false);
+
+      // Non-empty numeric string
+      const res2 = await sendApprove({
+        orderCode: 'ORD-TEST-001',
+        amount: ' 50000 ',
+      });
+      assert.equal(res2.status, 200);
+      assert.equal(rpcCalls.length, 2);
+      assert.equal(rpcCalls[1].args.p_verified_transfer_amount, 50000);
+
+      // transferAmount precedence over amount
+      const res3 = await sendApprove({
+        orderCode: 'ORD-TEST-001',
+        amount: 30000,
+        transferAmount: 50000,
+      });
+      assert.equal(res3.status, 200);
+      assert.equal(rpcCalls.length, 3);
+      assert.equal(rpcCalls[2].args.p_verified_transfer_amount, 50000);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 4. RPC underpayment returns HTTP 400
+  {
+    const sampleTx = {
+      id: 'tx-002',
+      order_code: 'ORD-TEST-002',
+      user_id: 'owner-mock-001',
+      amount: 100000,
+      status: 'pending',
+    };
+    const { client } = createMockAdminPaymentDb({
+      tx: sampleTx,
+      rpcError: {
+        message:
+          'PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản (50000) nhỏ hơn số tiền gói cước yêu cầu (100000).',
+      },
+    });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res = await sendApprove({
+        orderCode: 'ORD-TEST-002',
+        amount: 50000,
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error, /PAYMENT_AMOUNT_MISMATCH/);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 5. Non-pending order returns HTTP 409
+  {
+    const sampleTx = {
+      id: 'tx-003',
+      order_code: 'ORD-TEST-003',
+      user_id: 'owner-mock-001',
+      amount: 50000,
+      status: 'completed',
+    };
+    const { client } = createMockAdminPaymentDb({
+      tx: sampleTx,
+      rpcError: {
+        message:
+          'PAYMENT_ORDER_NOT_PENDING: Trạng thái đơn thanh toán là "completed", không thể hoàn tất.',
+      },
+    });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res = await sendApprove({
+        orderCode: 'ORD-TEST-003',
+        amount: 50000,
+      });
+      assert.equal(res.status, 409);
+      const body = await res.json();
+      assert.match(body.error, /PAYMENT_ORDER_NOT_PENDING/);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 6. Unknown order returns HTTP 404
+  {
+    const { client } = createMockAdminPaymentDb({ tx: null });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res = await sendApprove({
+        orderCode: 'ORD-UNKNOWN-999',
+        amount: 50000,
+      });
+      assert.equal(res.status, 404);
+      const body = await res.json();
+      assert.match(body.error, /PAYMENT_ORDER_NOT_FOUND/);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 7. Generic DB error returns HTTP 500
+  {
+    const { client } = createMockAdminPaymentDb({
+      paymentLookupError: { message: 'connection failure to replica' },
+    });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res = await sendApprove({
+        orderCode: 'ORD-TEST-007',
+        amount: 50000,
+      });
+      assert.equal(res.status, 500);
+      const body = await res.json();
+      assert.match(body.error, /DB_PAYMENT_LOOKUP_FAILED/);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+});

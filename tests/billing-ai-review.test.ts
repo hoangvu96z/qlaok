@@ -73,6 +73,14 @@ let mockProfiles: Record<
 let mockTableErrors: Partial<Record<string, { code?: string; message: string }>> = {};
 const selectedProjections: Array<{ table: string; columns: string }> = [];
 const insertedTransactions: Array<Record<string, unknown>> = [];
+let mockRpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+let mockRpcHandler:
+  | ((
+      name: string,
+      args: Record<string, unknown>
+    ) => Promise<{ data: unknown; error: unknown }>)
+  | null = null;
+let mockRpcError: { message: string } | null = null;
 
 // Authoritative column whitelist from 001_init_qlaok.sql & 004_memberships_billing_payments_audit.sql.
 // Notably, public.profiles has NO `role` or `is_admin` columns.
@@ -327,6 +335,133 @@ const mockSupabaseClient = {
     return chain;
   },
   auth: { getUser: async () => ({ data: { user: null }, error: new Error('no') }) },
+  rpc: async (fn: string, args: Record<string, unknown>) => {
+    mockRpcCalls.push({ name: fn, args: { ...args } });
+    if (mockRpcHandler) {
+      return mockRpcHandler(fn, args);
+    }
+    if (mockRpcError) {
+      return { data: null, error: mockRpcError };
+    }
+    if (fn === 'complete_payment_webhook_atomic') {
+      const orderCode = String(args.p_order_code || '').trim().toUpperCase();
+      const tx = insertedTransactions.find(
+        (t) => String(t.order_code || '').trim().toUpperCase() === orderCode
+      );
+      if (!tx) {
+        return {
+          data: null,
+          error: {
+            message: `PAYMENT_ORDER_NOT_FOUND: Không tìm thấy đơn thanh toán "${orderCode}".`,
+          },
+        };
+      }
+      if (tx.status === 'completed') {
+        const profile = mockProfiles[String(tx.user_id)];
+        return {
+          data: {
+            status: 'already_completed',
+            owner_id: tx.user_id,
+            target_plan: tx.target_plan,
+            plan_expires_at:
+              profile && 'plan_expires_at' in profile
+                ? (profile as Record<string, unknown>).plan_expires_at
+                : new Date().toISOString(),
+            order_code: tx.order_code,
+            bank_ref_id: tx.bank_ref_id,
+          },
+          error: null,
+        };
+      }
+      if (tx.status !== 'pending') {
+        return {
+          data: null,
+          error: {
+            message: `PAYMENT_ORDER_NOT_PENDING: Trạng thái đơn thanh toán là "${tx.status}", không thể hoàn tất.`,
+          },
+        };
+      }
+      const allowUnverified = Boolean(args.p_allow_unverified_amount);
+      const verifiedAmount = args.p_verified_transfer_amount;
+      if (!allowUnverified) {
+        if (
+          verifiedAmount === null ||
+          verifiedAmount === undefined ||
+          Number(verifiedAmount) <= 0 ||
+          !Number.isFinite(Number(verifiedAmount))
+        ) {
+          return {
+            data: null,
+            error: {
+              message:
+                'PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản không hợp lệ (phải là số dương lớn hơn 0).',
+            },
+          };
+        }
+        if (Number(verifiedAmount) < Number(tx.amount || 0)) {
+          return {
+            data: null,
+            error: {
+              message: `PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản (${verifiedAmount}) nhỏ hơn số tiền gói cước yêu cầu (${tx.amount}).`,
+            },
+          };
+        }
+      }
+      const bankRef = String(args.p_bank_ref_id || '').trim();
+      if (!bankRef) {
+        return {
+          data: null,
+          error: {
+            message:
+              'MISSING_BANK_REF: Thiếu mã tham chiếu ngân hàng (bank_ref_id).',
+          },
+        };
+      }
+      const dup = insertedTransactions.find(
+        (t) => t.id !== tx.id && t.bank_ref_id === bankRef
+      );
+      if (dup) {
+        return {
+          data: null,
+          error: {
+            message: `DUPLICATE_BANK_REF: Mã tham chiếu ngân hàng "${bankRef}" đã được sử dụng cho giao dịch khác.`,
+          },
+        };
+      }
+      tx.status = 'completed';
+      tx.bank_ref_id = bankRef;
+      const completedAt = new Date().toISOString();
+      tx.completed_at = completedAt;
+      const expires = new Date();
+      expires.setDate(expires.getDate() + 30);
+      const expiresAt = expires.toISOString();
+      const ownerId = String(tx.user_id);
+      if (!mockProfiles[ownerId]) {
+        mockProfiles[ownerId] = {
+          id: ownerId,
+          email: `${ownerId}@qlaok.vn`,
+          plan: tx.target_plan as string,
+          plan_expires_at: expiresAt,
+        } as never;
+      } else {
+        mockProfiles[ownerId]!.plan = tx.target_plan as string;
+        (mockProfiles[ownerId] as Record<string, unknown>).plan_expires_at =
+          expiresAt;
+      }
+      return {
+        data: {
+          status: 'completed',
+          owner_id: tx.user_id,
+          target_plan: tx.target_plan,
+          plan_expires_at: expiresAt,
+          order_code: tx.order_code,
+          bank_ref_id: bankRef,
+        },
+        error: null,
+      };
+    }
+    return { data: null, error: { message: `UNKNOWN_RPC: ${fn}` } };
+  },
 };
 
 setSupabaseDbClientForTests(mockSupabaseClient);
@@ -345,6 +480,9 @@ beforeEach(() => {
   mockTableErrors = {};
   selectedProjections.length = 0;
   insertedTransactions.length = 0;
+  mockRpcCalls.length = 0;
+  mockRpcHandler = null;
+  mockRpcError = null;
 });
 
 function post(path: string, token: string | null, body: unknown) {
@@ -1069,6 +1207,315 @@ test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV
   }
 });
 
+test('payment webhook Section 1.5 hardening: requires positive amount, rejects outbound transfer, preserves sandbox simulator, and DB lookup error does not succeed via SEED_TRANSACTIONS', async () => {
+  const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+  const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+  delete process.env.PAYMENT_DEV_SIMULATE;
+  // <16 chars so it never becomes the session signing secret fallback
+  process.env.PAYMENT_WEBHOOK_SECRET = 'whsec-sec-1-5';
+
+  try {
+    // 1. Create a pending order for testing
+    const createRes = await paymentPost(
+      post('/api/webhooks/payment', ownerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+      })
+    );
+    assert.equal(createRes.status, 201);
+    const { transaction: testTx } = await createRes.json();
+    assert.equal(testTx.amount, 69000);
+
+    // 2. Provider webhook missing both transferAmount and amount -> 400 PAYMENT_AMOUNT_REQUIRED
+    const missingAmtRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          referenceCode: 'BANK-REF-MISSING-AMT',
+        }),
+      })
+    );
+    assert.equal(missingAmtRes.status, 400);
+    const missingAmtBody = await missingAmtRes.json();
+    assert.equal(missingAmtBody.code, 'PAYMENT_AMOUNT_REQUIRED');
+
+    // 3. Provider webhook with zero amount -> 400 INVALID_PAYMENT_AMOUNT
+    const zeroAmtRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 0,
+        }),
+      })
+    );
+    assert.equal(zeroAmtRes.status, 400);
+    assert.equal((await zeroAmtRes.json()).code, 'INVALID_PAYMENT_AMOUNT');
+
+    // 4. Provider webhook with negative amount -> 400 INVALID_PAYMENT_AMOUNT
+    const negAmtRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: -69000,
+        }),
+      })
+    );
+    assert.equal(negAmtRes.status, 400);
+    assert.equal((await negAmtRes.json()).code, 'INVALID_PAYMENT_AMOUNT');
+
+    // 5. Provider webhook with malformed non-numeric string amount -> 400 INVALID_PAYMENT_AMOUNT
+    const malformedAmtRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 'not-a-number',
+        }),
+      })
+    );
+    assert.equal(malformedAmtRes.status, 400);
+    assert.equal((await malformedAmtRes.json()).code, 'INVALID_PAYMENT_AMOUNT');
+
+    // 6. Provider webhook with outbound transferType ('out') -> 400 INVALID_TRANSFER_TYPE
+    const outboundRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 69000,
+          transferType: 'out',
+        }),
+      })
+    );
+    assert.equal(outboundRes.status, 400);
+    assert.equal((await outboundRes.json()).code, 'INVALID_TRANSFER_TYPE');
+
+    // 7. Case-insensitive 'OUT' -> 400 INVALID_TRANSFER_TYPE
+    const outboundUpperRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 69000,
+          transferType: 'OUT',
+        }),
+      })
+    );
+    assert.equal(outboundUpperRes.status, 400);
+    assert.equal((await outboundUpperRes.json()).code, 'INVALID_TRANSFER_TYPE');
+
+    // 7b. Explicit null transferType (and snake_case alias transfer_type: null) -> 400 INVALID_TRANSFER_TYPE
+    const nullTypeRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 69000,
+          transferType: null,
+        }),
+      })
+    );
+    assert.equal(nullTypeRes.status, 400);
+    assert.equal((await nullTypeRes.json()).code, 'INVALID_TRANSFER_TYPE');
+
+    const nullSnakeTypeRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 69000,
+          transfer_type: null,
+        }),
+      })
+    );
+    assert.equal(nullSnakeTypeRes.status, 400);
+    assert.equal((await nullSnakeTypeRes.json()).code, 'INVALID_TRANSFER_TYPE');
+
+    // 8. Super Admin completing through payment webhook callback still requires amount
+    const superAdminToken = issueSessionToken({
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const adminNoAmtRes = await paymentPost(
+      post('/api/webhooks/payment', superAdminToken, {
+        orderCode: testTx.order_code,
+      })
+    );
+    assert.equal(adminNoAmtRes.status, 400);
+    assert.equal((await adminNoAmtRes.json()).code, 'PAYMENT_AMOUNT_REQUIRED');
+
+    // 9. Sandbox simulator path with PAYMENT_DEV_SIMULATE='true': owner tests without bank transfer
+    process.env.PAYMENT_DEV_SIMULATE = 'true';
+    const simOrderRes = await paymentPost(
+      post('/api/webhooks/payment', ownerToken, {
+        action: 'create_order',
+        targetPlan: 'basic',
+      })
+    );
+    const { transaction: simTx } = await simOrderRes.json();
+
+    const simNoAmtRes = await paymentPost(
+      post('/api/webhooks/payment', ownerToken, {
+        orderCode: simTx.order_code,
+        simulateWebhook: true,
+        // no amount or transferAmount
+      })
+    );
+    assert.equal(simNoAmtRes.status, 200);
+    const simNoAmtBody = await simNoAmtRes.json();
+    assert.equal(simNoAmtBody.success, true);
+
+    // 10. Valid provider path with transferType: 'In' (case-insensitive) and valid positive amount
+    delete process.env.PAYMENT_DEV_SIMULATE;
+    const validInboundRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: testTx.order_code,
+          transferAmount: 69000,
+          transferType: 'In',
+          referenceCode: 'BANK-REF-VALID-IN-01',
+        }),
+      })
+    );
+    assert.equal(validInboundRes.status, 200);
+    const validInboundBody = await validInboundRes.json();
+    assert.equal(validInboundBody.success, true);
+
+    // 11. DB lookup error does NOT fall back to matching seed transaction
+    const { SEED_TRANSACTIONS } = await import('@/lib/seed-data');
+    const seedTx = SEED_TRANSACTIONS[0];
+    assert.ok(seedTx && seedTx.order_code);
+
+    // Case A: Supabase returns { error } on payment_transactions lookup
+    mockTableErrors['payment_transactions'] = {
+      code: '57P01',
+      message: 'Database lookup failed: connection dropped',
+    };
+
+    const dbErrRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: seedTx.order_code,
+          transferAmount: 69000,
+          referenceCode: 'BANK-REF-SEED-EXPLOIT',
+        }),
+      })
+    );
+    // Must return 500, must NOT succeed, must NOT complete seed order
+    assert.equal(dbErrRes.status, 500);
+    const dbErrBody = await dbErrRes.json();
+    assert.match(dbErrBody.error, /DB_PAYMENT_LOOKUP_FAILED/);
+
+    delete mockTableErrors['payment_transactions'];
+
+    // Case B: Thrown exception from DB client during lookup
+    const throwingDbClient = {
+      from: (tbl: string) => {
+        if (tbl === 'payment_transactions') {
+          throw new Error('Supabase client crash: connection terminated abruptly');
+        }
+        return mockSupabaseClient.from(tbl);
+      },
+      auth: mockSupabaseClient.auth,
+    };
+    setSupabaseDbClientForTests(throwingDbClient as never);
+    try {
+      const throwRes = await paymentPost(
+        new Request('http://localhost/api/webhooks/payment', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-webhook-secret': 'whsec-sec-1-5',
+          },
+          body: JSON.stringify({
+            orderCode: seedTx.order_code,
+            transferAmount: 69000,
+            referenceCode: 'BANK-REF-SEED-EXPLOIT-THROW',
+          }),
+        })
+      );
+      assert.equal(throwRes.status, 500);
+      const throwBody = await throwRes.json();
+      assert.match(throwBody.error, /connection terminated abruptly/);
+    } finally {
+      setSupabaseDbClientForTests(mockSupabaseClient);
+    }
+
+    // Case C: Unknown order with healthy DB returns 404
+    const unknownRes = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'whsec-sec-1-5',
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_COMPLETELY_NON_EXISTENT_99999',
+          transferAmount: 69000,
+          referenceCode: 'BANK-REF-NON-EXISTENT',
+        }),
+      })
+    );
+    assert.equal(unknownRes.status, 404);
+    const unknownBody = await unknownRes.json();
+    assert.match(unknownBody.error, /PAYMENT_ORDER_NOT_FOUND/);
+  } finally {
+    delete mockTableErrors['payment_transactions'];
+    setSupabaseDbClientForTests(mockSupabaseClient);
+    if (previousSecret === undefined) delete process.env.PAYMENT_WEBHOOK_SECRET;
+    else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
+    if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
+    else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+  }
+});
+
 test('POST /api/webhooks/payment create_order rejects anonymous and invalid tokens with 401', async () => {
   const anonRes = await paymentPost(
     post('/api/webhooks/payment', null, {
@@ -1653,4 +2100,617 @@ test('reopening a pending billing transaction re-opens the exact existing order 
     /handleReopenPendingOrder[\s\S]*?create_order/,
     'Reopen handler must never call create_order'
   );
+});
+
+test('POST /api/webhooks/payment calls complete_payment_webhook_atomic with exact args, deterministic fallback bank ref, and ignores client allowUnverifiedAmount', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  try {
+    const txId = 'tx-atomic-test-101';
+    const orderCode = 'QLAOKP88881';
+    const merchantId = 'merchant-owner-101';
+
+    insertedTransactions.push({
+      id: txId,
+      user_id: merchantId,
+      order_code: orderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+    });
+    mockProfiles[merchantId] = {
+      id: merchantId,
+      email: 'merchant101@qlaok.vn',
+      plan: 'free',
+    };
+
+    // Provider webhook callback without bankRefId/referenceCode, sending amount=69000 and body attempt allowUnverifiedAmount=true
+    const req = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+        allowUnverifiedAmount: true, // Untrusted client flag MUST NOT affect RPC argument
+      }),
+    });
+
+    const res = await paymentPost(req);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.equal(body.alreadyCompleted, false);
+    assert.equal(body.profile.plan, 'premium');
+
+    assert.equal(mockRpcCalls.length, 1);
+    assert.equal(mockRpcCalls[0].name, 'complete_payment_webhook_atomic');
+    assert.deepEqual(mockRpcCalls[0].args, {
+      p_order_code: 'QLAOKP88881',
+      p_bank_ref_id: 'FT-QLAOKP88881',
+      p_verified_transfer_amount: 69000,
+      p_allow_unverified_amount: false,
+    });
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev sandbox simulator (provider and super admin require valid amount)', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  const merchantId = 'merchant-owner-sim-01';
+  const orderCode = 'QLAOKP_SIM_001';
+
+  insertedTransactions.push({
+    id: 'tx-sim-001',
+    user_id: merchantId,
+    order_code: orderCode,
+    target_plan: 'basic',
+    amount: 39000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: new Date().toISOString(),
+  });
+  mockProfiles[merchantId] = {
+    id: merchantId,
+    email: 'merchant-sim@qlaok.vn',
+    plan: 'free',
+  };
+
+  try {
+    // 1. Provider webhook without amount -> 400 PAYMENT_AMOUNT_REQUIRED
+    const providerMissingAmtReq = new Request(
+      'http://localhost/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({ orderCode }),
+      }
+    );
+    const providerRes = await paymentPost(providerMissingAmtReq);
+    assert.equal(providerRes.status, 400);
+    const providerBody = await providerRes.json();
+    assert.equal(providerBody.code, 'PAYMENT_AMOUNT_REQUIRED');
+    assert.equal(
+      mockRpcCalls.length,
+      0,
+      'Must not reach RPC when provider omits amount'
+    );
+
+    // 2. Super Admin caller without amount -> 400 PAYMENT_AMOUNT_REQUIRED
+    const adminToken = issueSessionToken({
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const adminMissingAmtReq = post('/api/webhooks/payment', adminToken, {
+      orderCode,
+    });
+    const adminRes = await paymentPost(adminMissingAmtReq);
+    assert.equal(adminRes.status, 400);
+    const adminBody = await adminRes.json();
+    assert.equal(adminBody.code, 'PAYMENT_AMOUNT_REQUIRED');
+    assert.equal(
+      mockRpcCalls.length,
+      0,
+      'Must not reach RPC when Super Admin omits amount'
+    );
+
+    // 3. Super Admin caller with valid amount -> calls RPC with p_allow_unverified_amount=false
+    const adminWithAmtReq = post('/api/webhooks/payment', adminToken, {
+      orderCode,
+      transferAmount: 39000,
+    });
+    const adminSuccessRes = await paymentPost(adminWithAmtReq);
+    assert.equal(adminSuccessRes.status, 200);
+    assert.equal(mockRpcCalls.length, 1);
+    assert.equal(mockRpcCalls[0].name, 'complete_payment_webhook_atomic');
+    assert.equal(mockRpcCalls[0].args.p_allow_unverified_amount, false);
+    assert.equal(mockRpcCalls[0].args.p_verified_transfer_amount, 39000);
+
+    // Reset for simulator test
+    mockRpcCalls.length = 0;
+    insertedTransactions[0].status = 'pending';
+    mockProfiles[merchantId]!.plan = 'free';
+
+    // 4. Dev sandbox simulator outside production with PAYMENT_DEV_SIMULATE=true
+    process.env.PAYMENT_DEV_SIMULATE = 'true';
+    const ownerToken = issueSessionToken({
+      id: merchantId,
+      email: 'merchant-sim@qlaok.vn',
+      role: 'owner',
+    });
+
+    const simReq = post('/api/webhooks/payment', ownerToken, {
+      orderCode,
+      simulateWebhook: true,
+      // Note: transferAmount omitted
+    });
+    const simRes = await paymentPost(simReq);
+    assert.equal(simRes.status, 200);
+    const simBody = await simRes.json();
+    assert.equal(simBody.success, true);
+    assert.equal(simBody.profile.plan, 'basic');
+    assert.equal(mockRpcCalls.length, 1);
+    assert.equal(mockRpcCalls[0].name, 'complete_payment_webhook_atomic');
+    assert.equal(mockRpcCalls[0].args.p_allow_unverified_amount, true);
+    assert.equal(mockRpcCalls[0].args.p_verified_transfer_amount, null);
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.PAYMENT_DEV_SIMULATE;
+  }
+});
+
+test('POST /api/webhooks/payment RPC errors propagate without table-update fallback, and unavailable RPC fails closed', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  const merchantId = 'merchant-owner-err-01';
+  const orderCode = 'QLAOKP_ERR_001';
+
+  insertedTransactions.push({
+    id: 'tx-err-001',
+    user_id: merchantId,
+    order_code: orderCode,
+    target_plan: 'premium',
+    amount: 69000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: new Date().toISOString(),
+  });
+  mockProfiles[merchantId] = {
+    id: merchantId,
+    email: 'merchant-err@qlaok.vn',
+    plan: 'free',
+  };
+
+  try {
+    // 1. Amount mismatch error from RPC propagates as 400 without mutating table rows
+    mockRpcError = {
+      message:
+        'PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản (39000) nhỏ hơn số tiền gói cước yêu cầu (69000).',
+    };
+
+    const mismatchReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 39000,
+      }),
+    });
+    const mismatchRes = await paymentPost(mismatchReq);
+    assert.equal(mismatchRes.status, 400);
+    const mismatchBody = await mismatchRes.json();
+    assert.match(mismatchBody.error, /PAYMENT_AMOUNT_MISMATCH/);
+
+    // Verify row was NOT mutated via any client-side write fallback
+    assert.equal(insertedTransactions[0].status, 'pending');
+    assert.equal(insertedTransactions[0].bank_ref_id, null);
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+
+    // 2. Duplicate bank ref error propagates as 400
+    mockRpcError = {
+      message:
+        'DUPLICATE_BANK_REF: Mã tham chiếu ngân hàng "FT-DUP-1" đã được sử dụng cho giao dịch khác.',
+    };
+    const dupRefReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        bankRefId: 'FT-DUP-1',
+        transferAmount: 69000,
+      }),
+    });
+    const dupRes = await paymentPost(dupRefReq);
+    assert.equal(dupRes.status, 400);
+    assert.match((await dupRes.json()).error, /DUPLICATE_BANK_REF/);
+    assert.equal(insertedTransactions[0].status, 'pending');
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+
+    // 3. Non-pending status error propagates as 409
+    mockRpcError = {
+      message:
+        'PAYMENT_ORDER_NOT_PENDING: Trạng thái đơn thanh toán là "cancelled", không thể hoàn tất.',
+    };
+    const notPendingReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+      }),
+    });
+    const notPendingRes = await paymentPost(notPendingReq);
+    assert.equal(notPendingRes.status, 409);
+    assert.match(
+      (await notPendingRes.json()).error,
+      /PAYMENT_ORDER_NOT_PENDING/
+    );
+
+    // 4. sb.rpc unavailable -> fails closed with 500 DB_RPC_UNAVAILABLE, never marks completed
+    mockRpcError = null;
+    const clientWithoutRpc = {
+      ...mockSupabaseClient,
+      rpc: undefined,
+    };
+    setSupabaseDbClientForTests(clientWithoutRpc as never);
+    try {
+      const noRpcReq = new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode,
+          transferAmount: 69000,
+        }),
+      });
+      const noRpcRes = await paymentPost(noRpcReq);
+      assert.equal(noRpcRes.status, 500);
+      assert.match((await noRpcRes.json()).error, /DB_RPC_UNAVAILABLE/);
+      assert.equal(insertedTransactions[0].status, 'pending');
+      assert.equal(mockProfiles[merchantId]!.plan, 'free');
+    } finally {
+      setSupabaseDbClientForTests(mockSupabaseClient);
+    }
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/webhooks/payment authoritative owner from transaction/RPC drives profile upgrade and billing response, ignoring caller ownerId', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  const realOwnerId = 'real-merchant-victim-999';
+  const attackerCallerId = 'attacker-caller-888';
+  const orderCode = 'QLAOKP_SEC_001';
+
+  insertedTransactions.push({
+    id: 'tx-sec-001',
+    user_id: realOwnerId,
+    order_code: orderCode,
+    target_plan: 'premium',
+    amount: 69000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: new Date().toISOString(),
+  });
+  mockProfiles[realOwnerId] = {
+    id: realOwnerId,
+    email: 'victim@qlaok.vn',
+    plan: 'free',
+  };
+  mockProfiles[attackerCallerId] = {
+    id: attackerCallerId,
+    email: 'attacker@qlaok.vn',
+    plan: 'free',
+  };
+
+  try {
+    // Caller attempts to pass ownerId='attacker-caller-888' in webhook body
+    const req = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+        ownerId: attackerCallerId,
+      }),
+    });
+
+    const res = await paymentPost(req);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    // Response profile must be real owner, upgraded to premium
+    assert.equal(body.profile.id, realOwnerId);
+    assert.equal(body.profile.plan, 'premium');
+    // Attacker profile must NOT receive upgrade
+    assert.equal(mockProfiles[attackerCallerId]!.plan, 'free');
+    assert.equal(mockProfiles[realOwnerId]!.plan, 'premium');
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/webhooks/payment idempotent already_completed status returns HTTP 200 with alreadyCompleted=true and no-op', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  const merchantId = 'merchant-owner-idem-01';
+  const orderCode = 'QLAOKP_IDEM_001';
+  const initialExpiry = new Date(Date.now() + 15 * 86400000).toISOString();
+
+  insertedTransactions.push({
+    id: 'tx-idem-001',
+    user_id: merchantId,
+    order_code: orderCode,
+    target_plan: 'premium',
+    amount: 69000,
+    status: 'completed',
+    bank_ref_id: 'FT-EXISTING-REF',
+    created_at: new Date(Date.now() - 86400000).toISOString(),
+    completed_at: new Date(Date.now() - 86400000).toISOString(),
+  });
+  mockProfiles[merchantId] = {
+    id: merchantId,
+    email: 'merchant-idem@qlaok.vn',
+    plan: 'premium',
+    plan_expires_at: initialExpiry,
+  } as never;
+
+  try {
+    const req = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+        bankRefId: 'FT-EXISTING-REF',
+      }),
+    });
+
+    const res = await paymentPost(req);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.equal(body.alreadyCompleted, true);
+    assert.equal(body.profile.plan, 'premium');
+    assert.equal(
+      (mockProfiles[merchantId] as Record<string, unknown>).plan_expires_at,
+      initialExpiry,
+      'Idempotent duplicate webhook must not alter plan_expires_at'
+    );
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/webhooks/payment HTTP error mappings preserve 404 for missing orders, 400 for amount/ref/duplicate errors, and 409 for non-pending orders', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+
+  try {
+    // 1. Unknown orderCode -> 404
+    const notFoundReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode: 'QLAOKP_NOT_EXIST',
+        transferAmount: 69000,
+      }),
+    });
+    const notFoundRes = await paymentPost(notFoundReq);
+    assert.equal(notFoundRes.status, 404);
+    assert.match((await notFoundRes.json()).error, /PAYMENT_ORDER_NOT_FOUND/);
+
+    // 2. Non-pending order (e.g. cancelled) -> 409
+    insertedTransactions.push({
+      id: 'tx-status-409',
+      user_id: 'owner-409',
+      order_code: 'QLAOKP_409',
+      target_plan: 'basic',
+      amount: 39000,
+      status: 'cancelled',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+    });
+    mockProfiles['owner-409'] = {
+      id: 'owner-409',
+      email: 'o409@qlaok.vn',
+      plan: 'free',
+    };
+
+    const nonPendingReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode: 'QLAOKP_409',
+        transferAmount: 39000,
+      }),
+    });
+    const nonPendingRes = await paymentPost(nonPendingReq);
+    assert.equal(nonPendingRes.status, 409);
+    assert.match(
+      (await nonPendingRes.json()).error,
+      /PAYMENT_ORDER_NOT_PENDING/
+    );
+  } finally {
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
+});
+
+test('POST /api/webhooks/payment RPC invalid response (malformed status, missing owner, mismatched owner) fails closed with HTTP 500 and never succeeds', async () => {
+  const secret = 'whsec_payment_review_atomic_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  const merchantId = 'merchant-owner-rpc-inv-01';
+  const orderCode = 'QLAOKP_RPC_INV_001';
+
+  insertedTransactions.push({
+    id: 'tx-rpc-inv-001',
+    user_id: merchantId,
+    order_code: orderCode,
+    target_plan: 'premium',
+    amount: 69000,
+    status: 'pending',
+    bank_ref_id: null,
+    created_at: new Date().toISOString(),
+  });
+  mockProfiles[merchantId] = {
+    id: merchantId,
+    email: 'merchant-inv@qlaok.vn',
+    plan: 'free',
+  };
+
+  try {
+    // 1. Malformed / unexpected status from RPC -> HTTP 500, DB_RPC_INVALID_RESPONSE, no success response
+    mockRpcHandler = async () => ({
+      data: {
+        status: 'unexpected_status',
+        owner_id: merchantId,
+      },
+      error: null,
+    });
+
+    const badStatusReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+      }),
+    });
+    const badStatusRes = await paymentPost(badStatusReq);
+    assert.equal(badStatusRes.status, 500);
+    const badStatusBody = await badStatusRes.json();
+    assert.equal(badStatusBody.success, undefined);
+    assert.match(badStatusBody.error, /DB_RPC_INVALID_RESPONSE/);
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+
+    // 2. Missing owner_id from RPC -> HTTP 500, DB_RPC_INVALID_RESPONSE, no fallback to transaction/caller owner
+    mockRpcHandler = async () => ({
+      data: {
+        status: 'completed',
+        // owner_id omitted
+      },
+      error: null,
+    });
+
+    const missingOwnerReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+      }),
+    });
+    const missingOwnerRes = await paymentPost(missingOwnerReq);
+    assert.equal(missingOwnerRes.status, 500);
+    const missingOwnerBody = await missingOwnerRes.json();
+    assert.equal(missingOwnerBody.success, undefined);
+    assert.match(missingOwnerBody.error, /DB_RPC_INVALID_RESPONSE/);
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+
+    // 2b. Empty whitespace owner_id from RPC -> HTTP 500, DB_RPC_INVALID_RESPONSE
+    mockRpcHandler = async () => ({
+      data: {
+        status: 'completed',
+        owner_id: '   ',
+      },
+      error: null,
+    });
+
+    const emptyOwnerReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+      }),
+    });
+    const emptyOwnerRes = await paymentPost(emptyOwnerReq);
+    assert.equal(emptyOwnerRes.status, 500);
+    const emptyOwnerBody = await emptyOwnerRes.json();
+    assert.equal(emptyOwnerBody.success, undefined);
+    assert.match(emptyOwnerBody.error, /DB_RPC_INVALID_RESPONSE/);
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+
+    // 3. Mismatched owner_id between transaction and RPC -> HTTP 500, DB_RPC_INVALID_RESPONSE
+    const mismatchedOwnerId = 'attacker-imposter-owner-999';
+    mockProfiles[mismatchedOwnerId] = {
+      id: mismatchedOwnerId,
+      email: 'imposter@qlaok.vn',
+      plan: 'free',
+    };
+
+    mockRpcHandler = async () => ({
+      data: {
+        status: 'completed',
+        owner_id: mismatchedOwnerId,
+      },
+      error: null,
+    });
+
+    const mismatchReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode,
+        transferAmount: 69000,
+      }),
+    });
+    const mismatchRes = await paymentPost(mismatchReq);
+    assert.equal(mismatchRes.status, 500);
+    const mismatchBody = await mismatchRes.json();
+    assert.equal(mismatchBody.success, undefined);
+    assert.match(mismatchBody.error, /DB_RPC_INVALID_RESPONSE/);
+    assert.equal(mockProfiles[merchantId]!.plan, 'free');
+    assert.equal(mockProfiles[mismatchedOwnerId]!.plan, 'free');
+  } finally {
+    mockRpcHandler = null;
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+  }
 });

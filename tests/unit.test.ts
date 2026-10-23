@@ -1243,6 +1243,16 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     const previousWebhookSecret = process.env.PAYMENT_WEBHOOK_SECRET;
     const secret = 'unit-test-whsec';
     process.env.PAYMENT_WEBHOOK_SECRET = secret;
+    const mockPaymentDb = {
+      from: () => ({
+        select: () => ({
+          ilike: () => ({
+            maybeSingle: async () => ({ data: null, error: null }),
+          }),
+        }),
+      }),
+    };
+    setSupabaseDbClientForTests(mockPaymentDb);
     try {
     // Unsigned webhook without secret -> 401
     const unsignedWebhookReq = new Request(
@@ -1258,6 +1268,86 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     );
     const unsignedRes = await paymentPost(unsignedWebhookReq);
     assert.equal(unsignedRes.status, 401);
+
+    // Signed webhook with missing amount -> 400 PAYMENT_AMOUNT_REQUIRED
+    const missingAmountReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_NON_EXISTENT_99999',
+        }),
+      }
+    );
+    const missingAmountRes = await paymentPost(missingAmountReq);
+    assert.equal(missingAmountRes.status, 400);
+    const missingAmountBody = await missingAmountRes.json();
+    assert.equal(missingAmountBody.code, 'PAYMENT_AMOUNT_REQUIRED');
+
+    // Signed webhook with zero amount -> 400 INVALID_PAYMENT_AMOUNT
+    const zeroAmountReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_NON_EXISTENT_99999',
+          transferAmount: 0,
+        }),
+      }
+    );
+    const zeroAmountRes = await paymentPost(zeroAmountReq);
+    assert.equal(zeroAmountRes.status, 400);
+    const zeroAmountBody = await zeroAmountRes.json();
+    assert.equal(zeroAmountBody.code, 'INVALID_PAYMENT_AMOUNT');
+
+    // Signed webhook with negative amount -> 400 INVALID_PAYMENT_AMOUNT
+    const negAmountReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_NON_EXISTENT_99999',
+          amount: -50000,
+        }),
+      }
+    );
+    const negAmountRes = await paymentPost(negAmountReq);
+    assert.equal(negAmountRes.status, 400);
+    const negAmountBody = await negAmountRes.json();
+    assert.equal(negAmountBody.code, 'INVALID_PAYMENT_AMOUNT');
+
+    // Signed webhook with outbound transferType -> 400 INVALID_TRANSFER_TYPE
+    const outboundReq = new Request(
+      'http://localhost:3000/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: 'QLAOKP_NON_EXISTENT_99999',
+          transferAmount: 69000,
+          transferType: 'out',
+        }),
+      }
+    );
+    const outboundRes = await paymentPost(outboundReq);
+    assert.equal(outboundRes.status, 400);
+    const outboundBody = await outboundRes.json();
+    assert.equal(outboundBody.code, 'INVALID_TRANSFER_TYPE');
 
     // Signed webhook with unknown orderCode -> 404 (must NOT auto-create completed transaction)
     const unknownOrderReq = new Request(
@@ -1290,6 +1380,7 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     );
     assert.equal(wrongSecretRes.status, 401);
     } finally {
+      setSupabaseDbClientForTests(null);
       if (previousWebhookSecret === undefined) {
         delete process.env.PAYMENT_WEBHOOK_SECRET;
       } else {

@@ -579,5 +579,264 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     ]);
     await db.exec('RESET ROLE');
 
+    // Verify 015_atomic_payment_completion.sql: atomic execution, rollback, idempotency, invariants & grants
+    const saasUser = '00000000-0000-0000-0000-000000000099';
+    await db.query(
+      `INSERT INTO profiles (id, email, plan) VALUES ('${saasUser}', 'saas-owner@example.com', 'free')`
+    );
+
+    // 1. Direct client call (anon / authenticated) is strictly blocked
+    await db.exec(
+      `RESET ROLE; SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub', '${saasUser}', false); SELECT set_config('request.jwt.claim.role', 'authenticated', false);`
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('ORDER-CLIENT-DIRECT', 'FT-CLIENT-1', 69000)"
+      ),
+      /permission denied/i
+    );
+
+    await db.exec(
+      "RESET ROLE; SET ROLE anon; SELECT set_config('request.jwt.claim.role', 'anon', false);"
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('ORDER-CLIENT-DIRECT', 'FT-CLIENT-1', 69000)"
+      ),
+      /permission denied/i
+    );
+
+    // Switch to service_role for backend server tests
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    // 2. Validate input and unknown order
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('NON_EXISTENT_ORDER_CODE_99999', 'FT-TEST', 69000)"
+      ),
+      /PAYMENT_ORDER_NOT_FOUND/i
+    );
+
+    // Create fixture pending order
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-test-1', '${saasUser}', 'QLAOKP_ATOMIC_1', 'premium', 69000, 'pending')
+    `);
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    // 3. Underpayment is rejected and status remains pending
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', 'FT-UNDERPAY', 50000)"
+      ),
+      /PAYMENT_AMOUNT_MISMATCH/i
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', 'FT-UNDERPAY', 0)"
+      ),
+      /PAYMENT_AMOUNT_MISMATCH/i
+    );
+    const txAfterUnderpay = (
+      await db.query(
+        "SELECT status, bank_ref_id FROM payment_transactions WHERE id = 'tx-atomic-test-1'"
+      )
+    ).rows[0];
+    assert.equal(txAfterUnderpay.status, 'pending');
+    assert.equal(txAfterUnderpay.bank_ref_id, null);
+
+    // Empty bank reference is rejected
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', '   ', 69000)"
+      ),
+      /MISSING_BANK_REF/i
+    );
+
+    // 4. Atomic rollback: Inject a failing profile trigger and prove payment_transactions stays pending
+    await db.exec('RESET ROLE');
+    await db.exec(`
+      CREATE OR REPLACE FUNCTION trg_test_injected_profile_failure()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        RAISE EXCEPTION 'INJECTED_PROFILE_FAILURE';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER trg_test_injected_profile_fail
+      BEFORE UPDATE ON public.profiles
+      FOR EACH ROW EXECUTE FUNCTION trg_test_injected_profile_failure();
+    `);
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', 'FT-ATOMIC-1', 69000)"
+      ),
+      /INJECTED_PROFILE_FAILURE/i
+    );
+
+    // Verify transaction row was NOT updated to completed (rolled back!)
+    const txAfterRollback = (
+      await db.query(
+        "SELECT status, bank_ref_id, completed_at FROM payment_transactions WHERE id = 'tx-atomic-test-1'"
+      )
+    ).rows[0];
+    assert.equal(
+      txAfterRollback.status,
+      'pending',
+      'payment_transactions must stay pending when profile update rolls back'
+    );
+    assert.equal(txAfterRollback.bank_ref_id, null);
+    assert.equal(txAfterRollback.completed_at, null);
+
+    // Verify profile was NOT upgraded
+    const profileAfterRollback = (
+      await db.query(
+        `SELECT plan, plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0];
+    assert.equal(
+      profileAfterRollback.plan,
+      'free',
+      'profile plan must stay free when trigger rolls back'
+    );
+    assert.equal(profileAfterRollback.plan_expires_at, null);
+
+    // Remove simulated failing trigger
+    await db.exec('RESET ROLE');
+    await db.exec('DROP TRIGGER trg_test_injected_profile_fail ON public.profiles;');
+    await db.exec('DROP FUNCTION trg_test_injected_profile_failure();');
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    // 5. Successful atomic completion: updates both payment_transactions and profiles
+    const completeResRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', 'FT-ATOMIC-1', 69000) AS res"
+      )
+    ).rows[0].res;
+    const completeRes =
+      typeof completeResRaw === 'string'
+        ? JSON.parse(completeResRaw)
+        : completeResRaw;
+    assert.equal(completeRes.status, 'completed');
+    assert.equal(completeRes.owner_id, saasUser);
+    assert.equal(completeRes.target_plan, 'premium');
+    assert.ok(completeRes.plan_expires_at);
+
+    const txAfterSuccess = (
+      await db.query(
+        "SELECT status, bank_ref_id, completed_at FROM payment_transactions WHERE id = 'tx-atomic-test-1'"
+      )
+    ).rows[0];
+    assert.equal(txAfterSuccess.status, 'completed');
+    assert.equal(txAfterSuccess.bank_ref_id, 'FT-ATOMIC-1');
+    assert.ok(txAfterSuccess.completed_at);
+
+    const profileAfterSuccess = (
+      await db.query(
+        `SELECT plan, plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0];
+    assert.equal(profileAfterSuccess.plan, 'premium');
+    assert.ok(profileAfterSuccess.plan_expires_at);
+    const firstExpiresAt = profileAfterSuccess.plan_expires_at;
+
+    // 6. Idempotent retry: returns status already_completed, does NOT re-extend plan_expires_at
+    const retryResRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_1', 'FT-ATOMIC-1', 69000) AS res"
+      )
+    ).rows[0].res;
+    const retryRes =
+      typeof retryResRaw === 'string' ? JSON.parse(retryResRaw) : retryResRaw;
+    assert.equal(retryRes.status, 'already_completed');
+    assert.equal(retryRes.owner_id, saasUser);
+
+    const profileAfterRetry = (
+      await db.query(
+        `SELECT plan, plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0];
+    assert.equal(profileAfterRetry.plan, 'premium');
+    assert.equal(
+      new Date(profileAfterRetry.plan_expires_at).toISOString(),
+      new Date(firstExpiresAt).toISOString(),
+      'retry must not extend plan_expires_at'
+    );
+
+    // 7. Duplicate bank reference is rejected with DUPLICATE_BANK_REF
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-test-2', '${saasUser}', 'QLAOKP_ATOMIC_2', 'basic', 39000, 'pending')
+    `);
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_2', 'FT-ATOMIC-1', 39000)"
+      ),
+      /DUPLICATE_BANK_REF/i
+    );
+    const tx2AfterDup = (
+      await db.query(
+        "SELECT status, bank_ref_id FROM payment_transactions WHERE id = 'tx-atomic-test-2'"
+      )
+    ).rows[0];
+    assert.equal(tx2AfterDup.status, 'pending');
+    assert.equal(tx2AfterDup.bank_ref_id, null);
+
+    // 8. Non-pending status (e.g. cancelled) is rejected with PAYMENT_ORDER_NOT_PENDING
+    await db.exec('RESET ROLE');
+    await db.query(
+      "UPDATE payment_transactions SET status = 'cancelled' WHERE id = 'tx-atomic-test-2'"
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    await assert.rejects(
+      db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_2', 'FT-ATOMIC-2', 39000)"
+      ),
+      /PAYMENT_ORDER_NOT_PENDING/i
+    );
+
+    // 9. p_allow_unverified_amount=true allows dev simulator to complete without transfer amount check
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-test-3', '${saasUser}', 'QLAOKP_ATOMIC_3', 'basic', 39000, 'pending')
+    `);
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    const devResRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_3', 'FT-DEV-SIM-3', NULL, true) AS res"
+      )
+    ).rows[0].res;
+    const devRes =
+      typeof devResRaw === 'string' ? JSON.parse(devResRaw) : devResRaw;
+    assert.equal(devRes.status, 'completed');
+    assert.equal(devRes.target_plan, 'basic');
+
+    await db.exec('RESET ROLE');
+
+    await db.exec('RESET ROLE');
+
   } finally { await db.close(); }
 });

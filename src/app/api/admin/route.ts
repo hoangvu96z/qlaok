@@ -675,10 +675,11 @@ export async function POST(req: Request) {
 
     // 7. Approve Pending Payment Transaction (VietQR)
     if (action === 'approve_transaction') {
-      const { orderCode, bankRefId, ownerId } = body as {
+      const { orderCode, bankRefId, amount, transferAmount } = body as {
         orderCode: string;
         bankRefId?: string;
-        ownerId?: string;
+        amount?: unknown;
+        transferAmount?: unknown;
       };
       if (!orderCode) {
         return NextResponse.json(
@@ -687,10 +688,48 @@ export async function POST(req: Request) {
         );
       }
 
+      const rawAmount =
+        transferAmount !== undefined ? transferAmount : amount;
+
+      if (rawAmount === undefined || rawAmount === null) {
+        return NextResponse.json(
+          {
+            error: 'Thiếu số tiền thanh toán (transferAmount hoặc amount).',
+            code: 'PAYMENT_AMOUNT_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+
+      let parsedAmount: number | null = null;
+      if (typeof rawAmount === 'number') {
+        parsedAmount = rawAmount;
+      } else if (typeof rawAmount === 'string' && rawAmount.trim() !== '') {
+        parsedAmount = Number(rawAmount.trim());
+      }
+
+      if (
+        parsedAmount === null ||
+        !Number.isFinite(parsedAmount) ||
+        parsedAmount <= 0
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Số tiền thanh toán không hợp lệ (phải là số dương lớn hơn 0).',
+            code: 'INVALID_PAYMENT_AMOUNT',
+          },
+          { status: 400 }
+        );
+      }
+
       const result = await dbCompletePaymentWebhook(
         orderCode,
         bankRefId || `ADMIN-APPROVED-${Date.now()}`,
-        ownerId
+        {
+          verifiedTransferAmount: parsedAmount,
+          allowUnverifiedAmount: false,
+        }
       );
       return NextResponse.json({ ok: true, result });
     }
@@ -787,14 +826,30 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Lỗi xử lý thao tác Super Admin';
+
+    let status = 500;
+    if (message.startsWith('PAYMENT_ORDER_NOT_FOUND')) {
+      status = 404;
+    } else if (message.startsWith('PAYMENT_ORDER_NOT_PENDING')) {
+      status = 409;
+    } else if (
+      message.startsWith('PAYMENT_AMOUNT_MISMATCH') ||
+      message.startsWith('DUPLICATE_BANK_REF') ||
+      message.startsWith('MISSING_ORDER_CODE') ||
+      message.startsWith('MISSING_BANK_REF') ||
+      message.startsWith('INVALID_PAYMENT_AMOUNT') ||
+      message.startsWith('PAYMENT_AMOUNT_REQUIRED')
+    ) {
+      status = 400;
+    }
+
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Lỗi xử lý thao tác Super Admin',
-      },
-      { status: 500 }
+      { error: message },
+      { status }
     );
   }
 }

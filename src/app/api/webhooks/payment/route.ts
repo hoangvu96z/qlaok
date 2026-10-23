@@ -404,22 +404,94 @@ export async function POST(req: Request) {
       }
     }
 
-    const verifiedTransferAmount =
-      body.transferAmount !== undefined
-        ? Number(body.transferAmount)
-        : body.amount !== undefined
-          ? Number(body.amount)
+    const hasTransferType =
+      body.transferType !== undefined || body.transfer_type !== undefined;
+
+    if (hasTransferType) {
+      const rawTransferType =
+        body.transferType !== undefined
+          ? body.transferType
+          : body.transfer_type;
+      const normalizedTransferType =
+        typeof rawTransferType === 'string'
+          ? rawTransferType.trim().toLowerCase()
+          : '';
+      if (normalizedTransferType !== 'in') {
+        return NextResponse.json(
+          {
+            error:
+              'Loại giao dịch không hợp lệ. Chỉ chấp nhận giao dịch tiền vào (inbound transfer).',
+            code: 'INVALID_TRANSFER_TYPE',
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    let verifiedTransferAmount: number | undefined;
+
+    if (!isDevSandboxSimulator) {
+      const hasTransferAmount = body.transferAmount !== undefined;
+      const hasAmount = body.amount !== undefined;
+      const rawAmount = hasTransferAmount
+        ? body.transferAmount
+        : hasAmount
+          ? body.amount
           : undefined;
 
-    const webhookFallbackOwnerId = isSuperAdminCaller
-      ? ownerId
-      : sessionUser?.sub;
+      if (rawAmount === undefined || rawAmount === null || rawAmount === '') {
+        return NextResponse.json(
+          {
+            error:
+              'Thiếu số tiền chuyển khoản (transferAmount hoặc amount).',
+            code: 'PAYMENT_AMOUNT_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+
+      const parsedAmount =
+        typeof rawAmount === 'number'
+          ? rawAmount
+          : typeof rawAmount === 'string' && rawAmount.trim() !== ''
+            ? Number(rawAmount.trim())
+            : NaN;
+
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        return NextResponse.json(
+          {
+            error:
+              'Số tiền chuyển khoản không hợp lệ (phải là số dương lớn hơn 0).',
+            code: 'INVALID_PAYMENT_AMOUNT',
+          },
+          { status: 400 }
+        );
+      }
+
+      verifiedTransferAmount = parsedAmount;
+    } else {
+      const rawAmount =
+        body.transferAmount !== undefined ? body.transferAmount : body.amount;
+      if (rawAmount !== undefined && rawAmount !== null && rawAmount !== '') {
+        const candidate =
+          typeof rawAmount === 'number'
+            ? rawAmount
+            : typeof rawAmount === 'string' && rawAmount.trim() !== ''
+              ? Number(rawAmount.trim())
+              : NaN;
+        if (Number.isFinite(candidate) && candidate > 0) {
+          verifiedTransferAmount = candidate;
+        }
+      }
+    }
 
     const result = await dbCompletePaymentWebhook(
       orderCode,
       body.referenceCode || body.bankRefId,
-      webhookFallbackOwnerId,
-      { verifiedTransferAmount }
+      {
+        verifiedTransferAmount,
+        allowUnverifiedAmount: Boolean(isDevSandboxSimulator),
+      }
     );
     return NextResponse.json({
       success: true,
@@ -428,13 +500,23 @@ export async function POST(req: Request) {
   } catch (error) {
     const msg =
       error instanceof Error ? error.message : 'Payment processing failed';
-    const status = msg.startsWith('PAYMENT_ORDER_NOT_FOUND')
-      ? 404
-      : msg.startsWith('PAYMENT_AMOUNT_MISMATCH') ||
-          msg.startsWith('DUPLICATE_BANK_REF') ||
-          msg.startsWith('MISSING_ORDER_CODE')
-        ? 400
-        : 500;
+    let status = 500;
+    if (msg.startsWith('PAYMENT_ORDER_NOT_FOUND')) {
+      status = 404;
+    } else if (
+      msg.startsWith('PAYMENT_ORDER_NOT_PENDING') ||
+      msg.startsWith('INVALID_PAYMENT_STATUS')
+    ) {
+      status = 409;
+    } else if (
+      msg.startsWith('PAYMENT_AMOUNT_MISMATCH') ||
+      msg.startsWith('DUPLICATE_BANK_REF') ||
+      msg.startsWith('MISSING_ORDER_CODE') ||
+      msg.startsWith('MISSING_BANK_REF') ||
+      msg.startsWith('INVALID_PAYMENT_AMOUNT')
+    ) {
+      status = 400;
+    }
     return NextResponse.json({ error: msg }, { status });
   }
 }

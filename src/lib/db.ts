@@ -1791,35 +1791,42 @@ export async function dbCreatePaymentOrder(
   return { ...data, amount: Number(data.amount) } as PaymentTransaction;
 }
 
+export interface DbCompletePaymentWebhookOptions {
+  verifiedTransferAmount?: number | null;
+  allowUnverifiedAmount?: boolean;
+}
+
 export async function dbCompletePaymentWebhook(
   orderCode: string,
   bankRefId?: string,
-  ownerId?: string,
-  options?: { verifiedTransferAmount?: number }
+  optionsOrLegacyOwner?: string | DbCompletePaymentWebhookOptions,
+  legacyOptions?: DbCompletePaymentWebhookOptions
 ) {
+  const options: DbCompletePaymentWebhookOptions | undefined =
+    typeof optionsOrLegacyOwner === 'object' && optionsOrLegacyOwner !== null
+      ? optionsOrLegacyOwner
+      : typeof legacyOptions === 'object' && legacyOptions !== null
+        ? legacyOptions
+        : undefined;
+
   const normalizedCode = (orderCode || '').trim().toUpperCase();
   if (!normalizedCode) {
     throw new Error('MISSING_ORDER_CODE: Thiếu mã đơn thanh toán.');
   }
 
-  let sb: ReturnType<typeof getSupabaseDbClient> | null = null;
-  let existingTx: PaymentTransaction | null = null;
+  await ensureSupabaseReadyAndSeeded();
+  const sb = getSupabaseDbClient();
+  const { data, error } = await sb
+    .from('payment_transactions')
+    .select('*')
+    .ilike('order_code', normalizedCode)
+    .maybeSingle();
 
-  try {
-    await ensureSupabaseReadyAndSeeded();
-    sb = getSupabaseDbClient();
-    const { data } = await sb
-      .from('payment_transactions')
-      .select('*')
-      .ilike('order_code', normalizedCode)
-      .maybeSingle();
-    existingTx = (data as PaymentTransaction | null) || null;
-  } catch {
-    existingTx =
-      SEED_TRANSACTIONS.find(
-        (tx) => tx.order_code.toUpperCase() === normalizedCode
-      ) || null;
+  if (error) {
+    throw new Error(`DB_PAYMENT_LOOKUP_FAILED: ${error.message}`);
   }
+
+  const existingTx = (data as PaymentTransaction | null) || null;
 
   // P0 #5 Fix: Never fabricate a completed transaction when orderCode does not exist
   if (!existingTx) {
@@ -1828,101 +1835,89 @@ export async function dbCompletePaymentWebhook(
     );
   }
 
-  if (!sb) {
-    await ensureSupabaseReadyAndSeeded();
-    sb = getSupabaseDbClient();
-  }
+  const safeFallbackBankRef = `FT-${normalizedCode}`.slice(0, 100);
+  const refId = (bankRefId || '').trim() || safeFallbackBankRef;
 
-  const resolvedOwnerId = existingTx.user_id || ownerId || SEED_PROFILE.id;
-
-  // P0 #5 Fix: Idempotent webhook retry — do NOT re-extend plan_expires_at if already completed
-  if (existingTx.status === 'completed') {
-    const billingData = await dbGetBillingData(resolvedOwnerId);
-    return {
-      ...billingData,
-      alreadyCompleted: true,
-    };
-  }
-
-  const requiredAmount = Number(existingTx.amount || 0);
-  if (
+  const verifiedAmount =
     options?.verifiedTransferAmount !== undefined &&
     options.verifiedTransferAmount !== null
+      ? Number(options.verifiedTransferAmount)
+      : null;
+
+  const allowUnverifiedAmount = Boolean(options?.allowUnverifiedAmount);
+
+  // Execute atomic payment completion and profile upgrade via Postgres RPC (migration 015)
+  if (typeof sb.rpc !== 'function') {
+    throw new Error(
+      'DB_RPC_UNAVAILABLE: complete_payment_webhook_atomic is not available on database client.'
+    );
+  }
+
+  const { data: rpcData, error: rpcError } = await sb.rpc(
+    'complete_payment_webhook_atomic',
+    {
+      p_order_code: normalizedCode,
+      p_bank_ref_id: refId,
+      p_verified_transfer_amount: verifiedAmount,
+      p_allow_unverified_amount: allowUnverifiedAmount,
+    }
+  );
+
+  if (rpcError) {
+    throw new Error(rpcError.message);
+  }
+
+  let rpcResult: Record<string, unknown> | null = null;
+  if (typeof rpcData === 'string') {
+    try {
+      rpcResult = JSON.parse(rpcData) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        'DB_RPC_INVALID_RESPONSE: Phản hồi không hợp lệ từ complete_payment_webhook_atomic.'
+      );
+    }
+  } else if (rpcData && typeof rpcData === 'object') {
+    rpcResult = rpcData as Record<string, unknown>;
+  }
+
+  if (!rpcResult || typeof rpcResult !== 'object') {
+    throw new Error(
+      'DB_RPC_INVALID_RESPONSE: Phản hồi không hợp lệ từ complete_payment_webhook_atomic.'
+    );
+  }
+
+  if (
+    rpcResult.status !== 'completed' &&
+    rpcResult.status !== 'already_completed'
   ) {
-    const paidAmount = Number(options.verifiedTransferAmount);
-    if (!Number.isFinite(paidAmount) || paidAmount < requiredAmount) {
-      throw new Error(
-        `PAYMENT_AMOUNT_MISMATCH: Số tiền chuyển khoản (${paidAmount}) nhỏ hơn số tiền gói cước yêu cầu (${requiredAmount}).`
-      );
-    }
+    throw new Error(
+      'DB_RPC_INVALID_RESPONSE: Trạng thái phản hồi RPC không hợp lệ từ complete_payment_webhook_atomic.'
+    );
   }
 
-  const nowIso = new Date().toISOString();
-  const refId = (bankRefId || '').trim() || `FT-${existingTx.id}`;
-
-  // Ensure bank_ref_id has not been used by another transaction
-  if (bankRefId && bankRefId.trim()) {
-    const { data: duplicateRef } = await sb
-      .from('payment_transactions')
-      .select('id, order_code')
-      .eq('bank_ref_id', refId)
-      .neq('id', existingTx.id)
-      .maybeSingle();
-
-    if (duplicateRef) {
-      throw new Error(
-        `DUPLICATE_BANK_REF: Mã tham chiếu ngân hàng "${refId}" đã được sử dụng cho giao dịch khác.`
-      );
-    }
+  if (
+    typeof rpcResult.owner_id !== 'string' ||
+    !rpcResult.owner_id.trim()
+  ) {
+    throw new Error(
+      'DB_RPC_INVALID_RESPONSE: Thiếu owner_id hợp lệ từ complete_payment_webhook_atomic.'
+    );
   }
 
-  const targetPlan = existingTx.target_plan as PlanTier;
+  const resolvedOwnerId = rpcResult.owner_id.trim();
 
-  // Conditional atomic update from status='pending' -> 'completed'
-  const { data: updatedTx, error: txUpdateErr } = await sb
-    .from('payment_transactions')
-    .update({
-      status: 'completed',
-      bank_ref_id: refId,
-      completed_at: nowIso,
-    })
-    .eq('id', existingTx.id)
-    .eq('status', 'pending')
-    .select('*')
-    .maybeSingle();
-
-  if (txUpdateErr) {
-    throw new Error(txUpdateErr.message);
+  if (existingTx.user_id && resolvedOwnerId !== existingTx.user_id) {
+    throw new Error(
+      'DB_RPC_INVALID_RESPONSE: Mã chủ tài khoản từ RPC không khớp với đơn thanh toán.'
+    );
   }
 
-  if (!updatedTx) {
-    const billingData = await dbGetBillingData(resolvedOwnerId);
-    return {
-      ...billingData,
-      alreadyCompleted: true,
-    };
-  }
-
-  const expires = new Date();
-  expires.setDate(expires.getDate() + 30);
-
-  const { error: profileErr } = await sb
-    .from('profiles')
-    .update({
-      plan: targetPlan,
-      plan_expires_at: expires.toISOString(),
-      updated_at: nowIso,
-    })
-    .eq('id', resolvedOwnerId);
-
-  if (profileErr) {
-    throw new Error(profileErr.message);
-  }
+  const alreadyCompleted = rpcResult.status === 'already_completed';
 
   const billingData = await dbGetBillingData(resolvedOwnerId);
   return {
     ...billingData,
-    alreadyCompleted: false,
+    alreadyCompleted,
   };
 }
 
