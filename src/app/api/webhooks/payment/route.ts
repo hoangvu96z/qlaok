@@ -18,6 +18,10 @@ import {
   type VerifiedSessionUser,
 } from '@/lib/server-auth';
 import { dbGetUserShopMemberships } from '@/lib/shop-permissions';
+import {
+  getConfiguredSaasReceivingAccounts,
+  normalizeReceivingAccount,
+} from '@/lib/saas-bank-accounts';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 import type { PlanTier, ShopRole } from '@/types/qlaok';
 
@@ -268,18 +272,6 @@ async function requireBillingOrderAuthority(
 function getConfiguredWebhookSecret(): string | null {
   const secret = (process.env.PAYMENT_WEBHOOK_SECRET || '').trim();
   return secret.length > 0 ? secret : null;
-}
-
-function getConfiguredSaasReceivingAccount(): string | null {
-  const primary = (process.env.SAAS_BANK_ACCOUNT || '').trim();
-  if (primary.length > 0) return primary;
-  const fallback = (process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT || '').trim();
-  if (fallback.length > 0) return fallback;
-  return null;
-}
-
-function normalizeReceivingAccount(account: string): string {
-  return account.replace(/\s+/g, '');
 }
 
 function verifyWebhookSignatureOrSecret(
@@ -534,12 +526,12 @@ export async function POST(req: Request) {
     }
 
     if (!isDevSandboxSimulator) {
-      const configuredReceivingAccount = getConfiguredSaasReceivingAccount();
-      if (!configuredReceivingAccount) {
+      const configuredReceivingAccounts = getConfiguredSaasReceivingAccounts();
+      if (configuredReceivingAccounts.length === 0) {
         return NextResponse.json(
           {
             error:
-              'Tài khoản nhận tiền SaaS chưa được cấu hình (thiếu SAAS_BANK_ACCOUNT hoặc NEXT_PUBLIC_SAAS_BANK_ACCOUNT).',
+              'Tài khoản nhận tiền SaaS chưa được cấu hình (thiếu SAAS_BANK_ACCOUNTS, SAAS_BANK_ACCOUNT hoặc NEXT_PUBLIC_SAAS_BANK_ACCOUNT).',
             code: 'RECEIVING_ACCOUNT_NOT_CONFIGURED',
           },
           { status: 503 }
@@ -570,12 +562,11 @@ export async function POST(req: Request) {
         );
       }
 
-      const normalizedProvided = String(rawAccountNumber).replace(/\s+/g, '');
-      const normalizedConfigured = normalizeReceivingAccount(
-        configuredReceivingAccount
+      const normalizedProvided = normalizeReceivingAccount(
+        String(rawAccountNumber)
       );
 
-      if (normalizedProvided !== normalizedConfigured) {
+      if (!configuredReceivingAccounts.includes(normalizedProvided)) {
         return NextResponse.json(
           {
             error:

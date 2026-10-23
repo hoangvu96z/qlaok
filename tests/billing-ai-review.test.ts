@@ -13,6 +13,7 @@ for (const key of [
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
   'PAYMENT_DEV_SIMULATE',
+  'SAAS_BANK_ACCOUNTS',
   'SAAS_BANK_ACCOUNT',
   'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
 ]) {
@@ -56,6 +57,10 @@ const { POST: paymentPost, GET: paymentGet } = await import(
 const { canReopenPaymentTransaction, buildBillingColumns } = await import(
   '@/lib/billing-table'
 );
+const {
+  getConfiguredSaasReceivingAccounts,
+  normalizeReceivingAccount,
+} = await import('@/lib/saas-bank-accounts');
 
 let profilePlan: string | null = 'free';
 let mockShops: Array<{ id: string; owner_id: string }> = [
@@ -3106,6 +3111,7 @@ test('DashboardBillingPage invariants: restricts canManageBilling to canonical s
 
 test('payment webhook receiving account: config precedence, whitespace normalization, error codes, and dev simulator bypass', async () => {
   const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+  const previousSaasAccounts = process.env.SAAS_BANK_ACCOUNTS;
   const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
   const previousPublicSaasAccount = process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
   const previousSim = process.env.PAYMENT_DEV_SIMULATE;
@@ -3113,6 +3119,7 @@ test('payment webhook receiving account: config precedence, whitespace normaliza
   const secret = 'whsec_rcv_acct_test_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
   delete process.env.PAYMENT_DEV_SIMULATE;
+  delete process.env.SAAS_BANK_ACCOUNTS;
 
   try {
     // 1. Config precedence: SAAS_BANK_ACCOUNT takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNT
@@ -3488,6 +3495,426 @@ test('payment webhook receiving account: config precedence, whitespace normaliza
   } finally {
     if (previousSecret === undefined) delete process.env.PAYMENT_WEBHOOK_SECRET;
     else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
+
+    if (previousSaasAccounts === undefined)
+      delete process.env.SAAS_BANK_ACCOUNTS;
+    else process.env.SAAS_BANK_ACCOUNTS = previousSaasAccounts;
+
+    if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
+    else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
+
+    if (previousPublicSaasAccount === undefined)
+      delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+    else process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = previousPublicSaasAccount;
+
+    if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
+    else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+  }
+});
+
+test('SaaS receiving accounts parser and precedence helper: JSON parsing, whitespace stripping, deduplication, legacy fallback, and fail-closed handling', () => {
+  // 1. Multiple JSON accounts parsed, trimmed, and returned in order
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789", "987654321"]',
+    }),
+    ['123456789', '987654321']
+  );
+
+  // 2. Whitespace normalization in JSON items
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["  1234  5678  90  ", "  9876 5432 10  "]',
+    }),
+    ['1234567890', '9876543210']
+  );
+
+  // 3. Deduplication preserving first-occurrence order
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS:
+        '["123456789", "  1234 5678 9  ", "987654321", "123456789", " 9876 5432 1 "]',
+    }),
+    ['123456789', '987654321']
+  );
+
+  // 4. Legacy single server fallback when SAAS_BANK_ACCOUNTS is absent or blank
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNT: '  1234 5678 90  ',
+    }),
+    ['1234567890']
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '   ',
+      SAAS_BANK_ACCOUNT: '1234567890',
+    }),
+    ['1234567890']
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '',
+      SAAS_BANK_ACCOUNT: '1234567890',
+    }),
+    ['1234567890']
+  );
+
+  // 5. Public legacy fallback when both server variables are absent or blank
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '  9876 5432 10  ',
+    }),
+    ['9876543210']
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '   ',
+      SAAS_BANK_ACCOUNT: '   ',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '9876543210',
+    }),
+    ['9876543210']
+  );
+
+  // 6. Server precedence: SAAS_BANK_ACCOUNT takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNT when SAAS_BANK_ACCOUNTS is absent
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNT: '11111',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '22222',
+    }),
+    ['11111']
+  );
+
+  // 7. Malformed configured array fails closed to [] and DOES NOT fall back
+  // 7a. Syntax error in JSON string
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789"',
+      SAAS_BANK_ACCOUNT: '99999',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '88888',
+    }),
+    []
+  );
+  // 7b. JSON object instead of array
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '{"account": "123456789"}',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  // 7c. JSON string literal or number
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '"123456789"',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '123456789',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  // 7d. Non-string elements in array
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '[123456789, 987654321]',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789", null]',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789", {}]',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  // 7e. Empty or whitespace-only elements in array
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789", ""]',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["123456789", "   "]',
+      SAAS_BANK_ACCOUNT: '99999',
+    }),
+    []
+  );
+  // 7f. Empty array fails closed and does not fall back
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '[]',
+      SAAS_BANK_ACCOUNT: '99999',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '88888',
+    }),
+    []
+  );
+
+  // 8. All variables absent or blank resolves to []
+  assert.deepEqual(getConfiguredSaasReceivingAccounts({}), []);
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '  ',
+      SAAS_BANK_ACCOUNT: '  ',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '  ',
+    }),
+    []
+  );
+});
+
+test('payment webhook: multiple allowlisted receiving accounts proceed, unlisted accounts mismatch without calling DB/RPC, and malformed config fails closed', async () => {
+  const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+  const previousSaasAccounts = process.env.SAAS_BANK_ACCOUNTS;
+  const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
+  const previousPublicSaasAccount = process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+  const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+
+  const secret = 'whsec_multi_acct_test_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  delete process.env.PAYMENT_DEV_SIMULATE;
+
+  try {
+    // 1. Configure multiple accounts via SAAS_BANK_ACCOUNTS
+    const acct1 = '111222333';
+    const acct2 = '444555666';
+    const acct3 = '777888999';
+    process.env.SAAS_BANK_ACCOUNTS = JSON.stringify([
+      acct1,
+      ' 444 555 666 ',
+      acct3,
+    ]);
+    // Set legacy account to an unlisted value to ensure SAAS_BANK_ACCOUNTS is authoritative
+    process.env.SAAS_BANK_ACCOUNT = '999000111';
+
+    const testOwnerId = 'owner-multi-acct-01';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+
+    // 1a. First account can proceed to atomic completion
+    const order1 = 'QLAOKP_MULTI_001';
+    insertedTransactions.push({
+      id: 'tx-multi-001',
+      user_id: testOwnerId,
+      order_code: order1,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+    const rpcCountStart = mockRpcCalls.length;
+
+    const res1 = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order1,
+          transferAmount: 69000,
+          accountNumber: acct1,
+          referenceCode: 'BANK-REF-M01',
+        }),
+      })
+    );
+    assert.equal(res1.status, 200);
+    const body1 = await res1.json();
+    assert.equal(body1.success, true);
+    assert.equal(mockProfiles[testOwnerId]?.plan, 'premium');
+    assert.equal(mockRpcCalls.length, rpcCountStart + 1);
+    assert.equal(
+      mockRpcCalls[mockRpcCalls.length - 1].args.p_order_code,
+      order1
+    );
+
+    // 1b. Second account with alternate whitespace formatting also succeeds
+    const order2 = 'QLAOKP_MULTI_002';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-multi-002',
+      user_id: testOwnerId,
+      order_code: order2,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const res2 = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order2,
+          transferAmount: 69000,
+          accountNumber: '444 555 666',
+          referenceCode: 'BANK-REF-M02',
+        }),
+      })
+    );
+    assert.equal(res2.status, 200);
+    assert.equal((await res2.json()).success, true);
+    assert.equal(mockRpcCalls.length, rpcCountStart + 2);
+    assert.equal(
+      mockRpcCalls[mockRpcCalls.length - 1].args.p_order_code,
+      order2
+    );
+
+    // 1c. Third account succeeds
+    const order3 = 'QLAOKP_MULTI_003';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-multi-003',
+      user_id: testOwnerId,
+      order_code: order3,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const res3 = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order3,
+          transferAmount: 69000,
+          accountNumber: acct3,
+          referenceCode: 'BANK-REF-M03',
+        }),
+      })
+    );
+    assert.equal(res3.status, 200);
+    assert.equal((await res3.json()).success, true);
+    assert.equal(mockRpcCalls.length, rpcCountStart + 3);
+
+    // 2. Unlisted account: returns 400 RECEIVING_ACCOUNT_MISMATCH and MUST NOT call dbCompletePaymentWebhook / RPC
+    const orderUnlisted = 'QLAOKP_MULTI_UNLISTED';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-multi-unlisted',
+      user_id: testOwnerId,
+      order_code: orderUnlisted,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const rpcCountBeforeUnlisted = mockRpcCalls.length;
+    const resUnlisted = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: orderUnlisted,
+          transferAmount: 69000,
+          accountNumber: '999999999', // Not in allowlist
+          referenceCode: 'BANK-REF-UNLISTED',
+        }),
+      })
+    );
+    assert.equal(resUnlisted.status, 400);
+    const bodyUnlisted = await resUnlisted.json();
+    assert.equal(bodyUnlisted.code, 'RECEIVING_ACCOUNT_MISMATCH');
+    assert.equal(
+      mockRpcCalls.length,
+      rpcCountBeforeUnlisted,
+      'dbCompletePaymentWebhook / atomic RPC must not be called on receiving account mismatch'
+    );
+    assert.equal(mockProfiles[testOwnerId]?.plan, 'free');
+    assert.equal(
+      insertedTransactions.find((t) => t.order_code === orderUnlisted)?.status,
+      'pending'
+    );
+
+    // Also verify legacy SAAS_BANK_ACCOUNT ('999000111') is NOT accepted because SAAS_BANK_ACCOUNTS is authoritative
+    const resShadowed = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: orderUnlisted,
+          transferAmount: 69000,
+          accountNumber: '999000111',
+          referenceCode: 'BANK-REF-SHADOWED',
+        }),
+      })
+    );
+    assert.equal(resShadowed.status, 400);
+    assert.equal(
+      (await resShadowed.json()).code,
+      'RECEIVING_ACCOUNT_MISMATCH'
+    );
+    assert.equal(mockRpcCalls.length, rpcCountBeforeUnlisted);
+
+    // 3. Malformed SAAS_BANK_ACCOUNTS fails closed (HTTP 503 RECEIVING_ACCOUNT_NOT_CONFIGURED)
+    // and does NOT fall back to SAAS_BANK_ACCOUNT
+    process.env.SAAS_BANK_ACCOUNTS = '["malformed_json_without_closing_quote';
+    process.env.SAAS_BANK_ACCOUNT = acct1; // legacy is set, but must NOT be used
+
+    const resMalformed = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: orderUnlisted,
+          transferAmount: 69000,
+          accountNumber: acct1,
+          referenceCode: 'BANK-REF-MALFORMED',
+        }),
+      })
+    );
+    assert.equal(resMalformed.status, 503);
+    const bodyMalformed = await resMalformed.json();
+    assert.equal(bodyMalformed.code, 'RECEIVING_ACCOUNT_NOT_CONFIGURED');
+    assert.equal(mockRpcCalls.length, rpcCountBeforeUnlisted);
+  } finally {
+    if (previousSecret === undefined) delete process.env.PAYMENT_WEBHOOK_SECRET;
+    else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
+
+    if (previousSaasAccounts === undefined)
+      delete process.env.SAAS_BANK_ACCOUNTS;
+    else process.env.SAAS_BANK_ACCOUNTS = previousSaasAccounts;
 
     if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
     else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
