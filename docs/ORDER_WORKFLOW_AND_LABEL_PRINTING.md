@@ -194,8 +194,8 @@ Automated coverage includes:
 
 ## 8. Deployment Notes & Hardware Limitations
 
-> [!WARNING]
-> **Deployment State**: SQL migrations `016_order_workflow_and_label_printing.sql` and `017_order_workflow_rpc.sql` have been verified in automated test environments using isolated in-memory PGlite. They have **not** been applied to the live production database. Applying migrations to production must follow the project's standard deployment procedures (`npm run db:migrate`).
+> [!NOTE]
+> **Deployment State**: Automated SQL tests verify migrations in an isolated in-memory PGlite environment, distinct from the live production database. Migrations `016_order_workflow_and_label_printing.sql` and `017_order_workflow_rpc.sql` were applied to production by GitHub Actions run [#93](https://github.com/hoangvu96z/qlaok/actions/runs/40022080279) and deployment completed successfully for commit `1d106dfe5e646c09fd58689976f912b22ff34316` on 24/10/2026 (Asia/Ho_Chi_Minh). Future rollout status must be checked against the exact Actions run/SHA rather than treating this historical run as proof of later commits.
 
 > [!IMPORTANT]
 > **Physical Printer Limitations**:
