@@ -96,12 +96,15 @@ export default function DashboardBillingPage() {
   const isAdmin = isSuperAdmin(profile);
   const isProduction = process.env.NODE_ENV === 'production';
   const canSimulate = isAdmin && !isProduction;
-  // Staff/cashier of someone else's shop must not buy a plan for themselves by mistake.
+  // Staff/cashier or membership-owner of someone else's shop must not manage billing.
+  // The page may manage billing for verified admin; a selected shop only when
+  // activeShop.owner_id === profile.id; and standalone profile with no selected shop
+  // only if there is a loaded profile and no active membership.
   const canManageBilling =
     isAdmin ||
-    !activeShop ||
-    activeShop.owner_id === profile?.id ||
-    activeMembership?.role === 'owner';
+    (activeShop
+      ? Boolean(profile?.id && activeShop.owner_id === profile.id)
+      : Boolean(profile?.id && !activeMembership));
 
   const getPlanCopy = (tier: PlanTier) => localizedPlanCopy(tier, locale);
 
@@ -114,10 +117,7 @@ export default function DashboardBillingPage() {
     profilePlan?: PlanTier;
     transactions: PaymentTransaction[];
   } | null> => {
-    const query = profile?.id
-      ? `?ownerId=${encodeURIComponent(profile.id)}`
-      : '';
-    const res = await fetch(`/api/webhooks/payment${query}`, {
+    const res = await fetch('/api/webhooks/payment', {
       headers: getAuthHeaders(),
       cache: 'no-store',
     });
@@ -134,7 +134,7 @@ export default function DashboardBillingPage() {
       : [];
     const profilePlan = (data.profile as { plan?: PlanTier } | undefined)?.plan;
     return { profilePlan, transactions: list };
-  }, [profile?.id, tx]);
+  }, [tx]);
 
   const loadBilling = useCallback(async () => {
     setLoadingBilling(true);
@@ -265,7 +265,7 @@ export default function DashboardBillingPage() {
           action: 'create_order',
           targetPlan,
           amount: cfg.priceMonthly,
-          ownerId: profile?.id,
+          ...(activeShop?.id ? { shopId: activeShop.id } : {}),
         }),
       });
       const data = await readJsonSafe(res);
@@ -306,7 +306,6 @@ export default function DashboardBillingPage() {
         body: JSON.stringify({
           orderCode,
           referenceCode: `SEPAY_${Date.now()}`,
-          ownerId: profile?.id,
           simulateWebhook: true,
         }),
       });

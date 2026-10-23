@@ -48,7 +48,9 @@ const {
   AI_RATE_LIMITS,
   isMembershipAllowedForCatalogAi,
 } = await import('@/app/api/ai/_lib/guard');
-const { POST: paymentPost } = await import('@/app/api/webhooks/payment/route');
+const { POST: paymentPost, GET: paymentGet } = await import(
+  '@/app/api/webhooks/payment/route'
+);
 const { canReopenPaymentTransaction, buildBillingColumns } = await import(
   '@/lib/billing-table'
 );
@@ -475,6 +477,10 @@ after(() => {
 beforeEach(() => {
   resetAiRateLimitsForTest();
   profilePlan = 'free';
+  mockShops = [
+    { id: 'shop-review-owner', owner_id: 'review-ai-owner' },
+    { id: 'shop-fnb-001', owner_id: 'owner-demo-001' },
+  ];
   mockProfiles = {};
   mockMemberships = [];
   mockTableErrors = {};
@@ -493,6 +499,15 @@ function post(path: string, token: string | null, body: unknown) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
+  });
+}
+
+function get(path: string, token: string | null) {
+  return new Request(`http://localhost${path}`, {
+    method: 'GET',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
 }
 
@@ -1831,7 +1846,9 @@ test('POST /api/webhooks/payment create_order allows authenticated owner for sel
   );
   assert.equal(ownShopRes.status, 201);
 
-  // User who is staff in one shop but active owner in another shop is still permitted
+  // Under Section 1.5 billing-account scoping:
+  // A membership-only role 'owner' in another shop does NOT authorize billing.
+  // Reject any non-owner member who owns no shop directly (403 INSUFFICIENT_BILLING_PERMISSION).
   mockMemberships.push(
     {
       id: 'mem-multi-staff',
@@ -1848,19 +1865,46 @@ test('POST /api/webhooks/payment create_order allows authenticated owner for sel
       is_active: true,
     }
   );
+  mockProfiles['multi-shop-owner-01'] = {
+    id: 'multi-shop-owner-01',
+    email: 'multi-owner@qlaok.vn',
+    plan: 'free',
+  };
   const multiOwnerToken = issueSessionToken({
     id: 'multi-shop-owner-01',
     email: 'multi-owner@qlaok.vn',
     role: 'owner',
   });
-  const multiOwnerRes = await paymentPost(
+  // Without directly owned shop -> 403 INSUFFICIENT_BILLING_PERMISSION
+  const multiOwnerDeniedRes = await paymentPost(
     post('/api/webhooks/payment', multiOwnerToken, {
       action: 'create_order',
       targetPlan: 'premium',
     })
   );
-  assert.equal(multiOwnerRes.status, 201);
-  assert.equal(insertedTransactions.length, 3);
+  assert.equal(multiOwnerDeniedRes.status, 403);
+  assert.equal(
+    (await multiOwnerDeniedRes.json()).code,
+    'INSUFFICIENT_BILLING_PERMISSION'
+  );
+
+  // When the user directly owns a separate shop, they can create their own account plan
+  mockShops.push({
+    id: 'shop-multi-owned',
+    owner_id: 'multi-shop-owner-01',
+  });
+  try {
+    const multiOwnerAllowedRes = await paymentPost(
+      post('/api/webhooks/payment', multiOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+      })
+    );
+    assert.equal(multiOwnerAllowedRes.status, 201);
+    assert.equal(insertedTransactions.length, 3);
+  } finally {
+    mockShops = mockShops.filter((s) => s.id !== 'shop-multi-owned');
+  }
 });
 
 test('POST /api/webhooks/payment create_order allows verified Super Admin to target another ownerId and rejects invalid plans', async () => {
@@ -2713,4 +2757,303 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
     mockRpcHandler = null;
     delete process.env.PAYMENT_WEBHOOK_SECRET;
   }
+});
+
+test('POST & GET /api/webhooks/payment Section 1.5 billing-account scoping: restricts order creation to canonical shop owner or standalone user without active memberships, and keeps GET scoped to authenticated session user', async () => {
+  const memberOnlyUserId = 'scoped-member-owner-001';
+  const memberShopId = 'shop-fnb-001'; // owned by 'owner-demo-001'
+
+  mockProfiles[memberOnlyUserId] = {
+    id: memberOnlyUserId,
+    email: 'member-owner@qlaok.vn',
+    plan: 'free',
+  };
+  await dbUpsertShopMembership({
+    shop_id: memberShopId,
+    user_id: memberOnlyUserId,
+    email: 'member-owner@qlaok.vn',
+    role: 'owner',
+  });
+
+  const memberOwnerToken = issueSessionToken({
+    id: memberOnlyUserId,
+    email: 'member-owner@qlaok.vn',
+    role: 'owner',
+  });
+
+  try {
+    // 1. Active membership-owner, no directly owned shop, POST create_order with shopId for their member shop
+    //    -> 403 INSUFFICIENT_BILLING_PERMISSION; no transaction insert.
+    const resWithShopId = await paymentPost(
+      post('/api/webhooks/payment', memberOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+        shopId: memberShopId,
+      })
+    );
+    assert.equal(resWithShopId.status, 403);
+    const bodyWithShopId = await resWithShopId.json();
+    assert.equal(bodyWithShopId.code, 'INSUFFICIENT_BILLING_PERMISSION');
+    assert.equal(
+      insertedTransactions.length,
+      0,
+      'Must not insert transaction for non-canonical shop owner'
+    );
+
+    // 2. Same membership-owner, POST create_order without shopId
+    //    -> same 403; no insert.
+    const resWithoutShopId = await paymentPost(
+      post('/api/webhooks/payment', memberOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+      })
+    );
+    assert.equal(resWithoutShopId.status, 403);
+    const bodyWithoutShopId = await resWithoutShopId.json();
+    assert.equal(bodyWithoutShopId.code, 'INSUFFICIENT_BILLING_PERMISSION');
+    assert.equal(
+      insertedTransactions.length,
+      0,
+      'Must not insert transaction for member without directly owned shop'
+    );
+
+    // 3. A normal member must be rejected when shopId points at someone else's shop even if requireShopOwnerOrAdmin would accept its membership role
+    //    (Tested with cashier role in member shop, and tested with a user owning a separate shop but passing memberShopId).
+    const cashierMemberId = 'scoped-cashier-001';
+    mockProfiles[cashierMemberId] = {
+      id: cashierMemberId,
+      email: 'cashier@qlaok.vn',
+      plan: 'free',
+    };
+    await dbUpsertShopMembership({
+      shop_id: memberShopId,
+      user_id: cashierMemberId,
+      email: 'cashier@qlaok.vn',
+      role: 'cashier',
+    });
+    const cashierToken = issueSessionToken({
+      id: cashierMemberId,
+      email: 'cashier@qlaok.vn',
+      role: 'cashier',
+    });
+    const cashierMemberRes = await paymentPost(
+      post('/api/webhooks/payment', cashierToken, {
+        action: 'create_order',
+        targetPlan: 'basic',
+        shopId: memberShopId,
+      })
+    );
+    assert.equal(cashierMemberRes.status, 403);
+    assert.equal(
+      (await cashierMemberRes.json()).code,
+      'INSUFFICIENT_BILLING_PERMISSION'
+    );
+
+    // User who directly owns Shop A, but passes shopId for Shop B where they are a member:
+    // Must be rejected for Shop B!
+    const separateOwnerId = 'owner-separate-001';
+    const separateShopId = 'shop-separate-001';
+    mockProfiles[separateOwnerId] = {
+      id: separateOwnerId,
+      email: 'separate-owner@qlaok.vn',
+      plan: 'free',
+    };
+    mockShops.push({
+      id: separateShopId,
+      owner_id: separateOwnerId,
+    });
+    await dbUpsertShopMembership({
+      shop_id: memberShopId,
+      user_id: separateOwnerId,
+      email: 'separate-owner@qlaok.vn',
+      role: 'owner',
+    });
+    const separateOwnerToken = issueSessionToken({
+      id: separateOwnerId,
+      email: 'separate-owner@qlaok.vn',
+      role: 'owner',
+    });
+
+    const crossShopRes = await paymentPost(
+      post('/api/webhooks/payment', separateOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+        shopId: memberShopId, // Points to someone else's shop
+      })
+    );
+    assert.equal(crossShopRes.status, 403);
+    assert.equal(
+      (await crossShopRes.json()).code,
+      'INSUFFICIENT_BILLING_PERMISSION'
+    );
+    assert.equal(insertedTransactions.length, 0);
+
+    // 4. A canonical direct shop owner can still create an order for their own shop
+    const canonicalOrderRes = await paymentPost(
+      post('/api/webhooks/payment', separateOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'basic',
+        shopId: separateShopId,
+      })
+    );
+    assert.equal(canonicalOrderRes.status, 201);
+    const canonicalBody = await canonicalOrderRes.json();
+    assert.equal(canonicalBody.transaction.user_id, separateOwnerId);
+    assert.equal(canonicalBody.transaction.target_plan, 'basic');
+    assert.equal(insertedTransactions.length, 1);
+
+    // Also: direct shop owner without shopId succeeds for self
+    const canonicalNoShopIdRes = await paymentPost(
+      post('/api/webhooks/payment', separateOwnerToken, {
+        action: 'create_order',
+        targetPlan: 'premium',
+      })
+    );
+    assert.equal(canonicalNoShopIdRes.status, 201);
+    assert.equal(insertedTransactions.length, 2);
+
+    // 5. A standalone profile with no shops and no active memberships can still create its own account-level order
+    const standaloneUserId = 'standalone-solo-001';
+    mockProfiles[standaloneUserId] = {
+      id: standaloneUserId,
+      email: 'solo@qlaok.vn',
+      plan: 'free',
+    };
+    const standaloneToken = issueSessionToken({
+      id: standaloneUserId,
+      email: 'solo@qlaok.vn',
+      role: 'owner',
+    });
+    const standaloneRes = await paymentPost(
+      post('/api/webhooks/payment', standaloneToken, {
+        action: 'create_order',
+        targetPlan: 'basic',
+      })
+    );
+    assert.equal(standaloneRes.status, 201);
+    const standaloneBody = await standaloneRes.json();
+    assert.equal(standaloneBody.transaction.user_id, standaloneUserId);
+    assert.equal(standaloneBody.transaction.target_plan, 'basic');
+    assert.equal(insertedTransactions.length, 3);
+
+    // 6. Preserve/verify GET ignores non-admin caller-supplied ownerId and returns only the authenticated user's own data
+    const victimOwnerId = 'victim-merchant-001';
+    mockProfiles[victimOwnerId] = {
+      id: victimOwnerId,
+      email: 'victim-merchant@qlaok.vn',
+      plan: 'premium',
+    };
+    insertedTransactions.push({
+      id: 'tx-victim-secret-01',
+      user_id: victimOwnerId,
+      order_code: 'QLAOKPV999',
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'completed',
+      bank_ref_id: 'FT-VICTIM-01',
+      created_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    });
+
+    const snooperGetRes = await paymentGet(
+      get(`/api/webhooks/payment?ownerId=${victimOwnerId}`, standaloneToken)
+    );
+    assert.equal(snooperGetRes.status, 200);
+    const snooperData = await snooperGetRes.json();
+    // Must return standaloneUserId's own data, NOT victim's data
+    assert.equal(snooperData.profile.id, standaloneUserId);
+    assert.equal(snooperData.profile.plan, 'free');
+    assert.equal(
+      snooperData.transactions.some(
+        (t: PaymentTransaction) => t.user_id === victimOwnerId
+      ),
+      false,
+      'GET must never expose another owner transactions to non-admin caller'
+    );
+    assert.equal(
+      snooperData.transactions.every(
+        (t: PaymentTransaction) => t.user_id === standaloneUserId
+      ),
+      true,
+      'GET returns only the authenticated user transactions'
+    );
+
+    // Super Admin passing ?ownerId=victimOwnerId CAN view victim's data
+    const adminToken = issueSessionToken({
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const adminGetRes = await paymentGet(
+      get(`/api/webhooks/payment?ownerId=${victimOwnerId}`, adminToken)
+    );
+    assert.equal(adminGetRes.status, 200);
+    const adminData = await adminGetRes.json();
+    assert.equal(adminData.profile.id, victimOwnerId);
+    assert.equal(adminData.profile.plan, 'premium');
+    assert.equal(
+      adminData.transactions.some(
+        (t: PaymentTransaction) => t.user_id === victimOwnerId
+      ),
+      true,
+      'Super Admin can view targeted owner billing data'
+    );
+  } finally {
+    mockShops = mockShops.filter((s) => s.id !== 'shop-separate-001');
+    await dbDeleteShopMembership(memberShopId, memberOnlyUserId);
+    await dbDeleteShopMembership(memberShopId, 'scoped-cashier-001');
+    await dbDeleteShopMembership(memberShopId, 'owner-separate-001');
+  }
+});
+
+test('DashboardBillingPage invariants: restricts canManageBilling to canonical shop owner or standalone user without membership, and stops sending ownerId in GET and POST', () => {
+  const pageSrc = fs.readFileSync(
+    path.resolve(originalCwd, 'src/app/(dashboard)/dashboard/billing/page.tsx'),
+    'utf8'
+  );
+
+  // 1. canManageBilling must NOT grant permission for activeMembership.role === 'owner'
+  assert.doesNotMatch(
+    pageSrc,
+    /activeMembership\?\.role === 'owner'/,
+    'canManageBilling must not authorize billing based on membership role owner'
+  );
+
+  // 2. canManageBilling requires activeShop.owner_id === profile.id for selected shop, and profile.id && !activeMembership for standalone
+  assert.match(
+    pageSrc,
+    /activeShop\.owner_id === profile(\?\.|\.)id/,
+    'canManageBilling must require canonical activeShop.owner_id === profile.id'
+  );
+  assert.match(
+    pageSrc,
+    /Boolean\(\s*profile\?\.id\s*&&\s*!activeMembership\s*\)/,
+    'canManageBilling must require loaded profile id and no active membership for standalone access'
+  );
+
+  // 3. Normal UI fetchBilling must NOT send ?ownerId query parameter
+  assert.doesNotMatch(
+    pageSrc,
+    /fetch\(`\/api\/webhooks\/payment\$\{query\}`/,
+    'fetchBilling must not append ownerId query param'
+  );
+
+  // 4. Normal UI handleCreateVietQrOrder must NOT send ownerId in POST body
+  const createOrderFn =
+    pageSrc.match(/const handleCreateVietQrOrder[\s\S]*?finally \{/)?.[0] || '';
+  assert.doesNotMatch(
+    createOrderFn,
+    /ownerId:/,
+    'handleCreateVietQrOrder must not send ownerId in request body'
+  );
+
+  // 5. Normal UI handleSimulateWebhookSuccess must NOT send ownerId in POST body
+  const simFn =
+    pageSrc.match(/const handleSimulateWebhookSuccess[\s\S]*?finally \{/)?.[0] || '';
+  assert.doesNotMatch(
+    simFn,
+    /ownerId:/,
+    'handleSimulateWebhookSuccess must not send ownerId in request body'
+  );
 });

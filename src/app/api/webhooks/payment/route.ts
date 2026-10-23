@@ -13,7 +13,6 @@ import {
 import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
 import {
   requireAuthenticatedUser,
-  requireShopOwnerOrAdmin,
   requireSuperAdmin,
   verifyRequestUser,
   type VerifiedSessionUser,
@@ -127,29 +126,26 @@ async function requireBillingOrderAuthority(
   }
   const requestedShopId =
     typeof rawShopId === 'string' ? rawShopId.trim() : '';
-  if (requestedShopId) {
-    const shopOwnerAuth = await requireShopOwnerOrAdmin(req, requestedShopId);
-    if (shopOwnerAuth.errorResponse) {
-      return { errorResponse: shopOwnerAuth.errorResponse };
-    }
-  }
 
-  const activeRoles = new Set<ShopRole>();
-  let ownsShop = false;
-  let hasOwnerProfile = false;
   const dbActive =
     isSupabaseDbClientOverriddenForTests() || isSupabaseConfigured();
 
   if (dbActive) {
     try {
       const sb = getSupabaseDbClient();
-      const [shopsRes, membershipsRes, profileRes] = await Promise.all([
-        sb
-          .from('shops')
-          .select('id, owner_id')
-          .eq('owner_id', user.sub)
-          .limit(1)
-          .maybeSingle<BillingShopRow>(),
+      const [shopRes, membershipsRes, profileRes] = await Promise.all([
+        requestedShopId
+          ? sb
+              .from('shops')
+              .select('id, owner_id')
+              .eq('id', requestedShopId)
+              .maybeSingle<BillingShopRow>()
+          : sb
+              .from('shops')
+              .select('id, owner_id')
+              .eq('owner_id', user.sub)
+              .limit(1)
+              .maybeSingle<BillingShopRow>(),
         sb
           .from('shop_memberships')
           .select<string, BillingMembershipRow>('role, is_active')
@@ -162,7 +158,7 @@ async function requireBillingOrderAuthority(
           .maybeSingle<BillingProfileRow>(),
       ]);
 
-      if (shopsRes.error || membershipsRes.error || profileRes.error) {
+      if (shopRes.error || membershipsRes.error || profileRes.error) {
         return {
           errorResponse: NextResponse.json(
             {
@@ -175,15 +171,43 @@ async function requireBillingOrderAuthority(
         };
       }
 
-      ownsShop = Boolean(
-        shopsRes.data?.id && shopsRes.data.owner_id === user.sub
-      );
-      hasOwnerProfile = profileRes.data?.id === user.sub;
-      for (const row of membershipsRes.data ?? []) {
-        if (row.is_active) {
-          activeRoles.add(row.role);
-        }
+      const hasProfile = profileRes.data?.id === user.sub;
+      if (!hasProfile) {
+        return { errorResponse: forbiddenBillingPermissionResponse() };
       }
+
+      if (requestedShopId) {
+        const targetShop = shopRes.data;
+        if (!targetShop || targetShop.owner_id !== user.sub) {
+          return { errorResponse: forbiddenBillingPermissionResponse() };
+        }
+        return {
+          user,
+          targetOwnerId: user.sub,
+        };
+      }
+
+      const ownsDirectShop = Boolean(
+        shopRes.data?.id && shopRes.data.owner_id === user.sub
+      );
+      if (ownsDirectShop) {
+        return {
+          user,
+          targetOwnerId: user.sub,
+        };
+      }
+
+      const hasActiveMemberships = (membershipsRes.data ?? []).some(
+        (m) => m.is_active
+      );
+      if (hasActiveMemberships) {
+        return { errorResponse: forbiddenBillingPermissionResponse() };
+      }
+
+      return {
+        user,
+        targetOwnerId: user.sub,
+      };
     } catch {
       return {
         errorResponse: NextResponse.json(
@@ -197,31 +221,43 @@ async function requireBillingOrderAuthority(
       };
     }
   } else if (process.env.NODE_ENV !== 'production') {
-    for (const mem of await dbGetUserShopMemberships(user.sub)) {
-      if (mem.is_active) {
-        activeRoles.add(mem.role);
-      }
+    const hasProfile = user.sub === SEED_PROFILE.id;
+    if (!hasProfile) {
+      return { errorResponse: forbiddenBillingPermissionResponse() };
     }
-    ownsShop = SEED_SHOPS.some((s) => s.owner_id === user.sub);
-    hasOwnerProfile = user.sub === SEED_PROFILE.id;
+
+    if (requestedShopId) {
+      const targetShop = SEED_SHOPS.find((s) => s.id === requestedShopId);
+      if (!targetShop || targetShop.owner_id !== user.sub) {
+        return { errorResponse: forbiddenBillingPermissionResponse() };
+      }
+      return {
+        user,
+        targetOwnerId: user.sub,
+      };
+    }
+
+    const ownsDirectShop = SEED_SHOPS.some((s) => s.owner_id === user.sub);
+    if (ownsDirectShop) {
+      return {
+        user,
+        targetOwnerId: user.sub,
+      };
+    }
+
+    const mems = await dbGetUserShopMemberships(user.sub);
+    const hasActiveMemberships = mems.some((m) => m.is_active);
+    if (hasActiveMemberships) {
+      return { errorResponse: forbiddenBillingPermissionResponse() };
+    }
+
+    return {
+      user,
+      targetOwnerId: user.sub,
+    };
   }
 
-  const hasOwnerMembership = activeRoles.has('owner');
-  const hasStaffOrCashierMembership =
-    activeRoles.has('cashier') || activeRoles.has('staff');
-
-  if (hasStaffOrCashierMembership && !ownsShop && !hasOwnerMembership) {
-    return { errorResponse: forbiddenBillingPermissionResponse() };
-  }
-
-  if (!ownsShop && !hasOwnerMembership && !hasOwnerProfile) {
-    return { errorResponse: forbiddenBillingPermissionResponse() };
-  }
-
-  return {
-    user,
-    targetOwnerId: user.sub,
-  };
+  return { errorResponse: forbiddenBillingPermissionResponse() };
 }
 
 /**
