@@ -354,7 +354,7 @@ export default function StorefrontMenuPage() {
         const loadedShop: Shop = data.shop;
         // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
         const planLangs = getAllowedLocalesForPlan(
-          data.ownerPlan || 'premium',
+          data.ownerPlan || 'free',
           normalizeShopSupportedLangs(loadedShop.supported_langs)
         );
 

@@ -82,11 +82,23 @@ export function canAddMoreItems(plan: PlanTier, currentItemCount: number): {
   return { allowed: true, limit: cfg.maxItems };
 }
 
+/**
+ * Normalizes an untrusted, missing, or invalid plan tier, failing closed to 'free'.
+ * Preserves explicit valid tiers ('basic', 'premium').
+ */
+export function normalizePlanTier(plan?: unknown): PlanTier {
+  if (plan === 'basic' || plan === 'premium') {
+    return plan;
+  }
+  return 'free';
+}
+
 export function getAllowedLocalesForPlan(
-  plan: PlanTier,
-  shopLocales: SupportedLocale[]
+  plan?: PlanTier | string | null,
+  shopLocales: SupportedLocale[] = []
 ): SupportedLocale[] {
-  const max = PLAN_CONFIGS[plan].maxLangs;
+  const safePlan = normalizePlanTier(plan);
+  const max = PLAN_CONFIGS[safePlan].maxLangs;
   const base = shopLocales.length > 0 ? shopLocales : (['vi'] as SupportedLocale[]);
   return base.slice(0, max);
 }

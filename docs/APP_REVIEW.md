@@ -98,14 +98,19 @@ Node cảnh báo MODULE_TYPELESS_PACKAGE_JSON ở các test TypeScript; suite v�
       - `npm run typecheck`: **pass** (0 errors).
       - `npm run build`: **pass** (exit code 0, hoàn thành đầy đủ cả pha lint, typecheck và sinh 37/37 static pages tối ưu).
       - **Lưu ý trung thực về hỗ trợ upstream:** ESLint 9 đã chính thức chạm mốc EOL (End-of-Life) từ upstream ESLint (`npm warn deprecated eslint@9.39.5`). Đây là cấu hình tương thích tất định chạy ổn định trên runtime Next.js 15 hiện tại; không khẳng định toolchain này đang được upstream hỗ trợ dài hạn. Hạng mục này cần được xem xét và nâng cấp đồng bộ khi dự án thực hiện di chuyển toàn diện phiên bản Next.js / React trong tương lai.
+14. **Đóng lỗi fail-closed quyền gói cước (plan-entitlement) trên trang Storefront Door và Menu (`src/app/(storefront)/s/[slug]/page.tsx`, `src/app/(storefront)/s/[slug]/menu/page.tsx`, `src/lib/plan-limits.ts`, `tests/app-i18n-review.test.ts`, `tests/unit.test.ts`):**
+    - Khắc phục lỗi plan-entitlement đã nhận diện trong đợt read-only audit: cả hai trang storefront khách (`/s/[slug]` và `/s/[slug]/menu`) trước đây truyền `data.ownerPlan || 'premium'` vào `getAllowedLocalesForPlan`, dẫn đến việc khi dữ liệu `ownerPlan` vắng mặt hoặc bị thiếu trên payload API client sẽ tự động mở khóa toàn bộ 8 ngôn ngữ Premium trái ngược với nguyên tắc fail-closed của backend.
+    - Đã thay đổi fallback ở cả hai trang storefront từ `data.ownerPlan || 'premium'` thành `data.ownerPlan || 'free'`, đồng bộ hoàn toàn với backend (`dbGetStorefrontBundle` / `shopsGet` mặc định `free`).
+    - Bổ sung helper an toàn `normalizePlanTier` và chuẩn hóa hàm `getAllowedLocalesForPlan` trong `src/lib/plan-limits.ts`: tự động chuẩn hóa plan đầu vào, giữ nguyên các gói hợp lệ tường minh (`basic`, `premium`), và fail-closed về `free` (giới hạn 1 ngôn ngữ) khi plan vắng mặt (`undefined`, `null`, `''`) hoặc không hợp lệ (`invalid_plan`, `enterprise`), ngăn chặn rò rỉ quyền và tránh lỗi runtime `TypeError`.
+    - Bổ sung test hồi quy ý nghĩa trong cả `tests/app-i18n-review.test.ts` (8/8 pass) và `tests/unit.test.ts` (Suite 3 test 3.9, 111/111 pass): kiểm chứng absent/invalid plan data không mở khóa ngôn ngữ Premium (chỉ trả về 1 ngôn ngữ `['vi']`), trong khi explicit Premium vẫn mở khóa đầy đủ ngôn ngữ cấu hình của quán (tối đa 8), explicit Basic mở tối đa 3, đồng thời kiểm tra regex source cả 2 file trang khách không còn chứa fallback legacy `|| 'premium'`.
 
 ### Kết quả kiểm chứng tại root (23/10/2026)
 
 - Root lint: **pass** (0 errors, 38 warnings qua `npm run lint` / `eslint .`: 36 `@next/next/no-img-element`, 1 `react-hooks/exhaustive-deps`, 1 `jsx-a11y/role-supports-aria-props`). Cặp tương thích Next 15 (`eslint@9.39.5` + `eslint-config-next@15.1.6` qua `FlatCompat`) chạy tất định; ghi nhận ESLint 9 đã upstream EOL.
 - Root install / lockfile: `npm install` và `npm ci` **pass** (lockfile đồng bộ sạch, exit code 0).
 - Web/mobile typecheck: **pass** (`npm run typecheck`, `npm run typecheck --prefix mobile`).
-- Unit tests: **110/110** pass (`npm run test:unit`).
-- Review tests: **150/150** pass (`npm run test:review`, focused tests `tests/catalog-dashboard-review.test.ts`: **4/4** pass, `tests/app-i18n-review.test.ts`: **7/7** pass, `tests/billing-ai-review.test.ts`: **29/29** pass, `tests/order-live-review.test.ts`: **10/10** pass).
+- Unit tests: **111/111** pass (`npm run test:unit`, bổ sung test 3.9).
+- Review tests: **151/151** pass (`npm run test:review`, focused tests `tests/app-i18n-review.test.ts`: **8/8** pass, `tests/catalog-dashboard-review.test.ts`: **4/4** pass, `tests/billing-ai-review.test.ts`: **29/29** pass, `tests/order-live-review.test.ts`: **10/10** pass).
 - SQL tests: **1/1** pass (`npm run test:sql`).
 - Mobile tests: **40/40** pass (`npm test --prefix mobile`).
 - Production build: **pass** (`npm run build`, biên dịch thành công toàn bộ 37 routes, tích hợp lint và typecheck thành công).

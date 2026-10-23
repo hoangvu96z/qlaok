@@ -21,6 +21,7 @@ import {
   PLAN_CONFIGS,
   canAddMoreItems,
   getAllowedLocalesForPlan,
+  normalizePlanTier,
 } from '@/lib/plan-limits';
 import {
   getAiConfig,
@@ -155,6 +156,7 @@ import type {
   CatalogItem,
   Category,
   OpeningHours,
+  PlanTier,
   Shop,
   ShopOrder,
 } from '@/types/qlaok';
@@ -514,6 +516,32 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
   test('3.8 getAllowedLocalesForPlan defaults to ["vi"] when shopLocales is empty', () => {
     assert.deepEqual(getAllowedLocalesForPlan('free', []), ['vi']);
     assert.deepEqual(getAllowedLocalesForPlan('premium', []), ['vi']);
+  });
+
+  test('3.9 normalizePlanTier and getAllowedLocalesForPlan fail closed to free for absent or invalid plans', () => {
+    const all8 = ALL_LOCALES;
+    assert.equal(normalizePlanTier(undefined), 'free');
+    assert.equal(normalizePlanTier(null), 'free');
+    assert.equal(normalizePlanTier(''), 'free');
+    assert.equal(normalizePlanTier('invalid_plan'), 'free');
+    assert.equal(normalizePlanTier('enterprise'), 'free');
+    assert.equal(normalizePlanTier('free'), 'free');
+    assert.equal(normalizePlanTier('basic'), 'basic');
+    assert.equal(normalizePlanTier('premium'), 'premium');
+
+    // Absent or invalid plan tiers must never unlock premium locales
+    assert.deepEqual(getAllowedLocalesForPlan(undefined, all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan(null as unknown as PlanTier, all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan('' as unknown as PlanTier, all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan('invalid' as unknown as PlanTier, all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan('enterprise' as unknown as PlanTier, all8), ['vi']);
+
+    // Explicit plans preserve their tier limits
+    assert.deepEqual(getAllowedLocalesForPlan('free', all8), ['vi']);
+    assert.deepEqual(getAllowedLocalesForPlan('basic', all8), ['vi', 'en', 'ko']);
+    assert.deepEqual(getAllowedLocalesForPlan('premium', all8), [
+      'vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru',
+    ]);
   });
 });
 

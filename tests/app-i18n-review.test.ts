@@ -21,7 +21,10 @@ import {
   dbGetStorefrontBundle,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
-import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import {
+  getAllowedLocalesForPlan,
+  normalizePlanTier,
+} from '@/lib/plan-limits';
 import { normalizeShopSupportedLangs } from '@/lib/i18n-helper';
 import { GET as shopsGet } from '@/app/api/shops/route';
 import type { Shop } from '@/types/qlaok';
@@ -692,4 +695,106 @@ console.log('LANGUAGE_SWITCHER_REGRESSION_PASS');
     }
   );
   assert.match(output, /LANGUAGE_SWITCHER_REGRESSION_PASS/);
+});
+
+test('storefront ownerPlan fallback and getAllowedLocalesForPlan fail closed to free for absent/invalid plans while explicit premium unlocks configured locales', async () => {
+  const all8 = ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'] as const;
+
+  // 1. normalizePlanTier helper fails closed to 'free' on absent or invalid plan values
+  assert.equal(normalizePlanTier(undefined), 'free');
+  assert.equal(normalizePlanTier(null), 'free');
+  assert.equal(normalizePlanTier(''), 'free');
+  assert.equal(normalizePlanTier('invalid_plan'), 'free');
+  assert.equal(normalizePlanTier('enterprise'), 'free');
+  assert.equal(normalizePlanTier(123), 'free');
+  assert.equal(normalizePlanTier({ plan: 'premium' }), 'free');
+  assert.equal(normalizePlanTier('free'), 'free');
+  assert.equal(normalizePlanTier('basic'), 'basic');
+  assert.equal(normalizePlanTier('premium'), 'premium');
+
+  // 2. getAllowedLocalesForPlan fails closed to free when plan is absent (undefined/null/'')
+  // Free plan permits exactly 1 locale ('vi'), preventing absent plan from unlocking premium locales
+  assert.deepEqual(getAllowedLocalesForPlan(undefined, [...all8]), ['vi']);
+  assert.deepEqual(getAllowedLocalesForPlan(null, [...all8]), ['vi']);
+  assert.deepEqual(getAllowedLocalesForPlan('', [...all8]), ['vi']);
+
+  // 3. getAllowedLocalesForPlan fails closed to free on invalid/unrecognized plan string
+  assert.deepEqual(getAllowedLocalesForPlan('enterprise', [...all8]), ['vi']);
+  assert.deepEqual(getAllowedLocalesForPlan('custom_tier', [...all8]), ['vi']);
+  assert.deepEqual(getAllowedLocalesForPlan('hacked', [...all8]), ['vi']);
+
+  // 4. Explicit plans preserve their configured limits
+  // Free: max 1 locale
+  assert.deepEqual(getAllowedLocalesForPlan('free', [...all8]), ['vi']);
+  // Basic: max 3 locales
+  assert.deepEqual(getAllowedLocalesForPlan('basic', [...all8]), ['vi', 'en', 'ko']);
+  // Premium: max 8 locales (unlocks all configured locales)
+  assert.deepEqual(getAllowedLocalesForPlan('premium', [...all8]), [
+    'vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru',
+  ]);
+  // Premium respects a shop configured with fewer locales (e.g. ['vi', 'en'])
+  assert.deepEqual(getAllowedLocalesForPlan('premium', ['vi', 'en']), ['vi', 'en']);
+
+  // 5. Storefront door and menu page fallback regression:
+  // When an API response lacks ownerPlan or passes undefined/null, the expression
+  // `data.ownerPlan || 'free'` resolves to 'free' and DOES NOT unlock premium locales.
+  const apiPayloadWithoutPlan: { ownerPlan?: unknown } = {};
+  const fallbackPlan = (apiPayloadWithoutPlan.ownerPlan as string) || 'free';
+  const resolvedLocales = getAllowedLocalesForPlan(
+    fallbackPlan,
+    normalizeShopSupportedLangs(['vi', 'en', 'ko', 'ja', 'zh'])
+  );
+  assert.deepEqual(
+    resolvedLocales,
+    ['vi'],
+    'Absent ownerPlan in storefront API payload must fail closed to free (1 locale) and never unlock premium'
+  );
+
+  // If explicit premium is returned by API, all configured languages are unlocked
+  const apiPayloadPremium: { ownerPlan?: unknown } = { ownerPlan: 'premium' };
+  const premiumLocales = getAllowedLocalesForPlan(
+    (apiPayloadPremium.ownerPlan as string) || 'free',
+    normalizeShopSupportedLangs(['vi', 'en', 'ko', 'ja', 'zh'])
+  );
+  assert.deepEqual(
+    premiumLocales,
+    ['vi', 'en', 'ko', 'ja', 'zh'],
+    'Explicit premium ownerPlan in storefront API payload must unlock all configured shop languages'
+  );
+
+  // If explicit basic is returned by API, capped at 3 languages
+  const apiPayloadBasic: { ownerPlan?: unknown } = { ownerPlan: 'basic' };
+  const basicLocales = getAllowedLocalesForPlan(
+    (apiPayloadBasic.ownerPlan as string) || 'free',
+    normalizeShopSupportedLangs(['vi', 'en', 'ko', 'ja', 'zh'])
+  );
+  assert.deepEqual(
+    basicLocales,
+    ['vi', 'en', 'ko'],
+    'Explicit basic ownerPlan in storefront API payload must be capped at 3 languages'
+  );
+
+  // 6. Source check: Verify neither door page nor menu page contains legacy `|| 'premium'` fallback
+  const fs = await import('node:fs');
+  const doorPageSource = fs.readFileSync('src/app/(storefront)/s/[slug]/page.tsx', 'utf8');
+  const menuPageSource = fs.readFileSync('src/app/(storefront)/s/[slug]/menu/page.tsx', 'utf8');
+
+  assert.equal(
+    doorPageSource.includes("data.ownerPlan || 'premium'"),
+    false,
+    "Door page must not contain legacy data.ownerPlan || 'premium'"
+  );
+  assert.equal(
+    menuPageSource.includes("data.ownerPlan || 'premium'"),
+    false,
+    "Menu page must not contain legacy data.ownerPlan || 'premium'"
+  );
+  assert.ok(
+    doorPageSource.includes("data.ownerPlan || 'free'"),
+    "Door page must pass data.ownerPlan || 'free'"
+  );
+  assert.ok(
+    menuPageSource.includes("data.ownerPlan || 'free'"),
+    "Menu page must pass data.ownerPlan || 'free'"
+  );
 });
