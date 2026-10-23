@@ -270,6 +270,16 @@ export default function OnboardingWizardPage() {
                 {tx('Tạo thêm chi nhánh', 'Create another branch')}
               </button>
             )}
+            {existingShops.owned === 0 && existingShops.member > 0 && (
+              <button
+                type="button"
+                onClick={() => setExistingShops(null)}
+                data-testid="onboarding-create-own-shop"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-5 py-3 text-xs font-bold text-slate-200 hover:bg-slate-800"
+              >
+                {tx('Tạo cửa hàng riêng', 'Create your own store')}
+              </button>
+            )}
           </div>
         </div>
       </div>
