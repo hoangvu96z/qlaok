@@ -23,6 +23,7 @@ import {
   createInitialKitchenOrdersState,
   createKitchenShopScopeTracker,
   DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES,
+  isKitchenDisplayEnabled,
   type KitchenOrdersState,
   type KitchenShopScopeToken,
   type KitchenShopScopeTracker,
@@ -32,10 +33,15 @@ import {
   shouldShowKitchenConfirmedEmptyState,
   summarizeKitchenQueue,
 } from '@/lib/kitchen-display';
+import { resolveShopOrderWorkflowConfig } from '@/lib/order-workflow';
 import { startOrderLiveSync, type OrderLiveStatus } from '@/lib/order-live-sync';
 import { KitchenTicketCard } from '@/components/dashboard/KitchenTicketCard';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
-import type { ShopMembership, ShopOrder } from '@/types/qlaok';
+import type {
+  OrderWorkflowStepStage,
+  ShopMembership,
+  ShopOrder,
+} from '@/types/qlaok';
 
 export default function KitchenDisplayPage() {
   const { activeShop, activeMembership } = useDashboard();
@@ -306,10 +312,15 @@ export default function KitchenDisplayPage() {
       ? activeMembership
       : null);
   const canFulfill = canPerformKitchenFulfill(effectiveMembership);
+  const workflowConfig = resolveShopOrderWorkflowConfig(
+    activeShop?.theme_config
+  );
+  const kdsEnabled = isKitchenDisplayEnabled(workflowConfig);
 
   const handleAdvanceStatus = async (
     order: ShopOrder,
-    nextStatus: 'preparing' | 'completed'
+    nextStatus: OrderWorkflowStepStage,
+    nextWorkflowStepId?: string
   ) => {
     const operationShopId = (activeShop?.id ?? '').trim();
     const patchScopeToken =
@@ -328,6 +339,9 @@ export default function KitchenDisplayPage() {
       shopId: operationShopId,
       orderId: order.id,
       currentStatus: order.status,
+      currentWorkflowStepId: order.workflow_step_id,
+      targetWorkflowStepId: nextWorkflowStepId,
+      workflowConfig,
     });
     if (!payload || payload.status !== nextStatus) return;
 
@@ -423,11 +437,13 @@ export default function KitchenDisplayPage() {
     shopId: activeShop.id,
     nowMs,
     overdueThresholdMinutes: DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES,
+    workflowConfig,
   });
 
   const visibleTickets = selectAndSortKitchenOrders(ordersState.orders, {
     shopId: activeShop.id,
     statusFilter,
+    workflowConfig,
   });
 
   const showConfirmedEmptyState = shouldShowKitchenConfirmedEmptyState({
@@ -787,7 +803,44 @@ export default function KitchenDisplayPage() {
       </div>
 
       {/* Tickets Grid */}
-      {visibleTickets.length > 0 ? (
+      {!kdsEnabled ? (
+        <div
+          data-testid="kds-disabled-state"
+          className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-10 sm:p-12 text-center space-y-4 shadow-2xs"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
+            <ChefHat className="h-6 w-6" />
+          </div>
+          <div className="space-y-1.5 max-w-lg mx-auto">
+            <p className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+              {tx(
+                'Màn hình bếp (KDS) đang tắt theo quy trình của quán',
+                'Kitchen Display (KDS) is turned off for this store workflow'
+              )}
+            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              {tx(
+                'Quán đang áp dụng quy trình phục vụ trực tiếp tại quầy/pha chế nên không chuyển đơn sang màn hình bếp riêng. Bạn có thể xử lý đơn tại trang Đơn hàng hoặc bật lại KDS trong Cài đặt.',
+                'This shop uses a direct counter/bar workflow without a separate kitchen display handoff. Handle orders on the Counter Orders screen or re-enable KDS in Settings.'
+              )}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+            <Link
+              href="/dashboard/orders"
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-emerald-500 transition"
+            >
+              {tx('Mở danh sách đơn tại quầy', 'Open Counter Orders')}
+            </Link>
+            <Link
+              href="/dashboard/settings"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-2.5 text-xs font-extrabold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              {tx('Cấu hình quy trình đơn', 'Configure Order Workflow')}
+            </Link>
+          </div>
+        </div>
+      ) : visibleTickets.length > 0 ? (
         <div
           data-testid="kds-tickets-grid"
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"
@@ -801,6 +854,7 @@ export default function KitchenDisplayPage() {
               canFulfill={canFulfill}
               isUpdating={updatingOrderId === order.id}
               overdueThresholdMinutes={DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES}
+              workflowConfig={workflowConfig}
               onAdvanceStatus={handleAdvanceStatus}
             />
           ))}

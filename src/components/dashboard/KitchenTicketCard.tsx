@@ -19,7 +19,18 @@ import {
   isKitchenOrderOverdue,
 } from '@/lib/kitchen-display';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
-import type { ShopOrder } from '@/types/qlaok';
+import {
+  getStaffOrderWorkflowActions,
+  resolveOrderCurrentWorkflowStep,
+  resolveShopOrderWorkflowConfig,
+  resolveStaffOrderStepLabel,
+} from '@/lib/order-workflow';
+import type {
+  OrderWorkflowStepStage,
+  ShopOrder,
+  ShopOrderWorkflowConfig,
+  ShopThemeConfig,
+} from '@/types/qlaok';
 
 export interface KitchenTicketCardProps {
   order: ShopOrder;
@@ -28,9 +39,11 @@ export interface KitchenTicketCardProps {
   canFulfill: boolean;
   isUpdating?: boolean;
   overdueThresholdMinutes?: number;
+  workflowConfig?: ShopOrderWorkflowConfig | ShopThemeConfig | null;
   onAdvanceStatus?: (
     order: ShopOrder,
-    nextStatus: 'preparing' | 'completed'
+    nextStatus: OrderWorkflowStepStage,
+    nextWorkflowStepId?: string
   ) => void;
 }
 
@@ -41,6 +54,7 @@ export function KitchenTicketCard({
   canFulfill,
   isUpdating = false,
   overdueThresholdMinutes = DEFAULT_KDS_OVERDUE_THRESHOLD_MINUTES,
+  workflowConfig,
   onAdvanceStatus,
 }: KitchenTicketCardProps) {
   const isEn = locale === 'en';
@@ -62,6 +76,30 @@ export function KitchenTicketCard({
     ? (order.order_code || '').trim()
     : `#${(order.order_code || '').trim()}`;
   const nextStatus = getNextKitchenOrderStatus(order.status);
+  const resolvedWorkflow = workflowConfig
+    ? resolveShopOrderWorkflowConfig(workflowConfig)
+    : null;
+  const currentWorkflowStep = resolvedWorkflow
+    ? resolveOrderCurrentWorkflowStep(order, resolvedWorkflow)
+    : null;
+  const canonicalStatusLabel = isNew
+    ? isEn
+      ? 'New'
+      : 'Chờ làm'
+    : isEn
+      ? 'Preparing'
+      : 'Đang làm';
+  const stepBadgeLabel = resolvedWorkflow
+    ? resolveStaffOrderStepLabel(
+        order,
+        resolvedWorkflow,
+        locale,
+        canonicalStatusLabel
+      )
+    : canonicalStatusLabel;
+  const workflowActions = resolvedWorkflow
+    ? getStaffOrderWorkflowActions(order, resolvedWorkflow, locale)
+    : [];
 
   const createdDate = new Date(order.created_at);
   const createdTimeText = Number.isNaN(createdDate.getTime())
@@ -81,6 +119,9 @@ export function KitchenTicketCard({
       data-testid={`kds-ticket-${order.id}`}
       data-order-code={order.order_code}
       data-order-status={order.status}
+      data-workflow-step-id={
+        currentWorkflowStep?.id || order.workflow_step_id || ''
+      }
       data-overdue={isOverdue ? 'true' : 'false'}
       className={`rounded-3xl bg-white dark:bg-slate-900 border-2 p-4 sm:p-5 shadow-xs flex flex-col justify-between gap-4 transition-all ${
         isOverdue
@@ -113,19 +154,14 @@ export function KitchenTicketCard({
               </span>
 
               <span
+                data-testid={`kds-ticket-step-${order.id}`}
                 className={`rounded-full px-2.5 py-0.5 text-[11px] font-black uppercase border ${
                   isNew
                     ? 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-500/20 dark:text-amber-200 dark:border-amber-500/40'
                     : 'bg-blue-100 text-blue-900 border-blue-300 dark:bg-blue-500/20 dark:text-blue-200 dark:border-blue-500/40'
                 }`}
               >
-                {isNew
-                  ? isEn
-                    ? 'New'
-                    : 'Chờ làm'
-                  : isEn
-                    ? 'Preparing'
-                    : 'Đang làm'}
+                {stepBadgeLabel}
               </span>
             </div>
 
@@ -285,7 +321,53 @@ export function KitchenTicketCard({
 
       {/* Touch Action Footer: Only shown/enabled for memberships with orders.fulfill */}
       <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-        {canFulfill && nextStatus ? (
+        {canFulfill && resolvedWorkflow && workflowActions.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {workflowActions.map((action) => {
+              const isCompleting = action.stage === 'completed';
+              const testId =
+                workflowActions.length === 1
+                  ? isCompleting
+                    ? `kds-action-complete-${order.id}`
+                    : `kds-action-start-${order.id}`
+                  : `kds-action-step-${order.id}-${action.stepId}`;
+
+              return (
+                <button
+                  key={action.stepId}
+                  type="button"
+                  data-testid={testId}
+                  data-workflow-step-id={action.stepId}
+                  data-workflow-stage={action.stage}
+                  disabled={isUpdating}
+                  aria-busy={isUpdating || undefined}
+                  onClick={() =>
+                    onAdvanceStatus?.(order, action.stage, action.stepId)
+                  }
+                  className={`min-h-[48px] flex-1 basis-[140px] max-w-full inline-flex items-center justify-center gap-2 rounded-2xl px-3.5 py-2.5 text-sm font-black text-white shadow-xs active:scale-[0.99] transition disabled:opacity-50 ${
+                    isCompleting
+                      ? 'bg-emerald-600 hover:bg-emerald-500'
+                      : 'bg-blue-600 hover:bg-blue-500'
+                  }`}
+                >
+                  {isUpdating ? (
+                    <Loader2
+                      className="h-4 w-4 shrink-0 animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : isCompleting ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <ChefHat className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="line-clamp-2 break-words text-center leading-tight">
+                    {action.actionLabel}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : canFulfill && !resolvedWorkflow && nextStatus ? (
           isNew ? (
             <button
               type="button"

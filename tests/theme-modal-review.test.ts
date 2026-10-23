@@ -12,4 +12,5 @@ test('theme preferences survive unavailable storage and the managed-table confir
   ], { cwd: process.cwd(), encoding: 'utf8', timeout: 30000 });
   assert.match(output, /PASS: inaccessible localStorage getter/);
   assert.match(output, /PASS: actual confirmation component server-rendered/);
+  assert.match(output, /PASS: guest order tracker renders configured workflow labels in VI\/EN with legacy fallback/);
 });

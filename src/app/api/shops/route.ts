@@ -27,6 +27,8 @@ import {
   dbUpsertShopSePayConfig,
 } from '@/lib/sepay-reconciliation';
 import { verifyTableQrSignature } from '@/lib/shop-tables';
+import { validateOrderWorkflowConfig } from '@/lib/order-workflow';
+import { validateLabelPrintConfig } from '@/lib/label-print-config';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -401,14 +403,43 @@ export async function PATCH(req: Request) {
     assertNoSePaySecretInThemeConfig(incomingTheme);
     const bankKeys = ['paymentQr', 'paymentConfig'];
     const promoKeys = ['promoBanner', 'welcomePopup', 'flashSale'];
+    const ownerOnlyKeys = ['orderWorkflow', 'labelPrintConfig'];
+    let requiresOwnerOrAdmin = false;
+    let nonOwnerThemeKeyChanged = false;
     for (const key of Object.keys(incomingTheme || {})) {
-      if (JSON.stringify(incomingTheme?.[key as keyof ShopThemeConfig]) === JSON.stringify(prevTheme[key as keyof ShopThemeConfig])) continue;
+      const changed =
+        JSON.stringify(incomingTheme?.[key as keyof ShopThemeConfig]) !==
+        JSON.stringify(prevTheme[key as keyof ShopThemeConfig]);
+      if (ownerOnlyKeys.includes(key)) {
+        if (changed) {
+          requiresOwnerOrAdmin = true;
+        }
+        continue;
+      }
+      if (!changed) continue;
+      nonOwnerThemeKeyChanged = true;
       if (bankKeys.includes(key)) requiredPerms.add('settings.bank');
       else if (promoKeys.includes(key)) requiredPerms.add('promotions.manage');
       else requiredPerms.add('settings.manage');
     }
+    const hasExplicitOwnerOnlyKey = Boolean(
+      incomingTheme &&
+        ('orderWorkflow' in incomingTheme || 'labelPrintConfig' in incomingTheme)
+    );
+    if (
+      hasExplicitOwnerOnlyKey &&
+      !nonOwnerThemeKeyChanged &&
+      !Object.keys(patch).some((key) => key !== 'theme_config')
+    ) {
+      requiresOwnerOrAdmin = true;
+    }
     if (Object.keys(patch).some((key) => key !== 'theme_config') || !requiredPerms.size) {
       requiredPerms.add('settings.manage');
+    }
+
+    if (requiresOwnerOrAdmin) {
+      const ownerAuth = await requireShopOwnerOrAdmin(req, id);
+      if (ownerAuth.errorResponse) return ownerAuth.errorResponse;
     }
 
     const auth = await requireShopPermission(
@@ -417,6 +448,50 @@ export async function PATCH(req: Request) {
       Array.from(requiredPerms)
     );
     if (auth.errorResponse) return auth.errorResponse;
+
+    let validatedOrderWorkflow = prevTheme.orderWorkflow;
+    if (incomingTheme && 'orderWorkflow' in incomingTheme && incomingTheme.orderWorkflow !== undefined) {
+      const wfValidation = validateOrderWorkflowConfig(incomingTheme.orderWorkflow);
+      if (!wfValidation.valid || !wfValidation.config) {
+        const primaryError = wfValidation.errors[0];
+        return NextResponse.json(
+          {
+            error:
+              primaryError?.message ||
+              'Cấu hình quy trình đơn hàng không hợp lệ.',
+            code: primaryError?.code || 'INVALID_WORKFLOW_CONFIG',
+            errors: wfValidation.errors,
+          },
+          { status: 400 }
+        );
+      }
+      validatedOrderWorkflow = wfValidation.config;
+    }
+
+    let validatedLabelPrintConfig = prevTheme.labelPrintConfig;
+    if (
+      incomingTheme &&
+      'labelPrintConfig' in incomingTheme &&
+      incomingTheme.labelPrintConfig !== undefined
+    ) {
+      const labelValidation = validateLabelPrintConfig(
+        incomingTheme.labelPrintConfig
+      );
+      if (!labelValidation.valid || !labelValidation.config) {
+        const primaryError = labelValidation.errors[0];
+        return NextResponse.json(
+          {
+            error:
+              primaryError?.message ||
+              'Cấu hình in tem nhãn không hợp lệ.',
+            code: primaryError?.code || 'INVALID_LABEL_PRINT_CONFIG',
+            errors: labelValidation.errors,
+          },
+          { status: 400 }
+        );
+      }
+      validatedLabelPrintConfig = labelValidation.config;
+    }
 
     if (
       patch.opening_hours_confirmed !== undefined &&
@@ -428,7 +503,7 @@ export async function PATCH(req: Request) {
       );
     }
 
-    // Safely merge theme_config so partial updates do not drop imageUrl, ctaText, or paymentQr
+    // Safely merge theme_config so partial updates do not drop imageUrl, ctaText, paymentQr, orderWorkflow, or labelPrintConfig
     if (incomingTheme) {
       patch.theme_config = {
         ...prevTheme,
@@ -455,6 +530,12 @@ export async function PATCH(req: Request) {
           incomingTheme.paymentQr !== undefined
             ? incomingTheme.paymentQr
             : prevTheme.paymentQr,
+        ...(validatedOrderWorkflow !== undefined
+          ? { orderWorkflow: validatedOrderWorkflow }
+          : {}),
+        ...(validatedLabelPrintConfig !== undefined
+          ? { labelPrintConfig: validatedLabelPrintConfig }
+          : {}),
       };
     }
 

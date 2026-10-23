@@ -305,8 +305,10 @@ export async function POST(req: Request) {
       const resolvedOrderId = body.orderId || body.order_id;
       const ticketType = (body.ticketType ||
         body.ticket_type ||
+        body.printType ||
+        body.print_type ||
         'receipt') as TicketPrintType;
-      if (!['kitchen', 'provisional', 'receipt'].includes(ticketType)) {
+      if (!['kitchen', 'provisional', 'receipt', 'label'].includes(ticketType)) {
         return NextResponse.json({ error: 'Loại phiếu không hợp lệ' }, { status: 400 });
       }
       if (!resolvedOrderId) {
@@ -324,7 +326,7 @@ export async function POST(req: Request) {
       }
 
       const requiredPerm: ShopPermission =
-        ticketType === 'kitchen'
+        ticketType === 'kitchen' || ticketType === 'label'
           ? 'orders.print_kitchen'
           : ticketType === 'provisional'
             ? 'orders.print_provisional'
@@ -473,10 +475,7 @@ export async function POST(req: Request) {
         );
       }
 
-      if (
-        (payment_status === 'paid' || markCompletedImmediately) &&
-        !canCollectPayment
-      ) {
+      if (payment_status === 'paid' && !canCollectPayment) {
         return NextResponse.json(
           {
             error: `Tài khoản (${membership?.role || 'staff'}) không có quyền xác nhận thu tiền.`,
@@ -485,6 +484,14 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+    } else if (hasCreatePerm && payment_status === 'paid' && !canCollectPayment) {
+      return NextResponse.json(
+        {
+          error: `Tài khoản (${membership?.role || 'staff'}) không có quyền xác nhận thu tiền.`,
+          code: 'INSUFFICIENT_SHOP_PERMISSION',
+        },
+        { status: 403 }
+      );
     }
 
     if (body.expected_total !== undefined) {
@@ -613,6 +620,8 @@ export async function PATCH(req: Request) {
       trackingToken,
       tracking_token,
       status,
+      workflow_step_id,
+      workflowStepId,
       payment_method,
       payment_status,
       payment_idempotency_key,
@@ -636,6 +645,8 @@ export async function PATCH(req: Request) {
       trackingToken?: string;
       tracking_token?: string;
       status?: OrderStatus;
+      workflow_step_id?: string | null;
+      workflowStepId?: string | null;
       payment_method?: PaymentMethod;
       payment_status?: OrderPaymentStatus;
       payment_idempotency_key?: string;
@@ -654,6 +665,9 @@ export async function PATCH(req: Request) {
       items?: OrderLineItem[];
       discount_amount?: number;
     };
+
+    const resolvedWorkflowStepId =
+      workflow_step_id !== undefined ? workflow_step_id : workflowStepId;
 
     const resolvedTableId = table_id !== undefined ? table_id : tableId;
     const resolvedTableCode = table_code !== undefined ? table_code : tableCode;
@@ -724,6 +738,7 @@ export async function PATCH(req: Request) {
 
       if (
         (status && status !== 'new' && status !== 'cancelled') ||
+        resolvedWorkflowStepId !== undefined ||
         (payment_status && payment_status !== 'unpaid') ||
         (discount_amount !== undefined && Number(discount_amount) > 0)
       ) {
@@ -808,7 +823,14 @@ export async function PATCH(req: Request) {
       requiredPerms.add('orders.edit_items');
     }
     if (isCancellingUnpaid) requiredPerms.add('orders.cancel_unpaid');
-    if (status !== undefined && status !== existingOrder.status && status !== 'cancelled') requiredPerms.add('orders.fulfill');
+    if (
+      (status !== undefined &&
+        status !== existingOrder.status &&
+        status !== 'cancelled') ||
+      (resolvedWorkflowStepId !== undefined && status !== 'cancelled')
+    ) {
+      requiredPerms.add('orders.fulfill');
+    }
     if (requiredPerms.size === 0) requiredPerms.add('orders.fulfill');
 
     const auth = await requireShopPermission(
@@ -903,6 +925,7 @@ export async function PATCH(req: Request) {
 
     const updated = await dbUpdateOrderStatus(resolvedOrderId, {
       status,
+      workflow_step_id: resolvedWorkflowStepId,
       payment_method,
       payment_status,
       payment_idempotency_key:
@@ -932,6 +955,7 @@ export async function PATCH(req: Request) {
       action: 'update_order',
       before: {
         status: existingOrder.status,
+        workflow_step_id: existingOrder.workflow_step_id,
         payment_status: existingOrder.payment_status,
         subtotal_amount: existingOrder.subtotal_amount,
         discount_amount: existingOrder.discount_amount,
@@ -940,6 +964,7 @@ export async function PATCH(req: Request) {
       },
       after: {
         status: updated.status,
+        workflow_step_id: updated.workflow_step_id,
         payment_status: updated.payment_status,
         subtotal_amount: updated.subtotal_amount,
         discount_amount: updated.discount_amount,
@@ -961,7 +986,7 @@ export async function PATCH(req: Request) {
       error instanceof Error
         ? error.message
         : 'Không thể cập nhật trạng thái đơn';
-    const statusCode = /ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
+    const statusCode = /ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED|AMBIGUOUS_WORKFLOW_TRANSITION/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
     const code = extractOrderErrorCode(message);
     return NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status: statusCode });
   }

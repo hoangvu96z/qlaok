@@ -30,8 +30,13 @@ import {
   Shop,
   ShopOrder,
   ShopTable,
+  ShopThemeConfig,
   SupportedLocale,
 } from '@/types/qlaok';
+import {
+  resolveWorkflowLocalizedText,
+  validateOrderWorkflowConfig,
+} from '@/lib/order-workflow';
 import {
   formatCurrency,
   formatTableLabel,
@@ -102,6 +107,66 @@ function isGuestOrderFinished(order: ShopOrder | null | undefined): boolean {
     return order.payment_status === 'paid' || order.payment_method !== 'vietqr';
   }
   return false;
+}
+
+/**
+ * Resolves the configured customer-facing label for the order's current workflow step.
+ * Returns null if the order has no workflow step ID, unknown/stale ID, stage mismatch,
+ * or if the shop's workflow configuration is missing or invalid.
+ */
+export function resolveCurrentWorkflowCustomerLabel(
+  order: Pick<ShopOrder, 'status' | 'workflow_step_id'> | null | undefined,
+  themeConfig: ShopThemeConfig | null | undefined,
+  locale: SupportedLocale
+): string | null {
+  if (!order || order.status === 'cancelled') {
+    return null;
+  }
+
+  const rawStepId =
+    typeof order.workflow_step_id === 'string'
+      ? order.workflow_step_id.trim()
+      : '';
+  if (!rawStepId) {
+    return null;
+  }
+
+  try {
+    const candidateWorkflow =
+      themeConfig && typeof themeConfig === 'object'
+        ? 'orderWorkflow' in themeConfig &&
+          typeof themeConfig.orderWorkflow === 'object' &&
+          themeConfig.orderWorkflow !== null &&
+          !Array.isArray(themeConfig.orderWorkflow)
+          ? themeConfig.orderWorkflow
+          : 'steps' in themeConfig && 'start_step_id' in themeConfig
+            ? themeConfig
+            : null
+        : null;
+
+    if (!candidateWorkflow) {
+      return null;
+    }
+
+    const validation = validateOrderWorkflowConfig(candidateWorkflow);
+    if (!validation.valid || !validation.config) {
+      return null;
+    }
+
+    const matchedStep = validation.config.steps.find(
+      (s) => s.id === rawStepId && s.stage === order.status
+    );
+    if (!matchedStep) {
+      return null;
+    }
+
+    const labelField =
+      matchedStep.customer_label_i18n || matchedStep.label_i18n;
+    const localized = resolveWorkflowLocalizedText(labelField, locale)?.trim();
+    return localized || null;
+  } catch {
+    return null;
+  }
 }
 
 const SEND_ORDER_LABELS: Record<
@@ -298,6 +363,15 @@ export function ShowToStaffModal({
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const orderText = SEND_ORDER_LABELS[locale] || SEND_ORDER_LABELS.vi;
   const guestLabels = getGuestOrderLabels(locale);
+  const currentStepCustomerLabel = useMemo(
+    () =>
+      resolveCurrentWorkflowCustomerLabel(
+        activeOrder,
+        shop.theme_config,
+        locale
+      ),
+    [activeOrder, shop.theme_config, locale]
+  );
   const visitorMeta = LOCALE_META[locale] || LOCALE_META.vi;
   const quickTagsPool = QUICK_TAGS_BY_VERTICAL[shop.vertical] || [];
   const resolvedTableError = useMemo(
@@ -901,7 +975,10 @@ export function ShowToStaffModal({
                   {[
                     {
                       key: 'new',
-                      title: orderText.stepNew,
+                      title:
+                        activeOrder.status === 'new' && currentStepCustomerLabel
+                          ? currentStepCustomerLabel
+                          : orderText.stepNew,
                       active:
                         activeOrder.status === 'new' ||
                         activeOrder.status === 'preparing' ||
@@ -909,14 +986,22 @@ export function ShowToStaffModal({
                     },
                     {
                       key: 'preparing',
-                      title: orderText.stepPreparing,
+                      title:
+                        activeOrder.status === 'preparing' &&
+                        currentStepCustomerLabel
+                          ? currentStepCustomerLabel
+                          : orderText.stepPreparing,
                       active:
                         activeOrder.status === 'preparing' ||
                         activeOrder.status === 'completed',
                     },
                     {
                       key: 'completed',
-                      title: orderText.stepCompleted,
+                      title:
+                        activeOrder.status === 'completed' &&
+                        currentStepCustomerLabel
+                          ? currentStepCustomerLabel
+                          : orderText.stepCompleted,
                       active: activeOrder.status === 'completed',
                     },
                   ].map((step, i) => (

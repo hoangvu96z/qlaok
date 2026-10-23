@@ -25,6 +25,11 @@ import {
   isPromoBannerActiveNow,
   type SharedOrderQuoteResult,
 } from './order-pricing';
+import {
+  resolveCompletedTerminalWorkflowStep,
+  resolveOrderWorkflowMutation,
+  resolveShopOrderWorkflowConfig,
+} from './order-workflow';
 import { SEED_ITEMS, SEED_SHOPS } from './seed-data';
 import { dbGetShopTables, dbResolveOrderTableIdentity } from './shop-tables';
 import { isSupabaseConfigured } from './supabase/client';
@@ -778,6 +783,12 @@ export function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
     visitor_lang: (raw.visitor_lang as SupportedLocale) || 'vi',
     customer_note: raw.customer_note || '',
     status: (raw.status as OrderStatus) || 'new',
+    workflow_step_id:
+      raw.workflow_step_id !== undefined &&
+      raw.workflow_step_id !== null &&
+      String(raw.workflow_step_id).trim() !== ''
+        ? String(raw.workflow_step_id).trim()
+        : null,
     payment_method: (raw.payment_method as PaymentMethod) || 'cash',
     payment_status: paymentStatus,
     subtotal_amount: subtotalAmount,
@@ -809,7 +820,8 @@ export function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
         ? Number(raw.print_count)
         : Number(raw.kitchen_printed_count || 0) +
           Number(raw.provisional_printed_count || 0) +
-          Number(raw.receipt_printed_count || 0),
+          Number(raw.receipt_printed_count || 0) +
+          Number(raw.label_printed_count || 0),
     kitchen_printed_count:
       raw.kitchen_printed_count !== undefined
         ? Number(raw.kitchen_printed_count)
@@ -821,6 +833,10 @@ export function normalizeOrderRecord(raw: Partial<ShopOrder>): ShopOrder {
     receipt_printed_count:
       raw.receipt_printed_count !== undefined
         ? Number(raw.receipt_printed_count)
+        : 0,
+    label_printed_count:
+      raw.label_printed_count !== undefined && raw.label_printed_count !== null
+        ? Math.max(0, Number(raw.label_printed_count || 0))
         : 0,
     last_printed_at: raw.last_printed_at,
     created_at: raw.created_at || new Date().toISOString(),
@@ -1956,8 +1972,13 @@ export async function dbCreateOrder(params: {
     const trackingToken = `trk_${randomUUID()}`;
 
     const markCompleted = isStaff && Boolean(params.markCompletedImmediately);
-    const isPaid =
-      canCollectPayment && (markCompleted || params.payment_status === 'paid');
+    const isPaid = canCollectPayment && params.payment_status === 'paid';
+
+    const workflowConfig = resolveShopOrderWorkflowConfig(themeConfig);
+    const initialWorkflowStep = markCompleted
+      ? resolveCompletedTerminalWorkflowStep(workflowConfig)
+      : workflowConfig.steps.find((s) => s.id === workflowConfig.start_step_id) ||
+        workflowConfig.steps[0];
 
     const orderSource =
       isStaff && params.source === 'counter_pos' ? 'counter_pos' : 'qr_table';
@@ -1995,6 +2016,7 @@ export async function dbCreateOrder(params: {
       visitor_lang: params.visitor_lang || 'vi',
       customer_note: params.customer_note?.trim() || '',
       status: markCompleted ? 'completed' : 'new',
+      workflow_step_id: initialWorkflowStep.id,
       payment_method: params.payment_method || 'cash',
       payment_status: isPaid ? 'paid' : 'unpaid',
       subtotal_amount: quote.subtotal_amount,
@@ -2013,9 +2035,11 @@ export async function dbCreateOrder(params: {
         : undefined,
       paid_at: isPaid ? nowIso : undefined,
       paid_by: isPaid ? params.paid_by : undefined,
+      print_count: 0,
       kitchen_printed_count: 0,
       provisional_printed_count: 0,
       receipt_printed_count: 0,
+      label_printed_count: 0,
       created_at: nowIso,
       updated_at: nowIso,
     };
@@ -2082,6 +2106,7 @@ export async function dbUpdateOrderStatus(
   orderId: string,
   patch: {
     status?: OrderStatus;
+    workflow_step_id?: string | null;
     payment_method?: PaymentMethod;
     payment_status?: OrderPaymentStatus;
     payment_idempotency_key?: string;
@@ -2120,14 +2145,14 @@ export async function dbUpdateOrderStatus(
       throw new Error('ORDER_ALREADY_PAID: Đơn hàng đã được tiếp nhận hoặc đã thanh toán.');
     }
 
-    const nextStatus = patch.status || existing.status;
+    const requestedStatus = patch.status;
 
-    if (!VALID_ORDER_STATUSES.has(nextStatus)) {
-      throw new Error(`INVALID_STATUS: Trạng thái đơn "${nextStatus}" không hợp lệ.`);
+    if (requestedStatus !== undefined && !VALID_ORDER_STATUSES.has(requestedStatus)) {
+      throw new Error(`INVALID_STATUS: Trạng thái đơn "${requestedStatus}" không hợp lệ.`);
     }
 
     // State machine guard: completed order cannot revert backward to 'new'
-    if (existing.status === 'completed' && nextStatus === 'new') {
+    if (existing.status === 'completed' && requestedStatus === 'new') {
       throw new Error(
         'INVALID_STATE_TRANSITION: Đơn hàng đã hoàn tất không thể chuyển ngược về trạng thái mới.'
       );
@@ -2169,7 +2194,8 @@ export async function dbUpdateOrderStatus(
     if (
       existing.payment_status === 'paid' &&
       patch.payment_status === 'paid' &&
-      nextStatus === existing.status &&
+      (requestedStatus === undefined || requestedStatus === existing.status) &&
+      patch.workflow_step_id === undefined &&
       !isChangingItems &&
       !isChangingDiscount &&
       !isChangingTableId &&
@@ -2265,6 +2291,28 @@ export async function dbUpdateOrderStatus(
     if (isOrderDbConfigured()) for (const item of itemMap.values()) {
       store.inventory[item.id] = { stock_quantity: item.stock_quantity ?? null, sold_count: Number(item.sold_count || 0) };
     }
+
+    const hasOtherFieldMutations = Boolean(
+      isChangingItems ||
+        isChangingDiscount ||
+        isChangingTableId ||
+        isChangingTableCode ||
+        isChangingTableLabel ||
+        patch.payment_status !== undefined ||
+        patch.payment_method !== undefined ||
+        patch.customer_note !== undefined ||
+        patch.cancelled_reason !== undefined ||
+        patch.refund_reason !== undefined
+    );
+    const workflowMutation = resolveOrderWorkflowMutation({
+      existingOrder: existing,
+      requestedStatus: patch.status,
+      requestedWorkflowStepId: patch.workflow_step_id,
+      themeConfig: loaded.themeConfig,
+      hasOtherFieldMutations,
+    });
+    const nextStatus = workflowMutation.nextStatus;
+    const nextWorkflowStepId = workflowMutation.nextWorkflowStepId;
 
     const restoredItemIds: string[] = [];
     const zeroedItemIds: string[] = [];
@@ -2517,6 +2565,7 @@ export async function dbUpdateOrderStatus(
       total_amount: nextTotalAmount,
       bill_version: nextBillVersion,
       status: nextStatus,
+      workflow_step_id: nextWorkflowStepId,
       payment_method: patch.payment_method || existing.payment_method,
       payment_status: nextPaymentStatus,
       payment_idempotency_key:
@@ -2859,20 +2908,27 @@ export async function dbRecordOrderPrint(
     const receiptCount =
       (existing.receipt_printed_count || 0) +
       (ticketType === 'receipt' ? 1 : 0);
+    const labelCount =
+      (existing.label_printed_count || 0) +
+      (ticketType === 'label' ? 1 : 0);
 
     const printCount =
       ticketType === 'kitchen'
         ? kitchenCount
         : ticketType === 'provisional'
           ? provisionalCount
-          : receiptCount;
+          : ticketType === 'label'
+            ? labelCount
+            : receiptCount;
 
     const updated: ShopOrder = {
       ...existing,
-      print_count: kitchenCount + provisionalCount + receiptCount,
+      print_count:
+        kitchenCount + provisionalCount + receiptCount + labelCount,
       kitchen_printed_count: kitchenCount,
       provisional_printed_count: provisionalCount,
       receipt_printed_count: receiptCount,
+      label_printed_count: labelCount,
       last_printed_at: nowIso,
       updated_at: nowIso,
     };

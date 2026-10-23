@@ -114,6 +114,65 @@ export interface ShopPaymentConfig {
   paymentNote?: string;     // Optional note shown below QR
 }
 
+export type OrderWorkflowTemplateId =
+  | 'classic_kitchen'
+  | 'counter_bar_serve'
+  | 'simple_counter'
+  | 'custom';
+
+export type WorkflowTemplateId = OrderWorkflowTemplateId;
+
+export type OrderWorkflowStepStage = 'new' | 'preparing' | 'completed';
+
+export interface OrderWorkflowStepConfig {
+  id: string;
+  stage: OrderWorkflowStepStage;
+  label_i18n: I18nText;
+  action_label_i18n: I18nText;
+  customer_label_i18n?: I18nText;
+  show_on_kds: boolean;
+  suggest_label_print?: boolean;
+  next_step_ids: string[];
+}
+
+export interface ShopOrderWorkflowConfig {
+  template_id: OrderWorkflowTemplateId;
+  kds_enabled: boolean;
+  start_step_id: string;
+  steps: OrderWorkflowStepConfig[];
+}
+
+export type LabelPaperPreset =
+  | 'cup_sticker_50x30'
+  | 'cup_sticker_40x30'
+  | 'production_slip_58mm'
+  | 'production_slip_80mm';
+
+export type LabelSplitMode =
+  | 'per_item_unit'
+  | 'per_line_item'
+  | 'single_ticket';
+
+export interface ShopLabelPrintConfig {
+  enabled: boolean;
+  paper_preset: LabelPaperPreset;
+  split_mode: LabelSplitMode;
+  copies_per_unit: number;
+  max_labels_per_print: number;
+  show_shop_name: boolean;
+  show_order_code: boolean;
+  show_table_label: boolean;
+  show_item_name: boolean;
+  show_item_options: boolean;
+  show_item_note: boolean;
+  show_order_note: boolean;
+  show_sequence_counter: boolean;
+  show_timestamp: boolean;
+  show_price: boolean;
+  show_payment_qr: boolean;
+  custom_footer_i18n?: I18nText;
+}
+
 export interface ShopThemeConfig {
   primaryColor: string;
   layout: 'grid' | 'list';
@@ -126,6 +185,8 @@ export interface ShopThemeConfig {
   welcomePopup?: ShopPopupConfig;
   paymentConfig?: ShopPaymentConfig;
   paymentQr?: ShopPaymentConfig;
+  orderWorkflow?: ShopOrderWorkflowConfig;
+  labelPrintConfig?: ShopLabelPrintConfig;
 }
 
 export interface Shop {
@@ -195,7 +256,7 @@ export interface CatalogItem {
 export type OrderStatus = 'new' | 'preparing' | 'completed' | 'cancelled';
 export type PaymentMethod = 'cash' | 'vietqr';
 export type OrderPaymentStatus = 'unpaid' | 'paid' | 'refunded';
-export type TicketPrintType = 'kitchen' | 'provisional' | 'receipt';
+export type TicketPrintType = 'kitchen' | 'provisional' | 'receipt' | 'label';
 
 export type ShopRole = 'owner' | 'cashier' | 'staff';
 
@@ -354,6 +415,7 @@ export interface ShopOrder {
   visitor_lang: SupportedLocale;
   customer_note?: string;
   status: OrderStatus;
+  workflow_step_id?: string | null;
   payment_method: PaymentMethod;
   payment_status: OrderPaymentStatus;
   subtotal_amount?: number;
@@ -387,6 +449,7 @@ export interface ShopOrder {
   kitchen_printed_count?: number;
   provisional_printed_count?: number;
   receipt_printed_count?: number;
+  label_printed_count?: number;
   last_printed_at?: string | null;
   last_printed_by?: string | null;
   created_at: string;

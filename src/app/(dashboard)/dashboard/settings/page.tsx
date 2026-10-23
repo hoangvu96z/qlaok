@@ -53,6 +53,8 @@ import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { ShopMembersManager } from '@/components/dashboard/ShopMembersManager';
+import { ShopOrderWorkflowEditor } from '@/components/dashboard/ShopOrderWorkflowEditor';
+import { ShopLabelPrintSettingsEditor } from '@/components/dashboard/ShopLabelPrintSettingsEditor';
 import { ShopSePayWebhookManager } from '@/components/dashboard/ShopSePayWebhookManager';
 import { WeeklyOpeningHoursPicker } from '@/components/ui/TimeSchedulePicker';
 import { uploadCompressedImage } from '@/lib/upload-helper';
@@ -153,8 +155,17 @@ export default function DashboardSettingsPage() {
 
   const [supportedLangs, setSupportedLangs] =
     useState<SupportedLocale[]>(ALL_LOCALES);
-  const [openingHours, setOpeningHours] = useState<OpeningHours | null>(null);
-  const [openingHoursConfirmed, setOpeningHoursConfirmed] = useState(false);
+  const [openingHours, setOpeningHours] = useState<OpeningHours | null>(() =>
+    activeShop
+      ? createInitialOpeningHoursSettingsState(activeShop).openingHours
+      : null
+  );
+  const [openingHoursConfirmed, setOpeningHoursConfirmed] = useState<boolean>(
+    () =>
+      activeShop
+        ? createInitialOpeningHoursSettingsState(activeShop).openingHoursConfirmed
+        : false
+  );
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
 
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
@@ -347,9 +358,15 @@ export default function DashboardSettingsPage() {
         paymentNote: (paymentConfig.paymentNote || '').trim(),
       };
 
-      // Preserve promoBanner, welcomePopup, and flashSale configured in /dashboard/posts
+      // Preserve promoBanner, welcomePopup, and flashSale configured in /dashboard/posts;
+      // omit orderWorkflow and labelPrintConfig so PATCH /api/shops preserves its independent owner-managed values.
+      const {
+        orderWorkflow: _preservedOrderWorkflow,
+        labelPrintConfig: _preservedLabelPrintConfig,
+        ...restThemeConfig
+      } = activeShop.theme_config || {};
       const nextThemeConfig: ShopThemeConfig = {
-        ...activeShop.theme_config,
+        ...restThemeConfig,
         primaryColor,
         layout: layoutMode,
         backgroundStyle,
@@ -1671,6 +1688,12 @@ export default function DashboardSettingsPage() {
           </label>
         </div>
       </div>
+
+      {/* 5b. Owner-managed Order Fulfillment Workflow Flowchart Editor */}
+      <ShopOrderWorkflowEditor />
+
+      {/* 5c. Owner-managed Production Labels & Cup Stickers Config */}
+      <ShopLabelPrintSettingsEditor />
 
       {/* 6. Staff & roles (owner only; component renders nothing otherwise) */}
       <ShopMembersManager />

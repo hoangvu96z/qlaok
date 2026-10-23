@@ -1,10 +1,18 @@
 import type { AppLocale } from '@/lib/app-i18n';
 import { membershipHasPermission } from '@/lib/dashboard-nav';
+import {
+  getAllowedNextWorkflowSteps,
+  resolveOrderCurrentWorkflowStep,
+  resolveShopOrderWorkflowConfig,
+} from '@/lib/order-workflow';
 import type {
   ItemOptionChoice,
   OrderStatus,
+  OrderWorkflowStepStage,
   ShopMembership,
   ShopOrder,
+  ShopOrderWorkflowConfig,
+  ShopThemeConfig,
 } from '@/types/qlaok';
 
 /**
@@ -26,7 +34,8 @@ export interface KitchenQueueSummary {
 export interface KitchenFulfillPatchPayload {
   shop_id: string;
   order_id: string;
-  status: 'preparing' | 'completed';
+  status: OrderWorkflowStepStage;
+  workflow_step_id?: string;
 }
 
 export interface KitchenOrdersState {
@@ -184,13 +193,32 @@ function parseTimestampMs(raw: string | number | Date | null | undefined): numbe
 }
 
 /**
+ * Returns true when KDS is enabled for the given shop workflow/theme config.
+ * Defaults to true (`classic_kitchen`) when omitted.
+ */
+export function isKitchenDisplayEnabled(
+  workflowOrTheme?: ShopOrderWorkflowConfig | ShopThemeConfig | null
+): boolean {
+  if (workflowOrTheme === undefined || workflowOrTheme === null) {
+    return true;
+  }
+  return resolveShopOrderWorkflowConfig(workflowOrTheme).kds_enabled;
+}
+
+/**
  * Returns true only for active kitchen orders (`new` or `preparing`),
- * optionally scoped to a specific shop. Completed and cancelled orders are
- * excluded from the KDS while remaining preserved in order history/reports.
+ * optionally scoped to a specific shop and filtered by the shop's workflow
+ * (`kds_enabled` and `show_on_kds` for the resolved current step).
+ * Completed and cancelled orders are excluded from the KDS while remaining
+ * preserved in order history/reports.
  */
 export function isActiveKitchenOrder(
-  order: Pick<ShopOrder, 'status' | 'shop_id'> | null | undefined,
-  shopId?: string | null
+  order:
+    | Pick<ShopOrder, 'status' | 'shop_id' | 'workflow_step_id'>
+    | null
+    | undefined,
+  shopId?: string | null,
+  workflowOrTheme?: ShopOrderWorkflowConfig | ShopThemeConfig | null
 ): boolean {
   if (!order) return false;
   if (order.status !== 'new' && order.status !== 'preparing') {
@@ -200,18 +228,30 @@ export function isActiveKitchenOrder(
   if (cleanShopId && order.shop_id !== cleanShopId) {
     return false;
   }
+  if (workflowOrTheme !== undefined && workflowOrTheme !== null) {
+    const workflowConfig = resolveShopOrderWorkflowConfig(workflowOrTheme);
+    if (!workflowConfig.kds_enabled) {
+      return false;
+    }
+    const currentStep = resolveOrderCurrentWorkflowStep(order, workflowConfig);
+    if (!currentStep || !currentStep.show_on_kds) {
+      return false;
+    }
+  }
   return true;
 }
 
 /**
  * Selects only active orders (`new`, `preparing`) for the shop (and optional
- * status sub-filter) and sorts them oldest-first by `created_at` ascending.
+ * status sub-filter and workflow config) and sorts them oldest-first by
+ * `created_at` ascending.
  */
 export function selectAndSortKitchenOrders(
   orders: readonly ShopOrder[] | null | undefined,
   options?: {
     shopId?: string | null;
     statusFilter?: KitchenStatusFilter;
+    workflowConfig?: ShopOrderWorkflowConfig | ShopThemeConfig | null;
   }
 ): ShopOrder[] {
   if (!Array.isArray(orders) || orders.length === 0) {
@@ -221,11 +261,12 @@ export function selectAndSortKitchenOrders(
   const cleanShopId =
     typeof options?.shopId === 'string' ? options.shopId.trim() : '';
   const statusFilter: KitchenStatusFilter = options?.statusFilter || 'all';
+  const workflowConfig = options?.workflowConfig;
   const seenIds = new Set<string>();
   const filtered: ShopOrder[] = [];
 
   for (const order of orders) {
-    if (!isActiveKitchenOrder(order, cleanShopId)) continue;
+    if (!isActiveKitchenOrder(order, cleanShopId, workflowConfig)) continue;
     if (statusFilter !== 'all' && order.status !== statusFilter) continue;
     if (order.id) {
       if (seenIds.has(order.id)) continue;
@@ -326,11 +367,13 @@ export function summarizeKitchenQueue(
     shopId?: string | null;
     nowMs?: number;
     overdueThresholdMinutes?: number;
+    workflowConfig?: ShopOrderWorkflowConfig | ShopThemeConfig | null;
   }
 ): KitchenQueueSummary {
   const activeOrders = selectAndSortKitchenOrders(orders, {
     shopId: options?.shopId,
     statusFilter: 'all',
+    workflowConfig: options?.workflowConfig,
   });
   const nowMs = options?.nowMs ?? Date.now();
   const threshold =
@@ -383,17 +426,67 @@ export function getNextKitchenOrderStatus(
 
 /**
  * Builds the minimal `/api/orders` PATCH payload for KDS fulfillment transitions.
+ * When `workflowConfig` or `targetWorkflowStepId` is supplied, validates the
+ * requested transition against the shop workflow and includes the concrete
+ * `workflow_step_id` alongside its canonical `status`.
  * Never sets `payment_status`, `payment_method`, or `payment_idempotency_key`.
  */
 export function buildKitchenFulfillPatchPayload(params: {
   shopId: string;
   orderId: string;
   currentStatus: OrderStatus | string | null | undefined;
+  currentWorkflowStepId?: string | null;
+  targetWorkflowStepId?: string | null;
+  workflowConfig?: ShopOrderWorkflowConfig | ShopThemeConfig | null;
 }): KitchenFulfillPatchPayload | null {
   const cleanShopId = (params.shopId ?? '').trim();
   const cleanOrderId = (params.orderId ?? '').trim();
+  if (!cleanShopId || !cleanOrderId) {
+    return null;
+  }
+
+  const hasWorkflowContext =
+    (params.workflowConfig !== undefined && params.workflowConfig !== null) ||
+    (typeof params.targetWorkflowStepId === 'string' &&
+      params.targetWorkflowStepId.trim().length > 0);
+
+  if (hasWorkflowContext) {
+    if (
+      params.currentStatus !== 'new' &&
+      params.currentStatus !== 'preparing'
+    ) {
+      return null;
+    }
+    const config = resolveShopOrderWorkflowConfig(params.workflowConfig);
+    const allowedSteps = getAllowedNextWorkflowSteps(
+      {
+        status: params.currentStatus,
+        workflow_step_id: params.currentWorkflowStepId ?? null,
+      },
+      config
+    );
+    const requestedStepId =
+      typeof params.targetWorkflowStepId === 'string'
+        ? params.targetWorkflowStepId.trim()
+        : '';
+    const targetStep = requestedStepId
+      ? allowedSteps.find((step) => step.id === requestedStepId)
+      : allowedSteps[0];
+
+    if (!targetStep) {
+      return null;
+    }
+
+    return {
+      shop_id: cleanShopId,
+      order_id: cleanOrderId,
+      status: targetStep.stage,
+      workflow_step_id: targetStep.id,
+    };
+  }
+
   const nextStatus = getNextKitchenOrderStatus(params.currentStatus);
-  if (!cleanShopId || !cleanOrderId || !nextStatus) {
+  if (!nextStatus) {
     return null;
   }
   return {

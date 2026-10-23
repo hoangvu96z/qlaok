@@ -40,7 +40,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await db.exec('SET ROLE authenticated');
     await assert.rejects(db.query('SELECT * FROM payment_bank_ref_conflicts'), /permission denied/i);
     await db.exec('RESET ROLE');
-    for (const file of migrations.filter((name) => name.startsWith('004_') || name.startsWith('005_') || name.startsWith('007_'))) {
+    for (const file of migrations.filter((name) => name.startsWith('004_') || name.startsWith('005_') || name.startsWith('007_') || name.startsWith('017_'))) {
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
     const owner = '00000000-0000-0000-0000-000000000001';
@@ -835,6 +835,233 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal(devRes.target_plan, 'basic');
 
     await db.exec('RESET ROLE');
+
+    // Verify 016_order_workflow_and_label_printing.sql: additive columns, nonnegative counter check constraint, idempotency, and preserved order/payment invariants
+    const idx015 = migrations.indexOf('015_atomic_payment_completion.sql');
+    const idx016 = migrations.indexOf(
+      '016_order_workflow_and_label_printing.sql'
+    );
+    assert.ok(idx015 >= 0, '015_atomic_payment_completion.sql must exist');
+    assert.ok(
+      idx016 > idx015,
+      '016_order_workflow_and_label_printing.sql must sort after 015_atomic_payment_completion.sql'
+    );
+
+    const orderWorkflowColMeta = (
+      await db.query(
+        "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name IN ('workflow_step_id', 'label_printed_count') ORDER BY column_name"
+      )
+    ).rows;
+    assert.equal(orderWorkflowColMeta.length, 2);
+    assert.equal(orderWorkflowColMeta[0].column_name, 'label_printed_count');
+    assert.equal(orderWorkflowColMeta[0].data_type, 'integer');
+    assert.equal(orderWorkflowColMeta[0].is_nullable, 'NO');
+    assert.match(String(orderWorkflowColMeta[0].column_default), /^0\b/);
+    assert.equal(orderWorkflowColMeta[1].column_name, 'workflow_step_id');
+    assert.equal(orderWorkflowColMeta[1].data_type, 'text');
+    assert.equal(orderWorkflowColMeta[1].is_nullable, 'YES');
+
+    // Existing rows remain valid with workflow_step_id = NULL and label_printed_count = 0
+    const existingOrder016 = (
+      await db.query(
+        "SELECT id, status, payment_status, workflow_step_id, label_printed_count FROM orders WHERE id = 'ord-sepay-1'"
+      )
+    ).rows[0];
+    assert.equal(existingOrder016.workflow_step_id, null);
+    assert.equal(existingOrder016.label_printed_count, 0);
+
+    // Updating workflow_step_id and label_printed_count works on paid and unpaid orders without altering payment_status
+    await db.query(
+      "UPDATE orders SET workflow_step_id = 'bar_making', label_printed_count = 3 WHERE id = 'ord-sepay-1'"
+    );
+    const updatedOrder016 = (
+      await db.query(
+        "SELECT status, payment_status, workflow_step_id, label_printed_count FROM orders WHERE id = 'ord-sepay-1'"
+      )
+    ).rows[0];
+    assert.equal(updatedOrder016.workflow_step_id, 'bar_making');
+    assert.equal(updatedOrder016.label_printed_count, 3);
+    assert.equal(updatedOrder016.payment_status, 'paid');
+    assert.equal(updatedOrder016.status, 'preparing');
+
+    // Negative label_printed_count and NULL label_printed_count are rejected
+    await assert.rejects(
+      db.query(
+        "UPDATE orders SET label_printed_count = -1 WHERE id = 'ord-sepay-1'"
+      ),
+      /orders_label_printed_count_check|check constraint/i
+    );
+    await assert.rejects(
+      db.query(
+        "INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items, label_printed_count) VALUES ('ord-neg-label', 'ORD-NEG-1', 'sql-shop', 'Bàn 01', 'new', 'cash', 'unpaid', 10000, 10000, '[]'::jsonb, -5)"
+      ),
+      /orders_label_printed_count_check|check constraint/i
+    );
+    await assert.rejects(
+      db.query(
+        "UPDATE orders SET label_printed_count = NULL WHERE id = 'ord-sepay-1'"
+      ),
+      /null value in column "label_printed_count"|not-null/i
+    );
+
+    // Re-applying 016_order_workflow_and_label_printing.sql is idempotent and preserves existing values
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/016_order_workflow_and_label_printing.sql',
+        'utf8'
+      )
+    );
+    const afterReapply016 = (
+      await db.query(
+        "SELECT workflow_step_id, label_printed_count FROM orders WHERE id = 'ord-sepay-1'"
+      )
+    ).rows[0];
+    assert.equal(afterReapply016.workflow_step_id, 'bar_making');
+    assert.equal(afterReapply016.label_printed_count, 3);
+
+    // =========================================================================
+    // Migration 017: Order Workflow Step & Label Print Counter RPC Support
+    // =========================================================================
+    const idx017 = migrations.indexOf('017_order_workflow_rpc.sql');
+    assert.ok(
+      idx017 > idx016,
+      '017_order_workflow_rpc.sql must sort after 016_order_workflow_and_label_printing.sql'
+    );
+
+    // Ensure anon and authenticated cannot execute commit_order_with_inventory or update_order_with_inventory directly
+    await db.exec('SET ROLE anon');
+    await assert.rejects(
+      db.query(
+        "SELECT public.commit_order_with_inventory('{\"id\":\"ord-anon-1\",\"order_code\":\"ORD-ANON\",\"shop_id\":\"sql-shop\"}'::jsonb, '[]'::jsonb)"
+      ),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.update_order_with_inventory('ord-sepay-1', '{\"status\":\"completed\"}'::jsonb, '[]'::jsonb, '{}'::jsonb)"
+      ),
+      /permission denied/i
+    );
+
+    await db.exec('RESET ROLE; SET ROLE authenticated');
+    await assert.rejects(
+      db.query(
+        "SELECT public.commit_order_with_inventory('{\"id\":\"ord-auth-1\",\"order_code\":\"ORD-AUTH\",\"shop_id\":\"sql-shop\"}'::jsonb, '[]'::jsonb)"
+      ),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.update_order_with_inventory('ord-sepay-1', '{\"status\":\"completed\"}'::jsonb, '[]'::jsonb, '{}'::jsonb)"
+      ),
+      /permission denied/i
+    );
+
+    // service_role can execute both RPCs and round-trip workflow_step_id and label_printed_count
+    await db.exec('RESET ROLE; SET ROLE service_role');
+    await db.query(
+      `SELECT public.commit_order_with_inventory($1::jsonb, '[]'::jsonb)`,
+      [
+        JSON.stringify({
+          id: 'ord-rpc-wf-1',
+          order_code: 'ORD-RPC-WF1',
+          shop_id: 'sql-shop',
+          table_label: 'Tại quầy',
+          status: 'new',
+          workflow_step_id: 'counter_received',
+          payment_method: 'cash',
+          payment_status: 'unpaid',
+          subtotal_amount: 45000,
+          discount_amount: 0,
+          total_amount: 45000,
+          items: [],
+          print_count: 1,
+          kitchen_printed_count: 0,
+          provisional_printed_count: 0,
+          receipt_printed_count: 0,
+          label_printed_count: 1,
+        }),
+      ]
+    );
+
+    const committedWfRow = (
+      await db.query(
+        "SELECT id, status, workflow_step_id, payment_status, print_count, label_printed_count, kitchen_printed_count FROM orders WHERE id = 'ord-rpc-wf-1'"
+      )
+    ).rows[0];
+    assert.equal(committedWfRow.status, 'new');
+    assert.equal(committedWfRow.workflow_step_id, 'counter_received');
+    assert.equal(committedWfRow.payment_status, 'unpaid');
+    assert.equal(committedWfRow.print_count, 1);
+    assert.equal(committedWfRow.label_printed_count, 1);
+    assert.equal(committedWfRow.kitchen_printed_count, 0);
+
+    // Advance workflow_step_id and label_printed_count via update_order_with_inventory without changing payment_status
+    await db.query(
+      `SELECT public.update_order_with_inventory('ord-rpc-wf-1', $1::jsonb, '[]'::jsonb, $2::jsonb)`,
+      [
+        JSON.stringify({
+          status: 'preparing',
+          workflow_step_id: 'bar_making',
+          payment_status: 'unpaid',
+          print_count: 2,
+          label_printed_count: 2,
+        }),
+        JSON.stringify({ expected_bill_version: 1 }),
+      ]
+    );
+    const updatedWfRow = (
+      await db.query(
+        "SELECT status, workflow_step_id, payment_status, print_count, label_printed_count FROM orders WHERE id = 'ord-rpc-wf-1'"
+      )
+    ).rows[0];
+    assert.equal(updatedWfRow.status, 'preparing');
+    assert.equal(updatedWfRow.workflow_step_id, 'bar_making');
+    assert.equal(updatedWfRow.payment_status, 'unpaid');
+    assert.equal(updatedWfRow.print_count, 2);
+    assert.equal(updatedWfRow.label_printed_count, 2);
+
+    // Partial update omitting workflow_step_id and label_printed_count preserves existing values
+    await db.query(
+      `SELECT public.update_order_with_inventory('ord-rpc-wf-1', $1::jsonb, '[]'::jsonb, '{}'::jsonb)`,
+      [JSON.stringify({ customer_note: 'Ít đá' })]
+    );
+    const preservedWfRow = (
+      await db.query(
+        "SELECT customer_note, status, workflow_step_id, label_printed_count FROM orders WHERE id = 'ord-rpc-wf-1'"
+      )
+    ).rows[0];
+    assert.equal(preservedWfRow.customer_note, 'Ít đá');
+    assert.equal(preservedWfRow.status, 'preparing');
+    assert.equal(preservedWfRow.workflow_step_id, 'bar_making');
+    assert.equal(preservedWfRow.label_printed_count, 2);
+
+    // Legacy commit payload omitting workflow_step_id and label_printed_count defaults cleanly
+    await db.query(
+      `SELECT public.commit_order_with_inventory($1::jsonb, '[]'::jsonb)`,
+      [
+        JSON.stringify({
+          id: 'ord-rpc-legacy-1',
+          order_code: 'ORD-RPC-LEG1',
+          shop_id: 'sql-shop',
+          table_label: 'Bàn 02',
+          status: 'new',
+          payment_method: 'cash',
+          payment_status: 'unpaid',
+          subtotal_amount: 30000,
+          total_amount: 30000,
+          items: [],
+        }),
+      ]
+    );
+    const legacyWfRow = (
+      await db.query(
+        "SELECT workflow_step_id, label_printed_count, print_count FROM orders WHERE id = 'ord-rpc-legacy-1'"
+      )
+    ).rows[0];
+    assert.equal(legacyWfRow.workflow_step_id, null);
+    assert.equal(legacyWfRow.label_printed_count, 0);
+    assert.equal(legacyWfRow.print_count, 0);
 
     await db.exec('RESET ROLE');
 

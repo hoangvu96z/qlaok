@@ -19,6 +19,7 @@ import {
   Banknote,
   ShoppingBag,
   Printer,
+  Tag,
   Settings,
   Monitor,
   Edit3,
@@ -38,6 +39,7 @@ import {
   ShopMembership,
   ShopOrder,
   TableServiceRequest,
+  TicketPrintType,
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
@@ -47,6 +49,12 @@ import { ReceiptPrintModal } from '@/components/dashboard/ReceiptPrintModal';
 import { PosCounterWorkspace } from '@/components/dashboard/PosCounterWorkspace';
 import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
+import {
+  getStaffOrderWorkflowActions,
+  resolveOrderCurrentWorkflowStep,
+  resolveShopOrderWorkflowConfig,
+  resolveStaffOrderStepLabel,
+} from '@/lib/order-workflow';
 import {
   CHIME_SETTINGS_EVENT,
   CHIME_SOUND_OPTIONS,
@@ -136,6 +144,9 @@ export default function CounterOrdersPage() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [qrOrderModal, setQrOrderModal] = useState<ShopOrder | null>(null);
   const [printingOrder, setPrintingOrder] = useState<ShopOrder | null>(null);
+  const [printingInitialTicketType, setPrintingInitialTicketType] = useState<
+    TicketPrintType | undefined
+  >(undefined);
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [updatingAction, setUpdatingAction] = useState<string | null>(null);
   const updatingRef = useRef<string | null>(null);
@@ -528,6 +539,7 @@ export default function CounterOrdersPage() {
     orderId: string,
     updates: {
       status?: OrderStatus;
+      workflow_step_id?: string;
       payment_status?: OrderPaymentStatus;
       payment_method?: PaymentMethod;
       restock_items?: boolean;
@@ -572,6 +584,7 @@ export default function CounterOrdersPage() {
           updatedOrder &&
           (forcePrint || (updates.payment_status === 'paid' && autoPrintOnPay))
         ) {
+          setPrintingInitialTicketType(undefined);
           setPrintingOrder(updatedOrder);
         }
         return updatedOrder;
@@ -611,6 +624,10 @@ export default function CounterOrdersPage() {
     );
   // Non-destructive capabilities keep the legacy optimistic default while membership loads;
   // the server still enforces every permission on PATCH.
+  const canFulfillOrder =
+    !membership ||
+    membership.role === 'owner' ||
+    membership.permissions.includes('orders.fulfill');
   const canCollectPayment =
     !membership || membership.permissions.includes('payment.collect');
   const canViewReports =
@@ -619,6 +636,9 @@ export default function CounterOrdersPage() {
   const canRefundOrder = hasPermission('payment.refund');
   const canEditItems = hasPermission('orders.edit_items');
   const canCancelUnpaid = hasPermission('orders.cancel_unpaid');
+  const workflowConfig = resolveShopOrderWorkflowConfig(
+    activeShop?.theme_config
+  );
 
   const paymentMethodLabel = (method?: PaymentMethod | null) =>
     method === 'vietqr'
@@ -1257,7 +1277,10 @@ export default function CounterOrdersPage() {
             editingOrder={editingOrder}
             onCancelEditOrder={() => setEditingOrder(null)}
             autoPrintOnPay={autoPrintOnPay}
-            onPrintOrder={(ord) => setPrintingOrder(ord)}
+            onPrintOrder={(ord) => {
+              setPrintingInitialTicketType(undefined);
+              setPrintingOrder(ord);
+            }}
             onUpdateOrder={(id, up) => {
               const target = orders.find((o) => o.id === id);
               if (target && up.payment_status === 'paid') {
@@ -1280,6 +1303,7 @@ export default function CounterOrdersPage() {
                 bc.close();
               }
               if (shouldPrint) {
+                setPrintingInitialTicketType(undefined);
                 setPrintingOrder(createdOrder);
               }
             }}
@@ -1463,10 +1487,33 @@ export default function CounterOrdersPage() {
                 const isCompleted = order.status === 'completed';
                 const isCancelled = order.status === 'cancelled';
                 const isOrderUpdating = updatingId === order.id;
+                const canonicalStatusLabel = isNew
+                  ? t('orders.statusNew')
+                  : isPreparing
+                    ? t('orders.statusPreparing')
+                    : isCompleted
+                      ? t('orders.statusCompleted')
+                      : t('orders.statusCancelled');
+                const currentWorkflowStep = resolveOrderCurrentWorkflowStep(
+                  order,
+                  workflowConfig
+                );
+                const stepBadgeLabel = resolveStaffOrderStepLabel(
+                  order,
+                  workflowConfig,
+                  locale,
+                  canonicalStatusLabel
+                );
+                const workflowActions = canFulfillOrder
+                  ? getStaffOrderWorkflowActions(order, workflowConfig, locale)
+                  : [];
 
                 return (
                   <div
                     key={order.id}
+                    data-workflow-step-id={
+                      currentWorkflowStep?.id || order.workflow_step_id || ''
+                    }
                     className={`rounded-3xl bg-white border-2 p-5 shadow-xs flex flex-col justify-between gap-4 transition-all ${
                       isNew
                         ? 'border-amber-400 ring-4 ring-amber-400/15'
@@ -1489,6 +1536,12 @@ export default function CounterOrdersPage() {
                               #{order.order_code}
                             </span>
                             <span
+                              data-testid={`order-step-badge-${order.id}`}
+                              data-workflow-step-id={
+                                currentWorkflowStep?.id ||
+                                order.workflow_step_id ||
+                                ''
+                              }
                               className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase ${
                                 isNew
                                   ? 'bg-amber-100 text-amber-800'
@@ -1499,13 +1552,7 @@ export default function CounterOrdersPage() {
                                       : 'bg-rose-100 text-rose-700'
                               }`}
                             >
-                              {isNew
-                                ? t('orders.statusNew')
-                                : isPreparing
-                                  ? t('orders.statusPreparing')
-                                  : isCompleted
-                                    ? t('orders.statusCompleted')
-                                    : t('orders.statusCancelled')}
+                              {stepBadgeLabel}
                             </span>
                           </div>
 
@@ -1674,53 +1721,52 @@ export default function CounterOrdersPage() {
                           </button>
                         )}
 
-                        {isNew && (
-                          <button
-                            type="button"
-                            disabled={isOrderUpdating}
-                            aria-busy={isActionPending(order.id, 'accept') || undefined}
-                            onClick={() =>
-                              handleUpdateOrder(
-                                order.id,
-                                { status: 'preparing' },
-                                false,
-                                'accept'
-                              )
-                            }
-                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                          >
-                            {isActionPending(order.id, 'accept') ? (
-                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <ChefHat className="h-4 w-4" />
-                            )}
-                            <span>{t('orders.actionAccept')}</span>
-                          </button>
-                        )}
-
-                        {isPreparing && (
-                          <button
-                            type="button"
-                            disabled={isOrderUpdating}
-                            aria-busy={isActionPending(order.id, 'serve') || undefined}
-                            onClick={() =>
-                              handleUpdateOrder(
-                                order.id,
-                                { status: 'completed' },
-                                false,
-                                'serve'
-                              )
-                            }
-                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-xs hover:bg-blue-500 disabled:opacity-50"
-                          >
-                            {isActionPending(order.id, 'serve') ? (
-                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <CheckCircle2 className="h-4 w-4" />
-                            )}
-                            <span>{t('orders.actionServed')}</span>
-                          </button>
-                        )}
+                        {workflowActions.map((action) => {
+                          const actionKey = `step:${action.stepId}`;
+                          const isCompletingStage =
+                            action.stage === 'completed';
+                          return (
+                            <button
+                              key={action.stepId}
+                              type="button"
+                              data-testid={`order-workflow-action-${order.id}-${action.stepId}`}
+                              data-workflow-step-id={action.stepId}
+                              data-workflow-stage={action.stage}
+                              disabled={isOrderUpdating}
+                              aria-busy={
+                                isActionPending(order.id, actionKey) ||
+                                undefined
+                              }
+                              onClick={() =>
+                                handleUpdateOrder(
+                                  order.id,
+                                  action.patchPayload,
+                                  false,
+                                  actionKey
+                                )
+                              }
+                              className={`flex-1 basis-[135px] min-w-[120px] max-w-full inline-flex items-center justify-center gap-1.5 rounded-2xl px-3.5 py-2.5 text-xs font-black text-white shadow-xs transition disabled:opacity-50 ${
+                                isCompletingStage
+                                  ? 'bg-blue-600 hover:bg-blue-500'
+                                  : 'bg-blue-600 hover:bg-blue-500'
+                              }`}
+                            >
+                              {isActionPending(order.id, actionKey) ? (
+                                <Loader2
+                                  className="h-4 w-4 shrink-0 animate-spin"
+                                  aria-hidden="true"
+                                />
+                              ) : isCompletingStage ? (
+                                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                              ) : (
+                                <ChefHat className="h-4 w-4 shrink-0" />
+                              )}
+                              <span className="line-clamp-1 break-words">
+                                {action.actionLabel}
+                              </span>
+                            </button>
+                          );
+                        })}
 
                         {(isPreparing || isCompleted) &&
                           order.payment_status === 'unpaid' &&
@@ -1790,7 +1836,23 @@ export default function CounterOrdersPage() {
 
                         <button
                           type="button"
-                          onClick={() => setPrintingOrder(order)}
+                          data-testid={`order-print-labels-${order.id}`}
+                          onClick={() => {
+                            setPrintingInitialTicketType('label');
+                            setPrintingOrder(order);
+                          }}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-50 transition-colors"
+                        >
+                          <Tag className="h-4 w-4 text-emerald-600" />
+                          <span>{tx('In tem', 'Print labels')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPrintingInitialTicketType(undefined);
+                            setPrintingOrder(order);
+                          }}
                           className={`inline-flex items-center justify-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-black transition-colors ${
                             isCompleted
                               ? 'flex-1 border-slate-900 bg-slate-900 text-white hover:bg-slate-800'
@@ -2350,7 +2412,17 @@ export default function CounterOrdersPage() {
         <ReceiptPrintModal
           order={printingOrder}
           shop={activeShop}
-          onClose={() => setPrintingOrder(null)}
+          initialTicketType={printingInitialTicketType}
+          onClose={() => {
+            setPrintingOrder(null);
+            setPrintingInitialTicketType(undefined);
+          }}
+          onOrderUpdated={(updatedOrder) => {
+            setPrintingOrder(updatedOrder);
+            setOrders((prev) =>
+              prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
+            );
+          }}
           onConfirmPaid={
             canCollectPayment
               ? async (targetOrder) => {
