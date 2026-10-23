@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   APP_DICTIONARY,
   APP_LOCALES,
@@ -602,3 +603,93 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
   }
 });
 
+test('storefront LanguageSwitcher honors explicit supportedLangs single-locale array and defaults to ALL_LOCALES when omitted', () => {
+  const runnerScript = `
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import assert from 'node:assert/strict';
+import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
+import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
+
+// 1. Non-compact with supportedLangs=['vi']: must expose only Vietnamese and not expand to ALL_LOCALES
+const nonCompactViHtml = renderToStaticMarkup(
+  React.createElement(LanguageSwitcher, {
+    currentLocale: 'vi',
+    supportedLangs: ['vi'],
+    onChange: () => {},
+    compact: false,
+  })
+);
+assert.ok(nonCompactViHtml.includes('Tiếng Việt'), 'Must render Vietnamese');
+const nonCompactViButtons = nonCompactViHtml.match(/<button/g) || [];
+assert.equal(nonCompactViButtons.length, 1, 'Must render exactly 1 button for single-locale supportedLangs=[vi]');
+for (const loc of ALL_LOCALES) {
+  if (loc === 'vi') continue;
+  const meta = LOCALE_META[loc];
+  assert.equal(
+    nonCompactViHtml.includes(meta.nativeName),
+    false,
+    \`Must not render non-supported locale \${loc} (\${meta.nativeName}) in non-compact mode\`
+  );
+}
+
+// 2. Non-compact with supportedLangs omitted: retains existing default behavior (ALL_LOCALES)
+const nonCompactDefaultHtml = renderToStaticMarkup(
+  React.createElement(LanguageSwitcher, {
+    currentLocale: 'vi',
+    onChange: () => {},
+  })
+);
+const nonCompactDefaultButtons = nonCompactDefaultHtml.match(/<button/g) || [];
+assert.equal(nonCompactDefaultButtons.length, 8, 'Default non-compact must render all 8 locales');
+for (const loc of ALL_LOCALES) {
+  const meta = LOCALE_META[loc];
+  assert.ok(
+    nonCompactDefaultHtml.includes(meta.nativeName),
+    \`Default non-compact must include locale \${loc} (\${meta.nativeName})\`
+  );
+}
+
+// 3. Compact with supportedLangs=['vi'] (closed): trigger button displays active locale
+const compactViHtml = renderToStaticMarkup(
+  React.createElement(LanguageSwitcher, {
+    currentLocale: 'vi',
+    supportedLangs: ['vi'],
+    onChange: () => {},
+    compact: true,
+  })
+);
+assert.ok(compactViHtml.includes('Tiếng Việt'), 'Compact trigger must display active Vietnamese');
+for (const loc of ALL_LOCALES) {
+  if (loc === 'vi') continue;
+  const meta = LOCALE_META[loc];
+  assert.equal(
+    compactViHtml.includes(meta.nativeName),
+    false,
+    \`Compact trigger must not display other locale \${loc}\`
+  );
+}
+
+console.log('LANGUAGE_SWITCHER_REGRESSION_PASS');
+`;
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      '--import',
+      './tests/register-ts.mjs',
+      '--import',
+      './tests/tsx-review-loader.mjs',
+      '--input-type=module',
+      '-e',
+      runnerScript,
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 30000,
+    }
+  );
+  assert.match(output, /LANGUAGE_SWITCHER_REGRESSION_PASS/);
+});
