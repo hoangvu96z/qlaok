@@ -14,6 +14,10 @@ Kiểm tra tài liệu chính thức ngày 18/10/2026: [Google Antigravity — R
 
 `.agents/rules/` là vị trí hiện tại theo tài liệu CLI. `.agent/rules/` là vị trí legacy vẫn được hỗ trợ; repo đã chuyển sang đường dẫn hiện tại và không giữ hai bản trùng nhau. Không cần chuyển báo cáo lịch sử vào rules hoặc thay cấu hình global ảnh hưởng dự án khác.
 
+## GitHub Actions MCP
+
+Use the project-scoped server in `.codex/config.toml` to inspect Actions for `hoangvu96z/qlaok`. GitHub's hosted MCP requires `GITHUB_PAT_TOKEN` in the user's process environment; never store it in the repository or `.env`. This endpoint does not support Dynamic Client Registration, so `codex mcp login github` cannot authenticate it. Use a GitHub MCP connector already provided by the Codex host, or configure the PAT described in [GitHub Actions workflow](GITHUB_ACTIONS_WORKFLOW.md). Commit matching and fallback rules are in [AGENTS.md](../AGENTS.md).
+
 Rule có frontmatter `trigger: always_on` hợp lệ. Dùng `@[label](path)` để nhúng nội dung AGENTS.md và CODEGRAPH_WORKFLOW.md; đường dẫn tính từ file rule. Link Markdown thông thường chỉ là tham chiếu, không bảo đảm nhúng nội dung. Không dùng `manual`/`model_decision` cho quy tắc bắt buộc. Không đặt rule trong thư mục con của rules vì CLI mặc định chỉ quét file `.md` trực tiếp.
 
 ## Kiểm chứng và phạm vi cưỡng chế

@@ -4,7 +4,7 @@ Cập nhật theo workspace ngày **23/10/2026**. Nền tảng menu/trang cửa 
 
 ## Bắt đầu cho coding agent
 
-**Bắt buộc dùng CodeGraph trước khi tìm/đọc/sửa code.** Codex đọc [AGENTS.md](AGENTS.md); AGY/Antigravity đọc [.agents/rules/codegraph.md](.agents/rules/codegraph.md) và [GEMINI.md](GEMINI.md). Rule AGY dùng `trigger: always_on` và nhúng đầy đủ chính sách mỗi lượt. Cấu hình: [AGENT_RULES.md](docs/AGENT_RULES.md). Quy trình và ngoại lệ: [CODEGRAPH_WORKFLOW.md](docs/CODEGRAPH_WORKFLOW.md).
+**Bắt buộc dùng CodeGraph trước khi tìm/đọc/sửa code.** Codex đọc [AGENTS.md](AGENTS.md); AGY/Antigravity đọc [.agents/rules/codegraph.md](.agents/rules/codegraph.md) và [GEMINI.md](GEMINI.md). Rule AGY dùng `trigger: always_on` và nhúng đầy đủ chính sách mỗi lượt. Cấu hình agent: [AGENT_RULES.md](docs/AGENT_RULES.md). Quy trình CodeGraph: [CODEGRAPH_WORKFLOW.md](docs/CODEGRAPH_WORKFLOW.md). Codex có cấu hình GitHub MCP theo project để kiểm tra Actions mà không mở trang web; MCP CLI cần `GITHUB_PAT_TOKEN` trong môi trường user, không lưu token trong repo: [GitHub Actions workflow](docs/GITHUB_ACTIONS_WORKFLOW.md).
 
 ## Chức năng hiện tại
 
