@@ -15,7 +15,11 @@ for (const key of [
   'PAYMENT_DEV_SIMULATE',
   'SAAS_BANK_ACCOUNTS',
   'SAAS_BANK_ACCOUNT',
+  'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
   'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+  'NEXT_PUBLIC_SAAS_BANK_BIN',
+  'NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME',
+  'NEXT_PUBLIC_SAAS_BANK_NAME',
 ]) {
   delete process.env[key];
 }
@@ -60,6 +64,11 @@ const { canReopenPaymentTransaction, buildBillingColumns } = await import(
 const {
   getConfiguredSaasReceivingAccounts,
   normalizeReceivingAccount,
+  parseSaasPublicBankAccounts,
+  getSaasPublicBankConfigs,
+  getSaasBankConfig,
+  selectSaasPublicBankConfig,
+  buildSaasVietQrUrl,
 } = await import('@/lib/saas-bank-accounts');
 
 let profilePlan: string | null = 'free';
@@ -3560,7 +3569,19 @@ test('SaaS receiving accounts parser and precedence helper: JSON parsing, whites
     ['1234567890']
   );
 
-  // 5. Public legacy fallback when both server variables are absent or blank
+  // 5. Public list fallback when both server variables are absent or blank
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: JSON.stringify([
+        { bin: '970436', account: '  1111 2222  ' },
+        { bin: '970422', account: '  3333 4444  ' },
+        { bin: '970436', account: '11112222' }, // duplicate account
+      ]),
+    }),
+    ['11112222', '33334444']
+  );
+
+  // 5b. Public legacy fallback when both server variables and public list are absent or blank
   assert.deepEqual(
     getConfiguredSaasReceivingAccounts({
       NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '  9876 5432 10  ',
@@ -3571,18 +3592,43 @@ test('SaaS receiving accounts parser and precedence helper: JSON parsing, whites
     getConfiguredSaasReceivingAccounts({
       SAAS_BANK_ACCOUNTS: '   ',
       SAAS_BANK_ACCOUNT: '   ',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '   ',
       NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '9876543210',
     }),
     ['9876543210']
   );
 
-  // 6. Server precedence: SAAS_BANK_ACCOUNT takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNT when SAAS_BANK_ACCOUNTS is absent
+  // 6. Server precedence over public variables
+  // 6a. SAAS_BANK_ACCOUNTS takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNTS
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      SAAS_BANK_ACCOUNTS: '["SERVER_ACCT_1"]',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: JSON.stringify([
+        { bin: '970436', account: 'PUBLIC_ACCT_1' },
+      ]),
+    }),
+    ['SERVER_ACCT_1']
+  );
+  // 6b. SAAS_BANK_ACCOUNT takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNTS and NEXT_PUBLIC_SAAS_BANK_ACCOUNT
   assert.deepEqual(
     getConfiguredSaasReceivingAccounts({
       SAAS_BANK_ACCOUNT: '11111',
-      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '22222',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: JSON.stringify([
+        { bin: '970436', account: '22222' },
+      ]),
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '33333',
     }),
     ['11111']
+  );
+  // 6c. NEXT_PUBLIC_SAAS_BANK_ACCOUNTS takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNT when server variables absent
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: JSON.stringify([
+        { bin: '970436', account: 'PUBLIC_MULTI' },
+      ]),
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: 'PUBLIC_LEGACY',
+    }),
+    ['PUBLIC_MULTI']
   );
 
   // 7. Malformed configured array fails closed to [] and DOES NOT fall back
@@ -3664,6 +3710,28 @@ test('SaaS receiving accounts parser and precedence helper: JSON parsing, whites
     }),
     []
   );
+  // 7g. Malformed NEXT_PUBLIC_SAAS_BANK_ACCOUNTS fails closed to [] and DOES NOT fall back to NEXT_PUBLIC_SAAS_BANK_ACCOUNT
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: 'malformed_json_here',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '88888',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '[]',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '88888',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getConfiguredSaasReceivingAccounts({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '[{"bin":"970436"}]', // missing account
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '88888',
+    }),
+    []
+  );
 
   // 8. All variables absent or blank resolves to []
   assert.deepEqual(getConfiguredSaasReceivingAccounts({}), []);
@@ -3671,6 +3739,7 @@ test('SaaS receiving accounts parser and precedence helper: JSON parsing, whites
     getConfiguredSaasReceivingAccounts({
       SAAS_BANK_ACCOUNTS: '  ',
       SAAS_BANK_ACCOUNT: '  ',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '  ',
       NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '  ',
     }),
     []
@@ -3922,6 +3991,504 @@ test('payment webhook: multiple allowlisted receiving accounts proceed, unlisted
     if (previousPublicSaasAccount === undefined)
       delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
     else process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = previousPublicSaasAccount;
+
+    if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
+    else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+  }
+});
+
+test('public VietQR receiving accounts pure parser: JSON parsing, required/optional fields, display order, id omission, and fail-closed validation', () => {
+  // 1. Valid JSON array with required and optional fields
+  const validJson = JSON.stringify([
+    {
+      bin: '970436',
+      account: '123456789',
+      accountName: 'Qlaok Co',
+      bankName: 'VCB',
+    },
+    {
+      bin: '970422',
+      account: '987654321',
+      accountName: 'Qlaok Store',
+      bankName: 'MB',
+    },
+  ]);
+  const parsed = parseSaasPublicBankAccounts(validJson);
+  assert.ok(parsed);
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(parsed[0], {
+    bin: '970436',
+    account: '123456789',
+    accountName: 'Qlaok Co',
+    bankName: 'VCB',
+  });
+  assert.deepEqual(parsed[1], {
+    bin: '970422',
+    account: '987654321',
+    accountName: 'Qlaok Store',
+    bankName: 'MB',
+  });
+
+  // 2. Preserves display order from JSON
+  const orderedJson = JSON.stringify([
+    { bin: 'BIN_C', account: 'ACCT_C' },
+    { bin: 'BIN_A', account: 'ACCT_A' },
+    { bin: 'BIN_B', account: 'ACCT_B' },
+  ]);
+  assert.deepEqual(
+    parseSaasPublicBankAccounts(orderedJson)?.map((c) => c.bin),
+    ['BIN_C', 'BIN_A', 'BIN_B']
+  );
+
+  // 3. Optional fields: bankName falls back to bin, accountName defaults to empty string
+  const minimalJson = JSON.stringify([
+    { bin: '970436', account: ' 123456789 ' },
+  ]);
+  assert.deepEqual(parseSaasPublicBankAccounts(minimalJson), [
+    {
+      bin: '970436',
+      account: '123456789',
+      accountName: '',
+      bankName: '970436',
+    },
+  ]);
+
+  // 4. "id" field is completely ignored (no ID duplication or unstable ID issues)
+  const withIdJson = JSON.stringify([
+    { id: 'bank-uuid-1', bin: '970436', account: '123456789' },
+    { id: 'bank-uuid-1', bin: '970422', account: '987654321' }, // duplicate id
+  ]);
+  const parsedWithId = parseSaasPublicBankAccounts(withIdJson);
+  assert.ok(parsedWithId);
+  assert.equal(parsedWithId.length, 2);
+  assert.equal((parsedWithId[0] as unknown as Record<string, unknown>).id, undefined);
+  assert.equal((parsedWithId[1] as unknown as Record<string, unknown>).id, undefined);
+
+  // 5. Absent or blank returns null
+  assert.equal(parseSaasPublicBankAccounts(undefined), null);
+  assert.equal(parseSaasPublicBankAccounts(null), null);
+  assert.equal(parseSaasPublicBankAccounts(''), null);
+  assert.equal(parseSaasPublicBankAccounts('   '), null);
+
+  // 6. Fail closed: non-empty string that is malformed JSON returns []
+  assert.deepEqual(parseSaasPublicBankAccounts('not json'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('[{"bin": "970436"'), []);
+
+  // 7. Fail closed: JSON object or primitive instead of array returns []
+  assert.deepEqual(
+    parseSaasPublicBankAccounts('{"bin":"970436","account":"123"}'),
+    []
+  );
+  assert.deepEqual(parseSaasPublicBankAccounts('"970436"'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('12345'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('true'), []);
+
+  // 8. Fail closed: empty array returns []
+  assert.deepEqual(parseSaasPublicBankAccounts('[]'), []);
+
+  // 9. Fail closed: array containing non-objects
+  assert.deepEqual(parseSaasPublicBankAccounts('["123456789"]'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('[null]'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('[123]'), []);
+  assert.deepEqual(parseSaasPublicBankAccounts('[[]]'), []);
+
+  // 10. Fail closed: missing or empty required fields
+  // Missing account
+  assert.deepEqual(parseSaasPublicBankAccounts('[{"bin":"970436"}]'), []);
+  // Missing bin
+  assert.deepEqual(parseSaasPublicBankAccounts('[{"account":"123456"}]'), []);
+  // Whitespace-only bin
+  assert.deepEqual(
+    parseSaasPublicBankAccounts('[{"bin":"   ","account":"123456"}]'),
+    []
+  );
+  // Whitespace-only account
+  assert.deepEqual(
+    parseSaasPublicBankAccounts('[{"bin":"970436","account":"   "}]'),
+    []
+  );
+  // Non-string bin or account
+  assert.deepEqual(
+    parseSaasPublicBankAccounts('[{"bin":970436,"account":"123456"}]'),
+    []
+  );
+  assert.deepEqual(
+    parseSaasPublicBankAccounts('[{"bin":"970436","account":123456}]'),
+    []
+  );
+
+  // 11. Fail closed: non-string optional fields (numeric accountName or object-valued bankName)
+  assert.deepEqual(
+    parseSaasPublicBankAccounts(
+      JSON.stringify([{ bin: '970436', account: '123456', accountName: 12345 }])
+    ),
+    []
+  );
+  assert.deepEqual(
+    parseSaasPublicBankAccounts(
+      JSON.stringify([
+        { bin: '970436', account: '123456', bankName: { name: 'VCB' } },
+      ])
+    ),
+    []
+  );
+
+  // Blank accountName remains '', blank bankName falls back to bin
+  assert.deepEqual(
+    parseSaasPublicBankAccounts(
+      JSON.stringify([
+        {
+          bin: '970436',
+          account: '123456',
+          accountName: '   ',
+          bankName: '   ',
+        },
+      ])
+    ),
+    [
+      {
+        bin: '970436',
+        account: '123456',
+        accountName: '',
+        bankName: '970436',
+      },
+    ]
+  );
+
+  // 12. Fail closed: any invalid item in an array causes entire array to fail closed
+  assert.deepEqual(
+    parseSaasPublicBankAccounts(
+      JSON.stringify([
+        { bin: '970436', account: '123456' },
+        { bin: '970422' }, // missing account
+      ])
+    ),
+    []
+  );
+});
+
+test('public VietQR bank configs helper: precedence, fail-closed handling, legacy fallback, and QR URL builder', () => {
+  // 1. Multiple configured accounts take precedence
+  const multiJson = JSON.stringify([
+    { bin: '970436', account: '111222', bankName: 'VCB' },
+    { bin: '970422', account: '333444', bankName: 'MB' },
+  ]);
+  const multiConfigs = getSaasPublicBankConfigs({
+    NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: multiJson,
+    NEXT_PUBLIC_SAAS_BANK_BIN: '970499',
+    NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '999999',
+  });
+  assert.equal(multiConfigs.length, 2);
+  assert.equal(multiConfigs[0].account, '111222');
+  assert.equal(multiConfigs[1].account, '333444');
+
+  // getSaasBankConfig returns first config
+  assert.deepEqual(
+    getSaasBankConfig({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: multiJson,
+    }),
+    multiConfigs[0]
+  );
+
+  // 2. Malformed / invalid NEXT_PUBLIC_SAAS_BANK_ACCOUNTS fails closed and does NOT fall back to legacy
+  assert.deepEqual(
+    getSaasPublicBankConfigs({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: 'malformed_json',
+      NEXT_PUBLIC_SAAS_BANK_BIN: '970499',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '999999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getSaasPublicBankConfigs({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '[]',
+      NEXT_PUBLIC_SAAS_BANK_BIN: '970499',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '999999',
+    }),
+    []
+  );
+  assert.deepEqual(
+    getSaasPublicBankConfigs({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '[{"bin":"970436"}]', // missing account
+      NEXT_PUBLIC_SAAS_BANK_BIN: '970499',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '999999',
+    }),
+    []
+  );
+
+  // 3. Absent / blank NEXT_PUBLIC_SAAS_BANK_ACCOUNTS falls back to legacy single account
+  assert.deepEqual(
+    getSaasPublicBankConfigs({
+      NEXT_PUBLIC_SAAS_BANK_BIN: '970436',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '123456789',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME: 'Qlaok Co',
+      NEXT_PUBLIC_SAAS_BANK_NAME: 'VCB',
+    }),
+    [
+      {
+        bin: '970436',
+        account: '123456789',
+        accountName: 'Qlaok Co',
+        bankName: 'VCB',
+      },
+    ]
+  );
+  assert.deepEqual(
+    getSaasPublicBankConfigs({
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNTS: '   ',
+      NEXT_PUBLIC_SAAS_BANK_BIN: '970436',
+      NEXT_PUBLIC_SAAS_BANK_ACCOUNT: '123456789',
+    }),
+    [
+      {
+        bin: '970436',
+        account: '123456789',
+        accountName: '',
+        bankName: '970436',
+      },
+    ]
+  );
+
+  // 4. All variables absent/blank resolves to []
+  assert.deepEqual(getSaasPublicBankConfigs({}), []);
+  assert.equal(getSaasBankConfig({}), null);
+
+  // 5. buildSaasVietQrUrl verifies VietQR URL formatting
+  const qrUrl1 = buildSaasVietQrUrl(
+    {
+      bin: '970436',
+      account: '123456789',
+      accountName: 'Qlaok Co',
+      bankName: 'VCB',
+    },
+    69000,
+    'QLAOKP_ORDER_001'
+  );
+  assert.match(
+    qrUrl1,
+    /^https:\/\/img\.vietqr\.io\/image\/970436-123456789-compact2\.png\?/
+  );
+  assert.match(qrUrl1, /amount=69000/);
+  assert.match(qrUrl1, /addInfo=QLAOKP_ORDER_001/);
+  assert.match(qrUrl1, /accountName=Qlaok\+Co/);
+
+  // Without accountName
+  const qrUrl2 = buildSaasVietQrUrl(
+    {
+      bin: '970422',
+      account: '987654321',
+      accountName: '',
+      bankName: 'MB',
+    },
+    199000,
+    'QLAOKP_ORDER_002'
+  );
+  assert.match(
+    qrUrl2,
+    /^https:\/\/img\.vietqr\.io\/image\/970422-987654321-compact2\.png\?/
+  );
+  assert.doesNotMatch(qrUrl2, /accountName=/);
+
+  // 6. Bank selection pure helper (selectSaasPublicBankConfig) and QR URL generation
+  // Asserts selection for index 0, index 1, and out-of-range fallback to index 0.
+  // Note: This verifies pure selection logic and QR URL generation; browser pointer/touch
+  // interaction is unverified in this unit test.
+  const bankOptions = multiConfigs;
+
+  // Index 0 selection
+  const selected0 = selectSaasPublicBankConfig(bankOptions, 0);
+  assert.deepEqual(selected0, bankOptions[0]);
+  assert.ok(selected0);
+  const urlOption0 = buildSaasVietQrUrl(selected0, 69000, 'QLAOKP_MEMO');
+  assert.match(urlOption0, /970436-111222/);
+  assert.match(urlOption0, /amount=69000/);
+  assert.match(urlOption0, /addInfo=QLAOKP_MEMO/);
+
+  // Index 1 selection
+  const selected1 = selectSaasPublicBankConfig(bankOptions, 1);
+  assert.deepEqual(selected1, bankOptions[1]);
+  assert.ok(selected1);
+  const urlOption1 = buildSaasVietQrUrl(selected1, 69000, 'QLAOKP_MEMO');
+  assert.match(urlOption1, /970422-333444/);
+  // Amount and memo unchanged across options
+  assert.match(urlOption1, /amount=69000/);
+  assert.match(urlOption1, /addInfo=QLAOKP_MEMO/);
+
+  // Out-of-range fallback (beyond length, e.g. index 999 or negative index -1) falls back to index 0
+  const selectedOutOfRangeHigh = selectSaasPublicBankConfig(bankOptions, 999);
+  assert.deepEqual(selectedOutOfRangeHigh, bankOptions[0]);
+  assert.ok(selectedOutOfRangeHigh);
+  const urlOutOfRangeHigh = buildSaasVietQrUrl(
+    selectedOutOfRangeHigh,
+    69000,
+    'QLAOKP_MEMO'
+  );
+  assert.match(urlOutOfRangeHigh, /970436-111222/);
+  assert.match(urlOutOfRangeHigh, /amount=69000/);
+  assert.match(urlOutOfRangeHigh, /addInfo=QLAOKP_MEMO/);
+
+  const selectedOutOfRangeNegative = selectSaasPublicBankConfig(bankOptions, -1);
+  assert.deepEqual(selectedOutOfRangeNegative, bankOptions[0]);
+
+  // Empty or null config list returns null
+  assert.equal(selectSaasPublicBankConfig([], 0), null);
+  assert.equal(selectSaasPublicBankConfig(null, 0), null);
+  assert.equal(selectSaasPublicBankConfig(undefined, 0), null);
+});
+
+test('payment webhook: NEXT_PUBLIC_SAAS_BANK_ACCOUNTS fallback accepts configured accounts, rejects unlisted, and malformed fails closed', async () => {
+  const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+  const previousSaasAccounts = process.env.SAAS_BANK_ACCOUNTS;
+  const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
+  const previousPublicAccounts = process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNTS;
+  const previousPublicAccount = process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+  const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+
+  const secret = 'whsec_pub_fallback_test_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  delete process.env.PAYMENT_DEV_SIMULATE;
+  delete process.env.SAAS_BANK_ACCOUNTS;
+  delete process.env.SAAS_BANK_ACCOUNT;
+
+  try {
+    const pubAcct1 = ' 1234  5678  90 ';
+    const pubAcct2 = ' 9876  5432  10 ';
+    process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNTS = JSON.stringify([
+      { bin: '970436', account: pubAcct1, bankName: 'VCB' },
+      { bin: '970422', account: pubAcct2, bankName: 'MB' },
+    ]);
+    process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = '8888888888'; // shadowed legacy public
+
+    const testOwnerId = 'owner-pub-fallback-01';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+
+    // 1. Account 1 from public list succeeds
+    const order1 = 'QLAOKP_PUB_FALLBACK_001';
+    insertedTransactions.push({
+      id: 'tx-pub-fallback-001',
+      user_id: testOwnerId,
+      order_code: order1,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const res1 = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order1,
+          transferAmount: 69000,
+          accountNumber: '1234567890',
+          referenceCode: 'BANK-REF-PUB-01',
+        }),
+      })
+    );
+    assert.equal(res1.status, 200);
+    assert.equal((await res1.json()).success, true);
+    assert.equal(mockProfiles[testOwnerId]?.plan, 'premium');
+
+    // 2. Unlisted account rejected with 400 RECEIVING_ACCOUNT_MISMATCH
+    const order2 = 'QLAOKP_PUB_FALLBACK_002';
+    mockProfiles[testOwnerId] = { id: testOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-pub-fallback-002',
+      user_id: testOwnerId,
+      order_code: order2,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const rpcCountBefore2 = mockRpcCalls.length;
+    const res2 = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order2,
+          transferAmount: 69000,
+          accountNumber: '5555555555',
+          referenceCode: 'BANK-REF-PUB-02',
+        }),
+      })
+    );
+    assert.equal(res2.status, 400);
+    assert.equal((await res2.json()).code, 'RECEIVING_ACCOUNT_MISMATCH');
+    assert.equal(mockRpcCalls.length, rpcCountBefore2);
+
+    // 3. Shadowed legacy account NEXT_PUBLIC_SAAS_BANK_ACCOUNT is rejected
+    const resLegacy = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order2,
+          transferAmount: 69000,
+          accountNumber: '8888888888',
+          referenceCode: 'BANK-REF-PUB-03',
+        }),
+      })
+    );
+    assert.equal(resLegacy.status, 400);
+    assert.equal((await resLegacy.json()).code, 'RECEIVING_ACCOUNT_MISMATCH');
+
+    // 4. Malformed NEXT_PUBLIC_SAAS_BANK_ACCOUNTS fails closed with 503 and does NOT fall back to legacy
+    process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNTS = 'malformed_json_here';
+    const resMalformed = await paymentPost(
+      new Request('http://localhost/api/webhooks/payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: order2,
+          transferAmount: 69000,
+          accountNumber: '8888888888',
+          referenceCode: 'BANK-REF-PUB-04',
+        }),
+      })
+    );
+    assert.equal(resMalformed.status, 503);
+    assert.equal(
+      (await resMalformed.json()).code,
+      'RECEIVING_ACCOUNT_NOT_CONFIGURED'
+    );
+  } finally {
+    if (previousSecret === undefined) delete process.env.PAYMENT_WEBHOOK_SECRET;
+    else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
+
+    if (previousSaasAccounts === undefined)
+      delete process.env.SAAS_BANK_ACCOUNTS;
+    else process.env.SAAS_BANK_ACCOUNTS = previousSaasAccounts;
+
+    if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
+    else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
+
+    if (previousPublicAccounts === undefined)
+      delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNTS;
+    else process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNTS = previousPublicAccounts;
+
+    if (previousPublicAccount === undefined)
+      delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+    else process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = previousPublicAccount;
 
     if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
     else process.env.PAYMENT_DEV_SIMULATE = previousSim;

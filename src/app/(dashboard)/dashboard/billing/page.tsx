@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
 import { getAuthHeaders, isSuperAdmin } from '@/lib/auth-session';
+import clsx from 'clsx';
 import { PLAN_CONFIGS } from '@/lib/plan-limits';
 import { getPlanCopy as localizedPlanCopy } from '@/lib/plan-copy';
 import { PaymentTransaction, PlanTier } from '@/types/qlaok';
@@ -25,47 +26,16 @@ import {
   AppDataTable,
   type TableColumn,
 } from '@/components/ui/AppDataTable';
+import {
+  getSaasPublicBankConfigs,
+  selectSaasPublicBankConfig,
+  buildSaasVietQrUrl,
+  type SaasPublicBankConfig,
+} from '@/lib/saas-bank-accounts';
 
 /** Poll interval and max duration while waiting for the bank webhook. */
 const PAYMENT_POLL_INTERVAL_MS = 4000;
 const PAYMENT_POLL_MAX_MS = 5 * 60 * 1000;
-
-interface SaasBankConfig {
-  bin: string;
-  account: string;
-  accountName: string;
-  bankName: string;
-}
-
-/**
- * SaaS receiving bank account (public info, safe for NEXT_PUBLIC_*).
- * NEXT_PUBLIC_* values must be referenced directly so Next.js can inline them.
- */
-function getSaasBankConfig(): SaasBankConfig | null {
-  const bin = (process.env.NEXT_PUBLIC_SAAS_BANK_BIN || '').trim();
-  const account = (process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT || '').trim();
-  const accountName = (
-    process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME || ''
-  ).trim();
-  const bankName = (process.env.NEXT_PUBLIC_SAAS_BANK_NAME || '').trim();
-  if (!bin || !account) return null;
-  return { bin, account, accountName, bankName: bankName || bin };
-}
-
-function buildSaasVietQrUrl(
-  bank: SaasBankConfig,
-  amount: number,
-  orderCode: string
-): string {
-  const params = new URLSearchParams({
-    amount: String(Math.round(Number(amount) || 0)),
-    addInfo: orderCode,
-  });
-  if (bank.accountName) params.set('accountName', bank.accountName);
-  return `https://img.vietqr.io/image/${encodeURIComponent(
-    bank.bin
-  )}-${encodeURIComponent(bank.account)}-compact2.png?${params.toString()}`;
-}
 
 async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
   try {
@@ -92,7 +62,12 @@ export default function DashboardBillingPage() {
   const [showBankNotConfigured, setShowBankNotConfigured] = useState(false);
   const qrCardRef = useRef<HTMLDivElement | null>(null);
 
-  const bankConfig = useMemo(() => getSaasBankConfig(), []);
+  const bankConfigs = useMemo(() => getSaasPublicBankConfigs(), []);
+  const [selectedBankIndex, setSelectedBankIndex] = useState(0);
+  const selectedBank = selectSaasPublicBankConfig(
+    bankConfigs,
+    selectedBankIndex
+  );
   const isAdmin = isSuperAdmin(profile);
   const isProduction = process.env.NODE_ENV === 'production';
   const canSimulate = isAdmin && !isProduction;
@@ -248,7 +223,7 @@ export default function DashboardBillingPage() {
       return;
     }
 
-    if (!bankConfig && !isAdmin) {
+    if (bankConfigs.length === 0 && !isAdmin) {
       setActiveOrder(null);
       setShowBankNotConfigured(true);
       return;
@@ -505,15 +480,81 @@ export default function DashboardBillingPage() {
           data-testid="billing-active-order"
           className="scroll-mt-24 rounded-3xl border-2 border-emerald-500 bg-white p-6 shadow-xl space-y-5"
         >
+          {/* Multiple bank accounts selector */}
+          {bankConfigs.length > 1 && (
+            <div
+              className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2"
+              role="region"
+              aria-label={tx(
+                'Chọn tài khoản ngân hàng nhận thanh toán',
+                'Select receiving bank account'
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-700">
+                  {tx(
+                    'Chọn tài khoản nhận chuyển khoản:',
+                    'Select transfer recipient account:'
+                  )}
+                </span>
+                <span className="text-[11px] font-medium text-slate-500">
+                  {tx(
+                    '{count} tài khoản',
+                    '{count} accounts',
+                    { count: bankConfigs.length }
+                  )}
+                </span>
+              </div>
+              <div
+                className="flex flex-wrap gap-2"
+                role="group"
+                aria-label={tx('Danh sách tài khoản VietQR', 'VietQR account list')}
+              >
+                {bankConfigs.map((cfg, idx) => {
+                  const isSelected = idx === selectedBankIndex;
+                  return (
+                    <button
+                      key={`${cfg.bin}-${cfg.account}-${idx}`}
+                      type="button"
+                      onClick={() => setSelectedBankIndex(idx)}
+                      aria-pressed={isSelected}
+                      data-testid={`billing-bank-option-${idx}`}
+                      className={clsx(
+                        'flex flex-col items-start rounded-xl border px-3 py-2 text-left text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500',
+                        isSelected
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold shadow-sm ring-1 ring-emerald-600'
+                          : 'border-slate-200 bg-white hover:bg-slate-100 text-slate-700'
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-extrabold text-slate-900">
+                          {cfg.bankName}
+                        </span>
+                        <span className="font-mono text-slate-700">
+                          {cfg.account}
+                        </span>
+                      </div>
+                      {cfg.accountName ? (
+                        <span className="text-[11px] font-semibold text-slate-500 truncate max-w-[220px]">
+                          {cfg.accountName}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-col md:flex-row items-center gap-6">
-            {bankConfig ? (
+            {selectedBank ? (
               <div
                 style={{ backgroundColor: '#ffffff' }}
                 className="qr-light-surface shrink-0 rounded-2xl border border-slate-200 p-3 bg-white shadow-md"
               >
                 <img
                   src={buildSaasVietQrUrl(
-                    bankConfig,
+                    selectedBank,
                     activeOrder.amount,
                     activeOrder.order_code
                   )}
@@ -575,14 +616,14 @@ export default function DashboardBillingPage() {
                     {activeOrder.order_code}
                   </strong>
                 </div>
-                {bankConfig && (
+                {selectedBank && (
                   <>
                     <div>
                       <span className="text-slate-400 block">
                         {tx('Ngân hàng:', 'Bank:')}
                       </span>
                       <strong className="text-sm text-slate-900">
-                        {bankConfig.bankName}
+                        {selectedBank.bankName}
                       </strong>
                     </div>
                     <div>
@@ -590,11 +631,11 @@ export default function DashboardBillingPage() {
                         {tx('Số tài khoản:', 'Account number:')}
                       </span>
                       <strong className="text-sm font-mono text-slate-900">
-                        {bankConfig.account}
+                        {selectedBank.account}
                       </strong>
-                      {bankConfig.accountName && (
+                      {selectedBank.accountName && (
                         <span className="block text-[11px] font-semibold text-slate-500">
-                          {bankConfig.accountName}
+                          {selectedBank.accountName}
                         </span>
                       )}
                     </div>
