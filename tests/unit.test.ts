@@ -1241,8 +1241,11 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
     // No hardcoded fallback secret exists any more: configure one explicitly for this test.
     // (<16 chars so it never becomes the session signing secret fallback.)
     const previousWebhookSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+    const previousSaasBankAccount = process.env.SAAS_BANK_ACCOUNT;
     const secret = 'unit-test-whsec';
+    const saasAccount = '0123456789';
     process.env.PAYMENT_WEBHOOK_SECRET = secret;
+    process.env.SAAS_BANK_ACCOUNT = saasAccount;
     const mockPaymentDb = {
       from: () => ({
         select: () => ({
@@ -1361,6 +1364,7 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
         body: JSON.stringify({
           orderCode: 'QLAOKP_NON_EXISTENT_99999',
           transferAmount: 69000,
+          accountNumber: saasAccount,
         }),
       }
     );
@@ -1385,6 +1389,11 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
         delete process.env.PAYMENT_WEBHOOK_SECRET;
       } else {
         process.env.PAYMENT_WEBHOOK_SECRET = previousWebhookSecret;
+      }
+      if (previousSaasBankAccount === undefined) {
+        delete process.env.SAAS_BANK_ACCOUNT;
+      } else {
+        process.env.SAAS_BANK_ACCOUNT = previousSaasBankAccount;
       }
     }
 

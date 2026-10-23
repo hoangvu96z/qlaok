@@ -13,6 +13,8 @@ for (const key of [
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
   'PAYMENT_DEV_SIMULATE',
+  'SAAS_BANK_ACCOUNT',
+  'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
 ]) {
   delete process.env[key];
 }
@@ -1107,8 +1109,10 @@ test('isMembershipAllowedForCatalogAi and /api/ai/ocr-menu enforce canonical rol
 test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV_SIMULATE, and provider webhook / dev simulation enforce secret and ownership', async () => {
   const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
   const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+  const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
   delete process.env.PAYMENT_WEBHOOK_SECRET;
   delete process.env.PAYMENT_DEV_SIMULATE;
+  delete process.env.SAAS_BANK_ACCOUNT;
   try {
     // 1. Without PAYMENT_DEV_SIMULATE or PAYMENT_WEBHOOK_SECRET -> 503
     const res = await paymentPost(
@@ -1181,6 +1185,7 @@ test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV
     // 3. Provider webhook requires valid x-webhook-secret when PAYMENT_DEV_SIMULATE is off
     delete process.env.PAYMENT_DEV_SIMULATE;
     process.env.PAYMENT_WEBHOOK_SECRET = 'whsec-short-test';
+    process.env.SAAS_BANK_ACCOUNT = '0123456789';
 
     const badSecretRes = await paymentPost(
       new Request('http://localhost/api/webhooks/payment', {
@@ -1192,6 +1197,7 @@ test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV
         body: JSON.stringify({
           orderCode: otherTx.order_code,
           transferAmount: 69000,
+          accountNumber: '0123456789',
         }),
       })
     );
@@ -1207,6 +1213,7 @@ test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV
         body: JSON.stringify({
           orderCode: otherTx.order_code,
           transferAmount: 69000,
+          accountNumber: '0123456789',
           referenceCode: 'BANK-REF-REVIEW-01',
         }),
       })
@@ -1219,15 +1226,19 @@ test('payment webhook: owner simulateWebhook is not accepted without PAYMENT_DEV
     else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
     if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
     else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+    if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
+    else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
   }
 });
 
 test('payment webhook Section 1.5 hardening: requires positive amount, rejects outbound transfer, preserves sandbox simulator, and DB lookup error does not succeed via SEED_TRANSACTIONS', async () => {
   const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
   const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+  const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
   delete process.env.PAYMENT_DEV_SIMULATE;
   // <16 chars so it never becomes the session signing secret fallback
   process.env.PAYMENT_WEBHOOK_SECRET = 'whsec-sec-1-5';
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
 
   try {
     // 1. Create a pending order for testing
@@ -1429,6 +1440,7 @@ test('payment webhook Section 1.5 hardening: requires positive amount, rejects o
         body: JSON.stringify({
           orderCode: testTx.order_code,
           transferAmount: 69000,
+          accountNumber: '0123456789',
           transferType: 'In',
           referenceCode: 'BANK-REF-VALID-IN-01',
         }),
@@ -1459,6 +1471,7 @@ test('payment webhook Section 1.5 hardening: requires positive amount, rejects o
         body: JSON.stringify({
           orderCode: seedTx.order_code,
           transferAmount: 69000,
+          accountNumber: '0123456789',
           referenceCode: 'BANK-REF-SEED-EXPLOIT',
         }),
       })
@@ -1492,6 +1505,7 @@ test('payment webhook Section 1.5 hardening: requires positive amount, rejects o
           body: JSON.stringify({
             orderCode: seedTx.order_code,
             transferAmount: 69000,
+            accountNumber: '0123456789',
             referenceCode: 'BANK-REF-SEED-EXPLOIT-THROW',
           }),
         })
@@ -1514,6 +1528,7 @@ test('payment webhook Section 1.5 hardening: requires positive amount, rejects o
         body: JSON.stringify({
           orderCode: 'QLAOKP_COMPLETELY_NON_EXISTENT_99999',
           transferAmount: 69000,
+          accountNumber: '0123456789',
           referenceCode: 'BANK-REF-NON-EXISTENT',
         }),
       })
@@ -1528,6 +1543,8 @@ test('payment webhook Section 1.5 hardening: requires positive amount, rejects o
     else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
     if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
     else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+    if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
+    else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
   }
 });
 
@@ -2149,6 +2166,7 @@ test('reopening a pending billing transaction re-opens the exact existing order 
 test('POST /api/webhooks/payment calls complete_payment_webhook_atomic with exact args, deterministic fallback bank ref, and ignores client allowUnverifiedAmount', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   try {
     const txId = 'tx-atomic-test-101';
     const orderCode = 'QLAOKP88881';
@@ -2180,6 +2198,7 @@ test('POST /api/webhooks/payment calls complete_payment_webhook_atomic with exac
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
         allowUnverifiedAmount: true, // Untrusted client flag MUST NOT affect RPC argument
       }),
     });
@@ -2201,12 +2220,14 @@ test('POST /api/webhooks/payment calls complete_payment_webhook_atomic with exac
     });
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev sandbox simulator (provider and super admin require valid amount)', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   const merchantId = 'merchant-owner-sim-01';
   const orderCode = 'QLAOKP_SIM_001';
 
@@ -2236,7 +2257,7 @@ test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev
           'Content-Type': 'application/json',
           'x-webhook-secret': secret,
         },
-        body: JSON.stringify({ orderCode }),
+        body: JSON.stringify({ orderCode, accountNumber: '0123456789' }),
       }
     );
     const providerRes = await paymentPost(providerMissingAmtReq);
@@ -2258,6 +2279,7 @@ test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev
     });
     const adminMissingAmtReq = post('/api/webhooks/payment', adminToken, {
       orderCode,
+      accountNumber: '0123456789',
     });
     const adminRes = await paymentPost(adminMissingAmtReq);
     assert.equal(adminRes.status, 400);
@@ -2273,6 +2295,7 @@ test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev
     const adminWithAmtReq = post('/api/webhooks/payment', adminToken, {
       orderCode,
       transferAmount: 39000,
+      accountNumber: '0123456789',
     });
     const adminSuccessRes = await paymentPost(adminWithAmtReq);
     assert.equal(adminSuccessRes.status, 200);
@@ -2311,12 +2334,14 @@ test('POST /api/webhooks/payment missing amount is allowed ONLY for explicit dev
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
     delete process.env.PAYMENT_DEV_SIMULATE;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment RPC errors propagate without table-update fallback, and unavailable RPC fails closed', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   const merchantId = 'merchant-owner-err-01';
   const orderCode = 'QLAOKP_ERR_001';
 
@@ -2352,6 +2377,7 @@ test('POST /api/webhooks/payment RPC errors propagate without table-update fallb
       body: JSON.stringify({
         orderCode,
         transferAmount: 39000,
+        accountNumber: '0123456789',
       }),
     });
     const mismatchRes = await paymentPost(mismatchReq);
@@ -2379,6 +2405,7 @@ test('POST /api/webhooks/payment RPC errors propagate without table-update fallb
         orderCode,
         bankRefId: 'FT-DUP-1',
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const dupRes = await paymentPost(dupRefReq);
@@ -2401,6 +2428,7 @@ test('POST /api/webhooks/payment RPC errors propagate without table-update fallb
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const notPendingRes = await paymentPost(notPendingReq);
@@ -2427,6 +2455,7 @@ test('POST /api/webhooks/payment RPC errors propagate without table-update fallb
         body: JSON.stringify({
           orderCode,
           transferAmount: 69000,
+          accountNumber: '0123456789',
         }),
       });
       const noRpcRes = await paymentPost(noRpcReq);
@@ -2439,12 +2468,14 @@ test('POST /api/webhooks/payment RPC errors propagate without table-update fallb
     }
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment authoritative owner from transaction/RPC drives profile upgrade and billing response, ignoring caller ownerId', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   const realOwnerId = 'real-merchant-victim-999';
   const attackerCallerId = 'attacker-caller-888';
   const orderCode = 'QLAOKP_SEC_001';
@@ -2481,6 +2512,7 @@ test('POST /api/webhooks/payment authoritative owner from transaction/RPC drives
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
         ownerId: attackerCallerId,
       }),
     });
@@ -2497,12 +2529,14 @@ test('POST /api/webhooks/payment authoritative owner from transaction/RPC drives
     assert.equal(mockProfiles[realOwnerId]!.plan, 'premium');
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment idempotent already_completed status returns HTTP 200 with alreadyCompleted=true and no-op', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   const merchantId = 'merchant-owner-idem-01';
   const orderCode = 'QLAOKP_IDEM_001';
   const initialExpiry = new Date(Date.now() + 15 * 86400000).toISOString();
@@ -2535,6 +2569,7 @@ test('POST /api/webhooks/payment idempotent already_completed status returns HTT
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
         bankRefId: 'FT-EXISTING-REF',
       }),
     });
@@ -2552,12 +2587,14 @@ test('POST /api/webhooks/payment idempotent already_completed status returns HTT
     );
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment HTTP error mappings preserve 404 for missing orders, 400 for amount/ref/duplicate errors, and 409 for non-pending orders', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
 
   try {
     // 1. Unknown orderCode -> 404
@@ -2570,6 +2607,7 @@ test('POST /api/webhooks/payment HTTP error mappings preserve 404 for missing or
       body: JSON.stringify({
         orderCode: 'QLAOKP_NOT_EXIST',
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const notFoundRes = await paymentPost(notFoundReq);
@@ -2602,6 +2640,7 @@ test('POST /api/webhooks/payment HTTP error mappings preserve 404 for missing or
       body: JSON.stringify({
         orderCode: 'QLAOKP_409',
         transferAmount: 39000,
+        accountNumber: '0123456789',
       }),
     });
     const nonPendingRes = await paymentPost(nonPendingReq);
@@ -2612,12 +2651,14 @@ test('POST /api/webhooks/payment HTTP error mappings preserve 404 for missing or
     );
   } finally {
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
 test('POST /api/webhooks/payment RPC invalid response (malformed status, missing owner, mismatched owner) fails closed with HTTP 500 and never succeeds', async () => {
   const secret = 'whsec_payment_review_atomic_2026';
   process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  process.env.SAAS_BANK_ACCOUNT = '0123456789';
   const merchantId = 'merchant-owner-rpc-inv-01';
   const orderCode = 'QLAOKP_RPC_INV_001';
 
@@ -2656,6 +2697,7 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const badStatusRes = await paymentPost(badStatusReq);
@@ -2683,6 +2725,7 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const missingOwnerRes = await paymentPost(missingOwnerReq);
@@ -2710,6 +2753,7 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const emptyOwnerRes = await paymentPost(emptyOwnerReq);
@@ -2744,6 +2788,7 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
       body: JSON.stringify({
         orderCode,
         transferAmount: 69000,
+        accountNumber: '0123456789',
       }),
     });
     const mismatchRes = await paymentPost(mismatchReq);
@@ -2756,6 +2801,7 @@ test('POST /api/webhooks/payment RPC invalid response (malformed status, missing
   } finally {
     mockRpcHandler = null;
     delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.SAAS_BANK_ACCOUNT;
   }
 });
 
@@ -3056,4 +3102,401 @@ test('DashboardBillingPage invariants: restricts canManageBilling to canonical s
     /ownerId:/,
     'handleSimulateWebhookSuccess must not send ownerId in request body'
   );
+});
+
+test('payment webhook receiving account: config precedence, whitespace normalization, error codes, and dev simulator bypass', async () => {
+  const previousSecret = process.env.PAYMENT_WEBHOOK_SECRET;
+  const previousSaasAccount = process.env.SAAS_BANK_ACCOUNT;
+  const previousPublicSaasAccount = process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+  const previousSim = process.env.PAYMENT_DEV_SIMULATE;
+
+  const secret = 'whsec_rcv_acct_test_2026';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+  delete process.env.PAYMENT_DEV_SIMULATE;
+
+  try {
+    // 1. Config precedence: SAAS_BANK_ACCOUNT takes precedence over NEXT_PUBLIC_SAAS_BANK_ACCOUNT
+    // and whitespace-normalized matching reaches atomic completion
+    const primaryAccount = ' 1234  5678  90 ';
+    const fallbackAccount = ' 9999  8888  77 ';
+    process.env.SAAS_BANK_ACCOUNT = primaryAccount;
+    process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = fallbackAccount;
+
+    const atomicOwnerId = 'owner-rcv-atomic-01';
+    const atomicOrderCode = 'QLAOKP_RCV_ATOMIC_001';
+    mockProfiles[atomicOwnerId] = { id: atomicOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-rcv-atomic-001',
+      user_id: atomicOwnerId,
+      order_code: atomicOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    // Provide accountNumber matching SAAS_BANK_ACCOUNT with different whitespace
+    const matchingReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode: atomicOrderCode,
+        transferAmount: 69000,
+        accountNumber: '1234 5678 90',
+        referenceCode: 'BANK-REF-RCV-001',
+      }),
+    });
+    const matchingRes = await paymentPost(matchingReq);
+    assert.equal(matchingRes.status, 200);
+    const matchingData = await matchingRes.json();
+    assert.equal(matchingData.success, true);
+    assert.equal(matchingData.profile.id, atomicOwnerId);
+    assert.equal(matchingData.profile.plan, 'premium');
+    const matchedTx = matchingData.transactions.find(
+      (t: PaymentTransaction) => t.order_code === atomicOrderCode
+    );
+    assert.equal(matchedTx?.status, 'completed');
+    assert.equal(mockProfiles[atomicOwnerId]?.plan, 'premium');
+    assert.ok(
+      mockRpcCalls.some(
+        (c) =>
+          c.name === 'complete_payment_webhook_atomic' &&
+          c.args.p_order_code === atomicOrderCode
+      )
+    );
+
+    // Also verify precedence: sending the fallback account fails because primary takes precedence
+    const fallbackOnlyOrderCode = 'QLAOKP_RCV_FALLBACK_001';
+    insertedTransactions.push({
+      id: 'tx-rcv-fallback-001',
+      user_id: atomicOwnerId,
+      order_code: fallbackOnlyOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+    const fallbackShadowedReq = new Request(
+      'http://localhost/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: fallbackOnlyOrderCode,
+          transferAmount: 69000,
+          accountNumber: '9999888877',
+          referenceCode: 'BANK-REF-RCV-001B',
+        }),
+      }
+    );
+    const fallbackShadowedRes = await paymentPost(fallbackShadowedReq);
+    assert.equal(fallbackShadowedRes.status, 400);
+    assert.equal(
+      (await fallbackShadowedRes.json()).code,
+      'RECEIVING_ACCOUNT_MISMATCH'
+    );
+
+    // Fallback account is used when primary is unset
+    delete process.env.SAAS_BANK_ACCOUNT;
+    const fallbackAllowedReq = new Request(
+      'http://localhost/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: fallbackOnlyOrderCode,
+          transferAmount: 69000,
+          accountNumber: ' 9999 8888 77 ',
+          referenceCode: 'BANK-REF-RCV-001C',
+        }),
+      }
+    );
+    const fallbackAllowedRes = await paymentPost(fallbackAllowedReq);
+    assert.equal(fallbackAllowedRes.status, 200);
+    assert.equal((await fallbackAllowedRes.json()).success, true);
+
+    // Reset SAAS_BANK_ACCOUNT for subsequent sub-tests
+    process.env.SAAS_BANK_ACCOUNT = '0123456789';
+    delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+
+    // 2. wrong account => 400 RECEIVING_ACCOUNT_MISMATCH with no RPC/profile change
+    const pendingOwnerId = 'owner-rcv-pending-02';
+    const pendingOrderCode = 'QLAOKP_RCV_PENDING_002';
+    mockProfiles[pendingOwnerId] = { id: pendingOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-rcv-pending-002',
+      user_id: pendingOwnerId,
+      order_code: pendingOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const rpcCountBeforeMismatch = mockRpcCalls.length;
+    const mismatchReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode: pendingOrderCode,
+        transferAmount: 69000,
+        accountNumber: '9999999999',
+        referenceCode: 'BANK-REF-RCV-002',
+      }),
+    });
+    const mismatchRes = await paymentPost(mismatchReq);
+    assert.equal(mismatchRes.status, 400);
+    const mismatchData = await mismatchRes.json();
+    assert.equal(mismatchData.code, 'RECEIVING_ACCOUNT_MISMATCH');
+    assert.equal(mockRpcCalls.length, rpcCountBeforeMismatch);
+    assert.equal(mockProfiles[pendingOwnerId]?.plan, 'free');
+    const txAfterMismatch = insertedTransactions.find(
+      (t) => t.order_code === pendingOrderCode
+    );
+    assert.equal(txAfterMismatch?.status, 'pending');
+
+    // 3. missing accountNumber => 400 RECEIVING_ACCOUNT_REQUIRED
+    const missingAcctReq = new Request('http://localhost/api/webhooks/payment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': secret,
+      },
+      body: JSON.stringify({
+        orderCode: pendingOrderCode,
+        transferAmount: 69000,
+        referenceCode: 'BANK-REF-RCV-003',
+      }),
+    });
+    const missingAcctRes = await paymentPost(missingAcctReq);
+    assert.equal(missingAcctRes.status, 400);
+    const missingAcctData = await missingAcctRes.json();
+    assert.equal(missingAcctData.code, 'RECEIVING_ACCOUNT_REQUIRED');
+    assert.equal(mockRpcCalls.length, rpcCountBeforeMismatch);
+    assert.equal(mockProfiles[pendingOwnerId]?.plan, 'free');
+
+    // Whitespace-only accountNumber => 400 RECEIVING_ACCOUNT_REQUIRED
+    const whitespaceAcctReq = new Request(
+      'http://localhost/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: pendingOrderCode,
+          transferAmount: 69000,
+          accountNumber: '   ',
+          referenceCode: 'BANK-REF-RCV-003B',
+        }),
+      }
+    );
+    const whitespaceAcctRes = await paymentPost(whitespaceAcctReq);
+    assert.equal(whitespaceAcctRes.status, 400);
+    assert.equal(
+      (await whitespaceAcctRes.json()).code,
+      'RECEIVING_ACCOUNT_REQUIRED'
+    );
+    assert.equal(mockRpcCalls.length, rpcCountBeforeMismatch);
+
+    // 3b. Verified Super Admin callback with valid amount but missing or mismatched accountNumber
+    // is rejected before atomic RPC / profile mutation (only dev simulator is exempt)
+    const adminToken = issueSessionToken({
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+
+    const adminTestOwnerId = 'owner-rcv-admin-01';
+    const adminTestOrderCode = 'QLAOKP_RCV_ADMIN_001';
+    mockProfiles[adminTestOwnerId] = { id: adminTestOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-rcv-admin-001',
+      user_id: adminTestOwnerId,
+      order_code: adminTestOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const rpcCountBeforeAdmin = mockRpcCalls.length;
+
+    // Super Admin callback missing accountNumber -> 400 RECEIVING_ACCOUNT_REQUIRED
+    const adminMissingAcctReq = post('/api/webhooks/payment', adminToken, {
+      orderCode: adminTestOrderCode,
+      transferAmount: 69000,
+      referenceCode: 'BANK-REF-RCV-ADMIN-001',
+    });
+    const adminMissingAcctRes = await paymentPost(adminMissingAcctReq);
+    assert.equal(adminMissingAcctRes.status, 400);
+    const adminMissingAcctData = await adminMissingAcctRes.json();
+    assert.equal(adminMissingAcctData.code, 'RECEIVING_ACCOUNT_REQUIRED');
+    assert.equal(
+      mockRpcCalls.length,
+      rpcCountBeforeAdmin,
+      'Must not invoke atomic RPC when Super Admin omits accountNumber'
+    );
+    assert.equal(
+      mockProfiles[adminTestOwnerId]?.plan,
+      'free',
+      'Must not mutate profile when Super Admin omits accountNumber'
+    );
+    assert.equal(
+      insertedTransactions.find((t) => t.order_code === adminTestOrderCode)?.status,
+      'pending'
+    );
+
+    // Super Admin callback mismatched accountNumber -> 400 RECEIVING_ACCOUNT_MISMATCH
+    const adminMismatchReq = post('/api/webhooks/payment', adminToken, {
+      orderCode: adminTestOrderCode,
+      transferAmount: 69000,
+      accountNumber: '9999999999',
+      referenceCode: 'BANK-REF-RCV-ADMIN-002',
+    });
+    const adminMismatchRes = await paymentPost(adminMismatchReq);
+    assert.equal(adminMismatchRes.status, 400);
+    const adminMismatchData = await adminMismatchRes.json();
+    assert.equal(adminMismatchData.code, 'RECEIVING_ACCOUNT_MISMATCH');
+    assert.equal(
+      mockRpcCalls.length,
+      rpcCountBeforeAdmin,
+      'Must not invoke atomic RPC when Super Admin provides mismatched accountNumber'
+    );
+    assert.equal(
+      mockProfiles[adminTestOwnerId]?.plan,
+      'free',
+      'Must not mutate profile when Super Admin provides mismatched accountNumber'
+    );
+    assert.equal(
+      insertedTransactions.find((t) => t.order_code === adminTestOrderCode)?.status,
+      'pending'
+    );
+
+    // 4. missing config => 503 RECEIVING_ACCOUNT_NOT_CONFIGURED
+    delete process.env.SAAS_BANK_ACCOUNT;
+    delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+
+    const unconfiguredReq = new Request(
+      'http://localhost/api/webhooks/payment',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': secret,
+        },
+        body: JSON.stringify({
+          orderCode: pendingOrderCode,
+          transferAmount: 69000,
+          accountNumber: '0123456789',
+          referenceCode: 'BANK-REF-RCV-004',
+        }),
+      }
+    );
+    const unconfiguredRes = await paymentPost(unconfiguredReq);
+    assert.equal(unconfiguredRes.status, 503);
+    const unconfiguredData = await unconfiguredRes.json();
+    assert.equal(unconfiguredData.code, 'RECEIVING_ACCOUNT_NOT_CONFIGURED');
+    assert.equal(mockRpcCalls.length, rpcCountBeforeMismatch);
+    assert.equal(mockProfiles[pendingOwnerId]?.plan, 'free');
+
+    // 5. explicitly allowed dev sandbox simulator bypasses the account requirement for the caller own pending order
+    process.env.PAYMENT_DEV_SIMULATE = 'true';
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+
+    const simOwnerId = 'sim-owner-bypass-01';
+    const simOrderCode = 'QLAOKP_SIM_BYPASS_001';
+    mockProfiles[simOwnerId] = { id: simOwnerId, plan: 'free' };
+    insertedTransactions.push({
+      id: 'tx-sim-bypass-001',
+      user_id: simOwnerId,
+      order_code: simOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+
+    const simOwnerToken = issueSessionToken({
+      id: simOwnerId,
+      email: 'sim-bypass@qlaok.vn',
+      role: 'owner',
+    });
+
+    // Caller own pending order: no accountNumber provided, missing config -> succeeds via simulator bypass
+    const simOwnRes = await paymentPost(
+      post('/api/webhooks/payment', simOwnerToken, {
+        orderCode: simOrderCode,
+        simulateWebhook: true,
+      })
+    );
+    assert.equal(simOwnRes.status, 200);
+    const simOwnData = await simOwnRes.json();
+    assert.equal(simOwnData.success, true);
+    assert.equal(simOwnData.profile.id, simOwnerId);
+    assert.equal(simOwnData.profile.plan, 'premium');
+    const matchedSimTx = simOwnData.transactions.find(
+      (t: PaymentTransaction) => t.order_code === simOrderCode
+    );
+    assert.equal(matchedSimTx?.status, 'completed');
+    assert.equal(mockProfiles[simOwnerId]?.plan, 'premium');
+
+    // Simulator attempting to complete another user's order is rejected with 403
+    const foreignOrderCode = 'QLAOKP_FOREIGN_001';
+    insertedTransactions.push({
+      id: 'tx-foreign-001',
+      user_id: 'someone-else-id',
+      order_code: foreignOrderCode,
+      target_plan: 'premium',
+      amount: 69000,
+      status: 'pending',
+      bank_ref_id: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    });
+    const simForeignRes = await paymentPost(
+      post('/api/webhooks/payment', simOwnerToken, {
+        orderCode: foreignOrderCode,
+        simulateWebhook: true,
+      })
+    );
+    assert.equal(simForeignRes.status, 403);
+  } finally {
+    if (previousSecret === undefined) delete process.env.PAYMENT_WEBHOOK_SECRET;
+    else process.env.PAYMENT_WEBHOOK_SECRET = previousSecret;
+
+    if (previousSaasAccount === undefined) delete process.env.SAAS_BANK_ACCOUNT;
+    else process.env.SAAS_BANK_ACCOUNT = previousSaasAccount;
+
+    if (previousPublicSaasAccount === undefined)
+      delete process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT;
+    else process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT = previousPublicSaasAccount;
+
+    if (previousSim === undefined) delete process.env.PAYMENT_DEV_SIMULATE;
+    else process.env.PAYMENT_DEV_SIMULATE = previousSim;
+  }
 });

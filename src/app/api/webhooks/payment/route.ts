@@ -270,6 +270,18 @@ function getConfiguredWebhookSecret(): string | null {
   return secret.length > 0 ? secret : null;
 }
 
+function getConfiguredSaasReceivingAccount(): string | null {
+  const primary = (process.env.SAAS_BANK_ACCOUNT || '').trim();
+  if (primary.length > 0) return primary;
+  const fallback = (process.env.NEXT_PUBLIC_SAAS_BANK_ACCOUNT || '').trim();
+  if (fallback.length > 0) return fallback;
+  return null;
+}
+
+function normalizeReceivingAccount(account: string): string {
+  return account.replace(/\s+/g, '');
+}
+
 function verifyWebhookSignatureOrSecret(
   req: Request,
   rawBody: string
@@ -518,6 +530,60 @@ export async function POST(req: Request) {
         if (Number.isFinite(candidate) && candidate > 0) {
           verifiedTransferAmount = candidate;
         }
+      }
+    }
+
+    if (!isDevSandboxSimulator) {
+      const configuredReceivingAccount = getConfiguredSaasReceivingAccount();
+      if (!configuredReceivingAccount) {
+        return NextResponse.json(
+          {
+            error:
+              'Tài khoản nhận tiền SaaS chưa được cấu hình (thiếu SAAS_BANK_ACCOUNT hoặc NEXT_PUBLIC_SAAS_BANK_ACCOUNT).',
+            code: 'RECEIVING_ACCOUNT_NOT_CONFIGURED',
+          },
+          { status: 503 }
+        );
+      }
+
+      const rawAccountNumber =
+        body.accountNumber !== undefined
+          ? body.accountNumber
+          : body.account_number;
+
+      if (
+        rawAccountNumber === undefined ||
+        rawAccountNumber === null ||
+        rawAccountNumber === '' ||
+        (typeof rawAccountNumber !== 'string' &&
+          typeof rawAccountNumber !== 'number') ||
+        String(rawAccountNumber).trim().length === 0 ||
+        String(rawAccountNumber).replace(/\s+/g, '').length === 0
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Thiếu số tài khoản nhận tiền (accountNumber) trong payload webhook.',
+            code: 'RECEIVING_ACCOUNT_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+
+      const normalizedProvided = String(rawAccountNumber).replace(/\s+/g, '');
+      const normalizedConfigured = normalizeReceivingAccount(
+        configuredReceivingAccount
+      );
+
+      if (normalizedProvided !== normalizedConfigured) {
+        return NextResponse.json(
+          {
+            error:
+              'Số tài khoản nhận tiền không khớp với tài khoản ngân hàng SaaS đã cấu hình.',
+            code: 'RECEIVING_ACCOUNT_MISMATCH',
+          },
+          { status: 400 }
+        );
       }
     }
 
