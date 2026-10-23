@@ -297,6 +297,110 @@ test('live sync handles 403 Forbidden as unauthorized and halts reconnect until 
   await settle();
   assert.equal(fetchCount, 1, 'does not loop on 403');
 
+  // Simulate permission recovery and triggering live sync recovery via reconnect
+  let streamOpened = false;
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => {
+      fetchCount++;
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          streamOpened = true;
+          c.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
+        },
+      });
+      return new Response(stream);
+    },
+  });
+
+  stop.reconnect();
+  await settle();
+  t.mock.timers.tick(200);
+  await settle();
+
+  assert.equal(statusResult, 'connected', 'reconnect transitions live sync from 403 unauthorized to connected');
+  assert.equal(fetchCount, 2, 'reconnect initiates exactly one fresh connection after 403 recovery');
+  assert.equal(streamOpened, true, 'stream was opened successfully on 403 recovery');
+
+  stop();
+});
+
+test('healthy live sync is not torn down or reopened when ready event triggers onChange and successful fetch calls reconnect', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const descriptors = Object.fromEntries(
+    ['document', 'window', 'fetch'].map((k) => [
+      k,
+      Object.getOwnPropertyDescriptor(globalThis, k),
+    ])
+  );
+  const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+  const win = new EventTarget();
+  let statusResult: string | undefined;
+  let sseConnections = 0;
+  let onChangeCalls = 0;
+  let streamAborted = false;
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: win });
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (_url: unknown, init: RequestInit) => {
+      sseConnections++;
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          streamController = c;
+          c.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
+        },
+      });
+      init.signal?.addEventListener('abort', () => {
+        streamAborted = true;
+        try {
+          streamController?.error(new DOMException('Aborted', 'AbortError'));
+        } catch {}
+      });
+      return new Response(stream);
+    },
+  });
+
+  let stop: ReturnType<typeof startOrderLiveSync> | undefined;
+  t.after(() => {
+    stop?.();
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  stop = startOrderLiveSync({
+    query: 'shopId=fixture',
+    onChange: () => {
+      onChangeCalls++;
+      // Simulates CounterOrdersPage: fetchOrdersAndCatalog(true) calls liveSyncRef.current?.reconnect?.()
+      stop?.reconnect();
+    },
+    onStatus: (s) => {
+      statusResult = s;
+    },
+  });
+
+  await settle();
+  // Flush debounce timer (200ms) for ready event -> onChange
+  t.mock.timers.tick(200);
+  await settle();
+
+  assert.equal(statusResult, 'connected', 'stream transitions to connected');
+  assert.equal(onChangeCalls, 1, 'onChange invoked once for ready event');
+  assert.equal(sseConnections, 1, 'initial SSE connection established');
+  assert.equal(streamAborted, false, 'reconnect() did not abort healthy stream');
+
+  // Advance time: prove healthy stream is not torn down, reopened, or caught in infinite loop
+  t.mock.timers.tick(30000);
+  await settle();
+  assert.equal(onChangeCalls, 1, 'no runaway onChange invocations');
+  assert.equal(sseConnections, 1, 'stream was not torn down and reopened');
+  assert.equal(streamAborted, false, 'healthy stream remains open and unaborted');
+
   stop();
 });
 

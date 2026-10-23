@@ -113,7 +113,7 @@ export function startOrderLiveSync(options: {
     window.removeEventListener('online', resume);
   }) as OrderLiveSyncHandle;
   stop.reconnect = () => {
-    if (stopped) return;
+    if (stopped || !unauthorized) return;
     unauthorized = false;
     retryDelay = 1000;
     if (visible()) {
