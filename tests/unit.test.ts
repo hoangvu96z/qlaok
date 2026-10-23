@@ -4519,6 +4519,102 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       setSupabaseDbClientForTests(null);
     }
   });
+
+  test('R.7 executeOnboardingCompletion preserves empty city without fabricating location (e.g. Đà Nẵng)', async () => {
+    interface OnboardingTestShopPayload {
+      name?: string;
+      city?: string;
+      address?: string;
+      google_maps_url?: string;
+      google_review_url?: string;
+    }
+    let capturedShopPayload: OnboardingTestShopPayload | null = null;
+
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/ai/translate') {
+        return new Response(
+          JSON.stringify({
+            category_i18n: { vi: 'Món Đặc Trưng', en: 'Signature' },
+            name_i18n: { vi: 'Trà Sen Vàng', en: 'Golden Lotus Tea' },
+            desc_i18n: { vi: 'Thanh mát', en: 'Refreshing' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url === '/api/shops') {
+        capturedShopPayload = JSON.parse(String(init?.body || '{}'));
+        return new Response(
+          JSON.stringify({
+            shop: {
+              id: 'shop-onboard-empty-city-1',
+              name: capturedShopPayload?.name || 'Tiệm Trà Mới',
+              slug: 'tiem-tra-moi',
+              is_published: false,
+              city: capturedShopPayload?.city ?? '',
+            },
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url === '/api/catalog') {
+        return new Response(
+          JSON.stringify({
+            createdCategories: [{ id: 'cat-1' }],
+            createdItems: [{ id: 'item-1' }],
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+
+    const result = await executeOnboardingCompletion({
+      locale: 'vi',
+      ownerId: 'owner-onboard-empty-city',
+      vertical: 'fnb',
+      shopName: 'Tiệm Trà Mới',
+      taglineVi: 'Trà thảo mộc',
+      city: '',
+      address: '',
+      phone: '0905123456',
+      wifiSsid: 'TiemTra_5G',
+      wifiPassword: '88888888',
+      categoryVi: 'Món Đặc Trưng',
+      firstItemNameVi: 'Trà Sen Vàng',
+      firstItemPrice: '45000',
+      fetchImpl: mockFetch,
+    });
+
+    assert.equal(result.ok, true, 'Onboarding must succeed when city is empty');
+    assert.ok(capturedShopPayload !== null, 'Shop payload must be sent to /api/shops');
+    const payload = capturedShopPayload as unknown as OnboardingTestShopPayload;
+    assert.equal(
+      payload.city,
+      '',
+      'Empty city must remain empty and not be prefilled or fabricated'
+    );
+    assert.notEqual(
+      payload.city,
+      'Đà Nẵng',
+      'Empty city must never be fabricated as Đà Nẵng'
+    );
+    assert.notEqual(
+      payload.city,
+      'TP. Hồ Chí Minh',
+      'Empty city must never be fabricated as TP. Hồ Chí Minh'
+    );
+    assert.equal(
+      payload.address,
+      '',
+      'Empty address must not be replaced with a fabricated location'
+    );
+    assert.equal(
+      payload.google_maps_url,
+      `https://maps.google.com/?q=${encodeURIComponent('Tiệm Trà Mới')}`,
+      'Maps URL must not append trailing space or fabricated location'
+    );
+  });
 });
 
 // ============================================================================

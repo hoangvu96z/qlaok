@@ -191,6 +191,10 @@ export async function executeOnboardingCompletion(
 
   if (!draftShop) {
     const slugBase = buildOnboardingSlugBase(trimmedShopName);
+    const trimmedCity = typeof city === 'string' ? city.trim() : '';
+    const mapLocationQuery = trimmedCity
+      ? `${trimmedShopName} ${trimmedCity}`
+      : trimmedShopName;
     try {
       const shopRes = await fetchImpl('/api/shops', {
         method: 'POST',
@@ -214,13 +218,13 @@ export async function executeOnboardingCompletion(
           },
           logo_url: null,
           cover_urls: [],
-          address: address.trim() || city,
-          city,
+          address: address.trim() || trimmedCity,
+          city: trimmedCity,
           google_maps_url: `https://maps.google.com/?q=${encodeURIComponent(
-            `${trimmedShopName} ${city}`
+            mapLocationQuery
           )}`,
           google_review_url: `https://maps.google.com/?q=${encodeURIComponent(
-            `${trimmedShopName} ${city}`
+            mapLocationQuery
           )}`,
           phone_contact: phone.trim() || ownerPhone || '',
           zalo_phone: phone.trim() || ownerPhone || '',

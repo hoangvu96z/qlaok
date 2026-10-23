@@ -43,7 +43,7 @@ export default function OnboardingWizardPage() {
   const [taglineVi, setTaglineVi] = useState('');
 
   // Step 2: Location & Wi-Fi
-  const [city, setCity] = useState('Đà Nẵng');
+  const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [wifiSsid, setWifiSsid] = useState('');
@@ -512,6 +512,12 @@ export default function OnboardingWizardPage() {
                   onChange={(e) => setCity(e.target.value)}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs font-bold text-white"
                 >
+                  <option value="">
+                    {tx(
+                      '-- Chọn Tỉnh / Thành phố --',
+                      '-- Select City / Province --'
+                    )}
+                  </option>
                   {VIETNAM_PROVINCES_34.map((prov) => (
                     <option key={prov.code} value={prov.name}>
                       {prov.name}
