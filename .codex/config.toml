@@ -7,3 +7,13 @@ enabled = true
 startup_timeout_sec = 20
 tool_timeout_sec = 60
 default_tools_approval_mode = "writes"
+
+# Project-scoped Supabase MCP. OAuth credentials are stored by Codex, never here.
+# Read-only database access; only schema/docs/debugging feature groups are enabled.
+[mcp_servers.supabase]
+url = "https://mcp.supabase.com/mcp?project_ref=kftmrjmmympztzztunxf&read_only=true&features=database%2Cdocs%2Cdebugging"
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "prompt"
+disabled_tools = ["apply_migration"]

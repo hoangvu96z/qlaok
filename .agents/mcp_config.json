@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "serverUrl": "https://mcp.supabase.com/mcp?project_ref=kftmrjmmympztzztunxf&read_only=true&features=database%2Cdocs%2Cdebugging",
+      "disabledTools": ["apply_migration"]
+    }
+  }
+}

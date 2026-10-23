@@ -25,3 +25,9 @@ Read and follow [CODEGRAPH_WORKFLOW.md](docs/CODEGRAPH_WORKFLOW.md) before any c
 - Match the run to the exact pushed commit, wait for a terminal state, and inspect failed jobs/logs before reporting. Claim success only when that run's conclusion is `success`.
 - GitHub's hosted MCP endpoint requires `GITHUB_PAT_TOKEN` in the environment that launches Codex. Grant only the read access needed for repository Actions. Do not use `codex mcp login github` for this endpoint, and never put tokens in the repo, `.env`, logs, or CI output.
 - If GitHub MCP is unavailable or unauthenticated, use an available GitHub CLI/API read path and state any access limitation. Do not trigger reruns or other GitHub writes unless the user asks.
+
+## Supabase MCP
+
+- For tasks that need live Supabase schema, migration state, logs, advisors, or current Supabase platform guidance, use the project-scoped `supabase` MCP configured in `.codex/config.toml` and `.agents/mcp_config.json` instead of guessing.
+- The MCP is scoped to this project, limited to the `database`, `docs`, and `debugging` feature groups, configured with `read_only=true`, and blocks `apply_migration`. Authenticate through the local Codex or Antigravity client; never add tokens or credentials to repository files.
+- Use it only for task-relevant inspection. Do not export or expose customer data, and do not attempt production writes or migrations through MCP. Implement database changes as reviewed migration files and follow the repository's deployment rules.
