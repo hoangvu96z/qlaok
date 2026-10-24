@@ -15,6 +15,7 @@
     "test:agy-runner": "node --test tests/agy-runner.test.mjs",
     "test:backup": "node --test tests/backup-qlaok-db.test.mjs",
     "test:demo-reset": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/demo-reset-purge.test.mjs tests/demo-reset-roundtrip.test.mjs",
+    "test:db-reset": "npm run test:backup && node --test tests/preflight-demo-reset.test.mjs && npm run test:demo-reset",
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts",
     "test:e2e": "node --test tests/e2e.test.mjs",
     "test": "npm run test:unit && npm run test:e2e",
