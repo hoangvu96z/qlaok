@@ -68,6 +68,8 @@ import {
   requestBrowserNotificationPermission,
   sendBrowserOrderNotification,
   sendBrowserServiceRequestNotification,
+  CHIME_SETTINGS_EVENT,
+  type OrderToastPosition,
 } from '@/lib/order-chime';
 
 const NAV_ITEMS: Array<{
@@ -129,6 +131,13 @@ const NAV_ITEMS: Array<{
   },
 ];
 
+const TOAST_POSITION_CLASSES: Record<OrderToastPosition, string> = {
+  'top-right': 'top-4 right-4',
+  'top-left': 'top-4 left-4',
+  'bottom-right': 'bottom-4 right-4',
+  'bottom-left': 'bottom-4 left-4',
+};
+
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -159,6 +168,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     tableLabel: string;
     totalAmount: number;
   } | null>(null);
+  const [toastPosition, setToastPosition] =
+    useState<OrderToastPosition>('top-right');
 
   const translateRef = useRef(tx);
   translateRef.current = tx;
@@ -182,6 +193,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     disposedRef.current = false;
     ensureAudioContextUnlocked();
+
+    const handleChimeSettingsChange = () => {
+      if (disposedRef.current) return;
+      // Re-read the persisted value so malformed/custom event details cannot
+      // bypass the position validation in loadOrderChimeSettings.
+      setToastPosition(loadOrderChimeSettings().newOrderToastPosition);
+    };
+
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('qlaok_cms_sidebar_collapsed');
@@ -192,6 +211,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         // ignore storage errors
       }
       setBrowserPerm(getBrowserNotificationPermission());
+      setToastPosition(loadOrderChimeSettings().newOrderToastPosition);
+      window.addEventListener(CHIME_SETTINGS_EVENT, handleChimeSettingsChange);
     }
     const supabase = createClient();
     if (supabase) {
@@ -203,6 +224,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     }
     return () => {
       disposedRef.current = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(
+          CHIME_SETTINGS_EVENT,
+          handleChimeSettingsChange
+        );
+      }
     };
   }, []);
 
@@ -637,8 +664,19 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col md:flex-row">
       {/* Global Floating New Order Toast Notification */}
       {liveToastOrder && (
-        <div className="fixed top-4 right-4 z-50 w-full max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce">
-          <div className="flex items-start justify-between gap-3">
+        <div
+          role="status"
+          className={`fixed ${TOAST_POSITION_CLASSES[toastPosition] || 'top-4 right-4'} z-50 w-[calc(100vw-2rem)] max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce`}
+        >
+          {/* Accessible full-card link layer behind controls */}
+          <Link
+            href="/dashboard/orders"
+            onClick={() => setLiveToastOrder(null)}
+            aria-label={`${liveToastOrder.tableLabel} • #${liveToastOrder.orderCode} - ${t('header.openOrdersNow')}`}
+            className="absolute inset-0 z-0 rounded-3xl focus:outline-none focus:ring-2 focus:ring-amber-400"
+          />
+
+          <div className="relative z-10 flex items-start justify-between gap-3 pointer-events-none">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-slate-950">
                 <BellRing className="h-5 w-5" />
@@ -657,7 +695,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                     activeShop?.currency || 'VND'
                   )}
                 </p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2 pointer-events-auto">
                   <Link
                     href="/dashboard/orders"
                     onClick={() => setLiveToastOrder(null)}
@@ -682,7 +720,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               onClick={() => setLiveToastOrder(null)}
               aria-label={t('common.close')}
               title={t('common.close')}
-              className="rounded-lg p-1 text-slate-400 hover:text-white"
+              className="pointer-events-auto rounded-lg p-1 text-slate-400 hover:text-white"
             >
               <X className="h-4 w-4" />
             </button>

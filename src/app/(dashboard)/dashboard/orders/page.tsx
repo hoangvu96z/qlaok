@@ -65,6 +65,7 @@ import {
   getBrowserNotificationPermission,
   loadOrderChimeSettings,
   OrderChimeSettings,
+  type OrderToastPosition,
   playOrderAlertChime,
   requestBrowserNotificationPermission,
   saveOrderChimeSettings,
@@ -2361,6 +2362,74 @@ export default function CounterOrdersPage() {
                           : t('header.alertsOff')}
                     </button>
                   )}
+                </div>
+              </div>
+
+              {/* 5. In-App New-Order Toast Position */}
+              <div className="pt-2.5 border-t border-slate-200/80 space-y-2">
+                <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
+                  {tx(
+                    '5. Vị trí bảng báo đơn mới trong ứng dụng:',
+                    '5. In-app new-order toast position:'
+                  )}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'top-left',
+                        title: tx('↖ Trên - Trái', '↖ Top Left'),
+                        sub: tx('Góc trên bên trái', 'Top-left corner'),
+                      },
+                      {
+                        id: 'top-right',
+                        title: tx('↗ Trên - Phải', '↗ Top Right'),
+                        sub: tx('Góc trên bên phải (Mặc định)', 'Top-right (Default)'),
+                      },
+                      {
+                        id: 'bottom-left',
+                        title: tx('↙ Dưới - Trái', '↙ Bottom Left'),
+                        sub: tx('Góc dưới bên trái', 'Bottom-left corner'),
+                      },
+                      {
+                        id: 'bottom-right',
+                        title: tx('↘ Dưới - Phải', '↘ Bottom Right'),
+                        sub: tx('Góc dưới bên phải', 'Bottom-right corner'),
+                      },
+                    ] as Array<{
+                      id: OrderToastPosition;
+                      title: string;
+                      sub: string;
+                    }>
+                  ).map((corner) => {
+                    const active =
+                      (chimeSettings.newOrderToastPosition || 'top-right') ===
+                      corner.id;
+                    return (
+                      <button
+                        key={corner.id}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => {
+                          updateChimeSettings({
+                            newOrderToastPosition: corner.id,
+                          });
+                        }}
+                        className={`rounded-2xl border p-2.5 text-left transition ${
+                          active
+                            ? 'border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500/20'
+                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="text-xs font-black text-slate-900">
+                          {corner.title}
+                        </div>
+                        <div className="text-[10px] font-medium text-slate-500 mt-0.5">
+                          {corner.sub}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
