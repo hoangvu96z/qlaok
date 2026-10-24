@@ -1466,5 +1466,44 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
 
     await db.exec('RESET ROLE');
 
+    // 9. Verify 019_revoke_staff_trigger_execute.sql: neither anon nor authenticated can EXECUTE staff boundary trigger helpers
+    const idx019 = migrations.indexOf('019_revoke_staff_trigger_execute.sql');
+    assert.ok(
+      idx019 > idx018,
+      '019_revoke_staff_trigger_execute.sql must sort after 018_shop_staff_accounts.sql'
+    );
+
+    const checkTriggerHelperPrivileges = async () => {
+      const { rows } = await db.query(`
+        SELECT
+          has_function_privilege('anon', 'public.enforce_shop_staff_credentials_boundaries()', 'EXECUTE') AS anon_cred_trigger_exec,
+          has_function_privilege('authenticated', 'public.enforce_shop_staff_credentials_boundaries()', 'EXECUTE') AS authenticated_cred_trigger_exec,
+          has_function_privilege('anon', 'public.enforce_staff_login_rate_limits_boundaries()', 'EXECUTE') AS anon_rate_limit_trigger_exec,
+          has_function_privilege('authenticated', 'public.enforce_staff_login_rate_limits_boundaries()', 'EXECUTE') AS authenticated_rate_limit_trigger_exec
+      `);
+      return rows[0];
+    };
+
+    assert.deepEqual(await checkTriggerHelperPrivileges(), {
+      anon_cred_trigger_exec: false,
+      authenticated_cred_trigger_exec: false,
+      anon_rate_limit_trigger_exec: false,
+      authenticated_rate_limit_trigger_exec: false,
+    });
+
+    // Re-applying 019_revoke_staff_trigger_execute.sql is idempotent and preserves trigger enforcement
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/019_revoke_staff_trigger_execute.sql',
+        'utf8'
+      )
+    );
+    assert.deepEqual(await checkTriggerHelperPrivileges(), {
+      anon_cred_trigger_exec: false,
+      authenticated_cred_trigger_exec: false,
+      anon_rate_limit_trigger_exec: false,
+      authenticated_rate_limit_trigger_exec: false,
+    });
+
   } finally { await db.close(); }
 });

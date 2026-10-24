@@ -106,6 +106,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 016_order_workflow_and_label_printing.sql
 017_order_workflow_rpc.sql
 018_shop_staff_accounts.sql
+019_revoke_staff_trigger_execute.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
