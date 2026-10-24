@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit --incremental false",
     "db:migrate": "node scripts/migrate-supabase.mjs",
     "db:backup": "node scripts/backup-qlaok-db.mjs",
+    "db:preflight": "node scripts/preflight-demo-reset.mjs",
     "agy": "node scripts/agy-runner.mjs",
     "test:agy-runner": "node --test tests/agy-runner.test.mjs",
     "test:backup": "node --test tests/backup-qlaok-db.test.mjs",

@@ -112,6 +112,7 @@ Before any future task executes a demo reset on `kftmrjmmympztzztunxf`, the foll
 1. **Explicit Authorization & Target Verification:**
    - Confirm explicit user authorization to run destructive writes against `kftmrjmmympztzztunxf`.
    - Verify the live schema and row counts via read-only inspection first (confirming all **20 migration files**, including `002z`, in `public.schema_migrations`). The user's authorization covers wiping the QA shop and its order `#ORD-769` as part of the full reset; do not silently preserve them.
+   - With `QLAOK_DATABASE_URL` set only in the local process environment, run `npm run db:preflight -- --project-ref kftmrjmmympztzztunxf`. This read-only tool reports aggregate counts for the 21 expected `public` tables and `auth.users`, and rejects a migration list that differs from the repository's SQL files. It does not perform a backup or reset.
 2. **Mandatory Pre-Reset Backup (Point-in-Time Snapshot):**
    - Export and verify a complete backup of all 21 `public` tables and `auth.users` metadata (e.g., `pg_dump` data/schema snapshot or verified JSON/SQL export stored in an untracked local backup directory with `chmod 600`) **before** any deletion.
    - **Automated Backup Wrapper (`scripts/backup-qlaok-db.mjs`):**
