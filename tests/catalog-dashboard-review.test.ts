@@ -301,3 +301,108 @@ test('catalog pagination clamps page correctly when items change or are deleted'
     'In-bounds page must remain untouched'
   );
 });
+
+test('QuickItemRow and DashboardCatalogPage render accessible row and page selection checkboxes', async () => {
+  await import('./tsx-review-loader.mjs');
+  const { registerHooks } = await import('node:module');
+  registerHooks({
+    load(url, context, next) {
+      if (url.includes('dashboard-context')) {
+        return {
+          format: 'module',
+          shortCircuit: true,
+          source:
+            "export function useDashboard() { return { activeShop: { id: 'shop-test', name: 'Test Shop', vertical: 'fnb', membership: { id: 'mem-1', shop_id: 'shop-test', user_id: 'user-1', role: 'owner', status: 'active', permissions: ['catalog.manage', 'inventory.adjust', 'inventory.view'] } }, profile: { id: 'user-1', plan: 'free' } }; }",
+        };
+      }
+      return next(url, context);
+    },
+  });
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { QuickItemRow } = await import('@/components/dashboard/QuickItemRow');
+  const { default: DashboardCatalogPage } = await import('@/app/(dashboard)/dashboard/catalog/page');
+
+  const uncheckedRowHtml = renderToStaticMarkup(
+    createElement(QuickItemRow, {
+      item: sampleItem,
+      selected: false,
+      onToggleSelect: () => {},
+      onToggleAvailable: async () => true,
+      onUpdatePrice: async () => true,
+      onToggleFeatured: async () => true,
+      onEditTranslations: () => {},
+      onDelete: async () => true,
+    })
+  );
+  assert.ok(
+    uncheckedRowHtml.includes('data-testid="catalog-item-checkbox-item-1"'),
+    'QuickItemRow must render an accessible selection checkbox when onToggleSelect is provided'
+  );
+  assert.ok(
+    uncheckedRowHtml.includes('type="checkbox"'),
+    'QuickItemRow selection control must be a native checkbox input'
+  );
+  assert.ok(
+    uncheckedRowHtml.includes('id="select-item-item-1"'),
+    'QuickItemRow checkbox must have an id matching label htmlFor'
+  );
+  assert.match(
+    uncheckedRowHtml,
+    /aria-label="[^"]*Cà phê sữa đá[^"]*"/,
+    'QuickItemRow checkbox must include an accessible aria-label naming the item'
+  );
+  assert.ok(
+    !uncheckedRowHtml.includes('checked=""'),
+    'Unselected QuickItemRow checkbox must not be checked'
+  );
+  assert.ok(
+    !uncheckedRowHtml.includes('disabled=""'),
+    'Unselected QuickItemRow checkbox must not be disabled by default'
+  );
+
+  const checkedRowHtml = renderToStaticMarkup(
+    createElement(QuickItemRow, {
+      item: sampleItem,
+      selected: true,
+      selectionDisabled: true,
+      onToggleSelect: () => {},
+      onToggleAvailable: async () => true,
+      onUpdatePrice: async () => true,
+      onToggleFeatured: async () => true,
+      onEditTranslations: () => {},
+      onDelete: async () => true,
+    })
+  );
+  assert.ok(
+    checkedRowHtml.includes('checked=""'),
+    'Selected QuickItemRow checkbox must render checked attribute'
+  );
+  assert.ok(
+    checkedRowHtml.includes('disabled=""'),
+    'Disabled QuickItemRow checkbox must render disabled attribute while bulk action is pending'
+  );
+  assert.match(
+    checkedRowHtml,
+    /ring-2|ring-emerald-500/,
+    'Selected QuickItemRow must visually reflect selected state'
+  );
+
+  const pageHtml = renderToStaticMarkup(createElement(DashboardCatalogPage));
+  assert.ok(
+    !pageHtml.includes('data-testid="catalog-bulk-action-bar"'),
+    'DashboardCatalogPage must hide bulk toolbar when zero items are selected'
+  );
+  assert.ok(
+    !pageHtml.includes('data-testid="catalog-bulk-selected-count"'),
+    'DashboardCatalogPage must not show bulk selected count when zero items are selected'
+  );
+  assert.ok(
+    !pageHtml.includes('data-testid="catalog-bulk-result-banner"'),
+    'DashboardCatalogPage must not show bulk result banner on initial render'
+  );
+  assert.ok(
+    pageHtml.includes('data-testid="catalog-loading-state"'),
+    'DashboardCatalogPage must render initial loading state while fetching catalog data'
+  );
+});

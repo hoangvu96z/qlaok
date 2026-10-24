@@ -23,6 +23,9 @@ import {
 
 export interface QuickItemRowProps {
   item: CatalogItem;
+  selected?: boolean;
+  onToggleSelect?: (itemId: string, nextSelected: boolean) => void;
+  selectionDisabled?: boolean;
   /** Mutation callbacks may resolve `false` when the server rejected the change (state rolled back). */
   onToggleAvailable: (item: CatalogItem, nextAvailable: boolean) => Promise<boolean | void>;
   onUpdatePrice: (item: CatalogItem, nextPrice: number) => Promise<boolean | void>;
@@ -35,6 +38,9 @@ export interface QuickItemRowProps {
 
 export function QuickItemRow({
   item,
+  selected = false,
+  onToggleSelect,
+  selectionDisabled = false,
   onToggleAvailable,
   onUpdatePrice,
   onUpdateStock,
@@ -181,14 +187,38 @@ export function QuickItemRow({
     <div
       data-testid={`catalog-item-row-${item.id}`}
       className={`rounded-2xl border bg-white p-2.5 sm:p-3 transition-all shadow-2xs hover:border-slate-300 ${
-        item.is_available
-          ? 'border-slate-200'
-          : 'border-rose-200 bg-rose-50/20 opacity-85'
+        selected
+          ? 'border-emerald-500 bg-emerald-50/10 ring-2 ring-emerald-500/20'
+          : item.is_available
+            ? 'border-slate-200'
+            : 'border-rose-200 bg-rose-50/20 opacity-85'
       }`}
     >
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-3">
-        {/* Left Section: Thumbnail + Item Identity + Metadata */}
-        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+        {/* Left Section: Checkbox + Thumbnail + Item Identity + Metadata */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+          {/* Accessible Row Selection Checkbox */}
+          <label
+            htmlFor={`select-item-${item.id}`}
+            className="-ml-1 inline-flex min-h-[44px] min-w-[44px] shrink-0 cursor-pointer items-center justify-center rounded-xl hover:bg-slate-50"
+            title={tx('Chọn món: {name}', 'Select item: {name}', {
+              name: item.name_i18n.vi,
+            })}
+          >
+            <input
+              id={`select-item-${item.id}`}
+              data-testid={`catalog-item-checkbox-${item.id}`}
+              type="checkbox"
+              checked={Boolean(selected)}
+              disabled={selectionDisabled}
+              onChange={(e) => onToggleSelect?.(item.id, e.target.checked)}
+              aria-label={tx('Chọn món {name}', 'Select item {name}', {
+                name: item.name_i18n.vi,
+              })}
+              className="h-[1.15em] w-[1.15em] cursor-pointer rounded border-slate-300 accent-emerald-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          </label>
+
           {/* Clickable Image Thumbnail with 1-Tap Upload Overlay */}
           <label
             title={tx(

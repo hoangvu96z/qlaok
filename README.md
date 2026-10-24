@@ -24,6 +24,12 @@ Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào 
 - AI dịch/OCR qua gateway OpenAI-compatible cấu hình `AI_*`, kết hợp Tesseract; upload ảnh qua R2. `/api/ai/ocr-menu` đối chiếu gói theo đúng chủ sở hữu của quán đang chọn đã được xác thực quyền và yêu cầu nhân viên/thu ngân có quyền chuẩn `catalog.manage`. Nội dung AI/OCR cần được merchant kiểm tra trước khi lưu.
 - Mobile Expo có các tab tổng quan, catalog, đơn, khuyến mãi và settings; dùng Supabase Auth thật và API có Bearer token. Thao tác hoàn tiền/hủy đơn trên mobile yêu cầu nhập lý do theo ngôn ngữ VI/EN đang chọn; server kiểm tra hợp lệ (bắt buộc, tối đa 500 ký tự) và ghi nhận `refund_reason`/`cancelled_reason` vào đơn cùng audit log. Khi có cấu hình `EXPO_PUBLIC_EAS_PROJECT_ID` (hoặc `extra.eas.projectId`) và chứng chỉ APNs/FCM trên EAS, ứng dụng đăng ký Expo push token theo shop đang xem (cần quyền `orders.view`, tự thử lại khi lỗi mạng tạm thời), nhận thông báo đơn QR mới có âm báo và chạm mở đúng tab Đơn của quán đó (nếu quán không khả dụng hoặc không còn quyền `orders.view` sẽ báo lỗi rõ ràng, không tự chuyển sang quán khác); khi đăng xuất chủ động hoặc tự thoát phiên do HTTP 401 đều thử hủy token best-effort qua API xác thực trước khi xóa phiên local (nếu access token đã hết hạn/không hợp lệ khiến `DELETE /api/push-tokens` trả 401 thì không lặp đệ quy và vẫn xóa phiên local). In mobile hiện là preview/mô phỏng.
 
+### Cài đặt quán và thao tác hàng loạt thực đơn
+
+- `/dashboard/settings` được chia thành năm tab: **Thông tin quán**, **Giao diện**, **Thanh toán**, **Đơn hàng & in ấn**, và **Nhân viên**. Deep link checklist và cấu hình hiện có (`#opening-hours-settings`, `#payment-qr-settings`, `#order-workflow-settings`, `#label-print-settings`) tự mở đúng tab chứa mục đích.
+- `/dashboard/catalog` hỗ trợ chọn từng món hoặc chọn tất cả món đang thấy trên trang; lựa chọn được giữ khi chuyển trang và xóa khi đổi quán, từ khóa hoặc danh mục. Thanh thao tác chỉ hiện khi có lựa chọn: đặt cùng một giá VND, bật/tắt còn hàng, chuyển danh mục hoặc xóa sau xác nhận. Bật/tắt chỉ đổi `is_available`, không đổi số lượng tồn kho. Giá, chuyển danh mục và xóa cần `catalog.manage`; trạng thái còn hàng cần `catalog.manage` hoặc `inventory.adjust`. API xác minh lại membership, quán và ID món trước khi ghi.
+- Chi tiết giới hạn, quyền và endpoint: [thao tác hàng loạt catalog](docs/CATALOG_BULK_ACTIONS.md).
+
 | Gói | Giá cấu hình/tháng | Món tối đa | Ngôn ngữ tối đa | OCR | Theme |
 | --- | ---: | ---: | ---: | --- | --- |
 | Free | 0đ | 5 | 1 | Không | Không |

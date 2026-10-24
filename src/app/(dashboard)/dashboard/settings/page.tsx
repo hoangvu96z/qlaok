@@ -25,6 +25,8 @@ import {
   QrCode,
   Landmark,
   CreditCard,
+  Printer,
+  Users,
   Loader2,
   AlertTriangle,
 } from 'lucide-react';
@@ -110,6 +112,72 @@ const BACKGROUND_IMAGE_PRESETS = [
     url: 'https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=1000&auto=format&fit=crop&q=80',
   },
 ];
+
+type SettingsTabId =
+  | 'store-info'
+  | 'appearance'
+  | 'payments'
+  | 'orders'
+  | 'staff';
+
+interface SettingsTabItem {
+  id: SettingsTabId;
+  labelVi: string;
+  labelEn: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const SETTINGS_TABS: SettingsTabItem[] = [
+  {
+    id: 'store-info',
+    labelVi: 'Thông tin quán',
+    labelEn: 'Store information',
+    icon: Store,
+  },
+  {
+    id: 'appearance',
+    labelVi: 'Giao diện',
+    labelEn: 'Appearance',
+    icon: Palette,
+  },
+  {
+    id: 'payments',
+    labelVi: 'Thanh toán',
+    labelEn: 'Payments',
+    icon: CreditCard,
+  },
+  {
+    id: 'orders',
+    labelVi: 'Quy trình & In ấn',
+    labelEn: 'Orders & printing',
+    icon: Printer,
+  },
+  {
+    id: 'staff',
+    labelVi: 'Nhân viên',
+    labelEn: 'Staff',
+    icon: Users,
+  },
+];
+
+const SETTINGS_HASH_TO_TAB: Record<string, SettingsTabId> = {
+  // Deep-link target hashes
+  'payment-qr-settings': 'payments',
+  'opening-hours-settings': 'store-info',
+  'order-workflow-settings': 'orders',
+  'label-print-settings': 'orders',
+  // Direct tab name hashes
+  'store-info': 'store-info',
+  'appearance': 'appearance',
+  'payments': 'payments',
+  'orders': 'orders',
+  'staff': 'staff',
+};
+
+function resolveSettingsTabFromHash(hash: string): SettingsTabId | null {
+  const clean = hash.replace(/^#/, '').trim();
+  return SETTINGS_HASH_TO_TAB[clean] || null;
+}
 
 export default function DashboardSettingsPage() {
   const { activeShop, updateActiveShop, refreshDashboard } = useDashboard();
@@ -197,6 +265,72 @@ export default function DashboardSettingsPage() {
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSlugConfirmModalOpen, setIsSlugConfirmModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTabId>('store-info');
+
+  useEffect(() => {
+    const scrollToHash = (hash: string) => {
+      const cleanId = hash.replace(/^#/, '').trim();
+      if (!cleanId) return;
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const el = document.getElementById(cleanId);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 50);
+      });
+    };
+
+    const handleHash = () => {
+      if (typeof window === 'undefined') return;
+      const currentHash = window.location.hash.replace(/^#/, '').trim();
+      if (!currentHash) return;
+      const targetTab = resolveSettingsTabFromHash(currentHash);
+      if (targetTab) {
+        setActiveTab(targetTab);
+        scrollToHash(currentHash);
+      }
+    };
+
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const handleSelectTab = (tabId: SettingsTabId) => {
+    setActiveTab(tabId);
+    if (typeof window !== 'undefined') {
+      const currentHash = window.location.hash.replace(/^#/, '').trim();
+      if (SETTINGS_HASH_TO_TAB[currentHash] !== tabId) {
+        window.history.replaceState(null, '', `#${tabId}`);
+      }
+    }
+  };
+
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
+    const tabIds = SETTINGS_TABS.map((t) => t.id);
+    const currentIndex = tabIds.indexOf(activeTab);
+    if (currentIndex === -1) return;
+
+    let nextIndex: number | null = null;
+    if (e.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % tabIds.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + tabIds.length) % tabIds.length;
+    } else if (e.key === 'Home') {
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      nextIndex = tabIds.length - 1;
+    }
+
+    if (nextIndex !== null) {
+      e.preventDefault();
+      const nextTabId = tabIds[nextIndex];
+      handleSelectTab(nextTabId);
+      const nextBtn = document.getElementById(`settings-tab-${nextTabId}`);
+      nextBtn?.focus();
+    }
+  };
 
   useEffect(() => {
     if (!activeShop) return;
@@ -588,672 +722,56 @@ export default function DashboardSettingsPage() {
         </div>
       )}
 
-      {/* 1. Storefront Theme & Appearance */}
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <Palette className="h-4 w-4 text-emerald-600" />
-            <span>
-              {tx(
-                'Giao diện',
-                'Appearance'
-              )}
-            </span>
-          </h2>
-          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-            {tx(
-              'Cập nhật trực tiếp ở khung bên phải 👉',
-              'Updates live in the right panel 👉'
-            )}
-          </span>
-        </div>
-
-        {/* Pure Color Swatches */}
-        <div>
-          <label className="block text-xs font-bold text-slate-700 mb-2.5">
-            {tx('Màu chủ đạo của quán', 'Primary brand color')}
-          </label>
-          <div className="flex flex-wrap items-center gap-3">
-            {BRAND_COLOR_SWATCHES.map((hex) => {
-              const selected =
-                primaryColor.toLowerCase() === hex.toLowerCase();
-              return (
-                <button
-                  key={hex}
-                  type="button"
-                  onClick={() => setPrimaryColor(hex)}
-                  aria-label={tx('Chọn màu {hex}', 'Select color {hex}', {
-                    hex,
-                  })}
-                  className={`relative h-9 w-9 rounded-full transition-transform ${
-                    selected
-                      ? 'scale-110 ring-2 ring-offset-2 ring-slate-900 shadow-md'
-                      : 'hover:scale-105 opacity-85 hover:opacity-100'
+      {/* Settings Navigation Tabs */}
+      <div className="border-b border-slate-200">
+        <div
+          role="tablist"
+          aria-label={tx('Phân nhóm cài đặt', 'Settings groups')}
+          onKeyDown={handleTabKeyDown}
+          className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto py-1 scroll-smooth"
+        >
+          {SETTINGS_TABS.map((tab) => {
+            const isSelected = activeTab === tab.id;
+            const TabIcon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                id={`settings-tab-${tab.id}`}
+                data-testid={`settings-tab-${tab.id}`}
+                type="button"
+                role="tab"
+                aria-selected={isSelected}
+                aria-controls={`settings-tabpanel-${tab.id}`}
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => handleSelectTab(tab.id)}
+                className={`shrink-0 inline-flex items-center gap-2 rounded-2xl px-3.5 py-2 text-xs sm:text-sm font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-600 ${
+                  isSelected
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+              >
+                <TabIcon
+                  className={`h-4 w-4 shrink-0 ${
+                    isSelected ? 'text-white' : 'text-slate-500'
                   }`}
-                  style={{ backgroundColor: hex }}
-                >
-                  {selected && (
-                    <Check className="h-4 w-4 text-white mx-auto drop-shadow" />
-                  )}
-                </button>
-              );
-            })}
-
-            {/* Custom Color Picker Circle */}
-            <label
-              title={tx('Tự chọn mã màu bất kỳ', 'Pick any custom color')}
-              className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 hover:border-slate-500"
-            >
-              <input
-                type="color"
-                value={primaryColor}
-                onChange={(e) => setPrimaryColor(e.target.value)}
-                className="sr-only"
-              />
-              <span
-                className="h-5 w-5 rounded-full border border-slate-200"
-                style={{ backgroundColor: primaryColor }}
-              />
-            </label>
-          </div>
-        </div>
-
-        {/* Background Style Selector */}
-        <div>
-          <label className="block text-xs font-bold text-slate-700 mb-2">
-            {tx('Nền màn hình điện thoại', 'Phone background style')}
-          </label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            {[
-              {
-                id: 'clean',
-                label: tx('☀️ Sáng', '☀️ Clean Light'),
-                previewBg: 'bg-slate-50 border-slate-200 text-slate-900',
-              },
-              {
-                id: 'warm',
-                label: tx('🏮 Kem ấm', '🏮 Warm Cream'),
-                previewBg: 'bg-[#fdf8ee] border-amber-200 text-amber-950',
-              },
-              {
-                id: 'dark',
-                label: tx('🌙 Tối', '🌙 Dark'),
-                previewBg: 'bg-slate-900 border-slate-700 text-white',
-              },
-              {
-                id: 'custom_image',
-                label: tx('🖼️ Ảnh nền', '🖼️ Wallpaper'),
-                previewBg:
-                  'bg-gradient-to-r from-emerald-900 to-slate-900 text-white',
-              },
-            ].map((bg) => {
-              const active = backgroundStyle === bg.id;
-              return (
-                <button
-                  key={bg.id}
-                  type="button"
-                  onClick={() =>
-                    setBackgroundStyle(
-                      bg.id as NonNullable<ShopThemeConfig['backgroundStyle']>
-                    )
-                  }
-                  className={`flex items-center justify-center gap-1.5 rounded-2xl border-2 py-3 px-3 text-xs font-extrabold transition ${
-                    active
-                      ? 'border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs'
-                      : 'border-slate-200 opacity-80 hover:opacity-100'
-                  } ${bg.previewBg}`}
-                >
-                  <span>{bg.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Custom Wallpaper Picker when custom_image is active */}
-        {backgroundStyle === 'custom_image' && (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-              {BACKGROUND_IMAGE_PRESETS.map((preset) => {
-                const label = tx(preset.labelVi, preset.labelEn);
-                return (
-                  <button
-                    key={preset.url}
-                    type="button"
-                    onClick={() => setBackgroundImageUrl(preset.url)}
-                    className={`group relative overflow-hidden rounded-xl border-2 aspect-video ${
-                      backgroundImageUrl === preset.url
-                        ? 'border-emerald-500 ring-2 ring-emerald-500/30'
-                        : 'border-transparent'
-                    }`}
-                  >
-                    <img
-                      src={preset.url}
-                      alt={label}
-                      className="h-full w-full object-cover"
-                    />
-                    <span className="absolute inset-x-0 bottom-0 bg-black/65 px-1 py-0.5 text-[9px] font-bold text-white truncate">
-                      {label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <ImageIcon className="h-4 w-4 text-slate-400 shrink-0" />
-              <input
-                type="text"
-                value={backgroundImageUrl}
-                onChange={(e) => setBackgroundImageUrl(e.target.value)}
-                placeholder={tx(
-                  'Dán link ảnh nền hoặc tải ảnh lên...',
-                  'Paste wallpaper URL or upload photo...'
-                )}
-                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
-              />
-              <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500">
-                <Upload className="h-3.5 w-3.5" />
-                <span>
-                  {uploadingField === 'bg' ? '...' : tx('Tải ảnh', 'Upload')}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) =>
-                    handleUploadImage(
-                      e.target.files?.[0],
-                      (url) => setBackgroundImageUrl(url),
-                      'bg'
-                    )
-                  }
                 />
-              </label>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <span className="text-[11px] font-bold text-slate-600 shrink-0">
-                {tx(
-                  'Độ tối lớp phủ ({pct}%)',
-                  'Overlay darkness ({pct}%)',
-                  { pct: Math.round(backgroundOverlayOpacity * 100) }
-                )}
-              </span>
-              <input
-                type="range"
-                min="0.35"
-                max="0.9"
-                step="0.05"
-                value={backgroundOverlayOpacity}
-                onChange={(e) =>
-                  setBackgroundOverlayOpacity(parseFloat(e.target.value))
-                }
-                className="w-full accent-emerald-600"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Menu Item Layout Selector */}
-        <div>
-          <label className="block text-xs font-bold text-slate-700 mb-2">
-            {tx('Bố cục hiển thị món', 'Menu item layout')}
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setLayoutMode('list')}
-              className={`flex items-center gap-2.5 rounded-2xl border p-3 text-left transition ${
-                layoutMode === 'list'
-                  ? 'border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold'
-                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              <List className="h-4 w-4 shrink-0 text-emerald-600" />
-              <div>
-                <span className="block text-xs font-extrabold">
-                  {tx('Danh sách ngang', 'Horizontal list')}
-                </span>
-                <span className="block text-[10px] text-slate-500">
-                  {tx('Gọn gàng, dễ chọn nhanh', 'Compact and easy to browse')}
-                </span>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setLayoutMode('grid')}
-              className={`flex items-center gap-2.5 rounded-2xl border p-3 text-left transition ${
-                layoutMode === 'grid'
-                  ? 'border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold'
-                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              <LayoutGrid className="h-4 w-4 shrink-0 text-emerald-600" />
-              <div>
-                <span className="block text-xs font-extrabold">
-                  {tx('Lưới ảnh 2 cột', '2-column photo grid')}
-                </span>
-                <span className="block text-[10px] text-slate-500">
-                  {tx('Hình món to, bắt mắt', 'Large, visual item cards')}
-                </span>
-              </div>
-            </button>
-          </div>
-        </div>
-
-        {/* Shortcut to Promotions & Flash Sale Studio */}
-        <div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 via-orange-50 to-rose-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-1.5 text-xs font-black text-amber-950">
-              <Zap className="h-4 w-4 text-rose-600" />
-              <span>
-                {tx(
-                  'Muốn cài giảm giá, Flash Sale & Banner khuyến mãi?',
-                  'Want to set up discounts, Flash Sales & Promo Banners?'
-                )}
-              </span>
-            </div>
-            <p className="text-[11px] text-amber-800">
-              {tx(
-                'Quản lý tập trung tại mục Khuyến mãi & Giờ vàng.',
-                'Manage all offers in the Promotions & Flash Sale section.'
-              )}
-            </p>
-          </div>
-          <Link
-            href="/dashboard/posts"
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-black text-white hover:bg-slate-800"
-          >
-            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-            <span>
-              {tx('Mở Khuyến mãi & Giờ vàng', 'Open Promotions & Flash Sale')}
-            </span>
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
+                <span>{tx(tab.labelVi, tab.labelEn)}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Bank Account & Payment QR */}
+      {/* Tab Panels */}
+      {/* 1. Store Information Tab Panel */}
       <div
-        id="payment-qr-settings"
-        className="rounded-3xl border-2 border-emerald-500/30 bg-white p-5 shadow-2xs space-y-5"
+        id="settings-tabpanel-store-info"
+        data-testid="settings-tabpanel-store-info"
+        role="tabpanel"
+        aria-labelledby="settings-tab-store-info"
+        hidden={activeTab !== 'store-info'}
+        className={activeTab === 'store-info' ? 'space-y-6 focus:outline-none' : 'hidden'}
       >
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white">
-              <QrCode className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-black text-slate-900">
-                💳{' '}
-                {tx(
-                  'Tài khoản ngân hàng & Mã QR thanh toán',
-                  'Bank Account & Payment QR Code'
-                )}
-              </h2>
-              <p className="text-[11px] text-slate-500">
-                {tx(
-                  'Tự động tạo mã VietQR theo số tiền từng đơn hoặc tải ảnh QR sẵn có của quán',
-                  'Auto-generate VietQR with exact order amounts or upload your own QR image'
-                )}
-              </p>
-            </div>
-          </div>
-
-          <span
-            className={`rounded-full px-3 py-1 text-[11px] font-black ${
-              liveQrPreview.isConfigured
-                ? 'bg-emerald-100 text-emerald-800'
-                : 'bg-amber-100 text-amber-800'
-            }`}
-          >
-            {liveQrPreview.isConfigured
-              ? tx('✓ Đã cấu hình QR thanh toán', '✓ Payment QR configured')
-              : tx(
-                  'Chưa cài tài khoản ngân hàng',
-                  'No bank account set'
-                )}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left 7 Cols: Mode Selector & Bank / Custom QR Inputs */}
-          <div className="lg:col-span-7 space-y-4">
-            {/* Mode Switcher */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-2">
-                {tx(
-                  'Phương thức tạo mã QR thanh toán:',
-                  'Payment QR generation method:'
-                )}
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPaymentConfig((prev) => ({
-                      ...prev,
-                      mode: 'vietqr_auto',
-                    }))
-                  }
-                  className={`flex items-start gap-2.5 rounded-2xl border-2 p-3.5 text-left transition ${
-                    paymentConfig.mode === 'vietqr_auto'
-                      ? 'border-emerald-600 bg-emerald-50/70 text-slate-900 shadow-2xs'
-                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <Landmark className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="block text-xs font-black">
-                      {tx(
-                        'VietQR tự động',
-                        'Automatic VietQR'
-                      )}
-                    </span>
-                    <span className="block text-[10px] text-slate-500 mt-0.5">
-                      {tx(
-                        'Khách quét tự điền đúng số tiền và mã đơn',
-                        'Pre-fills exact order amount and reference code'
-                      )}
-                    </span>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPaymentConfig((prev) => ({
-                      ...prev,
-                      mode: 'custom_qr',
-                    }))
-                  }
-                  className={`flex items-start gap-2.5 rounded-2xl border-2 p-3.5 text-left transition ${
-                    paymentConfig.mode === 'custom_qr'
-                      ? 'border-emerald-600 bg-emerald-50/70 text-slate-900 shadow-2xs'
-                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <Upload className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="block text-xs font-black">
-                      {tx(
-                        'Dùng ảnh QR',
-                        'Use a QR image'
-                      )}
-                    </span>
-                    <span className="block text-[10px] text-slate-500 mt-0.5">
-                      {tx(
-                        'Dùng ảnh chụp QR ngân hàng, MoMo, ZaloPay tại quầy',
-                        'Use your existing bank, MoMo, or ZaloPay QR image'
-                      )}
-                    </span>
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            {paymentConfig.mode === 'vietqr_auto' ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3.5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx('Ngân hàng nhận tiền *', 'Receiving bank *')}
-                    </label>
-                    <select
-                      value={paymentConfig.bankId || 'MB'}
-                      onChange={(e) => {
-                        const code = e.target.value;
-                        const found = VIETQR_BANKS.find((b) => b.code === code);
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          bankId: code,
-                          bankName: found?.shortName || code,
-                        }));
-                      }}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-900"
-                    >
-                      {VIETQR_BANKS.map((bank) => (
-                        <option key={bank.code} value={bank.code}>
-                          {bank.shortName} ({bank.code}) — {bank.fullName.split(' - ')[1] || bank.fullName}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx('Số tài khoản ngân hàng *', 'Bank account number *')}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.accountNumber || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          accountNumber: e.target.value,
-                        }))
-                      }
-                      placeholder={tx(
-                        'VD: 0905123456 hoặc 19036888999',
-                        'e.g. 0905123456 or 19036888999'
-                      )}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-black text-emerald-700"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx(
-                        'Tên chủ tài khoản (không dấu) *',
-                        'Account holder name (no accents) *'
-                      )}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.accountName || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          accountName: e.target.value.toUpperCase(),
-                        }))
-                      }
-                      placeholder={tx('VD: NGUYEN VAN A', 'e.g. NGUYEN VAN A')}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold uppercase text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx(
-                        'Tiền tố nội dung chuyển khoản',
-                        'Transfer memo prefix'
-                      )}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.transferPrefix || 'QLAOK'}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          transferPrefix: e.target.value.toUpperCase(),
-                        }))
-                      }
-                      placeholder={tx(
-                        'VD: QLAOK hoặc PHOHOIAN',
-                        'e.g. QLAOK or PHOHOIAN'
-                      )}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-mono font-bold text-slate-900"
-                    />
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-500">
-                  💡{' '}
-                  {tx(
-                    'Khi khách thanh toán đơn #DEMO88 giá 150.000đ, ứng dụng ngân hàng tự điền 150.000đ và nội dung:',
-                    'When paying order #DEMO88 (150,000đ), banking apps pre-fill 150,000đ and memo:'
-                  )}{' '}
-                  <code className="rounded bg-white px-1.5 py-0.5 font-mono font-bold text-emerald-700">
-                    {liveQrPreview.transferContent}
-                  </code>
-                </p>
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    {tx(
-                      'Tải lên hoặc dán link ảnh mã QR của quán (Ngân hàng / MoMo / ZaloPay) *',
-                      'Upload or paste your QR image URL (Bank / MoMo / ZaloPay) *'
-                    )}
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={paymentConfig.customQrUrl || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          customQrUrl: e.target.value,
-                        }))
-                      }
-                      placeholder={tx(
-                        'Dán link ảnh QR hoặc bấm nút Tải ảnh QR...',
-                        'Paste QR image URL or click Upload QR...'
-                      )}
-                      className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
-                    />
-                    <label className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500">
-                      <Upload className="h-3.5 w-3.5" />
-                      <span>
-                        {uploadingField === 'custom_qr'
-                          ? tx('Đang tải...', 'Uploading...')
-                          : tx('Tải ảnh QR', 'Upload QR')}
-                      </span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) =>
-                          handleUploadImage(
-                            e.target.files?.[0],
-                            (url) =>
-                              setPaymentConfig((prev) => ({
-                                ...prev,
-                                customQrUrl: url,
-                              })),
-                            'custom_qr'
-                          )
-                        }
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx('Tên Ngân hàng / Ví', 'Bank / Wallet name')}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.bankName || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          bankName: e.target.value,
-                        }))
-                      }
-                      placeholder="Vietcombank / MoMo"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx('Số tài khoản / SĐT Ví', 'Account / Wallet number')}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.accountNumber || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          accountNumber: e.target.value,
-                        }))
-                      }
-                      placeholder="0905123456"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-bold text-slate-900"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {tx('Tên chủ tài khoản', 'Account holder')}
-                    </label>
-                    <input
-                      type="text"
-                      value={paymentConfig.accountName || ''}
-                      onChange={(e) =>
-                        setPaymentConfig((prev) => ({
-                          ...prev,
-                          accountName: e.target.value.toUpperCase(),
-                        }))
-                      }
-                      placeholder="NGUYEN VAN A"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold uppercase text-slate-900"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Right 5 Cols: Live Payment QR Preview Card */}
-          <div className="lg:col-span-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center text-center space-y-2.5">
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase text-emerald-700">
-              <CreditCard className="h-3 w-3" />
-              {tx(
-                'Xem trước QR thu tiền & in hóa đơn',
-                'Payment & Receipt QR Preview'
-              )}
-            </span>
-
-            <div className="rounded-2xl border-2 border-emerald-500/40 bg-white p-3 shadow-sm">
-              <img
-                src={liveQrPreview.qrImageUrl}
-                alt={tx('Mã QR thanh toán', 'Payment QR')}
-                className="h-48 w-48 object-contain mx-auto"
-              />
-            </div>
-
-            <div className="space-y-0.5 text-xs">
-              <p className="font-black text-slate-900">
-                {liveQrPreview.bankShortName} •{' '}
-                <span className="font-mono text-emerald-700">
-                  {liveQrPreview.accountNumber ||
-                    tx('Chưa nhập STK', 'No account set')}
-                </span>
-              </p>
-              <p className="text-[11px] font-bold text-slate-600 uppercase">
-                {tx('Chủ TK:', 'Holder:')} {liveQrPreview.accountName}
-              </p>
-              <p className="text-[10px] text-slate-400">
-                {tx(
-                  '(Mở ứng dụng ngân hàng để quét thử ngay)',
-                  '(Scan with your banking app to test)'
-                )}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 1b. Owner-only SePay VietQR Automatic Order Reconciliation */}
-      <ShopSePayWebhookManager />
-
       {/* 2. Basic Store Identity, Logo & Cover Image */}
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
         <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
@@ -1688,16 +1206,722 @@ export default function DashboardSettingsPage() {
           </label>
         </div>
       </div>
+      </div>
 
+      {/* 2. Appearance Tab Panel */}
+      <div
+        id="settings-tabpanel-appearance"
+        data-testid="settings-tabpanel-appearance"
+        role="tabpanel"
+        aria-labelledby="settings-tab-appearance"
+        hidden={activeTab !== 'appearance'}
+        className={activeTab === 'appearance' ? 'space-y-6 focus:outline-none' : 'hidden'}
+      >
+      {/* 1. Storefront Theme & Appearance */}
+      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <Palette className="h-4 w-4 text-emerald-600" />
+            <span>
+              {tx(
+                'Giao diện',
+                'Appearance'
+              )}
+            </span>
+          </h2>
+          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+            {tx(
+              'Cập nhật trực tiếp ở khung bên phải 👉',
+              'Updates live in the right panel 👉'
+            )}
+          </span>
+        </div>
+
+        {/* Pure Color Swatches */}
+        <div>
+          <label className="block text-xs font-bold text-slate-700 mb-2.5">
+            {tx('Màu chủ đạo của quán', 'Primary brand color')}
+          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            {BRAND_COLOR_SWATCHES.map((hex) => {
+              const selected =
+                primaryColor.toLowerCase() === hex.toLowerCase();
+              return (
+                <button
+                  key={hex}
+                  type="button"
+                  onClick={() => setPrimaryColor(hex)}
+                  aria-label={tx('Chọn màu {hex}', 'Select color {hex}', {
+                    hex,
+                  })}
+                  className={`relative h-9 w-9 rounded-full transition-transform ${
+                    selected
+                      ? 'scale-110 ring-2 ring-offset-2 ring-slate-900 shadow-md'
+                      : 'hover:scale-105 opacity-85 hover:opacity-100'
+                  }`}
+                  style={{ backgroundColor: hex }}
+                >
+                  {selected && (
+                    <Check className="h-4 w-4 text-white mx-auto drop-shadow" />
+                  )}
+                </button>
+              );
+            })}
+
+            {/* Custom Color Picker Circle */}
+            <label
+              title={tx('Tự chọn mã màu bất kỳ', 'Pick any custom color')}
+              className="relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 hover:border-slate-500"
+            >
+              <input
+                type="color"
+                value={primaryColor}
+                onChange={(e) => setPrimaryColor(e.target.value)}
+                className="sr-only"
+              />
+              <span
+                className="h-5 w-5 rounded-full border border-slate-200"
+                style={{ backgroundColor: primaryColor }}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Background Style Selector */}
+        <div>
+          <label className="block text-xs font-bold text-slate-700 mb-2">
+            {tx('Nền màn hình điện thoại', 'Phone background style')}
+          </label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {[
+              {
+                id: 'clean',
+                label: tx('☀️ Sáng', '☀️ Clean Light'),
+                previewBg: 'bg-slate-50 border-slate-200 text-slate-900',
+              },
+              {
+                id: 'warm',
+                label: tx('🏮 Kem ấm', '🏮 Warm Cream'),
+                previewBg: 'bg-[#fdf8ee] border-amber-200 text-amber-950',
+              },
+              {
+                id: 'dark',
+                label: tx('🌙 Tối', '🌙 Dark'),
+                previewBg: 'bg-slate-900 border-slate-700 text-white',
+              },
+              {
+                id: 'custom_image',
+                label: tx('🖼️ Ảnh nền', '🖼️ Wallpaper'),
+                previewBg:
+                  'bg-gradient-to-r from-emerald-900 to-slate-900 text-white',
+              },
+            ].map((bg) => {
+              const active = backgroundStyle === bg.id;
+              return (
+                <button
+                  key={bg.id}
+                  type="button"
+                  onClick={() =>
+                    setBackgroundStyle(
+                      bg.id as NonNullable<ShopThemeConfig['backgroundStyle']>
+                    )
+                  }
+                  className={`flex items-center justify-center gap-1.5 rounded-2xl border-2 py-3 px-3 text-xs font-extrabold transition ${
+                    active
+                      ? 'border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs'
+                      : 'border-slate-200 opacity-80 hover:opacity-100'
+                  } ${bg.previewBg}`}
+                >
+                  <span>{bg.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Custom Wallpaper Picker when custom_image is active */}
+        {backgroundStyle === 'custom_image' && (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+              {BACKGROUND_IMAGE_PRESETS.map((preset) => {
+                const label = tx(preset.labelVi, preset.labelEn);
+                return (
+                  <button
+                    key={preset.url}
+                    type="button"
+                    onClick={() => setBackgroundImageUrl(preset.url)}
+                    className={`group relative overflow-hidden rounded-xl border-2 aspect-video ${
+                      backgroundImageUrl === preset.url
+                        ? 'border-emerald-500 ring-2 ring-emerald-500/30'
+                        : 'border-transparent'
+                    }`}
+                  >
+                    <img
+                      src={preset.url}
+                      alt={label}
+                      className="h-full w-full object-cover"
+                    />
+                    <span className="absolute inset-x-0 bottom-0 bg-black/65 px-1 py-0.5 text-[9px] font-bold text-white truncate">
+                      {label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <ImageIcon className="h-4 w-4 text-slate-400 shrink-0" />
+              <input
+                type="text"
+                value={backgroundImageUrl}
+                onChange={(e) => setBackgroundImageUrl(e.target.value)}
+                placeholder={tx(
+                  'Dán link ảnh nền hoặc tải ảnh lên...',
+                  'Paste wallpaper URL or upload photo...'
+                )}
+                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
+              />
+              <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500">
+                <Upload className="h-3.5 w-3.5" />
+                <span>
+                  {uploadingField === 'bg' ? '...' : tx('Tải ảnh', 'Upload')}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) =>
+                    handleUploadImage(
+                      e.target.files?.[0],
+                      (url) => setBackgroundImageUrl(url),
+                      'bg'
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-bold text-slate-600 shrink-0">
+                {tx(
+                  'Độ tối lớp phủ ({pct}%)',
+                  'Overlay darkness ({pct}%)',
+                  { pct: Math.round(backgroundOverlayOpacity * 100) }
+                )}
+              </span>
+              <input
+                type="range"
+                min="0.35"
+                max="0.9"
+                step="0.05"
+                value={backgroundOverlayOpacity}
+                onChange={(e) =>
+                  setBackgroundOverlayOpacity(parseFloat(e.target.value))
+                }
+                className="w-full accent-emerald-600"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Menu Item Layout Selector */}
+        <div>
+          <label className="block text-xs font-bold text-slate-700 mb-2">
+            {tx('Bố cục hiển thị món', 'Menu item layout')}
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setLayoutMode('list')}
+              className={`flex items-center gap-2.5 rounded-2xl border p-3 text-left transition ${
+                layoutMode === 'list'
+                  ? 'border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold'
+                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <List className="h-4 w-4 shrink-0 text-emerald-600" />
+              <div>
+                <span className="block text-xs font-extrabold">
+                  {tx('Danh sách ngang', 'Horizontal list')}
+                </span>
+                <span className="block text-[10px] text-slate-500">
+                  {tx('Gọn gàng, dễ chọn nhanh', 'Compact and easy to browse')}
+                </span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setLayoutMode('grid')}
+              className={`flex items-center gap-2.5 rounded-2xl border p-3 text-left transition ${
+                layoutMode === 'grid'
+                  ? 'border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold'
+                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <LayoutGrid className="h-4 w-4 shrink-0 text-emerald-600" />
+              <div>
+                <span className="block text-xs font-extrabold">
+                  {tx('Lưới ảnh 2 cột', '2-column photo grid')}
+                </span>
+                <span className="block text-[10px] text-slate-500">
+                  {tx('Hình món to, bắt mắt', 'Large, visual item cards')}
+                </span>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        {/* Shortcut to Promotions & Flash Sale Studio */}
+        <div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 via-orange-50 to-rose-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1.5 text-xs font-black text-amber-950">
+              <Zap className="h-4 w-4 text-rose-600" />
+              <span>
+                {tx(
+                  'Muốn cài giảm giá, Flash Sale & Banner khuyến mãi?',
+                  'Want to set up discounts, Flash Sales & Promo Banners?'
+                )}
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-800">
+              {tx(
+                'Quản lý tập trung tại mục Khuyến mãi & Giờ vàng.',
+                'Manage all offers in the Promotions & Flash Sale section.'
+              )}
+            </p>
+          </div>
+          <Link
+            href="/dashboard/posts"
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-black text-white hover:bg-slate-800"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+            <span>
+              {tx('Mở Khuyến mãi & Giờ vàng', 'Open Promotions & Flash Sale')}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      </div>
+      </div>
+
+      {/* 3. Payments Tab Panel */}
+      <div
+        id="settings-tabpanel-payments"
+        data-testid="settings-tabpanel-payments"
+        role="tabpanel"
+        aria-labelledby="settings-tab-payments"
+        hidden={activeTab !== 'payments'}
+        className={activeTab === 'payments' ? 'space-y-6 focus:outline-none' : 'hidden'}
+      >
+      {/* Bank Account & Payment QR */}
+      <div
+        id="payment-qr-settings"
+        className="rounded-3xl border-2 border-emerald-500/30 bg-white p-5 shadow-2xs space-y-5"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white">
+              <QrCode className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-black text-slate-900">
+                💳{' '}
+                {tx(
+                  'Tài khoản ngân hàng & Mã QR thanh toán',
+                  'Bank Account & Payment QR Code'
+                )}
+              </h2>
+              <p className="text-[11px] text-slate-500">
+                {tx(
+                  'Tự động tạo mã VietQR theo số tiền từng đơn hoặc tải ảnh QR sẵn có của quán',
+                  'Auto-generate VietQR with exact order amounts or upload your own QR image'
+                )}
+              </p>
+            </div>
+          </div>
+
+          <span
+            className={`rounded-full px-3 py-1 text-[11px] font-black ${
+              liveQrPreview.isConfigured
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {liveQrPreview.isConfigured
+              ? tx('✓ Đã cấu hình QR thanh toán', '✓ Payment QR configured')
+              : tx(
+                  'Chưa cài tài khoản ngân hàng',
+                  'No bank account set'
+                )}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left 7 Cols: Mode Selector & Bank / Custom QR Inputs */}
+          <div className="lg:col-span-7 space-y-4">
+            {/* Mode Switcher */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-2">
+                {tx(
+                  'Phương thức tạo mã QR thanh toán:',
+                  'Payment QR generation method:'
+                )}
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPaymentConfig((prev) => ({
+                      ...prev,
+                      mode: 'vietqr_auto',
+                    }))
+                  }
+                  className={`flex items-start gap-2.5 rounded-2xl border-2 p-3.5 text-left transition ${
+                    paymentConfig.mode === 'vietqr_auto'
+                      ? 'border-emerald-600 bg-emerald-50/70 text-slate-900 shadow-2xs'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Landmark className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="block text-xs font-black">
+                      {tx(
+                        'VietQR tự động',
+                        'Automatic VietQR'
+                      )}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 mt-0.5">
+                      {tx(
+                        'Khách quét tự điền đúng số tiền và mã đơn',
+                        'Pre-fills exact order amount and reference code'
+                      )}
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPaymentConfig((prev) => ({
+                      ...prev,
+                      mode: 'custom_qr',
+                    }))
+                  }
+                  className={`flex items-start gap-2.5 rounded-2xl border-2 p-3.5 text-left transition ${
+                    paymentConfig.mode === 'custom_qr'
+                      ? 'border-emerald-600 bg-emerald-50/70 text-slate-900 shadow-2xs'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Upload className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="block text-xs font-black">
+                      {tx(
+                        'Dùng ảnh QR',
+                        'Use a QR image'
+                      )}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 mt-0.5">
+                      {tx(
+                        'Dùng ảnh chụp QR ngân hàng, MoMo, ZaloPay tại quầy',
+                        'Use your existing bank, MoMo, or ZaloPay QR image'
+                      )}
+                    </span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {paymentConfig.mode === 'vietqr_auto' ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx('Ngân hàng nhận tiền *', 'Receiving bank *')}
+                    </label>
+                    <select
+                      value={paymentConfig.bankId || 'MB'}
+                      onChange={(e) => {
+                        const code = e.target.value;
+                        const found = VIETQR_BANKS.find((b) => b.code === code);
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          bankId: code,
+                          bankName: found?.shortName || code,
+                        }));
+                      }}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-900"
+                    >
+                      {VIETQR_BANKS.map((bank) => (
+                        <option key={bank.code} value={bank.code}>
+                          {bank.shortName} ({bank.code}) — {bank.fullName.split(' - ')[1] || bank.fullName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx('Số tài khoản ngân hàng *', 'Bank account number *')}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.accountNumber || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          accountNumber: e.target.value,
+                        }))
+                      }
+                      placeholder={tx(
+                        'VD: 0905123456 hoặc 19036888999',
+                        'e.g. 0905123456 or 19036888999'
+                      )}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-black text-emerald-700"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx(
+                        'Tên chủ tài khoản (không dấu) *',
+                        'Account holder name (no accents) *'
+                      )}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.accountName || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          accountName: e.target.value.toUpperCase(),
+                        }))
+                      }
+                      placeholder={tx('VD: NGUYEN VAN A', 'e.g. NGUYEN VAN A')}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold uppercase text-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx(
+                        'Tiền tố nội dung chuyển khoản',
+                        'Transfer memo prefix'
+                      )}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.transferPrefix || 'QLAOK'}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          transferPrefix: e.target.value.toUpperCase(),
+                        }))
+                      }
+                      placeholder={tx(
+                        'VD: QLAOK hoặc PHOHOIAN',
+                        'e.g. QLAOK or PHOHOIAN'
+                      )}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-mono font-bold text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500">
+                  💡{' '}
+                  {tx(
+                    'Khi khách thanh toán đơn #DEMO88 giá 150.000đ, ứng dụng ngân hàng tự điền 150.000đ và nội dung:',
+                    'When paying order #DEMO88 (150,000đ), banking apps pre-fill 150,000đ and memo:'
+                  )}{' '}
+                  <code className="rounded bg-white px-1.5 py-0.5 font-mono font-bold text-emerald-700">
+                    {liveQrPreview.transferContent}
+                  </code>
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    {tx(
+                      'Tải lên hoặc dán link ảnh mã QR của quán (Ngân hàng / MoMo / ZaloPay) *',
+                      'Upload or paste your QR image URL (Bank / MoMo / ZaloPay) *'
+                    )}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={paymentConfig.customQrUrl || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          customQrUrl: e.target.value,
+                        }))
+                      }
+                      placeholder={tx(
+                        'Dán link ảnh QR hoặc bấm nút Tải ảnh QR...',
+                        'Paste QR image URL or click Upload QR...'
+                      )}
+                      className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
+                    />
+                    <label className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500">
+                      <Upload className="h-3.5 w-3.5" />
+                      <span>
+                        {uploadingField === 'custom_qr'
+                          ? tx('Đang tải...', 'Uploading...')
+                          : tx('Tải ảnh QR', 'Upload QR')}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) =>
+                          handleUploadImage(
+                            e.target.files?.[0],
+                            (url) =>
+                              setPaymentConfig((prev) => ({
+                                ...prev,
+                                customQrUrl: url,
+                              })),
+                            'custom_qr'
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx('Tên Ngân hàng / Ví', 'Bank / Wallet name')}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.bankName || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          bankName: e.target.value,
+                        }))
+                      }
+                      placeholder="Vietcombank / MoMo"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx('Số tài khoản / SĐT Ví', 'Account / Wallet number')}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.accountNumber || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          accountNumber: e.target.value,
+                        }))
+                      }
+                      placeholder="0905123456"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-bold text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {tx('Tên chủ tài khoản', 'Account holder')}
+                    </label>
+                    <input
+                      type="text"
+                      value={paymentConfig.accountName || ''}
+                      onChange={(e) =>
+                        setPaymentConfig((prev) => ({
+                          ...prev,
+                          accountName: e.target.value.toUpperCase(),
+                        }))
+                      }
+                      placeholder="NGUYEN VAN A"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold uppercase text-slate-900"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right 5 Cols: Live Payment QR Preview Card */}
+          <div className="lg:col-span-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center text-center space-y-2.5">
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase text-emerald-700">
+              <CreditCard className="h-3 w-3" />
+              {tx(
+                'Xem trước QR thu tiền & in hóa đơn',
+                'Payment & Receipt QR Preview'
+              )}
+            </span>
+
+            <div className="rounded-2xl border-2 border-emerald-500/40 bg-white p-3 shadow-sm">
+              <img
+                src={liveQrPreview.qrImageUrl}
+                alt={tx('Mã QR thanh toán', 'Payment QR')}
+                className="h-48 w-48 object-contain mx-auto"
+              />
+            </div>
+
+            <div className="space-y-0.5 text-xs">
+              <p className="font-black text-slate-900">
+                {liveQrPreview.bankShortName} •{' '}
+                <span className="font-mono text-emerald-700">
+                  {liveQrPreview.accountNumber ||
+                    tx('Chưa nhập STK', 'No account set')}
+                </span>
+              </p>
+              <p className="text-[11px] font-bold text-slate-600 uppercase">
+                {tx('Chủ TK:', 'Holder:')} {liveQrPreview.accountName}
+              </p>
+              <p className="text-[10px] text-slate-400">
+                {tx(
+                  '(Mở ứng dụng ngân hàng để quét thử ngay)',
+                  '(Scan with your banking app to test)'
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 1b. Owner-only SePay VietQR Automatic Order Reconciliation */}
+      <ShopSePayWebhookManager />
+      </div>
+
+      {/* 4. Orders & Printing Tab Panel */}
+      <div
+        id="settings-tabpanel-orders"
+        data-testid="settings-tabpanel-orders"
+        role="tabpanel"
+        aria-labelledby="settings-tab-orders"
+        hidden={activeTab !== 'orders'}
+        className={activeTab === 'orders' ? 'space-y-6 focus:outline-none' : 'hidden'}
+      >
       {/* 5b. Owner-managed Order Fulfillment Workflow Flowchart Editor */}
       <ShopOrderWorkflowEditor />
 
       {/* 5c. Owner-managed Production Labels & Cup Stickers Config */}
       <ShopLabelPrintSettingsEditor />
+      </div>
 
+      {/* 5. Staff Tab Panel */}
+      <div
+        id="settings-tabpanel-staff"
+        data-testid="settings-tabpanel-staff"
+        role="tabpanel"
+        aria-labelledby="settings-tab-staff"
+        hidden={activeTab !== 'staff'}
+        className={activeTab === 'staff' ? 'space-y-6 focus:outline-none' : 'hidden'}
+      >
       {/* 6. Staff & roles (owner only; component renders nothing otherwise) */}
       <ShopMembersManager />
-
+      </div>
       {/* Right Preview Sidebar Live Smartphone Viewer */}
       <RightPreviewSidebar
         shop={previewShop}

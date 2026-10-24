@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   Plus,
@@ -18,9 +18,13 @@ import {
   FileSpreadsheet,
   ChevronLeft,
   ChevronRight,
+  CheckCircle2,
+  FolderInput,
+  Tag,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
+import { membershipHasPermission } from '@/lib/dashboard-nav';
 import { CatalogItem, Category, PlanTier } from '@/types/qlaok';
 import { PLAN_CONFIGS, formatPlanLimitError } from '@/lib/plan-limits';
 import { QuickItemRow } from '@/components/dashboard/QuickItemRow';
@@ -34,7 +38,10 @@ import {
   paginateCatalogItems,
   getCatalogPaginationRange,
 } from '@/lib/catalog-pagination';
-import { downloadCatalogXlsx } from '@/lib/catalog-excel';
+import {
+  downloadCatalogXlsx,
+  parseCatalogPriceValue,
+} from '@/lib/catalog-excel';
 import { CatalogExcelImportModal } from '@/components/dashboard/CatalogExcelImportModal';
 import {
   parseCatalogApiResponse,
@@ -51,7 +58,7 @@ interface CatalogMutationError {
 }
 
 export default function DashboardCatalogPage() {
-  const { activeShop } = useDashboard();
+  const { activeShop, activeMembership } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
@@ -79,6 +86,29 @@ export default function DashboardCatalogPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
+
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [bulkPriceInput, setBulkPriceInput] = useState('');
+  const [bulkPriceError, setBulkPriceError] = useState<string | null>(null);
+  const [bulkTargetCategoryId, setBulkTargetCategoryId] = useState('');
+  const [bulkActionPending, setBulkActionPending] = useState<
+    'delete' | 'price' | 'available' | 'sold_out' | 'move' | null
+  >(null);
+  const [bulkResultBanner, setBulkResultBanner] = useState<{
+    status: 'success' | 'partial';
+    message: string;
+    details?: Array<{ id: string; name?: string; error?: string }>;
+  } | null>(null);
+  const selectPageCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const clearBulkSelectionAndDrafts = useCallback(() => {
+    setSelectedItemIds((prev) => (prev.size === 0 ? prev : new Set()));
+    setBulkPriceInput('');
+    setBulkPriceError(null);
+    setBulkTargetCategoryId('');
+  }, []);
 
   const loadCatalog = useCallback(
     async (silent = false) => {
@@ -119,12 +149,34 @@ export default function DashboardCatalogPage() {
     setCategories([]);
     setItems([]);
     setSelectedCategoryId('all');
+    setSearchQuery('');
     setCurrentPage(1);
     setOwnerPlan('free');
     setLoadError(false);
     setHasLoaded(false);
+    setMutationError(null);
+    setBulkResultBanner(null);
+    clearBulkSelectionAndDrafts();
     void loadCatalog(false);
-  }, [loadCatalog]);
+  }, [loadCatalog, clearBulkSelectionAndDrafts]);
+
+  useEffect(() => {
+    if (!hasLoaded) return;
+    const validIdSet = new Set(items.map((item) => item.id));
+    setSelectedItemIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (validIdSet.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [hasLoaded, items]);
 
   const notifyRealtime = () => {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -356,6 +408,12 @@ export default function DashboardCatalogPage() {
       }
       return false;
     }
+    setSelectedItemIds((prev) => {
+      if (!prev.has(itemId)) return prev;
+      const next = new Set(prev);
+      next.delete(itemId);
+      return next;
+    });
     notifyRealtime();
     showToast(tx('Đã xóa món khỏi thực đơn', 'Deleted item from menu'));
     return true;
@@ -445,7 +503,10 @@ export default function DashboardCatalogPage() {
         tx('Không thể xóa danh mục', 'Could not delete category')
       );
       if (!ok) return;
-      if (selectedCategoryId === cat.id) setSelectedCategoryId('all');
+      if (selectedCategoryId === cat.id) {
+        setSelectedCategoryId('all');
+        clearBulkSelectionAndDrafts();
+      }
       await loadCatalog(true);
       notifyRealtime();
       showToast(tx('Đã xóa danh mục', 'Deleted category'));
@@ -465,6 +526,31 @@ export default function DashboardCatalogPage() {
     return matchCat && matchSearch;
   });
 
+  const pagination = getCatalogPaginationRange(
+    currentPage,
+    pageSize,
+    filteredItems.length
+  );
+  const pagedItems = paginateCatalogItems(
+    filteredItems,
+    pagination.page,
+    pageSize
+  );
+
+  const filteredItemIdSet = new Set(filteredItems.map((item) => item.id));
+  const selectedIds = filteredItems
+    .filter(
+      (item) => selectedItemIds.has(item.id) && filteredItemIdSet.has(item.id)
+    )
+    .map((item) => item.id);
+  const pagedItemIds = pagedItems.map((item) => item.id);
+  const selectedOnPageCount = pagedItemIds.filter((id) =>
+    selectedItemIds.has(id)
+  ).length;
+  const allOnPageSelected =
+    pagedItemIds.length > 0 && selectedOnPageCount === pagedItemIds.length;
+  const someOnPageSelected = selectedOnPageCount > 0 && !allOnPageSelected;
+
   // Synchronize currentPage state to valid bounds whenever the filtered item count or pageSize changes.
   useEffect(() => {
     setCurrentPage((prev) => {
@@ -472,6 +558,13 @@ export default function DashboardCatalogPage() {
       return prev === clamped ? prev : clamped;
     });
   }, [filteredItems.length, pageSize]);
+
+  // Synchronize native checkbox indeterminate DOM property for current-page selection.
+  useEffect(() => {
+    if (selectPageCheckboxRef.current) {
+      selectPageCheckboxRef.current.indeterminate = someOnPageSelected;
+    }
+  }, [someOnPageSelected, allOnPageSelected, pagedItems.length]);
 
   if (!activeShop) {
     return (
@@ -484,6 +577,14 @@ export default function DashboardCatalogPage() {
     );
   }
 
+  const canManageCatalog = activeMembership
+    ? membershipHasPermission(activeMembership, 'catalog.manage')
+    : true;
+  const canAdjustInventory = activeMembership
+    ? canManageCatalog ||
+      membershipHasPermission(activeMembership, 'inventory.adjust')
+    : true;
+
   const planTier = ownerPlan;
   const planCfg = PLAN_CONFIGS[planTier];
   const itemLimitReached = items.length >= planCfg.maxItems;
@@ -494,16 +595,539 @@ export default function DashboardCatalogPage() {
         ? tx('Gói Cơ Bản (Basic)', 'Basic Plan')
         : tx('Gói Khởi Đầu (Free)', 'Starter Plan (Free)');
 
-  const pagination = getCatalogPaginationRange(
-    currentPage,
-    pageSize,
-    filteredItems.length
-  );
-  const pagedItems = paginateCatalogItems(
-    filteredItems,
-    pagination.page,
-    pageSize
-  );
+  const handleToggleSelectItem = (itemId: string, nextSelected: boolean) => {
+    if (bulkActionPending) return;
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      if (nextSelected) {
+        next.add(itemId);
+      } else {
+        next.delete(itemId);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectCurrentPage = () => {
+    if (bulkActionPending || pagedItemIds.length === 0) return;
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      const everyOnPageSelected = pagedItemIds.every((id) => next.has(id));
+      if (everyOnPageSelected) {
+        for (const id of pagedItemIds) {
+          next.delete(id);
+        }
+      } else {
+        for (const id of pagedItemIds) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (
+      !activeShop ||
+      bulkActionPending ||
+      selectedIds.length === 0 ||
+      !canManageCatalog
+    ) {
+      return;
+    }
+    const targetIds = [...selectedIds];
+    const count = targetIds.length;
+    const confirmBulkDelete = confirm;
+    const confirmed = await confirmBulkDelete({
+      variant: 'danger',
+      title: tx(
+        'Xóa {count} món đã chọn khỏi thực đơn?',
+        'Delete {count} selected item(s) from the menu?',
+        { count }
+      ),
+      description: tx(
+        'Bạn sắp xóa vĩnh viễn {count} món đã chọn khỏi thực đơn QR. Thao tác này không thể hoàn tác.',
+        'You are about to permanently remove {count} selected item(s) from the QR menu. This cannot be undone.',
+        { count }
+      ),
+      confirmLabel: tx('Xóa {count} món', 'Delete {count} item(s)', { count }),
+    });
+    if (!confirmed) return;
+
+    setBulkActionPending('delete');
+    setMutationError(null);
+    setBulkResultBanner(null);
+    try {
+      const res = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'bulk_delete_items',
+          shopId: activeShop.id,
+          itemIds: targetIds,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      const confirmedIds: string[] = Array.isArray(data?.itemIds)
+        ? data.itemIds.filter(
+            (id: unknown): id is string => typeof id === 'string'
+          )
+        : [];
+      const deletedCount =
+        typeof data?.deletedCount === 'number'
+          ? data.deletedCount
+          : typeof data?.count === 'number'
+            ? data.count
+            : 0;
+
+      if (
+        !res.ok ||
+        data?.success !== true ||
+        deletedCount !== targetIds.length ||
+        confirmedIds.length !== targetIds.length
+      ) {
+        setMutationError(
+          toMutationError(
+            data,
+            tx(
+              'Không thể xóa các món đã chọn',
+              'Could not delete selected items'
+            )
+          )
+        );
+        return;
+      }
+
+      const deletedSet = new Set(confirmedIds);
+      setItems((prev) => prev.filter((item) => !deletedSet.has(item.id)));
+      clearBulkSelectionAndDrafts();
+      await loadCatalog(true);
+      notifyRealtime();
+      const successMsg = tx(
+        'Đã xóa {count} món khỏi thực đơn',
+        'Deleted {count} item(s) from menu',
+        { count: deletedCount }
+      );
+      setBulkResultBanner({ status: 'success', message: successMsg });
+      showToast(successMsg);
+    } catch (err) {
+      setMutationError(
+        toMutationError(
+          err,
+          tx('Không thể xóa các món đã chọn', 'Could not delete selected items')
+        )
+      );
+    } finally {
+      setBulkActionPending(null);
+    }
+  };
+
+  const handleBulkUpdatePrice = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (
+      !activeShop ||
+      bulkActionPending ||
+      selectedIds.length === 0 ||
+      !canManageCatalog
+    ) {
+      return;
+    }
+
+    const parsedPrice = parseCatalogPriceValue(bulkPriceInput);
+    if (!parsedPrice.valid) {
+      setBulkPriceError(parsedPrice.error);
+      return;
+    }
+    setBulkPriceError(null);
+    setMutationError(null);
+    setBulkResultBanner(null);
+
+    const nextPrice = parsedPrice.price;
+    const targetIds = [...selectedIds];
+    const targetIdSet = new Set(targetIds);
+    const itemNameById = new Map(
+      items.map((item) => [item.id, item.name_i18n.vi])
+    );
+
+    setBulkActionPending('price');
+    try {
+      const res = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId: activeShop.id,
+          items: targetIds.map((id) => ({ id, price: nextPrice })),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      const rawResults: unknown[] = Array.isArray(data?.results)
+        ? data.results
+        : [];
+
+      // Reconcile per-item results against the requested selected IDs exactly once.
+      const resultsByTargetId = new Map<
+        string,
+        Array<{ success: boolean; error?: string }>
+      >();
+      for (const id of targetIds) {
+        resultsByTargetId.set(id, []);
+      }
+
+      for (const r of rawResults) {
+        if (
+          r &&
+          typeof r === 'object' &&
+          typeof (r as { id?: unknown }).id === 'string'
+        ) {
+          const itemRes = r as {
+            id: string;
+            success?: unknown;
+            error?: unknown;
+          };
+          if (targetIdSet.has(itemRes.id)) {
+            resultsByTargetId.get(itemRes.id)!.push({
+              success: itemRes.success === true,
+              error:
+                typeof itemRes.error === 'string'
+                  ? itemRes.error
+                  : undefined,
+            });
+          }
+        }
+      }
+
+      const succeededIds: string[] = [];
+      const failedResults: Array<{ id: string; error?: string }> = [];
+
+      for (const id of targetIds) {
+        const occurrences = resultsByTargetId.get(id) ?? [];
+        if (occurrences.length === 0) {
+          failedResults.push({
+            id,
+            error: tx(
+              'Không nhận được kết quả cập nhật từ máy chủ',
+              'Missing update result from server'
+            ),
+          });
+        } else if (occurrences.length > 1) {
+          failedResults.push({
+            id,
+            error: tx(
+              'Kết quả cập nhật bị trùng lặp từ máy chủ',
+              'Duplicate update result from server'
+            ),
+          });
+        } else {
+          const entry = occurrences[0];
+          if (entry.success) {
+            succeededIds.push(id);
+          } else {
+            failedResults.push({
+              id,
+              error:
+                entry.error ||
+                tx('Cập nhật món thất bại', 'Failed to update item'),
+            });
+          }
+        }
+      }
+
+      const succeededCount = succeededIds.length;
+      const failedCount = failedResults.length;
+
+      if (!res.ok || succeededCount === 0) {
+        if (succeededCount > 0) {
+          await loadCatalog(true);
+          notifyRealtime();
+        }
+        const firstItemErr = failedResults.find((r) => r.error)?.error;
+        setMutationError(
+          toMutationError(
+            firstItemErr ? { error: firstItemErr } : data,
+            tx(
+              'Không thể cập nhật giá cho các món đã chọn',
+              'Could not update price for selected items'
+            )
+          )
+        );
+        return;
+      }
+
+      await loadCatalog(true);
+      notifyRealtime();
+      clearBulkSelectionAndDrafts();
+
+      if (
+        data?.success === true &&
+        failedCount === 0 &&
+        succeededCount === targetIds.length
+      ) {
+        const formattedPrice = `${nextPrice.toLocaleString('vi-VN')}đ`;
+        const successMsg = tx(
+          'Đã cập nhật giá {price} cho {count} món',
+          'Updated price to {price} for {count} item(s)',
+          { price: formattedPrice, count: succeededCount }
+        );
+        setBulkResultBanner({ status: 'success', message: successMsg });
+        showToast(successMsg);
+      } else {
+        const partialMsg = tx(
+          'Cập nhật một phần: {succeeded} món thành công, {failed} món thất bại.',
+          'Partial update: {succeeded} item(s) succeeded, {failed} item(s) failed.',
+          {
+            succeeded: succeededCount,
+            failed: failedCount,
+          }
+        );
+        setBulkResultBanner({
+          status: 'partial',
+          message: partialMsg,
+          details: failedResults.map((r) => ({
+            id: r.id,
+            name: itemNameById.get(r.id),
+            error: r.error,
+          })),
+        });
+      }
+    } catch (err) {
+      setMutationError(
+        toMutationError(
+          err,
+          tx(
+            'Không thể cập nhật giá cho các món đã chọn',
+            'Could not update price for selected items'
+          )
+        )
+      );
+    } finally {
+      setBulkActionPending(null);
+    }
+  };
+
+  const handleBulkSetAvailability = async (nextAvailable: boolean) => {
+    if (
+      !activeShop ||
+      bulkActionPending ||
+      selectedIds.length === 0 ||
+      !canAdjustInventory
+    ) {
+      return;
+    }
+    const targetIds = [...selectedIds];
+    setBulkActionPending(nextAvailable ? 'available' : 'sold_out');
+    setMutationError(null);
+    setBulkResultBanner(null);
+
+    try {
+      const res = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: activeShop.id,
+          itemIds: targetIds,
+          is_available: nextAvailable,
+          isAvailable: nextAvailable,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      const updatedCount =
+        typeof data?.updatedCount === 'number'
+          ? data.updatedCount
+          : typeof data?.count === 'number'
+            ? data.count
+            : 0;
+
+      if (
+        !res.ok ||
+        data?.success !== true ||
+        updatedCount !== targetIds.length
+      ) {
+        setMutationError(
+          toMutationError(
+            data,
+            tx(
+              'Không thể cập nhật trạng thái còn món',
+              'Could not update item availability'
+            )
+          )
+        );
+        return;
+      }
+
+      const targetIdSet = new Set(targetIds);
+      setItems((prev) =>
+        prev.map((item) =>
+          targetIdSet.has(item.id)
+            ? { ...item, is_available: nextAvailable }
+            : item
+        )
+      );
+      clearBulkSelectionAndDrafts();
+      await loadCatalog(true);
+      notifyRealtime();
+      const successMsg = nextAvailable
+        ? tx(
+            'Đã bật còn hàng cho {count} món',
+            'Marked {count} item(s) as available',
+            { count: updatedCount }
+          )
+        : tx(
+            'Đã chuyển tạm hết cho {count} món',
+            'Marked {count} item(s) as sold out',
+            { count: updatedCount }
+          );
+      setBulkResultBanner({ status: 'success', message: successMsg });
+      showToast(successMsg);
+    } catch (err) {
+      setMutationError(
+        toMutationError(
+          err,
+          tx(
+            'Không thể cập nhật trạng thái còn món',
+            'Could not update item availability'
+          )
+        )
+      );
+    } finally {
+      setBulkActionPending(null);
+    }
+  };
+
+  const handleBulkMoveCategory = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (
+      !activeShop ||
+      bulkActionPending ||
+      selectedIds.length === 0 ||
+      !canManageCatalog
+    ) {
+      return;
+    }
+    const targetCategoryId = bulkTargetCategoryId.trim();
+    if (!targetCategoryId) {
+      setMutationError({
+        message: tx(
+          'Vui lòng chọn danh mục đích để chuyển món.',
+          'Please select a target category to move items.'
+        ),
+      });
+      return;
+    }
+
+    const targetCategory = categories.find((c) => c.id === targetCategoryId);
+    const targetIds = [...selectedIds];
+
+    setBulkActionPending('move');
+    setMutationError(null);
+    setBulkResultBanner(null);
+
+    try {
+      const res = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'bulk_move_items',
+          shopId: activeShop.id,
+          itemIds: targetIds,
+          categoryId: targetCategoryId,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+
+      const movedCount =
+        typeof data?.movedCount === 'number'
+          ? data.movedCount
+          : typeof data?.updatedCount === 'number'
+            ? data.updatedCount
+            : null;
+      const unchangedCount =
+        typeof data?.unchangedCount === 'number' ? data.unchangedCount : 0;
+      const returnedIds = Array.isArray(data?.itemIds) ? data.itemIds : null;
+
+      // Validate counts against the selected batch
+      if (
+        !res.ok ||
+        data?.success !== true ||
+        movedCount === null ||
+        movedCount < 0 ||
+        unchangedCount < 0 ||
+        movedCount + unchangedCount !== targetIds.length ||
+        (returnedIds !== null && returnedIds.length !== targetIds.length)
+      ) {
+        setMutationError(
+          toMutationError(
+            data,
+            tx(
+              'Không thể chuyển danh mục cho các món đã chọn',
+              'Could not move selected items to category'
+            )
+          )
+        );
+        return;
+      }
+
+      const targetIdSet = new Set(targetIds);
+      setItems((prev) =>
+        prev.map((item) =>
+          targetIdSet.has(item.id)
+            ? { ...item, category_id: targetCategoryId }
+            : item
+        )
+      );
+      clearBulkSelectionAndDrafts();
+      await loadCatalog(true);
+      notifyRealtime();
+
+      const categoryLabel =
+        (locale === 'en' && targetCategory?.name_i18n?.en
+          ? targetCategory.name_i18n.en
+          : targetCategory?.name_i18n?.vi) ||
+        targetCategory?.name_i18n?.vi ||
+        targetCategoryId;
+
+      let successMsg: string;
+      if (movedCount === 0) {
+        successMsg = tx(
+          '0 món được chuyển: tất cả {count} món đã thuộc danh mục "{category}"',
+          '0 items moved: all {count} item(s) are already in category "{category}"',
+          { count: targetIds.length, category: categoryLabel }
+        );
+      } else if (unchangedCount > 0) {
+        successMsg = tx(
+          'Đã chuyển {count} món sang danh mục "{category}" ({unchanged} món đã ở danh mục này)',
+          'Moved {count} item(s) to category "{category}" ({unchanged} item(s) already in this category)',
+          {
+            count: movedCount,
+            unchanged: unchangedCount,
+            category: categoryLabel,
+          }
+        );
+      } else {
+        successMsg = tx(
+          'Đã chuyển {count} món sang danh mục "{category}"',
+          'Moved {count} item(s) to category "{category}"',
+          { count: movedCount, category: categoryLabel }
+        );
+      }
+
+      setBulkResultBanner({ status: 'success', message: successMsg });
+      showToast(successMsg);
+    } catch (err) {
+      setMutationError(
+        toMutationError(
+          err,
+          tx(
+            'Không thể chuyển danh mục cho các món đã chọn',
+            'Could not move selected items to category'
+          )
+        )
+      );
+    } finally {
+      setBulkActionPending(null);
+    }
+  };
 
   const handlePageSizeChange = (newSize: CatalogPageSize) => {
     setPageSize(newSize);
@@ -564,6 +1188,53 @@ export default function DashboardCatalogPage() {
             onClick={() => setMutationError(null)}
             aria-label={t('common.close')}
             className="-m-1 rounded-full p-1 text-rose-500 hover:bg-rose-100"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Bulk Result Banner (Total Success or Partial Failure) */}
+      {bulkResultBanner && (
+        <div
+          role={bulkResultBanner.status === 'partial' ? 'alert' : 'status'}
+          data-testid="catalog-bulk-result-banner"
+          className={`flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold ${
+            bulkResultBanner.status === 'partial'
+              ? 'border-amber-300 bg-amber-50 text-amber-900'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+          }`}
+        >
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              {bulkResultBanner.status === 'partial' ? (
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+              )}
+              <span>{bulkResultBanner.message}</span>
+            </div>
+            {bulkResultBanner.details && bulkResultBanner.details.length > 0 && (
+              <ul
+                data-testid="catalog-bulk-result-details"
+                className="list-disc space-y-1 pl-6 text-[11px] font-semibold text-amber-900"
+              >
+                {bulkResultBanner.details.map((detail, idx) => (
+                  <li key={`${detail.id}-${idx}`}>
+                    <span className="font-bold">
+                      {detail.name || detail.id}
+                    </span>
+                    {detail.error ? `: ${detail.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setBulkResultBanner(null)}
+            aria-label={t('common.close')}
+            className="-m-1 rounded-full p-1 opacity-70 hover:opacity-100"
           >
             <X className="h-4 w-4" />
           </button>
@@ -764,6 +1435,9 @@ export default function DashboardCatalogPage() {
           <button
             type="button"
             onClick={() => {
+              if (selectedCategoryId !== 'all') {
+                clearBulkSelectionAndDrafts();
+              }
               setSelectedCategoryId('all');
               setCurrentPage(1);
             }}
@@ -791,6 +1465,9 @@ export default function DashboardCatalogPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    if (selectedCategoryId !== cat.id) {
+                      clearBulkSelectionAndDrafts();
+                    }
                     setSelectedCategoryId(cat.id);
                     setCurrentPage(1);
                   }}
@@ -824,6 +1501,7 @@ export default function DashboardCatalogPage() {
           onChange={(e) => {
             setSearchQuery(e.target.value);
             setCurrentPage(1);
+            clearBulkSelectionAndDrafts();
           }}
           placeholder={tx(
             'Tìm nhanh món hoặc dịch vụ để đổi trạng thái, sửa giá...',
@@ -912,11 +1590,347 @@ export default function DashboardCatalogPage() {
         </div>
       ) : (
         <div className="space-y-3">
+          {/* Select-Current-Page Bar */}
+          {pagedItems.length > 0 && (
+            <div
+              data-testid="catalog-select-page-bar"
+              className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs shadow-2xs flex-wrap"
+            >
+              <label
+                htmlFor="catalog-select-current-page"
+                className="inline-flex min-h-[44px] cursor-pointer items-center gap-2.5 font-bold text-slate-700 select-none"
+              >
+                <input
+                  ref={selectPageCheckboxRef}
+                  id="catalog-select-current-page"
+                  data-testid="catalog-select-page-checkbox"
+                  type="checkbox"
+                  checked={allOnPageSelected}
+                  aria-checked={
+                    someOnPageSelected
+                      ? 'mixed'
+                      : allOnPageSelected
+                        ? 'true'
+                        : 'false'
+                  }
+                  disabled={Boolean(bulkActionPending) || pagedItems.length === 0}
+                  onChange={handleToggleSelectCurrentPage}
+                  className="h-[1.15em] w-[1.15em] cursor-pointer rounded border-slate-300 accent-emerald-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span>
+                  {tx(
+                    'Chọn tất cả trên trang này ({selected}/{total} món)',
+                    'Select all on this page ({selected}/{total} items)',
+                    {
+                      selected: selectedOnPageCount,
+                      total: pagedItems.length,
+                    }
+                  )}
+                </span>
+              </label>
+
+              {selectedIds.length > 0 && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="rounded-lg bg-emerald-50 px-2.5 py-1 font-extrabold text-emerald-800 border border-emerald-200">
+                    {tx(
+                      'Đã chọn {count} món',
+                      '{count} item(s) selected',
+                      { count: selectedIds.length }
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Compact Bilingual Bulk Action Toolbar (visible only when >= 1 item is selected) */}
+          {selectedIds.length > 0 && (
+            <div
+              role="region"
+              aria-label={tx('Thao tác hàng loạt', 'Bulk actions')}
+              data-testid="catalog-bulk-action-bar"
+              className="rounded-2xl border-2 border-emerald-500/70 bg-emerald-50/40 p-3 shadow-sm space-y-2.5"
+            >
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-2.5">
+                {/* Selection Count & Clear Selection */}
+                <div className="flex items-center justify-between sm:justify-start gap-2.5 shrink-0">
+                  <span
+                    data-testid="catalog-bulk-selected-count"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-2xs"
+                  >
+                    <span>
+                      {tx(
+                        'Đã chọn {count} món',
+                        '{count} selected',
+                        { count: selectedIds.length }
+                      )}
+                    </span>
+                  </span>
+
+                  <button
+                    type="button"
+                    data-testid="catalog-bulk-clear-selection"
+                    disabled={Boolean(bulkActionPending)}
+                    onClick={clearBulkSelectionAndDrafts}
+                    className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{tx('Bỏ chọn', 'Clear selection')}</span>
+                  </button>
+                </div>
+
+                {/* Bulk Action Controls */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* 1. Availability: Mark Available / Mark Sold Out */}
+                  <div className="inline-flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="catalog-bulk-available-btn"
+                      disabled={!canAdjustInventory || Boolean(bulkActionPending)}
+                      onClick={() => void handleBulkSetAvailability(true)}
+                      title={
+                        !canAdjustInventory
+                          ? tx(
+                              'Cần quyền điều chỉnh tồn kho hoặc quản lý thực đơn',
+                              'Requires inventory.adjust or catalog.manage permission'
+                            )
+                          : tx(
+                              'Đặt trạng thái Còn hàng cho các món đã chọn (giữ nguyên số lượng tồn kho)',
+                              'Mark selected items as available (leaves stock quantity untouched)'
+                            )
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-emerald-300 bg-white px-2.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkActionPending === 'available' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+                      ) : (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      )}
+                      <span>{tx('Bật còn hàng', 'Mark available')}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="catalog-bulk-soldout-btn"
+                      disabled={!canAdjustInventory || Boolean(bulkActionPending)}
+                      onClick={() => void handleBulkSetAvailability(false)}
+                      title={
+                        !canAdjustInventory
+                          ? tx(
+                              'Cần quyền điều chỉnh tồn kho hoặc quản lý thực đơn',
+                              'Requires inventory.adjust or catalog.manage permission'
+                            )
+                          : tx(
+                              'Đặt trạng thái Tạm hết cho các món đã chọn (giữ nguyên số lượng tồn kho)',
+                              'Mark selected items as sold out (leaves stock quantity untouched)'
+                            )
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkActionPending === 'sold_out' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
+                      )}
+                      <span>{tx('Tạm hết', 'Mark sold out')}</span>
+                    </button>
+                  </div>
+
+                  {/* 2. Set One Exact VND Price */}
+                  <form
+                    onSubmit={handleBulkUpdatePrice}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <label
+                      htmlFor="catalog-bulk-price-input"
+                      className="sr-only"
+                    >
+                      {tx('Giá bán đồng loạt (VND)', 'Bulk price (VND)')}
+                    </label>
+                    <div className="relative flex items-center">
+                      <input
+                        id="catalog-bulk-price-input"
+                        data-testid="catalog-bulk-price-input"
+                        type="text"
+                        inputMode="numeric"
+                        value={bulkPriceInput}
+                        disabled={!canManageCatalog || Boolean(bulkActionPending)}
+                        onChange={(e) => {
+                          setBulkPriceInput(e.target.value);
+                          if (bulkPriceError) setBulkPriceError(null);
+                        }}
+                        placeholder={tx(
+                          'Giá mới (VD: 35.000)',
+                          'New price (e.g. 35000)'
+                        )}
+                        aria-invalid={bulkPriceError ? 'true' : 'false'}
+                        aria-describedby={
+                          bulkPriceError ? 'catalog-bulk-price-error' : undefined
+                        }
+                        title={
+                          !canManageCatalog
+                            ? tx(
+                                'Cần quyền quản lý thực đơn (catalog.manage)',
+                                'Requires catalog.manage permission'
+                              )
+                            : undefined
+                        }
+                        className={`w-36 sm:w-40 rounded-xl border px-2.5 py-1.5 pr-6 text-xs font-bold focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                          bulkPriceError
+                            ? 'border-rose-400 bg-rose-50 text-rose-800 focus:border-rose-500 focus:bg-white'
+                            : 'border-slate-200 bg-white text-slate-900 focus:border-emerald-500'
+                        }`}
+                      />
+                      <span className="pointer-events-none absolute right-2 text-[11px] font-bold text-slate-400">
+                        đ
+                      </span>
+                    </div>
+                    <button
+                      type="submit"
+                      data-testid="catalog-bulk-price-apply"
+                      disabled={!canManageCatalog || Boolean(bulkActionPending)}
+                      title={
+                        !canManageCatalog
+                          ? tx(
+                              'Cần quyền quản lý thực đơn (catalog.manage)',
+                              'Requires catalog.manage permission'
+                            )
+                          : tx(
+                              'Đặt cùng mức giá VND cho các món đã chọn',
+                              'Set this exact VND price for all selected items'
+                            )
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkActionPending === 'price' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Tag className="h-3.5 w-3.5" />
+                      )}
+                      <span>{tx('Đặt giá', 'Set price')}</span>
+                    </button>
+                  </form>
+
+                  {/* 3. Move to Category */}
+                  <form
+                    onSubmit={handleBulkMoveCategory}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <label
+                      htmlFor="catalog-bulk-category-select"
+                      className="sr-only"
+                    >
+                      {tx('Chuyển sang danh mục', 'Move to category')}
+                    </label>
+                    <select
+                      id="catalog-bulk-category-select"
+                      data-testid="catalog-bulk-category-select"
+                      value={bulkTargetCategoryId}
+                      disabled={!canManageCatalog || Boolean(bulkActionPending)}
+                      onChange={(e) => setBulkTargetCategoryId(e.target.value)}
+                      title={
+                        !canManageCatalog
+                          ? tx(
+                              'Cần quyền quản lý thực đơn (catalog.manage)',
+                              'Requires catalog.manage permission'
+                            )
+                          : undefined
+                      }
+                      className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">
+                        {tx('Chọn danh mục...', 'Select category...')}
+                      </option>
+                      {categories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name_i18n.vi}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      data-testid="catalog-bulk-category-apply"
+                      disabled={
+                        !canManageCatalog ||
+                        Boolean(bulkActionPending) ||
+                        !bulkTargetCategoryId
+                      }
+                      title={
+                        !canManageCatalog
+                          ? tx(
+                              'Cần quyền quản lý thực đơn (catalog.manage)',
+                              'Requires catalog.manage permission'
+                            )
+                          : tx(
+                              'Chuyển các món đã chọn sang danh mục này',
+                              'Move selected items to this category'
+                            )
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkActionPending === 'move' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FolderInput className="h-3.5 w-3.5 text-emerald-600" />
+                      )}
+                      <span>{tx('Chuyển danh mục', 'Move category')}</span>
+                    </button>
+                  </form>
+
+                  {/* 4. Bulk Delete */}
+                  <button
+                    type="button"
+                    data-testid="catalog-bulk-delete-btn"
+                    disabled={!canManageCatalog || Boolean(bulkActionPending)}
+                    onClick={() => void handleBulkDelete()}
+                    title={
+                      !canManageCatalog
+                        ? tx(
+                            'Cần quyền quản lý thực đơn (catalog.manage)',
+                            'Requires catalog.manage permission'
+                          )
+                        : tx(
+                            'Xóa các món đã chọn khỏi thực đơn',
+                            'Delete selected items from menu'
+                          )
+                    }
+                    className="inline-flex items-center gap-1 rounded-xl border border-rose-300 bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {bulkActionPending === 'delete' ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    <span>
+                      {tx('Xóa ({count})', 'Delete ({count})', {
+                        count: selectedIds.length,
+                      })}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {bulkPriceError && (
+                <p
+                  id="catalog-bulk-price-error"
+                  data-testid="catalog-bulk-price-error"
+                  role="alert"
+                  className="text-[11px] font-bold text-rose-600"
+                >
+                  {bulkPriceError}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2">
             {pagedItems.map((item) => (
               <QuickItemRow
                 key={item.id}
                 item={item}
+                selected={selectedItemIds.has(item.id)}
+                onToggleSelect={handleToggleSelectItem}
+                selectionDisabled={Boolean(bulkActionPending)}
                 onToggleAvailable={handleToggleAvailable}
                 onUpdatePrice={handleUpdatePrice}
                 onUpdateStock={handleUpdateStock}

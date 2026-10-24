@@ -1492,6 +1492,30 @@ function createBulkCatalogMockHarness(options?: {
       created_at: '2026-10-01T00:00:00.000Z',
       updated_at: '2026-10-01T00:00:00.000Z',
     },
+    {
+      id: 'mem-staff-view-only',
+      shop_id: 'shop-fnb-001',
+      user_id: 'staff-view-only',
+      email: 'viewonly@qlaok.vn',
+      full_name: 'Staff View Only',
+      role: 'staff',
+      permissions: ['catalog.view', 'orders.view'],
+      is_active: true,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+    },
+    {
+      id: 'mem-staff-inactive',
+      shop_id: 'shop-fnb-001',
+      user_id: 'staff-inactive',
+      email: 'inactive@qlaok.vn',
+      full_name: 'Staff Inactive',
+      role: 'staff',
+      permissions: ['catalog.view', 'catalog.manage', 'inventory.adjust'],
+      is_active: false,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+    },
   ];
 
   const categorySelectCalls: Array<{
@@ -2512,6 +2536,527 @@ test('POST /api/catalog bulk_move_items and bulk_delete_items return non-success
     assert.equal(data.success, false);
     assert.equal(data.deletedCount, 0);
     assert.equal(data.code, 'BULK_DELETE_COUNT_MISMATCH');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_update_availability updates only is_available with a single shop-scoped write and leaves stock_quantity untouched', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const inventoryOnlyStaffToken = issueSessionToken({
+    id: 'staff-inventory-only',
+    email: 'staff@qlaok.vn',
+    role: 'staff',
+  });
+
+  const cashierManagerToken = issueSessionToken({
+    id: 'cashier-catalog-manager',
+    email: 'cashier@qlaok.vn',
+    role: 'cashier',
+  });
+
+  const {
+    mockDbClient,
+    itemsStore,
+    itemSelectCalls,
+    updateCalls,
+  } = createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+  setShopMembershipDbClientForTest(
+    mockDbClient as unknown as Parameters<
+      typeof setShopMembershipDbClientForTest
+    >[0]
+  );
+
+  try {
+    const beforeItem1 = structuredClone(
+      itemsStore.find((i) => i.id === 'item-fnb-001')!
+    );
+    const beforeItem2 = structuredClone(
+      itemsStore.find((i) => i.id === 'item-fnb-002')!
+    );
+
+    // 1. Owner marks items as temporarily sold out (is_available = false)
+    const resSoldOut = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: [' item-fnb-001 ', 'item-fnb-002'],
+          is_available: false,
+          // Extra injected fields in payload must never leak into update patch
+          stock_quantity: 0,
+          price: 1000,
+          category_id: 'cat-fnb-002',
+        }),
+      })
+    );
+
+    assert.equal(resSoldOut.status, 200);
+    const dataSoldOut = await resSoldOut.json();
+    assert.equal(dataSoldOut.success, true);
+    assert.equal(dataSoldOut.updatedCount, 2);
+    assert.equal(dataSoldOut.count, 2);
+    assert.equal(dataSoldOut.is_available, false);
+    assert.equal(dataSoldOut.isAvailable, false);
+    assert.deepEqual(dataSoldOut.itemIds, ['item-fnb-001', 'item-fnb-002']);
+
+    // Verify shop-scoped verification happened first
+    assert.equal(itemSelectCalls.length, 1);
+    assert.deepEqual(itemSelectCalls[0].eqFilters, {
+      shop_id: 'shop-fnb-001',
+    });
+    assert.deepEqual(itemSelectCalls[0].inFilters, {
+      id: ['item-fnb-001', 'item-fnb-002'],
+    });
+    assert.deepEqual(itemSelectCalls[0].filterOrder, ['eq:shop_id', 'in:id']);
+
+    // Verify update touched ONLY is_available
+    assert.equal(updateCalls.length, 1);
+    assert.deepEqual(updateCalls[0].patch, { is_available: false });
+    assert.deepEqual(Object.keys(updateCalls[0].patch), ['is_available']);
+    assert.equal(updateCalls[0].eqFilters.shop_id, 'shop-fnb-001');
+    assert.deepEqual(updateCalls[0].inFilters.id, [
+      'item-fnb-001',
+      'item-fnb-002',
+    ]);
+
+    const afterItem1 = itemsStore.find((i) => i.id === 'item-fnb-001')!;
+    const afterItem2 = itemsStore.find((i) => i.id === 'item-fnb-002')!;
+    assert.equal(afterItem1.is_available, false);
+    assert.equal(afterItem2.is_available, false);
+    assert.equal(afterItem1.stock_quantity, 15, 'Stock quantity must remain 15');
+    assert.equal(
+      afterItem2.stock_quantity,
+      null,
+      'Unlimited stock must remain null'
+    );
+    assert.deepEqual(
+      { ...afterItem1, is_available: beforeItem1.is_available },
+      beforeItem1
+    );
+    assert.deepEqual(
+      { ...afterItem2, is_available: beforeItem2.is_available },
+      beforeItem2
+    );
+
+    // 2. Staff with inventory.adjust (without catalog.manage) marks items available
+    const resStaffAvailable = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${inventoryOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-003'],
+          isAvailable: true,
+        }),
+      })
+    );
+
+    assert.equal(resStaffAvailable.status, 200);
+    const dataStaffAvailable = await resStaffAvailable.json();
+    assert.equal(dataStaffAvailable.success, true);
+    assert.equal(dataStaffAvailable.updatedCount, 2);
+    assert.equal(dataStaffAvailable.is_available, true);
+
+    // item-fnb-003 had stock_quantity: 0; availability change must NOT alter stock_quantity
+    const afterItem3 = itemsStore.find((i) => i.id === 'item-fnb-003')!;
+    assert.equal(afterItem3.is_available, true);
+    assert.equal(
+      afterItem3.stock_quantity,
+      0,
+      'Stock quantity 0 must remain untouched by availability toggle'
+    );
+
+    // 3. Cashier with catalog.manage (without inventory.adjust) can also update availability
+    const resCashier = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierManagerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-002'],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resCashier.status, 200);
+    const dataCashier = await resCashier.json();
+    assert.equal(dataCashier.success, true);
+    assert.equal(dataCashier.updatedCount, 1);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_update_availability enforces auth, active shop membership, and catalog.manage | inventory.adjust permissions', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+
+  const otherShopOwnerToken = issueSessionToken({
+    id: 'owner-other-002',
+    email: 'other@qlaok.vn',
+    role: 'owner',
+  });
+
+  const viewOnlyStaffToken = issueSessionToken({
+    id: 'staff-view-only',
+    email: 'viewonly@qlaok.vn',
+    role: 'staff',
+  });
+
+  const inactiveStaffToken = issueSessionToken({
+    id: 'staff-inactive',
+    email: 'inactive@qlaok.vn',
+    role: 'staff',
+  });
+
+  const { mockDbClient, updateCalls } = createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+  setShopMembershipDbClientForTest(
+    mockDbClient as unknown as Parameters<
+      typeof setShopMembershipDbClientForTest
+    >[0]
+  );
+
+  try {
+    // 1. Unauthenticated request -> 401
+    const resUnauth = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resUnauth.status, 401);
+
+    // 2. Missing shopId -> 400
+    const resMissingShop = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${otherShopOwnerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: '   ',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resMissingShop.status, 400);
+    const dataMissingShop = await resMissingShop.json();
+    assert.equal(dataMissingShop.code, 'INVALID_SHOP_ID');
+
+    // 3. Unknown shop -> 404
+    const resUnknownShop = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${otherShopOwnerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-nonexistent-404',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resUnknownShop.status, 404);
+
+    // 4. Wrong shop (owner of another shop) -> 403
+    const resWrongShop = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${otherShopOwnerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resWrongShop.status, 403);
+
+    // 5. Inactive membership -> 403
+    const resInactive = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${inactiveStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resInactive.status, 403);
+
+    // 6. Active member without catalog.manage or inventory.adjust -> 403 INSUFFICIENT_SHOP_PERMISSION
+    const resViewOnly = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${viewOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resViewOnly.status, 403);
+    const dataViewOnly = await resViewOnly.json();
+    assert.equal(dataViewOnly.code, 'INSUFFICIENT_SHOP_PERMISSION');
+    assert.deepEqual(dataViewOnly.requiredPermissions, [
+      'catalog.manage',
+      'inventory.adjust',
+    ]);
+
+    assert.equal(updateCalls.length, 0);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_update_availability rejects non-boolean availability, malformed/duplicate/>2000 itemIds, cross-shop IDs, and DB failures', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const { mockDbClient, itemsStore, updateCalls } =
+    createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    // 1. Invalid boolean payloads
+    const badAvailabilityPayloads: Array<Record<string, unknown>> = [
+      {},
+      { is_available: null },
+      { is_available: 'true' },
+      { is_available: 1 },
+      { isAvailable: 0 },
+      { isAvailable: 'false' },
+      { is_available: true, isAvailable: false },
+    ];
+
+    for (const extra of badAvailabilityPayloads) {
+      const resBadBool = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'bulk_update_availability',
+            shopId: 'shop-fnb-001',
+            itemIds: ['item-fnb-001'],
+            ...extra,
+          }),
+        })
+      );
+      assert.equal(resBadBool.status, 400);
+      const dataBadBool = await resBadBool.json();
+      assert.equal(dataBadBool.success, false);
+      assert.equal(dataBadBool.code, 'INVALID_AVAILABILITY');
+    }
+
+    // 2. Invalid itemIds (empty, non-array, malformed, duplicate, >2000)
+    const invalidIdCases: Array<{ itemIds: unknown; expectedCode: string }> = [
+      { itemIds: [], expectedCode: 'INVALID_ITEM_IDS' },
+      { itemIds: null, expectedCode: 'INVALID_ITEM_IDS' },
+      { itemIds: ['item-fnb-001', '   '], expectedCode: 'MALFORMED_ITEM_ID' },
+      { itemIds: ['item-fnb-001', 42], expectedCode: 'MALFORMED_ITEM_ID' },
+      {
+        itemIds: ['item-fnb-001', 'item-fnb-001'],
+        expectedCode: 'DUPLICATE_ITEM_ID',
+      },
+      {
+        itemIds: ['item-fnb-001', ' item-fnb-001 '],
+        expectedCode: 'DUPLICATE_ITEM_ID',
+      },
+      {
+        itemIds: Array.from({ length: 2001 }, (_, i) => `item-${i}`),
+        expectedCode: 'TOO_MANY_ITEMS',
+      },
+    ];
+
+    for (const { itemIds, expectedCode } of invalidIdCases) {
+      const resBadIds = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'bulk_update_availability',
+            shopId: 'shop-fnb-001',
+            itemIds,
+            is_available: false,
+          }),
+        })
+      );
+      assert.equal(resBadIds.status, 400);
+      const dataBadIds = await resBadIds.json();
+      assert.equal(dataBadIds.success, false);
+      assert.equal(dataBadIds.code, expectedCode);
+    }
+
+    // 3. Cross-shop or non-existent item IDs rejected before any write
+    for (const badBatch of [
+      ['item-fnb-001', 'item-foreign-999'],
+      ['item-fnb-001', 'item-missing-404'],
+    ]) {
+      const resCross = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'bulk_update_availability',
+            shopId: 'shop-fnb-001',
+            itemIds: badBatch,
+            is_available: false,
+          }),
+        })
+      );
+      assert.equal(resCross.status, 400);
+      const dataCross = await resCross.json();
+      assert.equal(dataCross.success, false);
+      assert.equal(dataCross.code, 'ITEM_NOT_IN_SHOP');
+      assert.equal(
+        JSON.stringify(dataCross).includes('shop-secret-foreign-id'),
+        false,
+        'Must never leak foreign shop_id'
+      );
+    }
+
+    assert.equal(updateCalls.length, 0);
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.is_available,
+      true
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  // 4. DB update error -> 500 DB_UPDATE_FAILED
+  const errHarness = createBulkCatalogMockHarness({
+    failUpdateError: 'Simulated DB availability error',
+  });
+  setSupabaseDbClientForTests(errHarness.mockDbClient);
+  try {
+    const resDbErr = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resDbErr.status, 500);
+    const dataDbErr = await resDbErr.json();
+    assert.equal(dataDbErr.success, false);
+    assert.equal(dataDbErr.updatedCount, 0);
+    assert.equal(dataDbErr.code, 'DB_UPDATE_FAILED');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  // 5. Affected count mismatch -> 409 BULK_AVAILABILITY_COUNT_MISMATCH
+  const mismatchHarness = createBulkCatalogMockHarness({
+    overrideUpdateCount: 1,
+  });
+  setSupabaseDbClientForTests(mismatchHarness.mockDbClient);
+  try {
+    const resMismatch = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resMismatch.status, 409);
+    const dataMismatch = await resMismatch.json();
+    assert.equal(dataMismatch.success, false);
+    assert.equal(dataMismatch.updatedCount, 0);
+    assert.equal(dataMismatch.code, 'BULK_AVAILABILITY_COUNT_MISMATCH');
   } finally {
     setSupabaseDbClientForTests(null);
   }

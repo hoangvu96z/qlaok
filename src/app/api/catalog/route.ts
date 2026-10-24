@@ -716,6 +716,148 @@ export async function POST(req: Request) {
       });
     }
 
+    if (
+      action === 'bulk_update_availability' ||
+      action === 'bulk_set_availability'
+    ) {
+      const targetShopId =
+        typeof body.shopId === 'string' ? body.shopId.trim() : '';
+      if (!targetShopId) {
+        return NextResponse.json(
+          { success: false, code: 'INVALID_SHOP_ID', error: 'Missing shopId' },
+          { status: 400 }
+        );
+      }
+
+      const auth = await requireShopPermission(req, targetShopId, []);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const permissionOptions: Array<'catalog.manage' | 'inventory.adjust'> = [
+        'catalog.manage',
+        'inventory.adjust',
+      ];
+      if (!hasAnyShopPermission(auth.membership, permissionOptions)) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Tài khoản (${auth.membership.role}) không có quyền thực hiện thao tác này (cần quyền: ${permissionOptions.join(' hoặc ')}).`,
+            code: 'INSUFFICIENT_SHOP_PERMISSION',
+            role: auth.membership.role,
+            requiredPermissions: permissionOptions,
+          },
+          { status: 403 }
+        );
+      }
+
+      const hasCamel = body.isAvailable !== undefined;
+      const hasSnake = body.is_available !== undefined;
+      if (
+        (!hasCamel && !hasSnake) ||
+        (hasCamel && typeof body.isAvailable !== 'boolean') ||
+        (hasSnake && typeof body.is_available !== 'boolean') ||
+        (hasCamel && hasSnake && body.isAvailable !== body.is_available)
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'INVALID_AVAILABILITY',
+            error: 'Trạng thái còn món (is_available) phải là kiểu boolean.',
+          },
+          { status: 400 }
+        );
+      }
+      const targetAvailable: boolean = hasCamel
+        ? body.isAvailable
+        : body.is_available;
+
+      const parsedIds = validateBulkCatalogItemIds(body.itemIds);
+      if (!parsedIds.valid) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: parsedIds.code,
+            error: parsedIds.error,
+          },
+          { status: 400 }
+        );
+      }
+      const normalizedItemIds = parsedIds.itemIds;
+
+      const sb = getSupabaseDbClient();
+
+      const verifiedItems = await fetchAndVerifyShopItems(
+        sb,
+        targetShopId,
+        normalizedItemIds
+      );
+      if (!verifiedItems.ok) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: verifiedItems.code,
+            error: verifiedItems.error,
+          },
+          { status: verifiedItems.status }
+        );
+      }
+
+      const {
+        data: updatedRows,
+        error: updateErr,
+        count: updateCount,
+      } = await sb
+        .from('items')
+        .update({ is_available: targetAvailable }, { count: 'exact' })
+        .eq('shop_id', targetShopId)
+        .in('id', normalizedItemIds);
+
+      if (updateErr) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'DB_UPDATE_FAILED',
+            updatedCount: 0,
+            count: 0,
+            error:
+              updateErr.message ||
+              'Không thể cập nhật trạng thái còn món cho các món đã chọn.',
+          },
+          { status: 500 }
+        );
+      }
+
+      const rawUpdatedRows = updatedRows as unknown;
+      const affectedCount =
+        typeof updateCount === 'number'
+          ? updateCount
+          : Array.isArray(rawUpdatedRows)
+            ? rawUpdatedRows.length
+            : null;
+
+      if (affectedCount === null || affectedCount !== normalizedItemIds.length) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'BULK_AVAILABILITY_COUNT_MISMATCH',
+            updatedCount: 0,
+            count: 0,
+            error:
+              'Số lượng món được cập nhật trạng thái không khớp với yêu cầu.',
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        updatedCount: affectedCount,
+        count: affectedCount,
+        is_available: targetAvailable,
+        isAvailable: targetAvailable,
+        itemIds: normalizedItemIds,
+      });
+    }
+
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error) {
     const message =
