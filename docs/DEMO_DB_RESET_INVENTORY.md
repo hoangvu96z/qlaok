@@ -141,6 +141,7 @@ Before any future task executes a demo reset on `kftmrjmmympztzztunxf`, the foll
 4. **Single-Transaction Child-First Purge & Canonical Re-Seed:**
    - Execute the reset inside an explicit transaction (`BEGIN ... COMMIT`) under `service_role` / admin privileges (`is_client_request_context() = FALSE`).
    - `scripts/demo-reset-purge.mjs` contains the fixed 19-table deletion sequence. Its PGlite test exercises the webhook and table triggers. This module only builds SQL; it does not connect to a database or perform the reset.
+   - `scripts/demo-reset-owner-seed.mjs` assembles the canonical demo owner, three shops, their owner memberships, and 17 tables from existing seed constants. It returns rows only; no database write is performed.
    - Keep `public.schema_migrations` and `public.provinces` intact (or idempotently upsert the 34 provinces).
    - Delete rows in the strict child-first order from Section 2 (`sepay_webhook_events` before `orders`; `orders` before `shop_tables`; leaf tables before `shops` and `profiles`).
    - Re-seed canonical demo state in parent-first order:
