@@ -42,6 +42,10 @@ import {
   TicketPrintType,
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
+import {
+  getUnseenPendingServiceRequests,
+  shouldNotifyBrowserServiceRequest,
+} from '@/lib/service-request-browser-notifications';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { formatChimeSummaryLabel } from '@/lib/app-i18n';
@@ -111,7 +115,7 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 }
 
 export default function CounterOrdersPage() {
-  const { activeShop } = useDashboard();
+  const { activeShop, profile } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const translateRef = useRef(tx);
   translateRef.current = tx;
@@ -292,10 +296,9 @@ export default function CounterOrdersPage() {
               (o) =>
                 o.status === 'new' && !knownOrderIdsRef.current.has(o.id)
             );
-            const brandNewServiceReq = fetchedServiceRequests.find(
-              (r) =>
-                r.status === 'pending' &&
-                !knownServiceRequestIdsRef.current.has(r.id)
+            const brandNewServiceReqs = getUnseenPendingServiceRequests(
+              fetchedServiceRequests,
+              knownServiceRequestIdsRef.current
             );
             if (brandNewOrder) {
               const latestChime = loadOrderChimeSettings();
@@ -326,19 +329,30 @@ export default function CounterOrdersPage() {
                 itemsSummary,
                 shopName: activeShop.name,
               });
-            } else if (brandNewServiceReq) {
+            }
+            const notifiableServiceReqs = brandNewServiceReqs.filter((request) =>
+              shouldNotifyBrowserServiceRequest({
+                rule: activeShop.theme_config?.serviceRequestNotificationRule,
+                requestType: request.request_type,
+                userId: profile?.id,
+                ownerId: activeShop.owner_id,
+              })
+            );
+            if (!brandNewOrder && notifiableServiceReqs.length > 0) {
               const latestChime = loadOrderChimeSettings();
               chimeSettingsRef.current = latestChime;
               if (latestChime.enabled) {
                 playOrderAlertChime(
                   latestChime,
-                  brandNewServiceReq.table_label
+                  notifiableServiceReqs[0].table_label
                 );
               }
+            }
+            for (const serviceRequest of notifiableServiceReqs) {
               sendBrowserServiceRequestNotification({
-                requestId: brandNewServiceReq.id,
-                tableLabel: brandNewServiceReq.table_label,
-                requestType: brandNewServiceReq.request_type,
+                requestId: serviceRequest.id,
+                tableLabel: serviceRequest.table_label,
+                requestType: serviceRequest.request_type,
                 shopName: activeShop.name,
               });
             }
@@ -367,7 +381,7 @@ export default function CounterOrdersPage() {
         if (!silent && !disposedRef.current && scopeRef.current === scope) setLoading(false);
       }
     },
-    [activeShop]
+    [activeShop, profile?.id]
   );
 
   useEffect(() => {

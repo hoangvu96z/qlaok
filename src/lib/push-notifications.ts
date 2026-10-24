@@ -3,8 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
+  ServiceRequestNotificationRule,
   ServiceRequestType,
+  ShopMembership,
   ShopOrder,
+  ShopThemeConfig,
   TableServiceRequest,
 } from '@/types/qlaok';
 import { getSupabaseDbClient } from './db';
@@ -446,6 +449,54 @@ export async function dbGetShopActivePushTokens(
   );
 }
 
+export const DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE: ServiceRequestNotificationRule =
+  'all_order_staff';
+
+export function isValidServiceRequestNotificationRule(
+  value: unknown
+): value is ServiceRequestNotificationRule {
+  return value === 'all_order_staff' || value === 'owner_only';
+}
+
+export function normalizeServiceRequestNotificationRule(
+  value: unknown
+): ServiceRequestNotificationRule {
+  return value === 'owner_only' ? 'owner_only' : 'all_order_staff';
+}
+
+export function resolveShopServiceRequestNotificationRule(
+  themeOrRule?: ShopThemeConfig | ServiceRequestNotificationRule | unknown
+): ServiceRequestNotificationRule {
+  if (typeof themeOrRule === 'string') {
+    const trimmed = themeOrRule.trim();
+    if (isValidServiceRequestNotificationRule(trimmed)) {
+      return trimmed;
+    }
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        return normalizeServiceRequestNotificationRule(
+          parsed?.serviceRequestNotificationRule
+        );
+      } catch {
+        return DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE;
+      }
+    }
+    return DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE;
+  }
+  if (
+    themeOrRule &&
+    typeof themeOrRule === 'object' &&
+    !Array.isArray(themeOrRule) &&
+    'serviceRequestNotificationRule' in themeOrRule
+  ) {
+    return normalizeServiceRequestNotificationRule(
+      (themeOrRule as Record<string, unknown>).serviceRequestNotificationRule
+    );
+  }
+  return DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE;
+}
+
 async function lookupShopOwnerAndName(
   shopId: string
 ): Promise<{ ownerId: string | null; shopName: string }> {
@@ -477,6 +528,84 @@ async function lookupShopOwnerAndName(
   };
 }
 
+async function lookupShopServiceRequestNotificationRule(
+  shopId: string
+): Promise<ServiceRequestNotificationRule> {
+  if (!shopId) return DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE;
+  if (isPushTokenDbAuthoritative()) {
+    try {
+      const sb = getPushDbClient();
+      const { data, error } = await sb
+        .from('shops')
+        .select('theme_config')
+        .eq('id', shopId)
+        .maybeSingle();
+      if (!error && data) {
+        return resolveShopServiceRequestNotificationRule(
+          (data as { theme_config?: unknown }).theme_config
+        );
+      }
+    } catch {
+      // fall through to seed / default recipient rule
+    }
+  }
+  try {
+    const seed = SEED_SHOPS.find((s) => s.id === shopId);
+    return resolveShopServiceRequestNotificationRule(seed?.theme_config);
+  } catch {
+    return DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE;
+  }
+}
+
+/**
+ * Pure recipient resolver for table service requests and order notifications.
+ * - For `call_staff`, missing/invalid legacy rule defaults to `all_order_staff`
+ *   (true shop owner unless explicitly inactive + active members with `orders.view`),
+ *   while `owner_only` targets only the true shop owner unless explicitly inactive.
+ * - For `request_bill`, the recipient rule is always `all_order_staff`.
+ */
+export function resolveServiceRequestNotificationRecipientUserIds(params: {
+  ownerId: string | null | undefined;
+  memberships: ShopMembership[];
+  requestType: ServiceRequestType;
+  rule?: ServiceRequestNotificationRule | unknown;
+}): Set<string> {
+  const authorized = new Set<string>();
+  const ownerId =
+    typeof params.ownerId === 'string' && params.ownerId.trim()
+      ? params.ownerId.trim()
+      : null;
+  const memberships = Array.isArray(params.memberships)
+    ? params.memberships
+    : [];
+
+  const memberByUser = new Map(memberships.map((m) => [m.user_id, m]));
+  if (ownerId) {
+    const ownerMem = memberByUser.get(ownerId);
+    // True shop owner always receives notifications unless explicitly deactivated
+    if (!ownerMem || ownerMem.is_active) {
+      authorized.add(ownerId);
+    }
+  }
+
+  const effectiveRule: ServiceRequestNotificationRule =
+    params.requestType === 'call_staff'
+      ? resolveShopServiceRequestNotificationRule(params.rule)
+      : 'all_order_staff';
+
+  if (effectiveRule === 'owner_only') {
+    return authorized;
+  }
+
+  for (const m of memberships) {
+    if (m.is_active && hasShopPermission(m, 'orders.view')) {
+      authorized.add(m.user_id);
+    }
+  }
+
+  return authorized;
+}
+
 /**
  * Resolves the set of authorized user IDs for a shop who are permitted to
  * receive new-order push notifications: the shop owner and active shop members
@@ -491,22 +620,44 @@ export async function resolveAuthorizedOrderNotificationUserIds(
   const { ownerId } = await lookupShopOwnerAndName(shopId);
   const memberships = await dbGetShopMemberships(shopId);
 
-  const memberByUser = new Map(memberships.map((m) => [m.user_id, m]));
-  if (ownerId) {
-    const ownerMem = memberByUser.get(ownerId);
-    // True shop owner always receives order notifications unless explicitly deactivated
-    if (!ownerMem || ownerMem.is_active) {
-      authorized.add(ownerId);
-    }
+  return resolveServiceRequestNotificationRecipientUserIds({
+    ownerId,
+    memberships,
+    requestType: 'request_bill',
+    rule: 'all_order_staff',
+  });
+}
+
+/**
+ * Resolves the set of authorized user IDs for a table service request push notification.
+ * Applies `shops.theme_config.serviceRequestNotificationRule` only to `call_staff`
+ * and falls back safely to `all_order_staff` if loading the optional rule fails.
+ */
+export async function resolveAuthorizedServiceRequestNotificationUserIds(
+  shopId: string,
+  requestType: ServiceRequestType = 'call_staff'
+): Promise<Set<string>> {
+  const authorized = new Set<string>();
+  if (!shopId) return authorized;
+
+  if (requestType !== 'call_staff') {
+    return resolveAuthorizedOrderNotificationUserIds(shopId);
   }
 
-  for (const m of memberships) {
-    if (m.is_active && hasShopPermission(m, 'orders.view')) {
-      authorized.add(m.user_id);
-    }
-  }
+  const [{ ownerId }, memberships, rule] = await Promise.all([
+    lookupShopOwnerAndName(shopId),
+    dbGetShopMemberships(shopId),
+    lookupShopServiceRequestNotificationRule(shopId).catch(
+      () => DEFAULT_SERVICE_REQUEST_NOTIFICATION_RULE
+    ),
+  ]);
 
-  return authorized;
+  return resolveServiceRequestNotificationRecipientUserIds({
+    ownerId,
+    memberships,
+    requestType,
+    rule,
+  });
 }
 
 export function buildLocalizedNewOrderPushMessage(params: {
@@ -929,7 +1080,10 @@ export async function sendServiceRequestPushNotifications(params: {
 
     try {
       const [authorizedUsers, shopTokens] = await Promise.all([
-        resolveAuthorizedOrderNotificationUserIds(serviceRequest.shop_id),
+        resolveAuthorizedServiceRequestNotificationUserIds(
+          serviceRequest.shop_id,
+          serviceRequest.request_type
+        ),
         dbGetShopActivePushTokens(serviceRequest.shop_id),
       ]);
 

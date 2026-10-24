@@ -38,6 +38,7 @@ import {
   OpeningHours,
   ShopPaymentConfig,
   ShopThemeConfig,
+  ServiceRequestNotificationRule,
   SupportedLocale,
 } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
@@ -184,7 +185,7 @@ function resolveSettingsTabFromHash(hash: string): SettingsTabId | null {
 }
 
 export default function DashboardSettingsPage() {
-  const { activeShop, updateActiveShop, refreshDashboard } = useDashboard();
+  const { activeShop, profile, updateActiveShop, refreshDashboard } = useDashboard();
   const { locale, t, tx } = useAppI18n();
 
   const [name, setName] = useState('');
@@ -239,6 +240,8 @@ export default function DashboardSettingsPage() {
         : false
   );
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
+  const [serviceRequestNotificationRule, setServiceRequestNotificationRule] =
+    useState<ServiceRequestNotificationRule>('all_order_staff');
 
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
@@ -358,6 +361,11 @@ export default function DashboardSettingsPage() {
     setWifiPassword(activeShop.wifi_info?.password || '');
 
     const tc = activeShop.theme_config;
+    setServiceRequestNotificationRule(
+      tc?.serviceRequestNotificationRule === 'owner_only'
+        ? 'owner_only'
+        : 'all_order_staff'
+    );
     setPrimaryColor(tc?.primaryColor || '#10b981');
     setLayoutMode(
       tc?.layout || (activeShop.vertical === 'retail' ? 'grid' : 'list')
@@ -513,6 +521,9 @@ export default function DashboardSettingsPage() {
         backgroundImageUrl: backgroundImageUrl.trim() || undefined,
         backgroundOverlayOpacity,
         paymentConfig: cleanedPaymentConfig,
+        ...(activeShop.owner_id === profile?.id
+          ? { serviceRequestNotificationRule }
+          : {}),
       };
 
       const nextCoverUrls = coverUrl.trim()
@@ -1920,6 +1931,82 @@ export default function DashboardSettingsPage() {
       >
       {/* 5b. Owner-managed Order Fulfillment Workflow Flowchart Editor */}
       <ShopOrderWorkflowEditor />
+
+      <section
+        data-testid="service-request-notification-settings"
+        className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
+      >
+        <div className="mb-4">
+          <h3 className="text-sm font-black text-slate-900">
+            {tx('Thông báo khách gọi nhân viên', 'Staff call notifications')}
+          </h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {tx(
+              'Chọn người nhận khi khách bấm gọi nhân viên tại bàn. Quy tắc được lưu cùng cài đặt cửa hàng.',
+              'Choose who receives alerts when a guest calls staff from a table. This rule is saved with store settings.'
+            )}
+          </p>
+        </div>
+        {activeShop.owner_id === profile?.id ? (
+          <fieldset disabled={saving} className="grid gap-3 sm:grid-cols-2">
+            <legend className="sr-only">
+              {tx('Người nhận thông báo gọi nhân viên', 'Staff call notification recipients')}
+            </legend>
+            {([
+              {
+                value: 'all_order_staff',
+                title: tx('Tất cả nhân viên nhận đơn', 'All order staff'),
+                description: tx(
+                  'Gửi đến nhân viên có quyền xem đơn hàng của quán.',
+                  'Send to staff who can view this shop’s orders.'
+                ),
+              },
+              {
+                value: 'owner_only',
+                title: tx('Chỉ chủ quán', 'Owner only'),
+                description: tx(
+                  'Chỉ chủ quán nhận thông báo khách gọi nhân viên.',
+                  'Only the shop owner receives staff call alerts.'
+                ),
+              },
+            ] as const).map((option) => (
+              <label
+                key={option.value}
+                data-testid={`service-request-notification-rule-${option.value}`}
+                className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${
+                  serviceRequestNotificationRule === option.value
+                    ? 'border-emerald-500 bg-emerald-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="serviceRequestNotificationRule"
+                  value={option.value}
+                  checked={serviceRequestNotificationRule === option.value}
+                  onChange={() => setServiceRequestNotificationRule(option.value)}
+                  className="mt-0.5 h-4 w-4 accent-emerald-600"
+                />
+                <span>
+                  <span className="block text-xs font-black text-slate-900">
+                    {option.title}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-600">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-4 text-xs text-slate-600">
+            {tx(
+              'Chủ quán đang quản lý quy tắc nhận thông báo này.',
+              'The shop owner manages this notification rule.'
+            )}
+          </p>
+        )}
+      </section>
 
       {/* 5c. Owner-managed Production Labels & Cup Stickers Config */}
       <ShopLabelPrintSettingsEditor />

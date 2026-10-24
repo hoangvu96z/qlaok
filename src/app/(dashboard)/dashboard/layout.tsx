@@ -61,6 +61,10 @@ import {
 } from '@/lib/dashboard-nav';
 import { formatCurrency } from '@/lib/i18n-helper';
 import {
+  getUnseenPendingServiceRequests,
+  shouldNotifyBrowserServiceRequest,
+} from '@/lib/service-request-browser-notifications';
+import {
   ensureAudioContextUnlocked,
   getBrowserNotificationPermission,
   loadOrderChimeSettings,
@@ -177,6 +181,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   pathnameRef.current = pathname;
   const activeShopRef = useRef(activeShop);
   activeShopRef.current = activeShop;
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
   const routerRef = useRef(router);
   routerRef.current = router;
 
@@ -334,8 +340,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           const brandNew = newList.find(
             (o) => !knownNewIdsRef.current.has(o.id)
           );
-          const brandNewServiceReq = pendingServiceReqs.find(
-            (r) => !knownServiceReqIdsRef.current.has(r.id)
+          const brandNewServiceReqs = getUnseenPendingServiceRequests(
+            pendingServiceReqs,
+            knownServiceReqIdsRef.current
           );
           if (brandNew) {
             const itemsSummary = (brandNew.items || [])
@@ -354,23 +361,33 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               totalAmount: brandNew.total_amount,
               itemsSummary,
             });
-          } else if (brandNewServiceReq) {
-            const onOrdersRoute = isOrdersDashboardRoute(pathnameRef.current);
-            if (!onOrdersRoute) {
-              playOrderAlertChime(
-                undefined,
-                brandNewServiceReq.table_label
-              );
-              sendBrowserServiceRequestNotification({
-                requestId: brandNewServiceReq.id,
-                tableLabel: brandNewServiceReq.table_label,
-                requestType: brandNewServiceReq.request_type,
-                shopName: activeShopRef.current?.name,
-                onClickNavigate: () => {
-                  routerRef.current.push('/dashboard/orders');
-                },
-              });
-            }
+          }
+          const notifiableServiceReqs = brandNewServiceReqs.filter((request) =>
+            shouldNotifyBrowserServiceRequest({
+              rule:
+                activeShopRef.current?.theme_config
+                  ?.serviceRequestNotificationRule,
+              requestType: request.request_type,
+              userId: profileRef.current?.id,
+              ownerId: activeShopRef.current?.owner_id,
+            })
+          );
+          if (!brandNew && notifiableServiceReqs.length > 0) {
+            playOrderAlertChime(
+              undefined,
+              notifiableServiceReqs[0].table_label
+            );
+          }
+          for (const serviceRequest of notifiableServiceReqs) {
+            sendBrowserServiceRequestNotification({
+              requestId: serviceRequest.id,
+              tableLabel: serviceRequest.table_label,
+              requestType: serviceRequest.request_type,
+              shopName: activeShopRef.current?.name,
+              onClickNavigate: () => {
+                routerRef.current.push('/dashboard/orders');
+              },
+            });
           }
         }
 
