@@ -165,6 +165,7 @@ Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng th
 - [docs/TABLE_MANAGEMENT.md](docs/TABLE_MANAGEMENT.md): quản lý bàn, QR từng bàn, sơ đồ mặt bằng (floor plan), báo cáo và migration 007, 012.
 - [docs/CODEX_TABLES_REVIEW.md](docs/CODEX_TABLES_REVIEW.md): kết quả kiểm tra độc lập và giới hạn của bản bàn/theme/UI.
 - [docs/APP_REVIEW.md](docs/APP_REVIEW.md): kết quả rà soát, chênh lệch tài liệu và điểm cần theo dõi.
+- [docs/QA_TEST_ACCOUNTS.md](docs/QA_TEST_ACCOUNTS.md): shop và tài khoản QA dùng cho kiểm thử; mật khẩu chỉ lưu trong `.env.testing` local và bị Git bỏ qua.
 - [I18N_NOTES.md](I18N_NOTES.md), [REALTIME_NOTES.md](REALTIME_NOTES.md): chi tiết chuyên đề.
 - [REVIEW_NOTES.md](REVIEW_NOTES.md), `AGY_*`: lịch sử review/triển khai; kết quả test trong đó thuộc thời điểm ghi.
 - [TODO.md](TODO.md), [document.md](document.md): roadmap/đặc tả gốc, không dùng để khẳng định tính năng hiện tại đã hoàn tất.

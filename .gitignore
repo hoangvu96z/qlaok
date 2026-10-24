@@ -3,6 +3,7 @@ node_modules
 .env
 .env.local
 .env.*.local
+.env.testing
 mobile/.env
 mobile/.env.local
 .local-db
