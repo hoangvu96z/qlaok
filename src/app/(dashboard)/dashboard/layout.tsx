@@ -681,19 +681,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col md:flex-row">
       {/* Global Floating New Order Toast Notification */}
       {liveToastOrder && (
-        <div
-          role="status"
-          className={`fixed ${TOAST_POSITION_CLASSES[toastPosition] || 'top-4 right-4'} z-50 w-[calc(100vw-2rem)] max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce`}
+        <Link
+          href="/dashboard/orders"
+          onClick={() => setLiveToastOrder(null)}
+          aria-live="polite"
+          aria-label={`${liveToastOrder.tableLabel} • #${liveToastOrder.orderCode} - ${t('header.openOrdersNow')}`}
+          className={`fixed ${TOAST_POSITION_CLASSES[toastPosition] || 'top-4 right-4'} z-50 block w-[calc(100vw-2rem)] max-w-sm rounded-3xl bg-slate-950 text-white border-2 border-amber-400 p-4 shadow-2xl animate-bounce focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400`}
         >
-          {/* Accessible full-card link layer behind controls */}
-          <Link
-            href="/dashboard/orders"
-            onClick={() => setLiveToastOrder(null)}
-            aria-label={`${liveToastOrder.tableLabel} • #${liveToastOrder.orderCode} - ${t('header.openOrdersNow')}`}
-            className="absolute inset-0 z-0 rounded-3xl focus:outline-none focus:ring-2 focus:ring-amber-400"
-          />
-
-          <div className="relative z-10 flex items-start justify-between gap-3 pointer-events-none">
+          <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-400 text-slate-950">
                 <BellRing className="h-5 w-5" />
@@ -712,37 +707,21 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                     activeShop?.currency || 'VND'
                   )}
                 </p>
-                <div className="mt-2 flex flex-wrap items-center gap-2 pointer-events-auto">
-                  <Link
-                    href="/dashboard/orders"
-                    onClick={() => setLiveToastOrder(null)}
-                    className="rounded-xl bg-amber-400 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300"
-                  >
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="rounded-xl bg-amber-400 px-3 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300">
                     {t('header.openOrdersNow')}
-                  </Link>
-                  {browserPerm !== 'granted' && browserPerm !== 'unsupported' && (
-                    <button
-                      type="button"
-                      onClick={handleEnableOrTestBrowserNotifications}
-                      className="rounded-xl border border-emerald-400/50 bg-emerald-500/20 px-2.5 py-1.5 text-[10px] font-black text-emerald-300 hover:bg-emerald-500/30"
-                    >
-                      {t('header.alertsOff')}
-                    </button>
-                  )}
+                  </span>
                 </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setLiveToastOrder(null)}
-              aria-label={t('common.close')}
-              title={t('common.close')}
-              className="pointer-events-auto rounded-lg p-1 text-slate-400 hover:text-white"
+            <span
+              aria-hidden="true"
+              className="rounded-lg p-1 text-slate-400 hover:text-white"
             >
               <X className="h-4 w-4" />
-            </button>
+            </span>
           </div>
-        </div>
+        </Link>
       )}
 
       {/* Desktop Collapsible Sidebar (Expanded w-64 vs Collapsed w-[72px] Icon Rail) */}

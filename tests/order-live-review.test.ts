@@ -452,3 +452,87 @@ test('CounterOrdersPage enforces 401/403 session expiration, displays actionable
   );
 });
 
+test('DashboardShell liveToastOrder is a single full-card navigation link with no nested interactive controls', async () => {
+  const fsMod = await import('node:fs');
+  const pathMod = await import('node:path');
+  const layoutSource = fsMod.readFileSync(
+    pathMod.join(
+      process.cwd(),
+      'src/app/(dashboard)/dashboard/layout.tsx'
+    ),
+    'utf8'
+  );
+
+  const toastMatch = layoutSource.match(
+    /\{liveToastOrder\s*&&\s*\(\s*([\s\S]*?<\/Link>)\s*\)\s*\}/
+  );
+  assert.ok(toastMatch, 'liveToastOrder block should exist in DashboardShell');
+  const toastBlock = toastMatch[1];
+
+  // 1. Root element is one Next Link with href="/dashboard/orders"
+  assert.match(
+    toastBlock.trim(),
+    /^<Link\s+href="\/dashboard\/orders"/,
+    'Root element of live toast must be a Next Link with href="/dashboard/orders"'
+  );
+
+  // 2. Closes liveToastOrder state on click
+  assert.match(
+    toastBlock,
+    /onClick=\{\s*\(\)\s*=>\s*setLiveToastOrder\(null\)\s*\}/,
+    'Toast Link must invoke setLiveToastOrder(null) on click'
+  );
+
+  // 3. Accessible label and keyboard focus-visible styling
+  assert.match(
+    toastBlock,
+    /aria-label=\{`\$\{liveToastOrder\.tableLabel\}\s*•\s*#\$\{liveToastOrder\.orderCode\}/,
+    'Toast Link must have accessible aria-label'
+  );
+  assert.match(
+    toastBlock,
+    /aria-live="polite"/,
+    'Toast Link should announce new order notifications without overriding link semantics'
+  );
+  assert.match(
+    toastBlock,
+    /focus-visible:ring-2/,
+    'Toast Link must provide keyboard focus-visible styling'
+  );
+
+  // 4. No absolute background link layer
+  assert.doesNotMatch(
+    toastBlock,
+    /className="[^"]*absolute\s+inset-0[^"]*"/,
+    'Must not use absolute background link layer'
+  );
+
+  // 5. No nested Link or button controls inside the toast card
+  const linkMatches = toastBlock.match(/<Link\b/g);
+  assert.equal(
+    linkMatches?.length,
+    1,
+    'Must have exactly one Link (the root card Link)'
+  );
+
+  const buttonMatches = toastBlock.match(/<button\b/g);
+  assert.equal(
+    buttonMatches,
+    null,
+    'Must not have any nested button controls inside the toast card'
+  );
+
+  // 6. Yellow CTA is rendered as a non-interactive span
+  assert.match(
+    toastBlock,
+    /<span\s+className="[^"]*bg-amber-400[^"]*">\s*\{\s*t\('header\.openOrdersNow'\)\s*\}\s*<\/span>/,
+    'Yellow CTA must be a non-interactive styled span'
+  );
+
+  // 7. Decorative X icon is non-interactive with aria-hidden
+  assert.match(
+    toastBlock,
+    /aria-hidden="true"[\s\S]*?<X\s+className="h-4\s+w-4"/,
+    'X must be a decorative icon, not an interactive dismiss control'
+  );
+});
