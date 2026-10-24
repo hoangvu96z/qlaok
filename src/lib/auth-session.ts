@@ -15,6 +15,14 @@ export function isSuperAdminEmail(email?: string | null): boolean {
 
 export function isSuperAdmin(profile?: Profile | null): boolean {
   if (!profile) return false;
+  if (
+    profile.account_type === 'staff' ||
+    profile.role === 'cashier' ||
+    profile.role === 'staff' ||
+    Boolean(profile.shop_id)
+  ) {
+    return false;
+  }
   return (
     Boolean(profile.is_admin) ||
     profile.role === 'admin' ||
@@ -61,8 +69,19 @@ export function getStoredAuthOwner(): Profile | null {
     const raw = localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Profile;
-    if (parsed && typeof parsed.id === 'string' && parsed.email) {
-      if (isSuperAdminEmail(parsed.email)) {
+    const hasIdentity =
+      parsed &&
+      typeof parsed.id === 'string' &&
+      parsed.id.trim() !== '' &&
+      (Boolean(parsed.email) ||
+        Boolean(parsed.username && parsed.shop_id) ||
+        parsed.account_type === 'staff');
+    if (hasIdentity) {
+      if (
+        parsed.account_type !== 'staff' &&
+        !parsed.shop_id &&
+        isSuperAdminEmail(parsed.email)
+      ) {
         parsed.is_admin = true;
         parsed.role = 'admin';
       }

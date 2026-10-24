@@ -285,6 +285,8 @@ export interface ShopMembership {
   shop_id: string;
   user_id: string;
   email?: string;
+  username?: string;
+  account_type?: 'email' | 'staff';
   full_name?: string;
   role: ShopRole;
   permissions: ShopPermission[];
@@ -512,6 +514,9 @@ export interface PaymentTransaction {
 export interface Profile {
   id: string;
   email: string;
+  username?: string;
+  shop_id?: string;
+  account_type?: 'owner' | 'staff' | 'admin';
   phone?: string;
   full_name: string;
   plan: PlanTier;

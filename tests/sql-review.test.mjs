@@ -1063,6 +1063,407 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal(legacyWfRow.label_printed_count, 0);
     assert.equal(legacyWfRow.print_count, 0);
 
+    // =========================================================================
+    // Migration 018: Shop-Scoped Staff Accounts (No-Email Login & RLS)
+    // =========================================================================
+    await db.exec('RESET ROLE');
+    const idx018 = migrations.indexOf('018_shop_staff_accounts.sql');
+    assert.ok(
+      idx018 > idx017,
+      '018_shop_staff_accounts.sql must sort after 017_order_workflow_rpc.sql'
+    );
+
+    // Re-apply 018_shop_staff_accounts.sql to verify idempotency and restore strict table REVOKE after test harness GRANT ALL
+    await db.exec(
+      fs.readFileSync('supabase/migrations/018_shop_staff_accounts.sql', 'utf8')
+    );
+
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+
+    const sampleScryptHash =
+      'scrypt$0123456789abcdef0123456789abcdef$' + 'a'.repeat(128);
+
+    // 1. Insert staff credential + membership in sql-shop (normalizes username to lowercase)
+    await db.query(
+      `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, full_name, role, is_active, session_version, created_by)
+       VALUES ('staff-acct-sql-0001', 'sql-shop', '  ThuNgan_01  ', $1, 'Thu Ngân Ca Sáng', 'cashier', true, 1, $2)`,
+      [sampleScryptHash, owner]
+    );
+    await db.query(
+      `INSERT INTO shop_memberships (id, shop_id, user_id, username, full_name, role, permissions, is_active)
+       VALUES ('mem-staff-sql-0001', 'sql-shop', 'staff-acct-sql-0001', '  ThuNgan_01  ', 'Thu Ngân Ca Sáng', 'cashier', '["orders.view","payment.collect"]'::jsonb, true)`
+    );
+
+    const savedCred1 = (
+      await db.query(
+        "SELECT user_id, shop_id, username, role, session_version FROM shop_staff_credentials WHERE user_id = 'staff-acct-sql-0001'"
+      )
+    ).rows[0];
+    assert.equal(savedCred1.username, 'thungan_01');
+    assert.equal(savedCred1.role, 'cashier');
+    assert.equal(savedCred1.session_version, 1);
+
+    // 2. Duplicate username in the SAME shop fails on both shop_staff_credentials and shop_memberships
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, role)
+         VALUES ('staff-acct-sql-dup1', 'sql-shop', 'THUNGAN_01', $1, 'staff')`,
+        [sampleScryptHash]
+      ),
+      /duplicate|unique/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_memberships (id, shop_id, user_id, username, role, permissions)
+         VALUES ('mem-staff-sql-dup1', 'sql-shop', 'staff-acct-sql-dup1', 'thungan_01', 'staff', '["orders.view"]'::jsonb)`
+      ),
+      /duplicate|unique/i
+    );
+
+    // 3. Same username in a DIFFERENT shop succeeds
+    await db.query(
+      `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, full_name, role, is_active)
+       VALUES ('staff-acct-sql-0002', 'sql-pub-shop', 'thungan_01', $1, 'Thu Ngân Quán 2', 'staff', true)`,
+      [sampleScryptHash]
+    );
+    await db.query(
+      `INSERT INTO shop_memberships (id, shop_id, user_id, username, full_name, role, permissions, is_active)
+       VALUES ('mem-staff-sql-0002', 'sql-pub-shop', 'staff-acct-sql-0002', 'thungan_01', 'Thu Ngân Quán 2', 'staff', '["orders.view"]'::jsonb, true)`
+    );
+
+    // 4. Reject owner role, members.manage permission, cross-shop reuse of staff-acct-* user_id, plaintext password hash, and staff owning a shop
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, role)
+         VALUES ('staff-acct-sql-badrole', 'sql-shop', 'bad_owner', $1, 'owner')`,
+        [sampleScryptHash]
+      ),
+      /FORBIDDEN_STAFF_OWNER_ROLE|check constraint/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, role)
+         VALUES ('staff-acct-sql-badhash', 'sql-shop', 'bad_hash', 'plaintext123', 'staff')`
+      ),
+      /INVALID_STAFF_PASSWORD_HASH|check constraint/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_memberships (id, shop_id, user_id, username, role, permissions)
+         VALUES ('mem-staff-bad-owner', 'sql-shop', 'staff-acct-sql-badowner', 'bad_owner', 'owner', '["orders.view"]'::jsonb)`
+      ),
+      /FORBIDDEN_STAFF_OWNER_ROLE|check constraint/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_memberships (id, shop_id, user_id, username, role, permissions)
+         VALUES ('mem-staff-bad-perm', 'sql-shop', 'staff-acct-sql-badperm', 'bad_perm', 'staff', '["orders.view","members.manage"]'::jsonb)`
+      ),
+      /FORBIDDEN_STAFF_MEMBER_MANAGE_PERMISSION/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_memberships (id, shop_id, user_id, username, role, permissions)
+         VALUES ('mem-staff-cross-shop', 'sql-pub-shop', 'staff-acct-sql-0001', 'cross_shop_user', 'staff', '["orders.view"]'::jsonb)`
+      ),
+      /FORBIDDEN_CROSS_SHOP_STAFF_MEMBERSHIP|duplicate|unique/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shops (id, owner_id, slug, name)
+         VALUES ('staff-owned-shop', 'staff-acct-sql-0001', 'staff-owned-shop', 'Illegal Staff Shop')`
+      ),
+      /shops_owner_not_staff_account_check|check constraint/i
+    );
+
+    // 5. Table service requests accept staff-acct-* actor IDs without public.profiles rows and preserve them after staff deletion
+    await db.query(
+      `INSERT INTO table_service_requests (id, shop_id, table_id, table_code, table_label, request_type, status, visitor_lang)
+       VALUES ('srv-staff-acct-1', 'sql-shop', 'sql-tbl-reused', 'T01-NEW', 'Bàn 01', 'call_staff', 'pending', 'vi')`
+    );
+    await db.query(
+      `UPDATE table_service_requests
+       SET status = 'acknowledged', acknowledged_by = 'staff-acct-sql-0001'
+       WHERE id = 'srv-staff-acct-1'`
+    );
+    await db.query(
+      `UPDATE table_service_requests
+       SET status = 'resolved', resolved_by = 'staff-acct-sql-0001'
+       WHERE id = 'srv-staff-acct-1'`
+    );
+    await db.query(
+      `DELETE FROM shop_staff_credentials WHERE user_id = 'staff-acct-sql-0002'`
+    );
+    await db.query(
+      `DELETE FROM shop_memberships WHERE user_id = 'staff-acct-sql-0002'`
+    );
+    const srvAfterStaffOps = (
+      await db.query(
+        "SELECT acknowledged_by, resolved_by FROM table_service_requests WHERE id = 'srv-staff-acct-1'"
+      )
+    ).rows[0];
+    assert.equal(srvAfterStaffOps.acknowledged_by, 'staff-acct-sql-0001');
+    assert.equal(srvAfterStaffOps.resolved_by, 'staff-acct-sql-0001');
+
+    // 6. Atomic multi-row staff account RPCs & transactional rollback on failure
+    const atomicCreatedRes = await db.query(
+      `SELECT public.create_shop_staff_account_atomic(
+        'staff-acct-rpc-0001',
+        'sql-shop',
+        '  Barista_RPC_01  ',
+        $1,
+        'Barista Nguyên Tử',
+        'staff',
+        '["orders.view","orders.fulfill"]'::jsonb,
+        true,
+        $2,
+        'mem-staff-acct-rpc-0001'
+      ) AS membership`,
+      [sampleScryptHash, owner]
+    );
+    const atomicCreatedMem = atomicCreatedRes.rows[0].membership;
+    assert.equal(atomicCreatedMem.user_id, 'staff-acct-rpc-0001');
+    assert.equal(atomicCreatedMem.username, 'barista_rpc_01');
+    assert.equal(atomicCreatedMem.role, 'staff');
+    assert.equal(atomicCreatedMem.is_active, true);
+
+    // Failed atomic create (invalid permission on membership step) rolls back credential insert completely
+    await assert.rejects(
+      db.query(
+        `SELECT public.create_shop_staff_account_atomic(
+          'staff-acct-rpc-rollback-1',
+          'sql-shop',
+          'rollback_user_01',
+          $1,
+          'Rollback User',
+          'staff',
+          '["orders.view","members.manage"]'::jsonb,
+          true,
+          $2,
+          'mem-staff-acct-rpc-rollback-1'
+        )`,
+        [sampleScryptHash, owner]
+      ),
+      /FORBIDDEN_STAFF_MEMBER_MANAGE_PERMISSION/i
+    );
+    const rolledBackCredRows = (
+      await db.query(
+        "SELECT * FROM shop_staff_credentials WHERE user_id = 'staff-acct-rpc-rollback-1'"
+      )
+    ).rows;
+    const rolledBackMemRows = (
+      await db.query(
+        "SELECT * FROM shop_memberships WHERE user_id = 'staff-acct-rpc-rollback-1'"
+      )
+    ).rows;
+    assert.equal(rolledBackCredRows.length, 0, 'atomic create failure must roll back credential insert');
+    assert.equal(rolledBackMemRows.length, 0, 'atomic create failure must not leave membership row');
+
+    // Failed atomic update (illegal permission on membership step) rolls back credential update completely
+    await assert.rejects(
+      db.query(
+        `SELECT public.update_shop_staff_account_atomic(
+          'sql-shop',
+          'staff-acct-rpc-0001',
+          'renamed_should_rollback',
+          'Renamed Rollback',
+          'cashier',
+          '["orders.view","unknown.permission.key"]'::jsonb,
+          false
+        )`
+      ),
+      /INVALID_PERMISSION/i
+    );
+    const credAfterFailedUpdate = (
+      await db.query(
+        "SELECT username, full_name, role, is_active, session_version FROM shop_staff_credentials WHERE user_id = 'staff-acct-rpc-0001'"
+      )
+    ).rows[0];
+    assert.equal(credAfterFailedUpdate.username, 'barista_rpc_01');
+    assert.equal(credAfterFailedUpdate.role, 'staff');
+    assert.equal(credAfterFailedUpdate.is_active, true);
+    assert.equal(credAfterFailedUpdate.session_version, 1);
+
+    // Valid atomic update updates both tables and bumps session_version on role change
+    const atomicUpdatedRes = await db.query(
+      `SELECT public.update_shop_staff_account_atomic(
+        'sql-shop',
+        'staff-acct-rpc-0001',
+        'barista_rpc_01',
+        'Barista Thu Ngân',
+        'cashier',
+        '["orders.view","payment.collect"]'::jsonb,
+        true
+      ) AS membership`
+    );
+    assert.equal(atomicUpdatedRes.rows[0].membership.role, 'cashier');
+    const credAfterValidUpdate = (
+      await db.query(
+        "SELECT role, session_version FROM shop_staff_credentials WHERE user_id = 'staff-acct-rpc-0001'"
+      )
+    ).rows[0];
+    assert.equal(credAfterValidUpdate.role, 'cashier');
+    assert.equal(credAfterValidUpdate.session_version, 2);
+
+    // Atomic password reset updates credential hash, bumps session_version, and clears login rate limit bucket
+    const sampleBucketKey = 'rl-staff-' + 'b'.repeat(64);
+    await db.query(
+      `SELECT public.record_staff_login_failure_atomic($1, '2026-10-24T10:00:00Z'::timestamptz, 5, 900, 900, 86400)`,
+      [sampleBucketKey]
+    );
+    const resetAtomicRes = (
+      await db.query(
+        `SELECT public.reset_shop_staff_password_atomic(
+          'sql-shop',
+          'staff-acct-rpc-0001',
+          $1,
+          $2
+        ) AS result`,
+        [
+          'scrypt$fedcba9876543210fedcba9876543210$' + 'c'.repeat(128),
+          sampleBucketKey,
+        ]
+      )
+    ).rows[0].result;
+    assert.equal(resetAtomicRes.session_version, 3);
+    const bucketAfterReset = (
+      await db.query(
+        'SELECT * FROM staff_login_rate_limits WHERE bucket_key = $1',
+        [sampleBucketKey]
+      )
+    ).rows;
+    assert.equal(bucketAfterReset.length, 0, 'password reset RPC clears rate-limit bucket');
+
+    // Atomic delete removes both credential and membership rows
+    const deleteAtomicRes = (
+      await db.query(
+        `SELECT public.delete_shop_staff_account_atomic('sql-shop', 'staff-acct-rpc-0001', NULL) AS result`
+      )
+    ).rows[0].result;
+    assert.equal(deleteAtomicRes.deleted, true);
+    assert.equal(
+      (
+        await db.query(
+          "SELECT * FROM shop_staff_credentials WHERE user_id = 'staff-acct-rpc-0001'"
+        )
+      ).rows.length,
+      0
+    );
+    assert.equal(
+      (
+        await db.query(
+          "SELECT * FROM shop_memberships WHERE user_id = 'staff-acct-rpc-0001'"
+        )
+      ).rows.length,
+      0
+    );
+
+    // 7. Staff login rate limiter RPCs: windowing, temporary cooldown, recovery, and retention cleanup
+    const rlKey = 'rl-staff-' + 'a'.repeat(64);
+    await assert.rejects(
+      db.query(
+        `INSERT INTO staff_login_rate_limits (bucket_key, failure_count) VALUES ('192.168.1.1:raw-ip-forbidden', 1)`
+      ),
+      /INVALID_STAFF_RATE_LIMIT_BUCKET_KEY|check constraint/i
+    );
+
+    for (let i = 1; i <= 5; i += 1) {
+      const rec = (
+        await db.query(
+          `SELECT public.record_staff_login_failure_atomic($1, '2026-10-24T12:00:00Z'::timestamptz, 5, 900, 900, 86400) AS r`,
+          [rlKey]
+        )
+      ).rows[0].r;
+      assert.equal(rec.failure_count, i);
+      assert.equal(rec.allowed, true);
+      assert.equal(rec.newly_blocked, i === 5);
+    }
+
+    // During active 15-minute cooldown, check returns allowed = false
+    const checkBlocked = (
+      await db.query(
+        `SELECT public.check_staff_login_rate_limit_atomic($1, '2026-10-24T12:05:00Z'::timestamptz, 900) AS r`,
+        [rlKey]
+      )
+    ).rows[0].r;
+    assert.equal(checkBlocked.allowed, false);
+    assert.equal(checkBlocked.retry_after_sec, 600);
+
+    // After 15-minute cooldown expires (no permanent lockout), check resets and allows login
+    const checkRecovered = (
+      await db.query(
+        `SELECT public.check_staff_login_rate_limit_atomic($1, '2026-10-24T12:15:01Z'::timestamptz, 900) AS r`,
+        [rlKey]
+      )
+    ).rows[0].r;
+    assert.equal(checkRecovered.allowed, true);
+    assert.equal(checkRecovered.failure_count, 0);
+
+    // Expired retention rows are cleaned up by cleanup_expired_staff_login_rate_limits
+    const staleKey = 'rl-staff-' + 'd'.repeat(64);
+    await db.query(
+      `SELECT public.record_staff_login_failure_atomic($1, '2026-10-20T00:00:00Z'::timestamptz, 5, 900, 900, 3600)`,
+      [staleKey]
+    );
+    const cleanedCount = (
+      await db.query(
+        `SELECT public.cleanup_expired_staff_login_rate_limits('2026-10-24T12:00:00Z'::timestamptz, 100) AS count`
+      )
+    ).rows[0].count;
+    assert.equal(cleanedCount, 1);
+
+    // 8. Strict RLS & privilege boundaries on shop_staff_credentials, staff_login_rate_limits, and atomic RPCs
+    await db.exec(
+      `RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`
+    );
+    await assert.rejects(
+      db.query("SELECT * FROM shop_staff_credentials WHERE shop_id = 'sql-shop'"),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(
+        `INSERT INTO shop_staff_credentials (user_id, shop_id, username, password_hash, role)
+         VALUES ('staff-acct-client-hijack', 'sql-shop', 'hijack_staff', '${sampleScryptHash}', 'staff')`
+      ),
+      /permission denied|FORBIDDEN_STAFF_CREDENTIAL_DIRECT_ACCESS/i
+    );
+    await assert.rejects(
+      db.query('SELECT * FROM staff_login_rate_limits'),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(
+        `SELECT public.check_staff_login_rate_limit_atomic('${rlKey}', NOW(), 900)`
+      ),
+      /permission denied|FORBIDDEN_STAFF_RATE_LIMIT_DIRECT_ACCESS/i
+    );
+    await assert.rejects(
+      db.query(
+        `SELECT public.create_shop_staff_account_atomic('staff-acct-client-rpc', 'sql-shop', 'client_rpc', '${sampleScryptHash}', 'Client', 'staff', '["orders.view"]'::jsonb, true, null, null)`
+      ),
+      /permission denied|FORBIDDEN_STAFF_CREDENTIAL_DIRECT_ACCESS/i
+    );
+
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', 'anon', false); SET ROLE anon"
+    );
+    await assert.rejects(
+      db.query('SELECT * FROM shop_staff_credentials'),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query('SELECT * FROM staff_login_rate_limits'),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query(
+        `SELECT public.record_staff_login_failure_atomic('${rlKey}', NOW(), 5, 900, 900, 86400)`
+      ),
+      /permission denied|FORBIDDEN_STAFF_RATE_LIMIT_DIRECT_ACCESS/i
+    );
+
     await db.exec('RESET ROLE');
 
   } finally { await db.close(); }

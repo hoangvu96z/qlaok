@@ -30,6 +30,137 @@ export const ALL_SHOP_PERMISSIONS: ShopPermission[] = [
   'members.manage',
 ];
 
+export const OWNER_ONLY_SHOP_PERMISSIONS: ShopPermission[] = [
+  'members.manage',
+];
+
+export const ALLOWED_STAFF_PERMISSIONS: ShopPermission[] =
+  ALL_SHOP_PERMISSIONS.filter(
+    (perm) => !OWNER_ONLY_SHOP_PERMISSIONS.includes(perm)
+  );
+
+export const STAFF_ACCOUNT_ROLES: Array<'cashier' | 'staff'> = [
+  'cashier',
+  'staff',
+];
+
+const STAFF_USER_ID_PREFIX = 'staff-acct-';
+const STAFF_USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
+
+export function isShopScopedStaffUserId(
+  userId: string | null | undefined
+): boolean {
+  return Boolean(
+    typeof userId === 'string' && userId.trim().startsWith(STAFF_USER_ID_PREFIX)
+  );
+}
+
+export function normalizeStaffUsername(
+  raw: string | null | undefined
+): string {
+  return String(raw ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+export function isValidStaffUsername(
+  username: string | null | undefined
+): boolean {
+  const normalized = normalizeStaffUsername(username);
+  return STAFF_USERNAME_REGEX.test(normalized);
+}
+
+export function validateStaffRole(
+  rawRole: unknown
+): { ok: true; role: 'cashier' | 'staff' } | { ok: false; errorCode: string; message: string } {
+  if (typeof rawRole !== 'string' || !rawRole.trim()) {
+    return {
+      ok: false,
+      errorCode: 'INVALID_ROLE',
+      message: 'Vai trò nhân sự phải là "cashier" (Thu ngân) hoặc "staff" (Nhân viên).',
+    };
+  }
+  const normalized = rawRole.trim() as ShopRole;
+  if (normalized === 'owner' || normalized === ('admin' as unknown as ShopRole)) {
+    return {
+      ok: false,
+      errorCode: 'FORBIDDEN_STAFF_OWNER_ROLE',
+      message: 'Không được phép gán vai trò chủ quán hoặc quản trị viên cho tài khoản nhân viên.',
+    };
+  }
+  if (normalized !== 'cashier' && normalized !== 'staff') {
+    return {
+      ok: false,
+      errorCode: 'INVALID_ROLE',
+      message: 'Vai trò nhân sự chỉ chấp nhận "cashier" (Thu ngân) hoặc "staff" (Nhân viên).',
+    };
+  }
+  return { ok: true, role: normalized };
+}
+
+export function validateStaffPermissionsInput(
+  role: 'cashier' | 'staff',
+  rawPermissions: unknown
+):
+  | { ok: true; permissions: ShopPermission[] }
+  | { ok: false; errorCode: string; message: string } {
+  if (rawPermissions === undefined || rawPermissions === null) {
+    return {
+      ok: true,
+      permissions: getDefaultPermissionsForRole(role).filter(
+        (perm) => !OWNER_ONLY_SHOP_PERMISSIONS.includes(perm)
+      ),
+    };
+  }
+  if (!Array.isArray(rawPermissions)) {
+    return {
+      ok: false,
+      errorCode: 'INVALID_PERMISSION',
+      message: 'Danh sách quyền hạn (permissions) phải là một mảng hợp lệ.',
+    };
+  }
+
+  const validAll = new Set<string>(ALL_SHOP_PERMISSIONS);
+  const ownerOnly = new Set<string>([
+    ...OWNER_ONLY_SHOP_PERMISSIONS,
+    'staff.manage',
+  ]);
+  const deduped: ShopPermission[] = [];
+  const seen = new Set<ShopPermission>();
+
+  for (const entry of rawPermissions) {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_PERMISSION',
+        message: 'Quyền hạn không hợp lệ.',
+      };
+    }
+    const perm = entry.trim();
+    if (ownerOnly.has(perm)) {
+      return {
+        ok: false,
+        errorCode: 'FORBIDDEN_STAFF_PERMISSION',
+        message: `Quyền "${perm}" chỉ dành cho chủ quán, không được cấp cho nhân viên.`,
+      };
+    }
+    if (!validAll.has(perm)) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_PERMISSION',
+        message: `Quyền "${perm}" không tồn tại trong hệ thống.`,
+      };
+    }
+    const typedPerm = perm as ShopPermission;
+    if (!seen.has(typedPerm)) {
+      seen.add(typedPerm);
+      deduped.push(typedPerm);
+    }
+  }
+
+  return { ok: true, permissions: deduped };
+}
+
 /**
  * Item fields that may be changed with only `inventory.adjust` (toggle
  * availability / stock). Any other field change still requires
@@ -243,7 +374,7 @@ export function isShopMembershipDbAuthoritative(): boolean {
   );
 }
 
-function getMembershipDbClient(): SupabaseClient {
+export function getMembershipDbClient(): SupabaseClient {
   if (testDbClientOverride) {
     return testDbClientOverride;
   }
@@ -267,33 +398,48 @@ function getMembershipDbClient(): SupabaseClient {
   return sb;
 }
 
-function normalizeMembershipRow(row: Record<string, unknown>): ShopMembership {
+export function normalizeMembershipRow(row: Record<string, unknown>): ShopMembership {
+  const userId = String(row.user_id);
+  const usernameClean =
+    typeof row.username === 'string' && row.username.trim()
+      ? normalizeStaffUsername(row.username)
+      : undefined;
+  const isStaffScoped = Boolean(usernameClean) || isShopScopedStaffUserId(userId);
   const rawRole = String(row.role || 'staff') as ShopRole;
-  const role: ShopRole =
-    rawRole === 'owner' || rawRole === 'cashier' || rawRole === 'staff'
+  const role: ShopRole = isStaffScoped
+    ? rawRole === 'cashier' || rawRole === 'staff'
+      ? rawRole
+      : 'staff'
+    : rawRole === 'owner' || rawRole === 'cashier' || rawRole === 'staff'
       ? rawRole
       : 'staff';
   const nowIso = new Date().toISOString();
+  const normalizedPerms = normalizePermissions(
+    role,
+    Array.isArray(row.permissions)
+      ? (row.permissions as ShopPermission[])
+      : undefined
+  );
+  const permissions = isStaffScoped
+    ? normalizedPerms.filter((p) => !OWNER_ONLY_SHOP_PERMISSIONS.includes(p))
+    : normalizedPerms;
 
   return {
-    id: String(row.id || `mem-${row.shop_id}-${row.user_id}`),
+    id: String(row.id || `mem-${row.shop_id}-${userId}`),
     shop_id: String(row.shop_id),
-    user_id: String(row.user_id),
+    user_id: userId,
     email:
       typeof row.email === 'string' && row.email.trim()
         ? row.email.trim()
         : undefined,
+    ...(usernameClean ? { username: usernameClean } : {}),
+    account_type: isStaffScoped ? 'staff' : 'email',
     full_name:
       typeof row.full_name === 'string' && row.full_name.trim()
         ? row.full_name.trim()
         : undefined,
     role,
-    permissions: normalizePermissions(
-      role,
-      Array.isArray(row.permissions)
-        ? (row.permissions as ShopPermission[])
-        : undefined
-    ),
+    permissions,
     is_active: row.is_active !== false,
     created_at:
       typeof row.created_at === 'string' && row.created_at
@@ -359,15 +505,9 @@ function readLocalMemberships(): ShopMembership[] {
     const raw = fs.readFileSync(MEMBERSHIPS_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return buildInitialSeedMemberships();
-    return parsed.map((m) => ({
-      ...m,
-      role: (m.role as ShopRole) || 'staff',
-      permissions: normalizePermissions(
-        (m.role as ShopRole) || 'staff',
-        m.permissions
-      ),
-      is_active: m.is_active !== false,
-    }));
+    return parsed.map((m) =>
+      normalizeMembershipRow(m as Record<string, unknown>)
+    );
   } catch {
     return buildInitialSeedMemberships();
   }
@@ -467,6 +607,7 @@ export async function dbUpsertShopMembership(input: {
   shop_id: string;
   user_id: string;
   email?: string;
+  username?: string;
   full_name?: string;
   role: ShopRole;
   permissions?: ShopPermission[];
@@ -480,8 +621,30 @@ export async function dbUpsertShopMembership(input: {
     throw new Error('MISSING_MEMBERSHIP_FIELDS: Thiếu shop_id hoặc user_id.');
   }
 
+  const usernameClean =
+    typeof input.username === 'string' && input.username.trim()
+      ? normalizeStaffUsername(input.username)
+      : undefined;
+  const isStaffScoped =
+    Boolean(usernameClean) || isShopScopedStaffUserId(input.user_id);
+
+  if (usernameClean !== undefined && !isValidStaffUsername(usernameClean)) {
+    throw new Error(
+      'INVALID_STAFF_USERNAME: Tên đăng nhập nhân viên phải từ 3–32 ký tự (a-z, 0-9, ., _, -).'
+    );
+  }
+
+  if (isStaffScoped && input.role === 'owner') {
+    throw new Error(
+      'FORBIDDEN_STAFF_OWNER_ROLE: Tài khoản nhân viên theo quán không được gán quyền chủ quán.'
+    );
+  }
+
   const nowIso = new Date().toISOString();
-  const permissions = normalizePermissions(input.role, input.permissions);
+  const rawPermissions = normalizePermissions(input.role, input.permissions);
+  const permissions = isStaffScoped
+    ? rawPermissions.filter((p) => !OWNER_ONLY_SHOP_PERMISSIONS.includes(p))
+    : rawPermissions;
 
   if (isShopMembershipDbAuthoritative()) {
     const emailClean =
@@ -498,6 +661,8 @@ export async function dbUpsertShopMembership(input: {
       shop_id: input.shop_id,
       user_id: input.user_id,
       ...(emailClean !== undefined ? { email: emailClean } : {}),
+      ...(usernameClean !== undefined ? { username: usernameClean } : {}),
+      account_type: isStaffScoped ? 'staff' : 'email',
       ...(fullNameClean !== undefined ? { full_name: fullNameClean } : {}),
       role: input.role,
       permissions,
@@ -506,11 +671,12 @@ export async function dbUpsertShopMembership(input: {
       updated_at: nowIso,
     };
 
-    const dbPayload = {
+    const dbPayload: Record<string, unknown> = {
       id: record.id,
       shop_id: record.shop_id,
       user_id: record.user_id,
       email: emailClean ?? null,
+      ...(usernameClean !== undefined ? { username: usernameClean } : {}),
       full_name: fullNameClean ?? null,
       role: record.role,
       permissions: record.permissions,
@@ -543,19 +709,54 @@ export async function dbUpsertShopMembership(input: {
   }
 
   const list = readLocalMemberships();
+  if (isShopScopedStaffUserId(input.user_id)) {
+    const crossShop = list.find(
+      (m) => m.user_id === input.user_id && m.shop_id !== input.shop_id
+    );
+    if (crossShop) {
+      throw new Error(
+        'FORBIDDEN_CROSS_SHOP_STAFF_MEMBERSHIP: Tài khoản nhân viên chỉ được gắn với duy nhất một cửa hàng.'
+      );
+    }
+  }
+
   const idx = list.findIndex(
     (m) => m.shop_id === input.shop_id && m.user_id === input.user_id
   );
   const existing = idx !== -1 ? list[idx] : null;
+  const effectiveUsername = usernameClean ?? existing?.username;
+
+  if (effectiveUsername) {
+    const duplicateUsername = list.find(
+      (m) =>
+        m.shop_id === input.shop_id &&
+        m.user_id !== input.user_id &&
+        m.username &&
+        normalizeStaffUsername(m.username) === effectiveUsername
+    );
+    if (duplicateUsername) {
+      throw new Error(
+        `STAFF_USERNAME_EXISTS: Tên đăng nhập "${effectiveUsername}" đã tồn tại trong cửa hàng này.`
+      );
+    }
+  }
 
   const record: ShopMembership = {
     id: existing?.id || `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     shop_id: input.shop_id,
     user_id: input.user_id,
     email: input.email ?? existing?.email,
+    ...(effectiveUsername ? { username: effectiveUsername } : {}),
+    account_type:
+      effectiveUsername || isShopScopedStaffUserId(input.user_id)
+        ? 'staff'
+        : 'email',
     full_name: input.full_name ?? existing?.full_name,
     role: input.role,
-    permissions,
+    permissions:
+      effectiveUsername || isShopScopedStaffUserId(input.user_id)
+        ? permissions.filter((p) => !OWNER_ONLY_SHOP_PERMISSIONS.includes(p))
+        : permissions,
     is_active: input.is_active !== undefined ? input.is_active : true,
     created_at: existing?.created_at || nowIso,
     updated_at: nowIso,
@@ -622,8 +823,9 @@ export async function resolveUserShopMembership(params: {
   if (!userId || !shopId) return null;
 
   const nowIso = new Date().toISOString();
+  const isStaffAccount = isShopScopedStaffUserId(userId);
 
-  if (isSuperAdmin) {
+  if (isSuperAdmin && !isStaffAccount) {
     return {
       id: `mem-admin-${shopId}`,
       shop_id: shopId,
@@ -637,7 +839,7 @@ export async function resolveUserShopMembership(params: {
   }
 
   let ownerId = params.shopOwnerId;
-  if (ownerId === undefined) {
+  if (!isStaffAccount && ownerId === undefined) {
     if (isShopMembershipDbAuthoritative()) {
       try {
         const sb = getMembershipDbClient();
@@ -660,7 +862,7 @@ export async function resolveUserShopMembership(params: {
     }
   }
 
-  if (ownerId && ownerId === userId) {
+  if (!isStaffAccount && ownerId && ownerId === userId) {
     return {
       id: `mem-owner-${shopId}-${userId}`,
       shop_id: shopId,

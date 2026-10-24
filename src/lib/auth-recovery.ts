@@ -4,7 +4,8 @@ export type WebLoginAuthMode =
   | 'password_login'
   | 'register'
   | 'otp'
-  | 'reset';
+  | 'reset'
+  | 'staff';
 
 export type PasswordRecoveryFailureReason =
   | 'invalid_email'
@@ -197,6 +198,9 @@ export function resolveLoginAuthMode(input: {
     return 'reset';
   }
   const modeParam = (input.searchParams?.get('mode') ?? '').trim().toLowerCase();
+  if (modeParam === 'staff') {
+    return 'staff';
+  }
   if (modeParam === 'register') {
     return 'register';
   }

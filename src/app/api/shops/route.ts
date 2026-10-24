@@ -9,6 +9,9 @@ import {
 } from '@/lib/db';
 import {
   getRequestShopMembership,
+  isShopBoundStaffSession,
+  isStaffSessionUser,
+  requireActiveShopOwner,
   requireAuthenticatedUser,
   requireShopOwnerOrAdmin,
   requireShopPermission,
@@ -19,7 +22,17 @@ import {
   dbGetShopMemberships,
   dbUpsertShopMembership,
   hasShopPermission,
+  isShopScopedStaffUserId,
+  validateStaffPermissionsInput,
+  validateStaffRole,
 } from '@/lib/shop-permissions';
+import {
+  dbCreateShopStaffAccount,
+  dbDeleteShopStaffAccount,
+  dbResetShopStaffPassword,
+  dbUpdateShopStaffAccount,
+  verifyActiveShopStaffSession,
+} from '@/lib/staff-accounts';
 import {
   assertNoSePaySecretInThemeConfig,
   dbDeleteShopSePayConfig,
@@ -146,6 +159,31 @@ export async function GET(req: Request) {
   if (memberFlag === '1') {
     const auth = await requireAuthenticatedUser(req);
     if (auth.errorResponse) return auth.errorResponse;
+    if (isShopBoundStaffSession(auth.user)) {
+      const boundShopId = auth.user.shop_id || '';
+      const staffCheck = await verifyActiveShopStaffSession({
+        userId: auth.user.sub,
+        shopId: boundShopId,
+        sessionVersion: auth.user.sv,
+      });
+      if (!staffCheck.active || !staffCheck.membership) {
+        return NextResponse.json(
+          {
+            error:
+              'Tài khoản nhân viên đã bị ngừng kích hoạt hoặc không còn quyền truy cập.',
+            code: 'STAFF_SESSION_REVOKED',
+          },
+          { status: 403 }
+        );
+      }
+      const data = await dbGetAllShopsAndProfile(auth.user.sub);
+      const scopedShops = data.shops.filter((s) => s.id === boundShopId);
+      return NextResponse.json({
+        ...data,
+        shops: scopedShops,
+        memberships: { [boundShopId]: staffCheck.membership },
+      });
+    }
     const data = await dbGetAllShopsAndProfile(auth.user.sub);
     return NextResponse.json(data);
   }
@@ -162,6 +200,32 @@ export async function GET(req: Request) {
         },
         { status: 403 }
       );
+    }
+
+    if (isShopBoundStaffSession(auth.user)) {
+      const boundShopId = auth.user.shop_id || '';
+      const staffCheck = await verifyActiveShopStaffSession({
+        userId: auth.user.sub,
+        shopId: boundShopId,
+        sessionVersion: auth.user.sv,
+      });
+      if (!staffCheck.active || !staffCheck.membership) {
+        return NextResponse.json(
+          {
+            error:
+              'Tài khoản nhân viên đã bị ngừng kích hoạt hoặc không còn quyền truy cập.',
+            code: 'STAFF_SESSION_REVOKED',
+          },
+          { status: 403 }
+        );
+      }
+      const data = await dbGetAllShopsAndProfile(ownerId);
+      const scopedShops = data.shops.filter((s) => s.id === boundShopId);
+      return NextResponse.json({
+        ...data,
+        shops: scopedShops,
+        memberships: { [boundShopId]: staffCheck.membership },
+      });
     }
 
     const data = await dbGetAllShopsAndProfile(ownerId);
@@ -263,12 +327,155 @@ export async function POST(req: Request) {
       return NextResponse.json({ membership }, { status: 201 });
     }
 
-    if (body?.action === 'upsert_member') {
-      const targetShopId = body.shop_id || body.shopId;
-      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+    if (
+      body?.action === 'create_staff_member' ||
+      body?.action === 'create_staff'
+    ) {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireActiveShopOwner(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const shop = await getShopForMemberAction(targetShopId);
+      if (!shop) {
+        return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
+      }
+
+      try {
+        const membership = await dbCreateShopStaffAccount({
+          shop_id: targetShopId,
+          username: body.username,
+          password: body.password,
+          full_name:
+            typeof body.full_name === 'string'
+              ? body.full_name
+              : typeof body.fullName === 'string'
+                ? body.fullName
+                : undefined,
+          role: body.role !== undefined ? body.role : 'staff',
+          permissions: body.permissions,
+          is_active: body.is_active !== false,
+          created_by: auth.user.sub,
+        });
+        return NextResponse.json({ membership }, { status: 201 });
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Không thể tạo tài khoản nhân viên.';
+        const codeMatch = message.match(/^([A-Z0-9_]+):\s*(.*)$/);
+        const code = codeMatch?.[1] || 'CREATE_STAFF_FAILED';
+        const status =
+          code === 'STAFF_USERNAME_EXISTS'
+            ? 409
+            : code.startsWith('DB_')
+              ? 500
+              : 400;
+        return NextResponse.json({ error: message, code }, { status });
+      }
+    }
+
+    if (
+      body?.action === 'update_staff_member' ||
+      body?.action === 'update_staff' ||
+      body?.action === 'set_staff_active'
+    ) {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireActiveShopOwner(req, targetShopId);
       if (auth.errorResponse) return auth.errorResponse;
 
       const targetUserId = body.user_id || body.userId;
+      const shopForMember = await getShopForMemberAction(targetShopId);
+      if (shopForMember && targetUserId === shopForMember.owner_id) {
+        return NextResponse.json(
+          {
+            error: 'Không thể thay đổi vai trò của chủ cửa hàng.',
+            code: 'MEMBER_IS_OWNER',
+          },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const membership = await dbUpdateShopStaffAccount({
+          shop_id: targetShopId,
+          user_id: targetUserId,
+          username: body.username,
+          full_name:
+            typeof body.full_name === 'string'
+              ? body.full_name
+              : typeof body.fullName === 'string'
+                ? body.fullName
+                : undefined,
+          role: body.role,
+          permissions: body.permissions,
+          is_active:
+            typeof body.is_active === 'boolean' ? body.is_active : undefined,
+        });
+        return NextResponse.json({ membership });
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Không thể cập nhật tài khoản nhân viên.';
+        const codeMatch = message.match(/^([A-Z0-9_]+):\s*(.*)$/);
+        const code = codeMatch?.[1] || 'UPDATE_STAFF_FAILED';
+        const status =
+          code === 'STAFF_MEMBER_NOT_FOUND'
+            ? 404
+            : code === 'STAFF_USERNAME_EXISTS'
+              ? 409
+              : code.startsWith('DB_')
+                ? 500
+                : 400;
+        return NextResponse.json({ error: message, code }, { status });
+      }
+    }
+
+    if (
+      body?.action === 'reset_staff_password' ||
+      body?.action === 'reset_member_password'
+    ) {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireActiveShopOwner(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      try {
+        const resetResult = await dbResetShopStaffPassword({
+          shop_id: targetShopId,
+          user_id: body.user_id || body.userId,
+          username: body.username,
+          new_password:
+            body.new_password ?? body.newPassword ?? body.password,
+        });
+        return NextResponse.json({
+          ok: true,
+          user_id: resetResult.user_id,
+          shop_id: resetResult.shop_id,
+          username: resetResult.username,
+        });
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Không thể đặt lại mật khẩu nhân viên.';
+        const codeMatch = message.match(/^([A-Z0-9_]+):\s*(.*)$/);
+        const code = codeMatch?.[1] || 'RESET_STAFF_PASSWORD_FAILED';
+        const status =
+          code === 'STAFF_MEMBER_NOT_FOUND'
+            ? 404
+            : code.startsWith('DB_')
+              ? 500
+              : 400;
+        return NextResponse.json({ error: message, code }, { status });
+      }
+    }
+
+    if (body?.action === 'upsert_member') {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const targetUserId = String(body.user_id || body.userId || '').trim();
       const shopForMember = await getShopForMemberAction(targetShopId);
       if (shopForMember && targetUserId === shopForMember.owner_id) {
         return NextResponse.json(
@@ -287,28 +494,138 @@ export async function POST(req: Request) {
           )
         : undefined;
 
+      const roleCandidate =
+        body.role !== undefined
+          ? body.role
+          : existingMember?.role || 'staff';
+      const roleCheck = validateStaffRole(roleCandidate);
+      if (!roleCheck.ok) {
+        return NextResponse.json(
+          { error: roleCheck.message, code: roleCheck.errorCode },
+          { status: 400 }
+        );
+      }
+
+      const permsCheck = validateStaffPermissionsInput(
+        roleCheck.role,
+        body.permissions !== undefined
+          ? body.permissions
+          : existingMember?.permissions
+      );
+      if (!permsCheck.ok) {
+        return NextResponse.json(
+          { error: permsCheck.message, code: permsCheck.errorCode },
+          { status: 400 }
+        );
+      }
+
+      const isTargetStaffAccount =
+        isShopScopedStaffUserId(targetUserId) ||
+        Boolean(existingMember?.username) ||
+        Boolean(body.username);
+
+      if (isTargetStaffAccount) {
+        const ownerCheck = await requireActiveShopOwner(req, targetShopId);
+        if (ownerCheck.errorResponse) return ownerCheck.errorResponse;
+
+        try {
+          const membership = await dbUpdateShopStaffAccount({
+            shop_id: targetShopId,
+            user_id: targetUserId || undefined,
+            username: body.username ?? existingMember?.username,
+            full_name:
+              body.full_name || body.fullName || existingMember?.full_name,
+            role: roleCheck.role,
+            permissions: permsCheck.permissions,
+            is_active:
+              typeof body.is_active === 'boolean'
+                ? body.is_active
+                : existingMember?.is_active ?? true,
+          });
+          return NextResponse.json({ membership });
+        } catch (err) {
+          const message =
+            err instanceof Error
+              ? err.message
+              : 'Không thể cập nhật tài khoản nhân viên.';
+          const codeMatch = message.match(/^([A-Z0-9_]+):\s*(.*)$/);
+          const code = codeMatch?.[1] || 'UPDATE_STAFF_FAILED';
+          const status =
+            code === 'STAFF_MEMBER_NOT_FOUND'
+              ? 404
+              : code === 'STAFF_USERNAME_EXISTS'
+                ? 409
+                : code.startsWith('DB_')
+                  ? 500
+                  : 400;
+          return NextResponse.json({ error: message, code }, { status });
+        }
+      }
+
       const membership = await dbUpsertShopMembership({
         shop_id: targetShopId,
         user_id: targetUserId,
         email: body.email ?? existingMember?.email,
         full_name: body.full_name || body.fullName || existingMember?.full_name,
-        role: (body.role as ShopRole) || 'staff',
-        permissions: body.permissions,
+        role: roleCheck.role,
+        permissions: permsCheck.permissions,
         is_active: body.is_active !== false,
       });
       return NextResponse.json({ membership });
     }
 
-    if (body?.action === 'delete_member') {
-      const targetShopId = body.shop_id || body.shopId;
-      const auth = await requireShopOwnerOrAdmin(req, targetShopId);
-      if (auth.errorResponse) return auth.errorResponse;
-
-      const deleted = await dbDeleteShopMembership(
-        targetShopId,
-        body.user_id || body.userId
+    if (
+      body?.action === 'delete_member' ||
+      body?.action === 'delete_staff_member'
+    ) {
+      const targetShopId = String(body.shop_id || body.shopId || '').trim();
+      const targetUserId = String(body.user_id || body.userId || '').trim();
+      const existingMembers = targetShopId
+        ? await dbGetShopMemberships(targetShopId)
+        : [];
+      const existingTargetMember = existingMembers.find(
+        (m) => m.user_id === targetUserId
       );
-      return NextResponse.json({ deleted });
+      const isTargetStaffAccount =
+        body?.action === 'delete_staff_member' ||
+        isShopScopedStaffUserId(targetUserId) ||
+        Boolean(existingTargetMember?.username) ||
+        existingTargetMember?.account_type === 'staff';
+
+      if (isTargetStaffAccount) {
+        const ownerAuth = await requireActiveShopOwner(req, targetShopId);
+        if (ownerAuth.errorResponse) return ownerAuth.errorResponse;
+      } else {
+        const auth = await requireShopOwnerOrAdmin(req, targetShopId);
+        if (auth.errorResponse) return auth.errorResponse;
+      }
+
+      const shopForMember = await getShopForMemberAction(targetShopId);
+      if (shopForMember && targetUserId === shopForMember.owner_id) {
+        return NextResponse.json(
+          {
+            error: 'Không thể xóa chủ cửa hàng khỏi danh sách nhân sự.',
+            code: 'MEMBER_IS_OWNER',
+          },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const deleted = isTargetStaffAccount
+          ? await dbDeleteShopStaffAccount(targetShopId, targetUserId)
+          : await dbDeleteShopMembership(targetShopId, targetUserId);
+        return NextResponse.json({ deleted });
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Không thể xóa tài khoản nhân sự.';
+        const codeMatch = message.match(/^([A-Z0-9_]+):\s*(.*)$/);
+        const code = codeMatch?.[1] || 'DELETE_STAFF_FAILED';
+        const status = code.startsWith('DB_') ? 500 : 400;
+        return NextResponse.json({ error: message, code }, { status });
+      }
     }
 
     if (body?.action === 'upsert_sepay_config') {
@@ -355,6 +672,21 @@ export async function POST(req: Request) {
 
     const auth = await requireAuthenticatedUser(req);
     if (auth.errorResponse) return auth.errorResponse;
+
+    if (
+      isStaffSessionUser(auth.user) ||
+      (typeof body?.owner_id === 'string' &&
+        isShopScopedStaffUserId(body.owner_id))
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Tài khoản nhân viên không được phép đăng ký chủ quán hoặc tạo cửa hàng mới.',
+          code: 'FORBIDDEN_STAFF_SHOP_CREATE',
+        },
+        { status: 403 }
+      );
+    }
 
     assertNoSePaySecretInThemeConfig(body?.theme_config);
 

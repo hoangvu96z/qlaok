@@ -41,12 +41,19 @@ import {
 import {
   type NotificationTapRoute,
   resolveNotificationTapTargetShop,
+  unregisterPushOnLogout,
 } from './src/lib/push-notifications';
+import {
+  clearStaffSession,
+  loadStaffSession,
+  type MobileStaffSession,
+} from './src/lib/staff-session';
 import { MobileThemePalette, styles } from './src/styles/mobileStyles';
 import { useMobilePushNotifications } from './src/hooks/useMobilePushNotifications';
 import { useShopRealtimeOrders } from './src/hooks/useShopRealtimeOrders';
 import { useTabNavigation } from './src/hooks/useTabNavigation';
 import { AuthScreen } from './src/components/AuthScreen';
+import { StaffWorkspace } from './src/components/staff/StaffWorkspace';
 import {
   MobileI18nProvider,
   MobileLanguageSwitcher,
@@ -59,34 +66,227 @@ import { CatalogTab } from './src/components/tabs/CatalogTab';
 import { PromotionsTab } from './src/components/tabs/PromotionsTab';
 import { SettingsTab } from './src/components/tabs/SettingsTab';
 
+export type MobileActiveWorkspaceRoute =
+  | { kind: 'loading' }
+  | { kind: 'staff'; staffSession: MobileStaffSession }
+  | { kind: 'owner'; ownerSession: Session }
+  | { kind: 'auth'; staffSessionExpired: boolean };
+
+/**
+ * Resolves the root mobile workspace route only after BOTH the Supabase owner
+ * session and the isolated Qlaok staff session have finished booting, preventing
+ * any flash of the wrong dashboard.
+ *
+ * - Never constructs a Supabase `Session` from a staff session.
+ * - Never passes staff identity into the owner `Workspace`.
+ * - Routes back to `AuthScreen` with `staffSessionExpired: true` when `staffApi`
+ *   clears a staff session on 401/revocation without logging out any owner.
+ */
+export function resolveMobileWorkspaceRoute(params: {
+  ownerReady: boolean;
+  staffReady: boolean;
+  ownerSession: Session | null;
+  staffSession: MobileStaffSession | null;
+  staffSessionExpired?: boolean;
+}): MobileActiveWorkspaceRoute {
+  if (!params.ownerReady || !params.staffReady) {
+    return { kind: 'loading' };
+  }
+  if (params.staffSession) {
+    return { kind: 'staff', staffSession: params.staffSession };
+  }
+  if (params.staffSessionExpired) {
+    return { kind: 'auth', staffSessionExpired: true };
+  }
+  if (params.ownerSession) {
+    return { kind: 'owner', ownerSession: params.ownerSession };
+  }
+  return { kind: 'auth', staffSessionExpired: false };
+}
+
+/**
+ * Clears the stored mobile staff session and cleans any coexisting Supabase
+ * owner session using the owner push-token-before-sign-out helper so staff
+ * sign-out on a shared device never reveals a stale owner account.
+ * Never sends an owner token to staff endpoints.
+ */
+export async function executeStaffSignOutCleanup(options?: {
+  clearStaff?: () => Promise<void>;
+  hasOwnerSession?: boolean;
+  getOwnerSession?: () => Promise<{
+    data?: { session: Session | null } | null;
+    error?: unknown;
+  }>;
+  ownerApiCall?: (path: string, init?: RequestInit) => Promise<Response>;
+  signOutOwner?: () => Promise<{ error?: { message?: string } | null } | void>;
+}): Promise<{
+  staffCleared: boolean;
+  ownerCleaned: boolean;
+}> {
+  const clearStaffFn = options?.clearStaff ?? (() => clearStaffSession());
+  await clearStaffFn();
+
+  let coexistingOwner = Boolean(options?.hasOwnerSession);
+  if (!coexistingOwner) {
+    const getOwnerSessionFn =
+      options?.getOwnerSession ?? (() => supabase.auth.getSession());
+    try {
+      const res = await getOwnerSessionFn();
+      if (res?.data?.session) {
+        coexistingOwner = true;
+      }
+    } catch {
+      coexistingOwner = false;
+    }
+  }
+
+  let ownerCleaned = false;
+  if (coexistingOwner) {
+    await unregisterPushOnLogout({
+      apiCall: options?.ownerApiCall ?? fetchApi,
+      signOut:
+        options?.signOutOwner ??
+        (() => supabase.auth.signOut({ scope: 'local' })),
+    });
+    ownerCleaned = true;
+  }
+
+  return {
+    staffCleared: true,
+    ownerCleaned,
+  };
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [ready, setReady] = useState(false);
+  const [staffSession, setStaffSession] = useState<MobileStaffSession | null>(
+    null
+  );
+  const [ownerReady, setOwnerReady] = useState(false);
+  const [staffReady, setStaffReady] = useState(false);
+  const [staffSessionExpired, setStaffSessionExpired] = useState(false);
+  const staffManualOverrideRef = useRef(false);
+
   useEffect(() => {
     let alive = true;
     let authEventReceived = false;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, next) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, next) => {
       authEventReceived = true;
-      if (alive) { setSession(next); setReady(true); }
+      if (alive) {
+        setSession(next);
+        if (event === 'SIGNED_IN' && next) {
+          setStaffSessionExpired(false);
+        }
+        setOwnerReady(true);
+      }
     });
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (alive && !authEventReceived) { setSession(error ? null : data.session); setReady(true); }
-    }).catch(() => { if (alive && !authEventReceived) setReady(true); });
+    supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (alive && !authEventReceived) {
+          setSession(error ? null : data.session);
+          setOwnerReady(true);
+        }
+      })
+      .catch(() => {
+        if (alive && !authEventReceived) setOwnerReady(true);
+      });
+
+    loadStaffSession()
+      .then((storedStaff) => {
+        if (alive && !staffManualOverrideRef.current) {
+          setStaffSession(storedStaff);
+        }
+      })
+      .catch(() => {
+        if (alive && !staffManualOverrideRef.current) {
+          setStaffSession(null);
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setStaffReady(true);
+        }
+      });
+
     const refresh = (state: string) => {
       if (state === 'active') supabase.auth.startAutoRefresh();
       else supabase.auth.stopAutoRefresh();
     };
     refresh(AppState.currentState);
     const appState = AppState.addEventListener('change', refresh);
-    return () => { alive = false; subscription.unsubscribe(); appState.remove(); supabase.auth.stopAutoRefresh(); };
+    return () => {
+      alive = false;
+      subscription.unsubscribe();
+      appState.remove();
+      supabase.auth.stopAutoRefresh();
+    };
   }, []);
-  if (!ready) return <SafeAreaView><ActivityIndicator /></SafeAreaView>;
+
+  const handleStaffLoginSuccess = useCallback(
+    (nextStaffSession: MobileStaffSession) => {
+      staffManualOverrideRef.current = true;
+      setStaffSessionExpired(false);
+      setStaffSession(nextStaffSession);
+    },
+    []
+  );
+
+  const handleStaffSignOut = useCallback(async () => {
+    staffManualOverrideRef.current = true;
+    await executeStaffSignOutCleanup({
+      hasOwnerSession: Boolean(session),
+    });
+    setStaffSession(null);
+    setSession(null);
+    setStaffSessionExpired(false);
+  }, [session]);
+
+  const handleStaffSessionExpired = useCallback(async () => {
+    staffManualOverrideRef.current = true;
+    await clearStaffSession().catch(() => {});
+    setStaffSession(null);
+    setStaffSessionExpired(true);
+  }, []);
+
+  const workspaceRoute = resolveMobileWorkspaceRoute({
+    ownerReady,
+    staffReady,
+    ownerSession: session,
+    staffSession,
+    staffSessionExpired,
+  });
+
+  if (workspaceRoute.kind === 'loading') {
+    return (
+      <SafeAreaView>
+        <ActivityIndicator />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <MobileI18nProvider>
-      {!session ? (
-        <AuthScreen />
+      {workspaceRoute.kind === 'staff' ? (
+        <StaffWorkspace
+          key={`${workspaceRoute.staffSession.user.id}:${workspaceRoute.staffSession.activeShopId}`}
+          session={workspaceRoute.staffSession}
+          onSignOut={handleStaffSignOut}
+          onSessionExpired={handleStaffSessionExpired}
+        />
+      ) : workspaceRoute.kind === 'owner' ? (
+        <Workspace
+          key={workspaceRoute.ownerSession.user.id}
+          userId={workspaceRoute.ownerSession.user.id}
+        />
       ) : (
-        <Workspace key={session.user.id} userId={session.user.id} />
+        <AuthScreen
+          onStaffLoginSuccess={handleStaffLoginSuccess}
+          staffSessionExpired={workspaceRoute.staffSessionExpired}
+          onDismissSessionNotice={() => setStaffSessionExpired(false)}
+        />
       )}
     </MobileI18nProvider>
   );

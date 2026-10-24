@@ -394,6 +394,89 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
   memberships?: Record<string, ShopMembership>;
   source: 'supabase';
 }> {
+  if (!testDbClientOverride && !isSupabaseConfigured()) {
+    if (ownerId) {
+      const ownedShops = SEED_SHOPS.filter((s) => s.owner_id === ownerId);
+      const ownerProfile = ownerId === SEED_PROFILE.id ? SEED_PROFILE : null;
+      const userMemberships = await dbGetUserShopMemberships(ownerId);
+      const shopMap = new Map<string, Shop>();
+      const membershipsMap: Record<string, ShopMembership> = {};
+      const nowIso = new Date().toISOString();
+
+      for (const raw of ownedShops) {
+        const hydrated = hydrateShopWithSeedDefaults(raw);
+        shopMap.set(hydrated.id, hydrated);
+        membershipsMap[hydrated.id] = {
+          id: `mem-owner-${hydrated.id}-${ownerId}`,
+          shop_id: hydrated.id,
+          user_id: ownerId,
+          role: 'owner',
+          permissions: [...ALL_SHOP_PERMISSIONS],
+          is_active: true,
+          created_at: nowIso,
+          updated_at: nowIso,
+        };
+      }
+
+      for (const mem of userMemberships) {
+        if (!mem.is_active) continue;
+        if (!shopMap.has(mem.shop_id)) {
+          const seedShop = SEED_SHOPS.find((s) => s.id === mem.shop_id);
+          if (seedShop) {
+            shopMap.set(seedShop.id, hydrateShopWithSeedDefaults(seedShop));
+          }
+        }
+        if (shopMap.has(mem.shop_id)) {
+          const shop = shopMap.get(mem.shop_id)!;
+          if (shop.owner_id !== ownerId) {
+            membershipsMap[mem.shop_id] = mem;
+          }
+        }
+      }
+
+      const primaryMembership = userMemberships.find((m) => m.is_active);
+      const fallbackProfile: Profile = primaryMembership
+        ? {
+            id: ownerId,
+            email: primaryMembership.email || '',
+            ...(primaryMembership.username
+              ? { username: primaryMembership.username }
+              : {}),
+            ...(primaryMembership.username || ownerId.startsWith('staff-acct-')
+              ? {
+                  shop_id: primaryMembership.shop_id,
+                  account_type: 'staff' as const,
+                }
+              : {}),
+            full_name:
+              primaryMembership.full_name ||
+              primaryMembership.username ||
+              primaryMembership.email ||
+              'Nhân viên',
+            plan: 'free',
+            role: primaryMembership.role,
+          }
+        : {
+            ...SEED_PROFILE,
+            id: ownerId,
+            plan: 'free',
+          };
+
+      return {
+        shops: Array.from(shopMap.values()),
+        profile: ownerProfile || fallbackProfile,
+        memberships: membershipsMap,
+        source: 'supabase',
+      };
+    }
+
+    return {
+      shops: SEED_SHOPS.map(hydrateShopWithSeedDefaults),
+      profile: SEED_PROFILE,
+      source: 'supabase',
+    };
+  }
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
@@ -471,14 +554,37 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
       }
     }
 
-    return {
-      shops: Array.from(shopMap.values()),
-      profile:
-        (ownerProfile as Profile) || {
+    const primaryMembership = userMemberships.find((m) => m.is_active);
+    const fallbackProfile: Profile = primaryMembership
+      ? {
+          id: ownerId,
+          email: primaryMembership.email || '',
+          ...(primaryMembership.username
+            ? { username: primaryMembership.username }
+            : {}),
+          ...(primaryMembership.username || ownerId.startsWith('staff-acct-')
+            ? {
+                shop_id: primaryMembership.shop_id,
+                account_type: 'staff' as const,
+              }
+            : {}),
+          full_name:
+            primaryMembership.full_name ||
+            primaryMembership.username ||
+            primaryMembership.email ||
+            'Nhân viên',
+          plan: 'free',
+          role: primaryMembership.role,
+        }
+      : {
           ...SEED_PROFILE,
           id: ownerId,
           plan: 'free',
-        },
+        };
+
+    return {
+      shops: Array.from(shopMap.values()),
+      profile: (ownerProfile as Profile) || fallbackProfile,
       memberships: membershipsMap,
       source: 'supabase',
     };

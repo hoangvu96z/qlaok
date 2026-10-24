@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   createSupabasePublicAuthClient,
+  dbGetShopById,
   ensureSupabaseReadyAndSeeded,
   getSupabaseDbClient,
 } from '@/lib/db';
@@ -16,11 +17,20 @@ import {
 import {
   attachSessionCookie,
   clearSessionCookie,
+  isShopBoundStaffSession,
+  isStaffSessionUser,
   issueSessionToken,
   verifyRequestUser,
 } from '@/lib/server-auth';
 import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
-import { dbGetUserShopMemberships } from '@/lib/shop-permissions';
+import {
+  dbGetUserShopMemberships,
+  isShopScopedStaffUserId,
+} from '@/lib/shop-permissions';
+import {
+  authenticateShopStaffLogin,
+  verifyActiveShopStaffSession,
+} from '@/lib/staff-accounts';
 import {
   formatGenericPasswordRecoveryNotice,
   isReservedUnsupportedRecoveryEmail,
@@ -70,6 +80,27 @@ export async function GET(req: Request) {
     if (!verified) {
       return NextResponse.json({ authenticated: false }, { status: 401 });
     }
+    if (isShopBoundStaffSession(verified)) {
+      const boundShopId = verified.shop_id || '';
+      const staffCheck = await verifyActiveShopStaffSession({
+        userId: verified.sub,
+        shopId: boundShopId,
+        sessionVersion: verified.sv,
+      });
+      if (!staffCheck.active || !staffCheck.membership) {
+        return NextResponse.json(
+          { authenticated: false, code: 'STAFF_SESSION_REVOKED' },
+          { status: 401 }
+        );
+      }
+      return NextResponse.json({
+        authenticated: true,
+        session: {
+          ...verified,
+          role: staffCheck.membership.role,
+        },
+      });
+    }
     return NextResponse.json({
       authenticated: true,
       session: verified,
@@ -95,6 +126,7 @@ export async function POST(req: Request) {
     const {
       action,
       email = '',
+      username = '',
       password = '',
       fullName = '',
       phone = '',
@@ -103,17 +135,41 @@ export async function POST(req: Request) {
       action:
         | 'register'
         | 'login'
+        | 'staff_login'
         | 'demo_login'
         | 'sync_user'
         | 'logout'
         | 'check_recovery';
       email?: string;
+      username?: string;
       password?: string;
       fullName?: string;
       phone?: string;
       userId?: string;
+      shopIdentifier?: string;
+      shop_identifier?: string;
+      shopSlug?: string;
+      shop_slug?: string;
+      shopId?: string;
+      shop_id?: string;
+      shopCode?: string;
+      shop_code?: string;
+      shop?: string;
       supabaseAccessToken?: string;
     };
+
+    const rawShopIdentifier = String(
+      body.shopIdentifier ??
+        body.shop_identifier ??
+        body.shopSlug ??
+        body.shop_slug ??
+        body.shopId ??
+        body.shop_id ??
+        body.shopCode ??
+        body.shop_code ??
+        body.shop ??
+        ''
+    ).trim();
 
     if (action === 'logout') {
       const res = NextResponse.json({ success: true });
@@ -159,6 +215,25 @@ export async function POST(req: Request) {
 
     // P0 Security Fix: Reject any attempt to register or overwrite the Super Admin account BEFORE DB access
     if (action === 'register') {
+      const callerSession = await verifyRequestUser(req);
+      if (
+        isStaffSessionUser(callerSession) ||
+        Boolean(username && String(username).trim()) ||
+        Boolean(rawShopIdentifier) ||
+        isShopScopedStaffUserId(body.userId) ||
+        body.role === 'staff' ||
+        body.role === 'cashier' ||
+        body.account_type === 'staff'
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Tài khoản nhân viên do chủ quán cấp, không được phép tự đăng ký hoặc nâng quyền thành chủ quán.',
+            code: 'FORBIDDEN_STAFF_REGISTER',
+          },
+          { status: 403 }
+        );
+      }
       if (!normalizedEmail || !normalizedEmail.includes('@')) {
         return NextResponse.json(
           { error: 'Vui lòng nhập địa chỉ email hợp lệ.' },
@@ -180,6 +255,69 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+    }
+
+    // Shop-scoped Staff Account Login (shop identifier + username + password, no email)
+    if (
+      action === 'staff_login' ||
+      (action === 'login' &&
+        (Boolean(rawShopIdentifier) ||
+          (Boolean(username && String(username).trim()) && !normalizedEmail)))
+    ) {
+      const candidateUsername = String(
+        username || (!normalizedEmail.includes('@') ? email : '')
+      ).trim();
+
+      const staffAuth = await authenticateShopStaffLogin({
+        shopIdentifier: rawShopIdentifier,
+        username: candidateUsername,
+        password,
+      });
+
+      if (!staffAuth.ok) {
+        const headers: Record<string, string> = {};
+        if (
+          staffAuth.status === 429 &&
+          typeof staffAuth.retryAfterSec === 'number' &&
+          staffAuth.retryAfterSec > 0
+        ) {
+          headers['Retry-After'] = String(staffAuth.retryAfterSec);
+        }
+        return NextResponse.json(
+          {
+            error: staffAuth.message,
+            code: staffAuth.errorCode,
+            ...(typeof staffAuth.retryAfterSec === 'number' &&
+            staffAuth.retryAfterSec > 0
+              ? { retryAfterSec: staffAuth.retryAfterSec }
+              : {}),
+          },
+          { status: staffAuth.status, headers }
+        );
+      }
+
+      const accessToken = issueSessionToken({
+        id: staffAuth.user.id,
+        email: '',
+        username: staffAuth.user.username,
+        shop_id: staffAuth.shop.id,
+        account_type: 'staff',
+        sv: staffAuth.sessionVersion,
+        role: staffAuth.membership.role,
+        is_admin: false,
+      });
+
+      const res = NextResponse.json({
+        user: staffAuth.user,
+        shops: [] as Shop[],
+        memberShops: [staffAuth.shop],
+        memberships: [staffAuth.membership],
+        activeShopId: staffAuth.shop.id,
+        redirectTo: '/dashboard/orders',
+        isAdmin: false,
+        accessToken,
+      });
+      return attachSessionCookie(res, accessToken);
     }
 
     // P0 Security Fix: Verify token on sync_user BEFORE DB access
@@ -216,6 +354,72 @@ export async function POST(req: Request) {
           },
           { status: 401 }
         );
+      }
+
+      if (isShopBoundStaffSession(preVerifiedSyncSession)) {
+        const boundShopId = preVerifiedSyncSession.shop_id || '';
+        const staffCheck = await verifyActiveShopStaffSession({
+          userId: preVerifiedSyncSession.sub,
+          shopId: boundShopId,
+          sessionVersion: preVerifiedSyncSession.sv,
+        });
+        if (!staffCheck.active || !staffCheck.membership) {
+          return NextResponse.json(
+            {
+              error:
+                'Phiên đăng nhập nhân viên đã bị thu hồi hoặc ngừng kích hoạt.',
+              code: 'STAFF_SESSION_REVOKED',
+            },
+            { status: 401 }
+          );
+        }
+        const boundShop = await dbGetShopById(boundShopId);
+        if (!boundShop) {
+          return NextResponse.json(
+            { error: 'Không tìm thấy cửa hàng được phân công.' },
+            { status: 404 }
+          );
+        }
+        const staffUser: Profile = {
+          id: preVerifiedSyncSession.sub,
+          email: '',
+          username:
+            staffCheck.membership.username ||
+            preVerifiedSyncSession.username ||
+            '',
+          shop_id: boundShopId,
+          account_type: 'staff',
+          full_name:
+            staffCheck.membership.full_name ||
+            staffCheck.membership.username ||
+            preVerifiedSyncSession.username ||
+            'Nhân viên',
+          plan: 'free',
+          role: staffCheck.membership.role,
+        };
+        const accessToken = issueSessionToken({
+          id: staffUser.id,
+          email: '',
+          username: staffUser.username,
+          shop_id: boundShopId,
+          account_type: 'staff',
+          sv:
+            staffCheck.credential?.session_version ??
+            preVerifiedSyncSession.sv,
+          role: staffCheck.membership.role,
+          is_admin: false,
+        });
+        const res = NextResponse.json({
+          user: staffUser,
+          shops: [] as Shop[],
+          memberShops: [boundShop],
+          memberships: [staffCheck.membership],
+          activeShopId: boundShopId,
+          redirectTo: '/dashboard/orders',
+          isAdmin: false,
+          accessToken,
+        });
+        return attachSessionCookie(res, accessToken);
       }
 
       if (normalizedEmail && normalizedEmail !== preVerifiedSyncSession.email) {
@@ -564,6 +768,68 @@ export async function POST(req: Request) {
           },
           { status: 401 }
         );
+      }
+
+      if (isShopBoundStaffSession(verifiedSession)) {
+        const boundShopId = verifiedSession.shop_id || '';
+        const staffCheck = await verifyActiveShopStaffSession({
+          userId: verifiedSession.sub,
+          shopId: boundShopId,
+          sessionVersion: verifiedSession.sv,
+        });
+        if (!staffCheck.active || !staffCheck.membership) {
+          return NextResponse.json(
+            {
+              error:
+                'Phiên đăng nhập nhân viên đã bị thu hồi hoặc ngừng kích hoạt.',
+              code: 'STAFF_SESSION_REVOKED',
+            },
+            { status: 401 }
+          );
+        }
+        const boundShop = await dbGetShopById(boundShopId);
+        if (!boundShop) {
+          return NextResponse.json(
+            { error: 'Không tìm thấy cửa hàng được phân công.' },
+            { status: 404 }
+          );
+        }
+        const staffUser: Profile = {
+          id: verifiedSession.sub,
+          email: '',
+          username:
+            staffCheck.membership.username || verifiedSession.username || '',
+          shop_id: boundShopId,
+          account_type: 'staff',
+          full_name:
+            staffCheck.membership.full_name ||
+            staffCheck.membership.username ||
+            verifiedSession.username ||
+            'Nhân viên',
+          plan: 'free',
+          role: staffCheck.membership.role,
+        };
+        const accessToken = issueSessionToken({
+          id: staffUser.id,
+          email: '',
+          username: staffUser.username,
+          shop_id: boundShopId,
+          account_type: 'staff',
+          sv: staffCheck.credential?.session_version ?? verifiedSession.sv,
+          role: staffCheck.membership.role,
+          is_admin: false,
+        });
+        const res = NextResponse.json({
+          user: staffUser,
+          shops: [] as Shop[],
+          memberShops: [boundShop],
+          memberships: [staffCheck.membership],
+          activeShopId: boundShopId,
+          redirectTo: '/dashboard/orders',
+          isAdmin: false,
+          accessToken,
+        });
+        return attachSessionCookie(res, accessToken);
       }
 
       // If caller passed an email in body, it must match the verified token's email

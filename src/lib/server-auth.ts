@@ -2,12 +2,18 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
-import { getSupabaseDbClient } from '@/lib/db';
+import { dbGetShopById, getSupabaseDbClient } from '@/lib/db';
 import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
 import {
+  dbGetShopMemberships,
+  getMembershipDbClient,
   hasShopPermission,
+  isShopMembershipDbAuthoritative,
+  isShopScopedStaffUserId,
+  normalizeStaffUsername,
   resolveUserShopMembership,
 } from '@/lib/shop-permissions';
+import { verifyActiveShopStaffSession } from '@/lib/staff-accounts';
 import type { Profile, ShopMembership, ShopPermission } from '@/types/qlaok';
 
 export const SESSION_COOKIE_NAME = 'qlaok_session';
@@ -16,9 +22,37 @@ const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export interface VerifiedSessionUser {
   sub: string;
   email: string;
+  username?: string;
+  shop_id?: string;
+  account_type?: 'owner' | 'staff' | 'admin';
+  sv?: number;
   role: 'admin' | 'owner' | 'cashier' | 'staff';
   iat: number;
   exp: number;
+}
+
+export function isStaffSessionUser(
+  user: VerifiedSessionUser | null | undefined
+): boolean {
+  if (!user) return false;
+  return (
+    user.role === 'cashier' ||
+    user.role === 'staff' ||
+    user.account_type === 'staff' ||
+    Boolean(user.shop_id) ||
+    isShopScopedStaffUserId(user.sub)
+  );
+}
+
+export function isShopBoundStaffSession(
+  user: VerifiedSessionUser | null | undefined
+): boolean {
+  if (!user) return false;
+  return (
+    user.account_type === 'staff' ||
+    Boolean(user.shop_id) ||
+    isShopScopedStaffUserId(user.sub)
+  );
 }
 
 export function isServerSigningSecretConfigured(): boolean {
@@ -52,7 +86,13 @@ function signBase64Url(input: string, secret: string): string {
 }
 
 export function issueSessionToken(
-  user: Pick<Profile, 'id' | 'email'> & {
+  user: Pick<Profile, 'id'> & {
+    email?: string;
+    username?: string;
+    shop_id?: string;
+    account_type?: 'owner' | 'staff' | 'admin';
+    session_version?: number;
+    sv?: number;
     role?: 'admin' | 'owner' | 'cashier' | 'staff';
     is_admin?: boolean;
   },
@@ -60,20 +100,49 @@ export function issueSessionToken(
 ): string {
   const nowSec = Math.floor(Date.now() / 1000);
   const emailLower = (user.email || '').trim().toLowerCase();
-  const isAdmin =
-    Boolean(user.is_admin) ||
-    user.role === 'admin' ||
-    isSuperAdminEmail(emailLower);
+  const shopIdClean =
+    typeof user.shop_id === 'string' && user.shop_id.trim()
+      ? user.shop_id.trim()
+      : undefined;
+  const usernameClean =
+    typeof user.username === 'string' && user.username.trim()
+      ? normalizeStaffUsername(user.username)
+      : undefined;
+  const isStaffScoped =
+    user.account_type === 'staff' ||
+    Boolean(shopIdClean) ||
+    Boolean(usernameClean) ||
+    isShopScopedStaffUserId(user.id);
 
-  const resolvedRole: VerifiedSessionUser['role'] = isAdmin
-    ? 'admin'
-    : user.role === 'cashier' || user.role === 'staff'
-      ? user.role
-      : 'owner';
+  const isAdmin =
+    !isStaffScoped &&
+    (Boolean(user.is_admin) ||
+      user.role === 'admin' ||
+      isSuperAdminEmail(emailLower));
+
+  const resolvedRole: VerifiedSessionUser['role'] = isStaffScoped
+    ? user.role === 'cashier'
+      ? 'cashier'
+      : 'staff'
+    : isAdmin
+      ? 'admin'
+      : user.role === 'cashier' || user.role === 'staff'
+        ? user.role
+        : 'owner';
+
+  const svRaw = user.sv ?? user.session_version;
+  const sv =
+    typeof svRaw === 'number' && Number.isFinite(svRaw) && svRaw >= 1
+      ? Math.floor(svRaw)
+      : undefined;
 
   const payload: VerifiedSessionUser = {
     sub: user.id,
-    email: emailLower,
+    email: isStaffScoped ? emailLower : emailLower,
+    ...(usernameClean ? { username: usernameClean } : {}),
+    ...(shopIdClean ? { shop_id: shopIdClean } : {}),
+    ...(isStaffScoped ? { account_type: 'staff' as const } : {}),
+    ...(sv !== undefined ? { sv } : {}),
     role: resolvedRole,
     iat: nowSec,
     exp: nowSec + ttlSeconds,
@@ -114,17 +183,52 @@ export function verifySessionToken(token?: string | null): VerifiedSessionUser |
       !decoded ||
       typeof decoded.sub !== 'string' ||
       !decoded.sub ||
-      typeof decoded.email !== 'string' ||
-      !decoded.email ||
       typeof decoded.exp !== 'number' ||
       decoded.exp <= nowSec
     ) {
       return null;
     }
 
+    const shopIdClean =
+      typeof decoded.shop_id === 'string' && decoded.shop_id.trim()
+        ? decoded.shop_id.trim()
+        : undefined;
+    const usernameClean =
+      typeof decoded.username === 'string' && decoded.username.trim()
+        ? normalizeStaffUsername(decoded.username)
+        : undefined;
+    const isStaffScoped =
+      decoded.account_type === 'staff' ||
+      Boolean(shopIdClean) ||
+      Boolean(usernameClean) ||
+      isShopScopedStaffUserId(decoded.sub);
+
+    const emailClean =
+      typeof decoded.email === 'string' ? decoded.email.trim().toLowerCase() : '';
+
+    if (isStaffScoped) {
+      if (!shopIdClean || (!usernameClean && !emailClean)) {
+        return null;
+      }
+      const staffRole: 'cashier' | 'staff' =
+        decoded.role === 'cashier' ? 'cashier' : 'staff';
+      return {
+        ...decoded,
+        email: emailClean,
+        ...(usernameClean ? { username: usernameClean } : {}),
+        shop_id: shopIdClean,
+        account_type: 'staff',
+        role: staffRole,
+      };
+    }
+
+    if (!emailClean) {
+      return null;
+    }
+
     // Re-verify admin claim server-side: only authoritative super admin email or DB admin can hold role=admin
     const resolvedRole: VerifiedSessionUser['role'] =
-      decoded.role === 'admin' && isSuperAdminEmail(decoded.email)
+      decoded.role === 'admin' && isSuperAdminEmail(emailClean)
         ? 'admin'
         : decoded.role === 'cashier' || decoded.role === 'staff'
           ? decoded.role
@@ -132,7 +236,7 @@ export function verifySessionToken(token?: string | null): VerifiedSessionUser |
 
     return {
       ...decoded,
-      email: decoded.email.trim().toLowerCase(),
+      email: emailClean,
       role: resolvedRole,
     };
   } catch {
@@ -329,14 +433,28 @@ async function lookupShopBasic(
 ): Promise<{ id: string; owner_id: string } | null> {
   if (!shopId) return null;
   let shop: { id: string; owner_id: string } | null = null;
+  if (isShopMembershipDbAuthoritative()) {
+    try {
+      const sb = getMembershipDbClient();
+      const { data } = await sb
+        .from('shops')
+        .select('id, owner_id')
+        .eq('id', shopId)
+        .maybeSingle();
+      if (data && typeof data.id === 'string') {
+        shop = { id: data.id, owner_id: String(data.owner_id || '') };
+      }
+    } catch {
+      // fail closed when authoritative DB is configured
+    }
+    return shop;
+  }
+
   try {
-    const sb = getSupabaseDbClient();
-    const { data } = await sb
-      .from('shops')
-      .select('id, owner_id')
-      .eq('id', shopId)
-      .maybeSingle();
-    shop = data;
+    const found = await dbGetShopById(shopId);
+    if (found) {
+      shop = { id: found.id, owner_id: found.owner_id };
+    }
   } catch {
     // fallback to seed shops
   }
@@ -361,6 +479,20 @@ export async function getRequestShopMembership(
   const user = await verifyRequestUser(req);
   if (!user || !shopId) {
     return { user: user || null, membership: null };
+  }
+  if (user.shop_id && user.shop_id !== shopId) {
+    return { user, membership: null };
+  }
+  if (isShopBoundStaffSession(user)) {
+    const staffCheck = await verifyActiveShopStaffSession({
+      userId: user.sub,
+      shopId,
+      sessionVersion: user.sv,
+    });
+    return {
+      user,
+      membership: staffCheck.active ? staffCheck.membership : null,
+    };
   }
   const shop = await lookupShopBasic(shopId);
   const membership = await resolveUserShopMembership({
@@ -401,6 +533,19 @@ export async function requireShopPermission(
     };
   }
 
+  if (user.shop_id && user.shop_id !== shopId) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Tài khoản nhân viên chỉ được phép truy cập vào cửa hàng đã được phân công.',
+          code: 'FORBIDDEN_CROSS_SHOP_ACCESS',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
   const shop = await lookupShopBasic(shopId);
   if (!shop && user.role !== 'admin') {
     return {
@@ -411,12 +556,22 @@ export async function requireShopPermission(
     };
   }
 
-  const membership = await resolveUserShopMembership({
-    userId: user.sub,
-    shopId,
-    isSuperAdmin: user.role === 'admin',
-    shopOwnerId: shop?.owner_id ?? null,
-  });
+  let membership: ShopMembership | null = null;
+  if (isShopBoundStaffSession(user)) {
+    const staffCheck = await verifyActiveShopStaffSession({
+      userId: user.sub,
+      shopId,
+      sessionVersion: user.sv,
+    });
+    membership = staffCheck.active ? staffCheck.membership : null;
+  } else {
+    membership = await resolveUserShopMembership({
+      userId: user.sub,
+      shopId,
+      isSuperAdmin: user.role === 'admin',
+      shopOwnerId: shop?.owner_id ?? null,
+    });
+  }
 
   if (!membership || !membership.is_active) {
     return {
@@ -463,6 +618,19 @@ export async function requireShopOwnerOrAdmin(
   if (auth.errorResponse) return auth;
   const { user } = auth;
 
+  if (isStaffSessionUser(user)) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Tài khoản nhân viên không có quyền thực hiện thao tác dành riêng cho chủ quán.',
+          code: 'FORBIDDEN_STAFF_OWNER_ACTION',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
   if (user.role === 'admin') {
     return { user };
   }
@@ -486,6 +654,20 @@ export async function requireShopOwnerOrAdmin(
     };
   }
 
+  const explicitMemberships = await dbGetShopMemberships(shopId);
+  const explicitRow = explicitMemberships.find((m) => m.user_id === user.sub);
+  if (explicitRow && !explicitRow.is_active) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Tài khoản chủ quán hiện đang bị vô hiệu hóa tại cửa hàng này.',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
   if (shop.owner_id !== user.sub) {
     const membership = await resolveUserShopMembership({
       userId: user.sub,
@@ -504,6 +686,88 @@ export async function requireShopOwnerOrAdmin(
         ),
       };
     }
+  }
+
+  return { user };
+}
+
+export async function requireActiveShopOwner(
+  req: Request,
+  shopId: string
+): Promise<
+  | { user: VerifiedSessionUser; errorResponse?: undefined }
+  | { user?: undefined; errorResponse: NextResponse }
+> {
+  const auth = await requireAuthenticatedUser(req);
+  if (auth.errorResponse) return auth;
+  const { user } = auth;
+
+  if (isStaffSessionUser(user) || user.role === 'admin') {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Chỉ chủ quán đang hoạt động của cửa hàng này mới được phép tạo hoặc quản lý tài khoản nhân viên.',
+          code: 'FORBIDDEN_NOT_ACTIVE_SHOP_OWNER',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (!shopId) {
+    return {
+      errorResponse: NextResponse.json(
+        { error: 'Thiếu mã cửa hàng (shopId).' },
+        { status: 400 }
+      ),
+    };
+  }
+
+  const shop = await lookupShopBasic(shopId);
+  if (!shop) {
+    return {
+      errorResponse: NextResponse.json(
+        { error: 'Không tìm thấy cửa hàng.' },
+        { status: 404 }
+      ),
+    };
+  }
+
+  const explicitMemberships = await dbGetShopMemberships(shopId);
+  const explicitRow = explicitMemberships.find((m) => m.user_id === user.sub);
+  if (explicitRow && !explicitRow.is_active) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Tài khoản chủ quán hiện đang bị vô hiệu hóa tại cửa hàng này.',
+          code: 'FORBIDDEN_INACTIVE_SHOP_OWNER',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  const isTrueOwner = shop.owner_id === user.sub;
+  const isExplicitActiveOwner =
+    Boolean(explicitRow) &&
+    explicitRow?.role === 'owner' &&
+    explicitRow?.is_active === true &&
+    !explicitRow?.username &&
+    !isShopScopedStaffUserId(user.sub);
+
+  if (!isTrueOwner && !isExplicitActiveOwner) {
+    return {
+      errorResponse: NextResponse.json(
+        {
+          error:
+            'Chỉ chủ quán đang hoạt động của cửa hàng này mới được phép tạo hoặc quản lý tài khoản nhân viên.',
+          code: 'FORBIDDEN_NOT_ACTIVE_SHOP_OWNER',
+        },
+        { status: 403 }
+      ),
+    };
   }
 
   return { user };
