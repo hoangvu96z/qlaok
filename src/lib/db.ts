@@ -1259,6 +1259,7 @@ export async function dbUpdateShop(
     .single();
 
   if (error) throw new Error(error.message);
+  if (!data) return null;
   const updated = data as Shop;
 
   if (nextSlug && previousSlug && previousSlug !== nextSlug) {

@@ -6,14 +6,15 @@ import { test } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { PATCH as patchOrders, POST as postOrders } from '@/app/api/orders/route';
-import { PATCH as patchShops } from '@/app/api/shops/route';
-import { setSupabaseDbClientForTests } from '@/lib/db';
+import { GET as getShops, PATCH as patchShops } from '@/app/api/shops/route';
+import {
+  dbGetAllShopsAndProfile,
+  dbGetShopById,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
 import {
   dbCreateOrder,
   dbGetOrderById,
-  dbRecordOrderPrint,
-  dbUpdateOrderStatus,
-  normalizeOrderRecord,
   setMposDbClientForTests,
 } from '@/lib/mpos-store';
 import {
@@ -24,10 +25,8 @@ import {
   getBuiltInOrderWorkflowTemplate,
   getDefaultShopLabelPrintConfig,
   LABEL_PAPER_PRESET_SPECS,
-  resolveCompletedTerminalWorkflowStep,
   resolveLabelLocalizedText,
   resolveOrderCurrentWorkflowStep,
-  resolveOrderWorkflowMutation,
   resolveShopLabelPrintConfig,
   resolveShopOrderWorkflowConfig,
   resolveWorkflowLocalizedText,
@@ -2257,7 +2256,7 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
   assert.equal(switchedToCustom.template_id, 'custom');
   assert.deepEqual(switchedToCustom.steps, counterBar.steps);
 
-  // 2. KDS toggle and start-step selection preserve single-'new'-step invariant
+  // 2. KDS toggle and start-step selection preserve single-'new'-step invariant and valid DAG edges
   const kdsToggled = setWorkflowKdsEnabled(counterBar, true);
   assert.equal(kdsToggled.kds_enabled, true);
   assert.equal(kdsToggled.template_id, 'custom');
@@ -2268,6 +2267,33 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
     startChanged.steps.filter((s) => s.stage === 'new').length,
     1
   );
+
+  // Switching start_step_id to another preparing step ('bar_making') rewires edges so the workflow stays valid and never regresses or orphans steps
+  const switchedStartToPrep = setWorkflowStartStep(counterBar, 'bar_making');
+  assert.equal(switchedStartToPrep.start_step_id, 'bar_making');
+  assert.equal(switchedStartToPrep.template_id, 'custom');
+  assert.equal(
+    switchedStartToPrep.steps.filter((s) => s.stage === 'new').length,
+    1
+  );
+  assert.equal(switchedStartToPrep.steps[0].id, 'bar_making');
+  assert.equal(switchedStartToPrep.steps[0].stage, 'new');
+  const switchedStartValidation =
+    validateOrderWorkflowConfig(switchedStartToPrep);
+  assert.equal(
+    switchedStartValidation.valid,
+    true,
+    `Switching start step to preparing step must produce a valid DAG: ${JSON.stringify(switchedStartValidation.errors)}`
+  );
+  assert.equal(
+    resolveShopOrderWorkflowConfig(switchedStartToPrep).start_step_id,
+    'bar_making'
+  );
+
+  // Attempting to set a terminal completed step ('served') as start_step_id is ignored so terminal step is not corrupted
+  const ignoredCompletedStart = setWorkflowStartStep(counterBar, 'served');
+  assert.equal(ignoredCompletedStart.start_step_id, 'counter_received');
+  assert.equal(validateOrderWorkflowConfig(ignoredCompletedStart).valid, true);
 
   // 3. Adding steps within limits (2..8), keeping stable IDs, editing VI/EN labels & flags, and connecting steps
   let draft = applyWorkflowTemplateSelection(
@@ -2427,11 +2453,16 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
   function ident(name: string): string {
     return `"${name.replace(/"/g, '""')}"`;
   }
+  let simulateShopUpdateDbError = false;
+  let simulateShopUpdateNullRow = false;
+
   class PgQueryBuilder {
     private table: string;
     private filters: Array<{ col: string; val: unknown }> = [];
+    private inFilters: Array<{ col: string; vals: unknown[] }> = [];
     private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
     private updatePayload: Record<string, unknown> | null = null;
+    private limitCount: number | null = null;
     constructor(table: string) {
       this.table = table;
     }
@@ -2444,6 +2475,17 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
     }
     eq(col: string, val: unknown) {
       this.filters.push({ col, val });
+      return this;
+    }
+    in(col: string, vals: unknown[]) {
+      this.inFilters.push({ col, vals });
+      return this;
+    }
+    order() {
+      return this;
+    }
+    limit(n: number) {
+      this.limitCount = n;
       return this;
     }
     single() {
@@ -2460,17 +2502,37 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
     }> {
       try {
         const params: unknown[] = [];
+        const clauses: string[] = [];
+        for (const f of this.filters) {
+          params.push(f.val);
+          clauses.push(`${ident(f.col)} = $${params.length}`);
+        }
+        for (const inf of this.inFilters) {
+          if (inf.vals.length === 0) {
+            clauses.push('1 = 0');
+          } else {
+            const placeholders = inf.vals.map((v) => {
+              params.push(v);
+              return `$${params.length}`;
+            });
+            clauses.push(`${ident(inf.col)} IN (${placeholders.join(', ')})`);
+          }
+        }
         const whereSql =
-          this.filters.length > 0
-            ? ' WHERE ' +
-              this.filters
-                .map((f) => {
-                  params.push(f.val);
-                  return `${ident(f.col)} = $${params.length}`;
-                })
-                .join(' AND ')
-            : '';
+          clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
         if (this.updatePayload) {
+          if (simulateShopUpdateDbError && this.table === 'shops') {
+            return {
+              data: null,
+              error: { message: 'SIMULATED_DB_WRITE_FAILURE' },
+            };
+          }
+          if (simulateShopUpdateNullRow && this.table === 'shops') {
+            return {
+              data: null,
+              error: null,
+            };
+          }
           const keys = Object.keys(this.updatePayload);
           const setClauses = keys.map((k) => {
             const v = this.updatePayload![k];
@@ -2488,8 +2550,10 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
             error: null,
           };
         }
+        const limitSql =
+          this.limitCount !== null ? ` LIMIT ${Number(this.limitCount)}` : '';
         const { rows } = await db.query(
-          `SELECT * FROM ${ident(this.table)}${whereSql}`,
+          `SELECT * FROM ${ident(this.table)}${whereSql}${limitSql}`,
           params
         );
         return {
@@ -2650,6 +2714,168 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
         'counter_bar_serve'
       );
     }
+
+    // 6c. Fresh reload via GET /api/shops?shopId=..., GET /api/shops?ownerId=..., dbGetShopById, and dbGetAllShopsAndProfile resolves to the saved counter_bar_serve workflow (never reverting to classic_kitchen)
+    const reloadByShopIdRes = await getShops(
+      new Request('http://localhost/api/shops?shopId=wf-ui-shop', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    assert.equal(reloadByShopIdRes.status, 200);
+    const reloadedByShopIdPayload = (await reloadByShopIdRes.json()) as {
+      shop: Shop;
+    };
+    assert.deepEqual(
+      resolveShopOrderWorkflowConfig(reloadedByShopIdPayload.shop.theme_config),
+      counterBar
+    );
+
+    const reloadByOwnerIdRes = await getShops(
+      new Request(
+        `http://localhost/api/shops?ownerId=${encodeURIComponent(ownerId)}`,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        }
+      )
+    );
+    assert.equal(reloadByOwnerIdRes.status, 200);
+    const reloadedByOwnerIdPayload = (await reloadByOwnerIdRes.json()) as {
+      shops: Shop[];
+    };
+    const reloadedOwnerShop = reloadedByOwnerIdPayload.shops.find(
+      (s) => s.id === 'wf-ui-shop'
+    );
+    assert.ok(reloadedOwnerShop, 'owner reload includes wf-ui-shop');
+    assert.deepEqual(
+      resolveShopOrderWorkflowConfig(reloadedOwnerShop.theme_config),
+      counterBar
+    );
+
+    // 6d. Saving a custom workflow with edited rules, added step, and switched start step persists and resolves identically after reload + subsequent unrelated Settings PATCH
+    let customRulesDraft = applyWorkflowTemplateSelection(
+      counterBar,
+      'simple_counter'
+    );
+    customRulesDraft = setWorkflowKdsEnabled(customRulesDraft, true);
+    customRulesDraft = addWorkflowStep(customRulesDraft, {
+      id: 'tea_shake',
+      stage: 'preparing',
+      labelVi: 'Lắc trà & đóng nắp',
+      labelEn: 'Shake tea & seal',
+      actionLabelVi: 'Lắc trà & in tem',
+      actionLabelEn: 'Shake & print label',
+      customerLabelVi: 'Quầy đang lắc trà',
+      customerLabelEn: 'Shaking your tea',
+      show_on_kds: true,
+      suggest_label_print: true,
+    });
+    customRulesDraft = setWorkflowStartStep(customRulesDraft, 'tea_shake');
+    assert.equal(validateOrderWorkflowConfig(customRulesDraft).valid, true);
+
+    let reloadedDashboardShopAfterCustomSave: Shop | null = null;
+    const customSaveResult = await saveShopOrderWorkflowConfig({
+      shopId: 'wf-ui-shop',
+      draft: customRulesDraft,
+      locale: 'vi',
+      fetchImpl: makeRouteFetch(ownerToken),
+      onUpdateActiveShop: (s) => {
+        reloadedDashboardShopAfterCustomSave = s;
+      },
+      onRefreshDashboard: async () => {
+        const dashData = await dbGetAllShopsAndProfile(ownerId);
+        reloadedDashboardShopAfterCustomSave =
+          dashData.shops.find((s) => s.id === 'wf-ui-shop') ?? null;
+      },
+    });
+    assert.equal(customSaveResult.ok, true);
+    assert.ok(reloadedDashboardShopAfterCustomSave);
+    assert.deepEqual(
+      resolveShopOrderWorkflowConfig(
+        (reloadedDashboardShopAfterCustomSave as Shop).theme_config
+      ),
+      validateOrderWorkflowConfig(customRulesDraft).config
+    );
+
+    // Subsequent general Settings PATCH that omits orderWorkflow preserves the saved custom workflow and unrelated theme_config keys
+    const generalSettingsPatchRes = await patchShops(
+      new Request('http://localhost/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: 'wf-ui-shop',
+          name: 'Quán Cafe Flowchart Updated',
+          theme_config: {
+            primaryColor: '#0ea5e9',
+            layout: 'list',
+          },
+        }),
+      })
+    );
+    assert.equal(generalSettingsPatchRes.status, 200);
+    const freshShopFromDb = await dbGetShopById('wf-ui-shop');
+    assert.ok(freshShopFromDb);
+    assert.equal(freshShopFromDb.theme_config.primaryColor, '#0ea5e9');
+    assert.equal(freshShopFromDb.theme_config.paymentQr?.accountNo, '88889999');
+    assert.deepEqual(
+      resolveShopOrderWorkflowConfig(freshShopFromDb.theme_config),
+      validateOrderWorkflowConfig(customRulesDraft).config
+    );
+
+    const reloadedEditorMarkup = renderToStaticMarkup(
+      React.createElement(ShopOrderWorkflowEditor, {
+        shop: freshShopFromDb,
+        membership: { role: 'owner', permissions: [], is_active: true },
+        locale: 'vi',
+      })
+    );
+    assert.match(reloadedEditorMarkup, /Mẫu: Tùy chỉnh/);
+    assert.match(
+      reloadedEditorMarkup,
+      /data-testid="workflow-step-card-tea_shake"/
+    );
+    assert.match(reloadedEditorMarkup, /Lắc trà &amp; đóng nắp/);
+
+    // 6e. Simulated DB write failure and missing-row update return ok: false and never mutate persisted workflow
+    simulateShopUpdateDbError = true;
+    let updatedOnFailure: Shop | null = null;
+    const failedDbSave = await saveShopOrderWorkflowConfig({
+      shopId: 'wf-ui-shop',
+      draft: getBuiltInOrderWorkflowTemplate('classic_kitchen'),
+      locale: 'vi',
+      fetchImpl: makeRouteFetch(ownerToken),
+      onUpdateActiveShop: (s) => {
+        updatedOnFailure = s;
+      },
+    });
+    simulateShopUpdateDbError = false;
+    assert.equal(failedDbSave.ok, false);
+    assert.equal(updatedOnFailure, null);
+
+    simulateShopUpdateNullRow = true;
+    const nullRowSave = await saveShopOrderWorkflowConfig({
+      shopId: 'wf-ui-shop',
+      draft: getBuiltInOrderWorkflowTemplate('classic_kitchen'),
+      locale: 'vi',
+      fetchImpl: makeRouteFetch(ownerToken),
+      onUpdateActiveShop: (s) => {
+        updatedOnFailure = s;
+      },
+    });
+    simulateShopUpdateNullRow = false;
+    assert.equal(nullRowSave.ok, false);
+    assert.equal(updatedOnFailure, null);
+
+    const shopAfterFailedWrites = await dbGetShopById('wf-ui-shop');
+    assert.deepEqual(
+      resolveShopOrderWorkflowConfig(shopAfterFailedWrites?.theme_config),
+      validateOrderWorkflowConfig(customRulesDraft).config,
+      'persisted workflow must remain unchanged after failed DB writes'
+    );
 
     // 7. Server-side rendering of ShopOrderWorkflowEditor component (owner interactive, validation alert, and staff read-only)
     const testShop: Shop = {

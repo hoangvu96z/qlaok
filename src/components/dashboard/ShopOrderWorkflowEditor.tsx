@@ -152,9 +152,9 @@ export function setWorkflowStartStep(
 ): ShopOrderWorkflowConfig {
   const cloned = cloneWorkflowConfig(config);
   const trimmed = startStepId.trim();
-  const targetExists = cloned.steps.some((step) => step.id === trimmed);
+  const targetStep = cloned.steps.find((step) => step.id === trimmed);
 
-  if (!targetExists) {
+  if (!targetStep) {
     return {
       ...cloned,
       template_id: 'custom',
@@ -162,27 +162,95 @@ export function setWorkflowStartStep(
     };
   }
 
-  const updatedSteps = cloned.steps.map((step) => {
+  if (targetStep.stage === 'completed') {
+    return cloned;
+  }
+
+  const oldStartStep =
+    cloned.steps.find((step) => step.id === cloned.start_step_id) ||
+    cloned.steps.find((step) => step.stage === 'new');
+
+  if (!oldStartStep || oldStartStep.id === trimmed) {
+    const updatedSteps = cloned.steps.map((step) => {
+      if (step.id === trimmed) {
+        return {
+          ...step,
+          stage: 'new' as OrderWorkflowStepStage,
+        };
+      }
+      if (step.stage === 'new') {
+        return {
+          ...step,
+          stage: 'preparing' as OrderWorkflowStepStage,
+        };
+      }
+      return step;
+    });
+
+    return {
+      ...cloned,
+      template_id: 'custom',
+      start_step_id: trimmed,
+      steps: updatedSteps,
+    };
+  }
+
+  const oldStartId = oldStartStep.id;
+  const oldStartNext = oldStartStep.next_step_ids.filter(
+    (id) => id !== trimmed && id !== oldStartId
+  );
+  const targetOldNext = targetStep.next_step_ids.filter(
+    (id) => id !== oldStartId && id !== trimmed
+  );
+  const fallbackCompleted = cloned.steps.find((s) => s.stage === 'completed');
+
+  const newStartNextIds = Array.from(
+    new Set([oldStartId, ...oldStartNext])
+  );
+  const demotedOldStartNextIds =
+    targetOldNext.length > 0
+      ? Array.from(new Set([...targetOldNext, ...oldStartNext]))
+      : oldStartNext.length > 0
+        ? [...oldStartNext]
+        : fallbackCompleted
+          ? [fallbackCompleted.id]
+          : [];
+
+  const rewiredSteps = cloned.steps.map((step) => {
     if (step.id === trimmed) {
       return {
         ...step,
         stage: 'new' as OrderWorkflowStepStage,
+        next_step_ids: newStartNextIds,
       };
     }
-    if (step.stage === 'new') {
+    if (step.id === oldStartId) {
       return {
         ...step,
         stage: 'preparing' as OrderWorkflowStepStage,
+        next_step_ids: demotedOldStartNextIds,
+      };
+    }
+    if (step.next_step_ids.includes(trimmed)) {
+      const redirected = step.next_step_ids
+        .map((id) => (id === trimmed ? oldStartId : id))
+        .filter((id) => id !== step.id);
+      return {
+        ...step,
+        next_step_ids: Array.from(new Set(redirected)),
       };
     }
     return step;
   });
 
+  const newStartObj = rewiredSteps.find((s) => s.id === trimmed)!;
+  const remainingSteps = rewiredSteps.filter((s) => s.id !== trimmed);
+
   return {
     ...cloned,
     template_id: 'custom',
     start_step_id: trimmed,
-    steps: updatedSteps,
+    steps: [newStartObj, ...remainingSteps],
   };
 }
 
@@ -785,7 +853,12 @@ export async function saveShopOrderWorkflowConfig(params: {
       errors?: OrderWorkflowValidationError[];
     };
 
-    if (!res.ok || !data?.shop || !data.shop.id) {
+    if (
+      !res.ok ||
+      !data?.shop ||
+      !data.shop.id ||
+      data.shop.id !== params.shopId
+    ) {
       return {
         ok: false,
         error:
@@ -796,6 +869,20 @@ export async function saveShopOrderWorkflowConfig(params: {
         ...(Array.isArray(data?.errors)
           ? { validationErrors: data.errors }
           : {}),
+      };
+    }
+
+    const persistedValidation = validateOrderWorkflowConfig(
+      data.shop.theme_config?.orderWorkflow
+    );
+    if (!persistedValidation.valid || !persistedValidation.config) {
+      return {
+        ok: false,
+        error:
+          data?.error ||
+          (isEn
+            ? 'Server response did not include the saved order workflow.'
+            : 'Phản hồi máy chủ không chứa cấu hình quy trình đơn hàng đã lưu.'),
       };
     }
 
@@ -826,7 +913,7 @@ export async function saveShopOrderWorkflowConfig(params: {
     return {
       ok: true,
       shop: data.shop,
-      workflow: resolveShopOrderWorkflowConfig(data.shop.theme_config),
+      workflow: persistedValidation.config,
     };
   } catch (err) {
     return {
@@ -929,7 +1016,10 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
     );
     setErrorMsg(null);
     setNoticeMsg(null);
-  }, [shopId, serializedPersistedWorkflow, props.initialDraftOverride, activeShop?.theme_config]);
+    // Synchronize only when shopId or the serialized persisted workflow actually changes,
+    // not when activeShop.theme_config gets a new object reference with identical workflow data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, serializedPersistedWorkflow, props.initialDraftOverride]);
 
   if (!activeShop) return null;
 
@@ -1261,12 +1351,14 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
               onChange={(e) => handleStartStepChange(e.target.value)}
               className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-900"
             >
-              {draft.steps.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {resolveWorkflowLocalizedText(s.label_i18n, effectiveLocale)} (#
-                  {s.id})
-                </option>
-              ))}
+              {draft.steps
+                .filter((s) => s.stage !== 'completed')
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {resolveWorkflowLocalizedText(s.label_i18n, effectiveLocale)} (#
+                    {s.id})
+                  </option>
+                ))}
             </select>
           </div>
         </div>
