@@ -452,7 +452,7 @@ test('CounterOrdersPage enforces 401/403 session expiration, displays actionable
   );
 });
 
-test('DashboardShell liveToastOrder is a single full-card navigation link with no nested interactive controls', async () => {
+test('DashboardShell renders the shared full-card new-order toast and dismisses it on open', async () => {
   const fsMod = await import('node:fs');
   const pathMod = await import('node:path');
   const layoutSource = fsMod.readFileSync(
@@ -463,76 +463,73 @@ test('DashboardShell liveToastOrder is a single full-card navigation link with n
     'utf8'
   );
 
-  const toastMatch = layoutSource.match(
-    /\{liveToastOrder\s*&&\s*\(\s*([\s\S]*?<\/Link>)\s*\)\s*\}/
+  const dashboardToastMatch = layoutSource.match(
+    /\{liveToastOrder\s*&&\s*\(\s*<NewOrderToastCard\b([\s\S]*?)\/>\s*\)\s*\}/
   );
-  assert.ok(toastMatch, 'liveToastOrder block should exist in DashboardShell');
-  const toastBlock = toastMatch[1];
+  assert.ok(
+    dashboardToastMatch,
+    'DashboardShell must render NewOrderToastCard for liveToastOrder'
+  );
+  const dashboardToastProps = dashboardToastMatch[1];
 
-  // 1. Root element is one Next Link with href="/dashboard/orders"
+  // The production shell passes the current order/configuration and closes the toast.
   assert.match(
-    toastBlock.trim(),
-    /^<Link\s+href="\/dashboard\/orders"/,
-    'Root element of live toast must be a Next Link with href="/dashboard/orders"'
+    dashboardToastProps,
+    /order=\{liveToastOrder\}/,
+    'DashboardShell must pass the current order into the shared card'
   );
+  assert.match(
+    dashboardToastProps,
+    /position=\{toastPosition\}/,
+    'DashboardShell must pass the configured toast position'
+  );
+  assert.match(
+    dashboardToastProps,
+    /onOpenOrders=\{\(\)\s*=>\s*setLiveToastOrder\(null\)\}/,
+    'Opening the production toast must clear liveToastOrder'
+  );
+  assert.match(dashboardToastProps, /openOrdersLabel=\{t\(/);
+  assert.match(dashboardToastProps, /newOrderBadgeLabel=\{t\(/);
+  assert.match(dashboardToastProps, /totalLabel=\{tx\(/);
 
-  // 2. Closes liveToastOrder state on click
-  assert.match(
-    toastBlock,
-    /onClick=\{\s*\(\)\s*=>\s*setLiveToastOrder\(null\)\s*\}/,
-    'Toast Link must invoke setLiveToastOrder(null) on click'
+  const componentMatch = layoutSource.match(
+    /export function NewOrderToastCard\([\s\S]*?\n\}\n\nfunction DashboardShell/
   );
+  assert.ok(componentMatch, 'NewOrderToastCard implementation must exist before DashboardShell');
+  const cardComponent = componentMatch[0];
 
-  // 3. Accessible label and keyboard focus-visible styling
+  // The actual shared component uses one full-card link and one dismiss callback.
   assert.match(
-    toastBlock,
-    /aria-label=\{`\$\{liveToastOrder\.tableLabel\}\s*•\s*#\$\{liveToastOrder\.orderCode\}/,
-    'Toast Link must have accessible aria-label'
+    cardComponent,
+    /<Link\s+href=\{targetHref\}/,
+    'The shared card must navigate through one Next Link'
   );
   assert.match(
-    toastBlock,
-    /aria-live="polite"/,
-    'Toast Link should announce new order notifications without overriding link semantics'
+    cardComponent,
+    /onOpenOrders\(\)/,
+    'The link click must invoke the dismiss callback'
   );
-  assert.match(
-    toastBlock,
-    /focus-visible:ring-2/,
-    'Toast Link must provide keyboard focus-visible styling'
-  );
-
-  // 4. No absolute background link layer
   assert.doesNotMatch(
-    toastBlock,
-    /className="[^"]*absolute\s+inset-0[^"]*"/,
-    'Must not use absolute background link layer'
+    dashboardToastProps,
+    /targetHref=/,
+    'The production card should keep its canonical /dashboard/orders target'
   );
+  assert.match(cardComponent, /aria-live="polite"/);
+  assert.match(cardComponent, /data-testid="new-order-toast-card"/);
+  assert.match(cardComponent, /focus-visible:ring-2/);
+  assert.match(cardComponent, /pointer-events-none/);
+  assert.match(cardComponent, /cursor-pointer/);
 
-  // 5. No nested Link or button controls inside the toast card
-  const linkMatches = toastBlock.match(/<Link\b/g);
+  const linkMatches = cardComponent.match(/<Link\b/g);
   assert.equal(
     linkMatches?.length,
     1,
-    'Must have exactly one Link (the root card Link)'
+    'The shared card must have exactly one root Link'
   );
-
-  const buttonMatches = toastBlock.match(/<button\b/g);
+  const buttonMatches = cardComponent.match(/<button\b/g);
   assert.equal(
     buttonMatches,
     null,
-    'Must not have any nested button controls inside the toast card'
-  );
-
-  // 6. Yellow CTA is rendered as a non-interactive span
-  assert.match(
-    toastBlock,
-    /<span\s+className="[^"]*bg-amber-400[^"]*">\s*\{\s*t\('header\.openOrdersNow'\)\s*\}\s*<\/span>/,
-    'Yellow CTA must be a non-interactive styled span'
-  );
-
-  // 7. Decorative X icon is non-interactive with aria-hidden
-  assert.match(
-    toastBlock,
-    /aria-hidden="true"[\s\S]*?<X\s+className="h-4\s+w-4"/,
-    'X must be a decorative icon, not an interactive dismiss control'
+    'The shared card must not have nested buttons'
   );
 });
