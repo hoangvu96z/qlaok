@@ -149,6 +149,40 @@ export async function GET(req: Request) {
       });
     }
 
+    // Lightweight dashboard header badge & live-notification read path: requires explicit shopId
+    // and 'orders.view', reuses the scoped active-order helper filtered to 'new' orders plus
+    // pending service requests, and avoids catalog and stats queries.
+    if (view === 'badge') {
+      if (!rawShopId) {
+        return NextResponse.json(
+          {
+            error: 'Thiếu mã cửa hàng (shopId).',
+            code: 'SHOP_ID_REQUIRED',
+          },
+          { status: 400 }
+        );
+      }
+      const auth = await requireShopPermission(req, rawShopId, 'orders.view');
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const [activeOrders, serviceRequests] = await Promise.all([
+        dbGetShopActiveKitchenOrders(rawShopId),
+        dbGetShopServiceRequests(rawShopId, {
+          statuses: ['pending'],
+        }).catch(() => []),
+      ]);
+      const newOrders = activeOrders.filter((order) => order.status === 'new');
+      const pendingServiceRequests = serviceRequests.filter(
+        (request) => request.status === 'pending'
+      );
+
+      return NextResponse.json({
+        orders: newOrders,
+        serviceRequests: pendingServiceRequests,
+        membership: auth.membership,
+      });
+    }
+
     // Listing orders for a shop requires 'orders.view' permission
     const auth = await requireShopPermission(req, shopId, 'orders.view');
     if (auth.errorResponse) return auth.errorResponse;

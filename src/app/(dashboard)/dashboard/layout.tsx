@@ -397,7 +397,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       inFlightRef.current = request;
       try {
         const res = await fetch(
-          `/api/orders?shopId=${encodeURIComponent(shopId)}`,
+          `/api/orders?shopId=${encodeURIComponent(shopId)}&view=badge`,
           { cache: 'no-store', headers: getAuthHeaders() }
         );
         if (

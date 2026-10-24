@@ -28,6 +28,7 @@ import {
 import {
   dbCreateOrder,
   dbGetOrderById,
+  dbUpdateOrderStatus,
   resetMposStoreForTests,
 } from '../src/lib/mpos-store';
 import {
@@ -2297,5 +2298,374 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
       setShopMembershipDbClientForTest(null);
       await db.close();
     }
+  });
+
+  test('10. GET /api/orders?view=badge enforces shopId and orders.view, returns only new orders and pending service requests without catalog/stats work, and preserves default/KDS contracts', async () => {
+    const validSigA1 = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const validSigA2 = signTableQr(SHOP_A, 'tbl-fnb-02');
+    const validSigA3 = signTableQr(SHOP_A, 'tbl-fnb-03');
+
+    const catalogOnlyStaffId = 'staff-catalog-only-badge-001';
+    const catalogOnlyStaffToken = issueSessionToken({
+      id: catalogOnlyStaffId,
+      email: 'catalog-only-badge@qlaok.vn',
+      role: 'staff',
+    });
+    await dbUpsertShopMembership({
+      shop_id: SHOP_A,
+      user_id: catalogOnlyStaffId,
+      email: 'catalog-only-badge@qlaok.vn',
+      role: 'staff',
+      permissions: ['catalog.view'],
+      is_active: true,
+    });
+
+    // Fail-closed checks: missing shopId -> 400 SHOP_ID_REQUIRED, anonymous -> 401, unauthorized -> 403
+    for (const missingUrl of [
+      'http://localhost/api/orders?view=badge',
+      'http://localhost/api/orders?shopId=%20%20&view=badge',
+    ]) {
+      const missingShopRes = await getOrdersRoute(
+        new Request(missingUrl, {
+          headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+        })
+      );
+      assert.equal(missingShopRes.status, 400);
+      const missingShopJson = await missingShopRes.json();
+      assert.equal(missingShopJson.code, 'SHOP_ID_REQUIRED');
+    }
+
+    const anonBadgeRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`)
+    );
+    assert.equal(anonBadgeRes.status, 401);
+
+    for (const unauthorizedToken of [
+      OWNER_B_TOKEN,
+      INACTIVE_STAFF_TOKEN,
+      catalogOnlyStaffToken,
+    ]) {
+      const forbiddenRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${unauthorizedToken}` },
+        })
+      );
+      assert.equal(forbiddenRes.status, 403);
+    }
+
+    // Seed orders across statuses ('new', 'preparing', 'completed', 'cancelled') and shops
+    const newOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-01',
+      table_qr_sig: validSigA1,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 2,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const preparingOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-02',
+      table_qr_sig: validSigA2,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(preparingOrder.id, { status: 'preparing' });
+
+    const completedOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-03',
+      table_qr_sig: validSigA3,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(completedOrder.id, { status: 'completed' });
+
+    const cancelledOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_label: 'Bàn 04',
+      source: 'counter_pos',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(cancelledOrder.id, {
+      status: 'cancelled',
+      cancelled_reason: 'Khách đổi ý',
+    });
+
+    // Seed service requests in pending, acknowledged, and resolved states
+    const pendingReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_qr_sig: validSigA1,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(pendingReqRes.status, 201);
+    const { serviceRequest: pendingReq } = await pendingReqRes.json();
+
+    const ackReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-02',
+          table_qr_sig: validSigA2,
+          request_type: 'request_bill',
+        }),
+      })
+    );
+    assert.equal(ackReqRes.status, 201);
+    const { serviceRequest: ackReq } = await ackReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${STAFF_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: ackReq.id,
+          shop_id: SHOP_A,
+          status: 'acknowledged',
+        }),
+      })
+    );
+
+    const resolvedReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-03',
+          table_qr_sig: validSigA3,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(resolvedReqRes.status, 201);
+    const { serviceRequest: resolvedReq } = await resolvedReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OWNER_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: resolvedReq.id,
+          shop_id: SHOP_A,
+          status: 'resolved',
+        }),
+      })
+    );
+
+    // Valid staff and owner requests to view=badge receive only new orders and pending service requests,
+    // preserving toast fields and omitting top-level stats and items
+    for (const [token, expectedUserId] of [
+      [STAFF_A_TOKEN, STAFF_A_ID],
+      [OWNER_A_TOKEN, 'owner-demo-001'],
+    ] as const) {
+      const badgeRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(badgeRes.status, 200);
+      const badgeData = await badgeRes.json();
+
+      assert.deepEqual(
+        Object.keys(badgeData).sort(),
+        ['membership', 'orders', 'serviceRequests'],
+        'view=badge must return only { orders, serviceRequests, membership }'
+      );
+      assert.equal('stats' in badgeData, false, 'view=badge must omit stats');
+      assert.equal('items' in badgeData, false, 'view=badge must omit catalog items');
+      assert.equal(badgeData.membership?.user_id, expectedUserId);
+
+      assert.ok(
+        badgeData.orders.every((o: { status: string; shop_id: string }) =>
+          o.status === 'new' && o.shop_id === SHOP_A
+        ),
+        'view=badge must return only SHOP_A orders with status === "new"'
+      );
+      assert.deepEqual(
+        badgeData.orders.map((o: { id: string }) => o.id),
+        ['ord-seed-101', newOrder.id],
+        'view=badge must return only orders with status === "new"'
+      );
+      const returnedNewOrder = badgeData.orders.find(
+        (o: { id: string }) => o.id === newOrder.id
+      );
+      assert.ok(returnedNewOrder);
+      assert.equal(returnedNewOrder.id, newOrder.id);
+      assert.equal(returnedNewOrder.order_code, newOrder.order_code);
+      assert.equal(returnedNewOrder.table_label, newOrder.table_label);
+      assert.equal(returnedNewOrder.total_amount, 110000);
+      assert.ok(Array.isArray(returnedNewOrder.items));
+      assert.equal(returnedNewOrder.items.length, 1);
+      assert.equal(returnedNewOrder.items[0].quantity, 2);
+      assert.equal(
+        returnedNewOrder.items[0].name_vi,
+        'Mì Quảng Tôm Thịt Trứng Cút'
+      );
+
+      assert.deepEqual(
+        badgeData.serviceRequests.map((r: { id: string }) => r.id),
+        [pendingReq.id],
+        'view=badge must return only pending service requests'
+      );
+    }
+
+    // Prove view=badge returns before any call to dbGetShopCatalog or dbComputeShopRevenueAndInventoryStats
+    const queriedTables: string[] = [];
+    const calledRpcs: string[] = [];
+    setSupabaseDbClientForTests({
+      from(table: string) {
+        queriedTables.push(table);
+        if (table === 'categories' || table === 'items') {
+          throw new Error(`UNEXPECTED_CATALOG_QUERY_${table}`);
+        }
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  order() {
+                    return Promise.resolve({ data: [], error: null });
+                  },
+                  limit() {
+                    return Promise.resolve({ data: [], error: null });
+                  },
+                  maybeSingle() {
+                    return Promise.resolve({ data: null, error: null });
+                  },
+                };
+              },
+              order() {
+                return Promise.resolve({ data: [], error: null });
+              },
+            };
+          },
+        };
+      },
+      rpc(fnName: string) {
+        calledRpcs.push(fnName);
+        if (fnName === 'get_shop_order_stats_summary') {
+          throw new Error('UNEXPECTED_STATS_RPC');
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+    });
+    try {
+      const noCatalogBadgeRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+        })
+      );
+      assert.equal(noCatalogBadgeRes.status, 200);
+      assert.equal(
+        queriedTables.includes('categories') || queriedTables.includes('items'),
+        false,
+        'view=badge must return before calling dbGetShopCatalog (categories/items)'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'view=badge must return before calling dbComputeShopRevenueAndInventoryStats'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // Default and KDS endpoints preserve their existing contracts
+    const defaultRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+        headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+      })
+    );
+    assert.equal(defaultRes.status, 200);
+    const defaultData = await defaultRes.json();
+    assert.equal('stats' in defaultData, true);
+    assert.equal(Array.isArray(defaultData.items), true);
+    assert.deepEqual(
+      defaultData.serviceRequests.map((r: { id: string }) => r.id).sort(),
+      [pendingReq.id, ackReq.id].sort(),
+      'default GET /api/orders continues returning pending and acknowledged service requests'
+    );
+
+    const kdsRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=kds`, {
+        headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+      })
+    );
+    assert.equal(kdsRes.status, 200);
+    const kdsData = await kdsRes.json();
+    assert.deepEqual(
+      Object.keys(kdsData).sort(),
+      ['membership', 'orders'],
+      'view=kds contract remains { orders, membership }'
+    );
+    assert.deepEqual(
+      kdsData.orders.map((o: { id: string }) => o.id),
+      ['ord-seed-102', 'ord-seed-101', newOrder.id, preparingOrder.id]
+    );
+
+    // DashboardShell checkLiveOrders polls with view=badge
+    const layoutSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/app/(dashboard)/dashboard/layout.tsx'),
+      'utf8'
+    );
+    assert.match(
+      layoutSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(shopId\)\}&view=badge/
+    );
   });
 });
