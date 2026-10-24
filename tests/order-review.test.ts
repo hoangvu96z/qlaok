@@ -44,7 +44,7 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
     order() { return this; }
     maybeSingle() { this.single = true; return this; }
     async execute() {
-      const identifier = (value: string) => { assert.match(value, /^[a-z_]+$/i); return `"${value}"`; };
+      const identifier = (value: string) => { assert.match(value, /^[a-z_][a-z0-9_]*$/i); return `"${value}"`; };
       const where = this.filters.map(([key], i) => `${identifier(key)}=$${i + 1}`).join(' AND ');
       const { rows } = await db.query(`SELECT ${this.columns === '*' ? '*' : this.columns.split(',').map((value) => identifier(value.trim())).join(',')} FROM ${identifier(this.table)}${where ? ` WHERE ${where}` : ''}`, this.filters.map(([, value]) => value));
       return { data: this.single ? rows[0] ?? null : rows, error: null };
@@ -167,7 +167,7 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     }
     async execute() {
       const identifier = (value: string) => {
-        assert.match(value, /^[a-z_]+$/i);
+        assert.match(value, /^[a-z_][a-z0-9_]*$/i);
         return `"${value}"`;
       };
       const params: unknown[] = [];

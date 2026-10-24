@@ -4,6 +4,7 @@ import type {
   AnalyticsEventType,
   CatalogItem,
   Category,
+  I18nText,
   PaymentTransaction,
   PlanTier,
   Post,
@@ -1731,6 +1732,67 @@ export async function dbRecordAnalyticsEvent(params: {
   return data as AnalyticsEvent;
 }
 
+export const ANALYTICS_SUMMARY_EVENT_SELECT_COLUMNS =
+  'id,shop_id,event_type,item_id,visitor_lang,created_at';
+
+export const ANALYTICS_SUMMARY_ITEM_SELECT_COLUMNS =
+  'id,name_i18n,price,is_available,view_count,stock_quantity,sold_count';
+
+export interface ShopAnalyticsItemSummary {
+  id: string;
+  name_vi: string;
+  name_i18n: I18nText;
+  price: number;
+  is_available: boolean;
+  view_count: number;
+  stock_quantity: number | null;
+  sold_count: number;
+}
+
+export interface ShopAnalyticsRecentEvent {
+  id: number;
+  shop_id: string;
+  event_type: AnalyticsEventType;
+  item_id?: string | null;
+  visitor_lang: SupportedLocale;
+  created_at: string;
+}
+
+function projectAnalyticsItemSummary(
+  item: Partial<CatalogItem>
+): ShopAnalyticsItemSummary {
+  const nameI18n: I18nText =
+    item.name_i18n && typeof item.name_i18n === 'object'
+      ? item.name_i18n
+      : { vi: '' };
+  return {
+    id: String(item.id || ''),
+    name_vi: nameI18n.vi || 'Món',
+    name_i18n: nameI18n,
+    price: Number(item.price || 0),
+    is_available: item.is_available !== false,
+    view_count: Number(item.view_count || 0),
+    stock_quantity:
+      item.stock_quantity === undefined || item.stock_quantity === null
+        ? null
+        : Number(item.stock_quantity),
+    sold_count: Number(item.sold_count || 0),
+  };
+}
+
+function projectAnalyticsEventSummary(
+  ev: AnalyticsEvent
+): ShopAnalyticsRecentEvent {
+  return {
+    id: ev.id,
+    shop_id: ev.shop_id,
+    event_type: ev.event_type,
+    ...(ev.item_id !== undefined ? { item_id: ev.item_id } : {}),
+    visitor_lang: ev.visitor_lang,
+    created_at: ev.created_at,
+  };
+}
+
 export async function dbGetShopAnalyticsSummary(shopId?: string) {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
@@ -1751,23 +1813,59 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
     await Promise.all([
       sb
         .from('analytics_events')
-        .select('*')
+        .select(ANALYTICS_SUMMARY_EVENT_SELECT_COLUMNS)
         .eq('shop_id', resolvedShopId)
         .order('created_at', { ascending: false }),
-      sb.from('items').select('*').eq('shop_id', resolvedShopId),
+      sb
+        .from('items')
+        .select(ANALYTICS_SUMMARY_ITEM_SELECT_COLUMNS)
+        .eq('shop_id', resolvedShopId),
       dbGetPublicShopTables(resolvedShopId).catch(() => []),
     ]);
 
-  const events = (eventsData || []) as AnalyticsEvent[];
-  const rawItems = ((itemsData || []) as CatalogItem[]).map((i) => ({
-    ...i,
-    price: Number(i.price),
-  }));
-  const items = enrichItemsWithInventory(rawItems);
-  const mposStats = await dbComputeShopRevenueAndInventoryStats(
-    resolvedShopId,
-    items
+  const events = ((eventsData || []) as AnalyticsEvent[]).map(
+    projectAnalyticsEventSummary
   );
+  const rawItems = ((itemsData || []) as CatalogItem[]).map(
+    (i) =>
+      ({
+        id: i.id,
+        name_i18n: i.name_i18n,
+        price: Number(i.price),
+        is_available: i.is_available,
+        view_count: Number(i.view_count || 0),
+        ...(i.stock_quantity !== undefined
+          ? { stock_quantity: i.stock_quantity }
+          : {}),
+        ...(i.sold_count !== undefined ? { sold_count: i.sold_count } : {}),
+      }) as CatalogItem
+  );
+  const items = enrichItemsWithInventory(rawItems).map(
+    projectAnalyticsItemSummary
+  );
+  const rawMposStats = await dbComputeShopRevenueAndInventoryStats(
+    resolvedShopId,
+    items as unknown as CatalogItem[]
+  );
+  const projectedLowStockItems = rawMposStats.lowStockItems.map(
+    projectAnalyticsItemSummary
+  );
+  const projectedTopSellingItems = rawMposStats.topSellingItems.map((item) => ({
+    ...projectAnalyticsItemSummary(item),
+    name_vi: item.name_vi || item.name_i18n?.vi || 'Món',
+    sold_count: Number(item.sold_count || 0),
+    stock_quantity:
+      item.stock_quantity === undefined ? null : item.stock_quantity,
+    revenue: Number(item.revenue || 0),
+    estimated_revenue: Number(
+      item.estimated_revenue ?? item.revenue ?? 0
+    ),
+  }));
+  const mposStats = {
+    ...rawMposStats,
+    lowStockItems: projectedLowStockItems,
+    topSellingItems: projectedTopSellingItems,
+  };
   const activeTablesCount = Array.isArray(publicTables)
     ? publicTables.filter((t) => t && t.is_active && !t.is_archived).length
     : 0;

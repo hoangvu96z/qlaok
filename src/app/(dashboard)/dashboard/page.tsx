@@ -25,11 +25,22 @@ import {
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
-import { CatalogItem, SupportedLocale } from '@/types/qlaok';
+import { I18nText, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { evaluateShopSetupChecklist } from '@/lib/shop-setup-checklist';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+
+interface AnalyticsTopItemSummary {
+  id: string;
+  name_vi?: string;
+  name_i18n?: I18nText;
+  price: number;
+  is_available: boolean;
+  view_count: number;
+  stock_quantity?: number | null;
+  sold_count?: number;
+}
 
 interface AnalyticsSummary {
   scanDoorCount: number;
@@ -42,7 +53,7 @@ interface AnalyticsSummary {
     count: number;
     percentage: number;
   }>;
-  topItems: CatalogItem[];
+  topItems: AnalyticsTopItemSummary[];
   totalCatalogItems?: number;
   availableCatalogItems?: number;
   activeTablesCount?: number;
