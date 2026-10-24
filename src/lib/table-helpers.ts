@@ -568,7 +568,7 @@ export function resolveStorefrontMenuTableState(input: {
   };
 }
 
-export const STOREFRONT_MENU_POLL_INTERVAL_MS = 30_000;
+export const STOREFRONT_MENU_POLL_INTERVAL_MS = 120_000;
 export const STOREFRONT_MENU_STALE_REFRESH_MS = 10_000;
 
 export function shouldRefreshStorefrontCatalog(input: {
