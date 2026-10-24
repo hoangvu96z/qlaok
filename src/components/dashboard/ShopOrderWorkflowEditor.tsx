@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -17,6 +17,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  FeedbackToast,
+  type FeedbackToastMessage,
+} from '@/components/ui/FeedbackToast';
 import { getAuthHeaders, isSuperAdmin } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import { isShopOwnerMembership } from '@/lib/dashboard-nav';
@@ -998,6 +1002,12 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
   const [noticeMsg, setNoticeMsg] = useState<string | null>(
     props.noticeOverride ?? null
   );
+  const [saveFeedback, setSaveFeedback] =
+    useState<FeedbackToastMessage | null>(null);
+  const dismissSaveFeedback = useCallback(() => {
+    setNoticeMsg(null);
+    setSaveFeedback(null);
+  }, []);
 
   const shopId = activeShop?.id ?? '';
   const serializedPersistedWorkflow = useMemo(
@@ -1124,6 +1134,7 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
     if (!canEdit || saving) return;
     setErrorMsg(null);
     setNoticeMsg(null);
+    setSaveFeedback(null);
 
     if (!validation.valid || !validation.config) {
       setErrorMsg(
@@ -1148,7 +1159,11 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
       });
 
       if (!result.ok) {
-        setErrorMsg(result.error);
+        if (result.validationErrors?.length) {
+          setErrorMsg(result.error);
+        } else {
+          setSaveFeedback({ kind: 'error', message: result.error });
+        }
         return;
       }
 
@@ -1203,6 +1218,15 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
       aria-labelledby={`${baseId}-heading`}
       className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5"
     >
+      <FeedbackToast
+        feedback={
+          saveFeedback ??
+          (noticeMsg ? { kind: 'success', message: noticeMsg } : null)
+        }
+        dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
+        onDismiss={dismissSaveFeedback}
+      />
+
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3.5">
         <div className="flex items-start gap-2.5">
@@ -1981,17 +2005,6 @@ export function ShopOrderWorkflowEditor(props: ShopOrderWorkflowEditorProps) {
           className="rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-800"
         >
           {errorMsg}
-        </div>
-      )}
-
-      {noticeMsg && (
-        <div
-          role="status"
-          aria-live="polite"
-          data-testid="order-workflow-notice"
-          className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-800"
-        >
-          {noticeMsg}
         </div>
       )}
 

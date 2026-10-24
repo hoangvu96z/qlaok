@@ -35,6 +35,10 @@ import {
 } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META, formatCurrency } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import {
+  FeedbackToast,
+  type FeedbackToastMessage,
+} from '@/components/ui/FeedbackToast';
 import { StorefrontWelcomePopup } from '@/components/storefront/StorefrontCustomDecor';
 import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar';
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
@@ -76,7 +80,12 @@ export default function DashboardPostsPage() {
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [savingPromo, setSavingPromo] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [promoSaveFeedback, setPromoSaveFeedback] =
+    useState<FeedbackToastMessage | null>(null);
+  const dismissPromoSaveFeedback = useCallback(
+    () => setPromoSaveFeedback(null),
+    []
+  );
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
 
@@ -346,7 +355,7 @@ export default function DashboardPostsPage() {
 
   const handleSavePromotions = async () => {
     setSavingPromo(true);
-    setSavedSuccess(false);
+    setPromoSaveFeedback(null);
     try {
       const nextThemeConfig: ShopThemeConfig = {
         ...activeShop.theme_config,
@@ -367,16 +376,49 @@ export default function DashboardPostsPage() {
         }),
       });
 
-      if (res.ok) {
-        if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      if (!res.ok) {
+        setPromoSaveFeedback({
+          kind: 'error',
+          message: await readResponseError(
+            res,
+            tx(
+              'Không thể lưu khuyến mãi. Vui lòng thử lại.',
+              'Could not save promotions. Please try again.'
+            )
+          ),
+        });
+        return;
+      }
+
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        try {
           const bc = new BroadcastChannel('qlaok_realtime_sync');
           bc.postMessage({ type: 'shop_updated', shopId: activeShop.id });
           bc.close();
+        } catch {
+          // The server has already saved the promotion configuration.
         }
-        await refreshDashboard();
-        setSavedSuccess(true);
-        setTimeout(() => setSavedSuccess(false), 3000);
       }
+      try {
+        await refreshDashboard();
+      } catch {
+        // The API already confirmed the save; a refresh failure does not undo it.
+      }
+      setPromoSaveFeedback({
+        kind: 'success',
+        message: tx(
+          'Đã lưu và áp dụng khuyến mãi.',
+          'Promotions saved and applied.'
+        ),
+      });
+    } catch {
+      setPromoSaveFeedback({
+        kind: 'error',
+        message: tx(
+          'Không thể lưu khuyến mãi. Vui lòng thử lại.',
+          'Could not save promotions. Please try again.'
+        ),
+      });
     } finally {
       setSavingPromo(false);
     }
@@ -537,6 +579,12 @@ export default function DashboardPostsPage() {
         isPreviewSidebarOpen ? 'xl:pr-[385px]' : ''
       }`}
     >
+      <FeedbackToast
+        feedback={promoSaveFeedback}
+        dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
+        onDismiss={dismissPromoSaveFeedback}
+      />
+
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -584,21 +632,12 @@ export default function DashboardPostsPage() {
             disabled={savingPromo}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
           >
-            {savedSuccess ? (
-              <>
-                <Check className="h-4 w-4" />
-                <span>{tx('Đã lưu khuyến mãi!', 'Promotions saved!')}</span>
-              </>
-            ) : (
-              <>
-                <Save className="h-4 w-4" />
-                <span>
-                  {savingPromo
-                    ? t('common.saving')
-                    : tx('Lưu & áp dụng', 'Save & Apply')}
-                </span>
-              </>
-            )}
+            <Save className="h-4 w-4" />
+            <span>
+              {savingPromo
+                ? t('common.saving')
+                : tx('Lưu & áp dụng', 'Save & Apply')}
+            </span>
           </button>
         </div>
       </div>

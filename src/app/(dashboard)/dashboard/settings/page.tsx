@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Save,
@@ -66,6 +66,10 @@ import {
   stripVietnameseAccents,
 } from '@/lib/payment-qr';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  FeedbackToast,
+  type FeedbackToastMessage,
+} from '@/components/ui/FeedbackToast';
 
 // Pure color swatches — no text labels needed
 const BRAND_COLOR_SWATCHES = [
@@ -262,7 +266,9 @@ export default function DashboardSettingsPage() {
   };
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveFeedback, setSaveFeedback] =
+    useState<FeedbackToastMessage | null>(null);
+  const dismissSaveFeedback = useCallback(() => setSaveFeedback(null), []);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSlugConfirmModalOpen, setIsSlugConfirmModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTabId>('store-info');
@@ -470,7 +476,7 @@ export default function DashboardSettingsPage() {
 
     setSaving(true);
     setErrorMsg('');
-    setSavedSuccess(false);
+    setSaveFeedback(null);
 
     try {
       const selectedBank = VIETQR_BANKS.find(
@@ -564,24 +570,36 @@ export default function DashboardSettingsPage() {
       setSlug(normalizedSlug);
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel('qlaok_realtime_sync');
-        bc.postMessage({
-          type: 'shop_updated',
-          shopId: activeShop.id,
-          shop: data?.shop,
-        });
-        bc.close();
+        try {
+          const bc = new BroadcastChannel('qlaok_realtime_sync');
+          bc.postMessage({
+            type: 'shop_updated',
+            shopId: activeShop.id,
+            shop: data?.shop,
+          });
+          bc.close();
+        } catch {
+          // The server has already saved the settings; keep the local result.
+        }
       }
 
-      await refreshDashboard();
-      setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 3000);
+      try {
+        await refreshDashboard();
+      } catch {
+        // The server has already saved the settings; keep the local result.
+      }
+      setSaveFeedback({
+        kind: 'success',
+        message: tx('Đã lưu cài đặt cửa hàng.', 'Store settings saved.'),
+      });
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : tx('Lỗi khi lưu cài đặt', 'Failed to save settings')
-      );
+      setSaveFeedback({
+        kind: 'error',
+        message:
+          err instanceof Error && err.message
+            ? err.message
+            : tx('Lỗi khi lưu cài đặt', 'Failed to save settings'),
+      });
     } finally {
       setSaving(false);
     }
@@ -648,6 +666,12 @@ export default function DashboardSettingsPage() {
         isPreviewSidebarOpen ? 'xl:pr-[385px]' : ''
       }`}
     >
+      <FeedbackToast
+        feedback={saveFeedback}
+        dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
+        onDismiss={dismissSaveFeedback}
+      />
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-black text-slate-900">
@@ -697,21 +721,12 @@ export default function DashboardSettingsPage() {
             disabled={saving}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
           >
-            {savedSuccess ? (
-              <>
-                <Check className="h-4 w-4" />
-                <span>{t('common.saved')}</span>
-              </>
-            ) : (
-              <>
-                <Save className="h-4 w-4" />
-                <span>
-                  {saving
-                    ? t('common.saving')
-                    : tx('Lưu cài đặt', 'Save Settings')}
-                </span>
-              </>
-            )}
+            <Save className="h-4 w-4" />
+            <span>
+              {saving
+                ? t('common.saving')
+                : tx('Lưu cài đặt', 'Save Settings')}
+            </span>
           </button>
         </div>
       </div>
