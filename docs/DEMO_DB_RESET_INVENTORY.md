@@ -144,7 +144,11 @@ Before any future task executes a demo reset on `kftmrjmmympztzztunxf`, the foll
    - `scripts/demo-reset-owner-seed.mjs` assembles the canonical demo rows from existing seed constants: owner, three shops, owner memberships, 17 tables, catalog, posts, transactions, and analytics. It validates parent references and returns rows only; no database write is performed.
    - `scripts/demo-reset-seed-sql.mjs` turns those rows into parent-first INSERT statements without a DB connection. `npm run test:db-reset` checks backup/preflight guards and applies every migration to local PGlite, then tests seed → purge → seed in one transaction. The deploy workflow runs this suite before migration/deploy; it does not prove the current live database matches the repo schema.
    - `scripts/demo-reset-transaction.mjs` combines purge and seed with in-transaction count assertions for all 19 application tables. The PGlite round-trip test also forces an assertion failure and verifies the transaction rolls back to preserve existing data.
-   - `scripts/demo-reset-public-runner.mjs` gates the future `public` reset on exact project URL, explicit execution/maintenance flags, preflight, and verified backup. It then sends the transaction through `scripts/demo-reset-psql.mjs` and checks aggregate counts afterward. These modules have no CLI entrypoint yet and do not change `auth.users`; live reset and Auth account handling remain pending.
+   - `scripts/demo-reset-public-runner.mjs` gates the `public` reset on exact project URL, explicit execution/maintenance flags, preflight, and verified backup. It then sends the transaction through `scripts/demo-reset-psql.mjs` and checks aggregate counts afterward. The guarded CLI is `scripts/reset-demo-public.mjs`; run it only after the live preflight and Auth account policy are settled:
+     ```bash
+     node --experimental-strip-types --import ./tests/register-ts.mjs scripts/reset-demo-public.mjs --project-ref kftmrjmmympztzztunxf --execute --maintenance-confirmed
+     ```
+     This CLI does not change `auth.users`, Storage, or R2. The entire database reset requested by the user remains pending until Auth account handling and a live connection are available.
    - Keep `public.schema_migrations` and `public.provinces` intact (or idempotently upsert the 34 provinces).
    - Delete rows in the strict child-first order from Section 2 (`sepay_webhook_events` before `orders`; `orders` before `shop_tables`; leaf tables before `shops` and `profiles`).
    - Re-seed canonical demo state in parent-first order:
