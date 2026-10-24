@@ -40,6 +40,7 @@ import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar'
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { getVietnamDateKey } from '@/lib/date-utils';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
@@ -252,7 +253,7 @@ export default function DashboardPostsPage() {
     }
 
     if (tc?.flashSale) {
-      const todayIso = new Date().toISOString().slice(0, 10);
+      const todayIso = getVietnamDateKey();
       setFlashSale({
         enabled: Boolean(tc.flashSale.enabled),
         badgeText: tc.flashSale.badgeText || '⚡ FLASH SALE GIỜ VÀNG',

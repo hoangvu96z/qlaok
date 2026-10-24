@@ -4,6 +4,11 @@ import React from 'react';
 import { Calendar, Clock, Copy, Sparkles } from 'lucide-react';
 import type { OpeningHours, ShopFlashSaleConfig } from '@/types/qlaok';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  getVietnamDateKey,
+  addDaysToDateKey,
+  countDaysInclusive,
+} from '@/lib/date-utils';
 
 export const TIME_OPTIONS_24H: string[] = [
   '00:00',
@@ -288,20 +293,19 @@ export function FlashSaleSchedulePicker({
   onChange: (next: ShopFlashSaleConfig) => void;
 }) {
   const { tx } = useAppI18n();
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = getVietnamDateKey();
   const startDate = flashSale.startDate || todayIso;
   const endDate = flashSale.endDate || todayIso;
   const startTime = flashSale.startTime || '11:00';
   const endTime = flashSale.endTime || '22:00';
 
   const setDateRangeDays = (daysCount: number) => {
-    const start = new Date();
-    const end = new Date();
-    end.setDate(start.getDate() + Math.max(0, daysCount - 1));
+    const startIso = getVietnamDateKey();
+    const endIso = addDaysToDateKey(startIso, Math.max(0, daysCount - 1));
     onChange({
       ...flashSale,
-      startDate: start.toISOString().slice(0, 10),
-      endDate: end.toISOString().slice(0, 10),
+      startDate: startIso,
+      endDate: endIso,
     });
   };
 
@@ -314,15 +318,7 @@ export function FlashSaleSchedulePicker({
   };
 
   // Calculate total days selected
-  const diffDays = (() => {
-    const s = new Date(startDate);
-    const e = new Date(endDate);
-    if (isNaN(s.getTime()) || isNaN(e.getTime())) return 1;
-    return Math.max(
-      1,
-      Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1
-    );
-  })();
+  const diffDays = countDaysInclusive(startDate, endDate);
 
   return (
     <div className="rounded-2xl border border-rose-200 bg-rose-50/40 p-3.5 space-y-3.5">

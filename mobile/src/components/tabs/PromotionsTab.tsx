@@ -14,6 +14,7 @@ import {
   MobilePopupConfig,
   MobilePromoBannerConfig,
 } from '../../lib/supabase';
+import { getVietnamDateKey, addDaysToDateKey } from '../../lib/date-utils';
 import {
   BANNER_GRADIENT_SWATCHES,
   MobileThemePalette,
@@ -588,13 +589,8 @@ export const PromotionsTab = memo(function PromotionsTab({
               { label: t('promo.preset14Days'), days: 13 },
               { label: t('promo.preset30Days'), days: 29 },
             ].map((preset) => {
-              const formatLocalDate = (d: Date) =>
-                `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-              const dStart = new Date();
-              const startIso = formatLocalDate(dStart);
-              const dEnd = new Date();
-              dEnd.setDate(dEnd.getDate() + preset.days);
-              const endIso = formatLocalDate(dEnd);
+              const startIso = getVietnamDateKey();
+              const endIso = addDaysToDateKey(startIso, preset.days);
               const isActive =
                 flashSale.startDate === startIso &&
                 flashSale.endDate === endIso;
