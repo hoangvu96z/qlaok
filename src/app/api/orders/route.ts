@@ -42,6 +42,12 @@ function extractOrderErrorCode(message: string): string | undefined {
   return match ? match[1] : undefined;
 }
 
+function isQueryFlagDisabled(value: string | null): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '0' || normalized === 'false';
+}
+
 function sanitizeCustomerOrderView(order: ShopOrder) {
   const {
     tracking_token: _t,
@@ -187,62 +193,73 @@ export async function GET(req: Request) {
     const auth = await requireShopPermission(req, shopId, 'orders.view');
     if (auth.errorResponse) return auth.errorResponse;
 
+    const includeCatalog = !isQueryFlagDisabled(
+      searchParams.get('includeCatalog')
+    );
+    const includeStats = !isQueryFlagDisabled(
+      searchParams.get('includeStats')
+    );
+
     const [orders, serviceRequests] = await Promise.all([
       dbGetShopOrders(shopId),
       dbGetShopServiceRequests(shopId).catch(() => []),
     ]);
     let catalogItems: Awaited<ReturnType<typeof dbGetShopCatalog>>['items'] = [];
-    try {
-      const catalog = await dbGetShopCatalog(shopId);
-      catalogItems = catalog.items;
-    } catch {
-      const { SEED_ITEMS } = await import('@/lib/seed-data');
-      catalogItems = SEED_ITEMS.filter((i) => i.shop_id === shopId);
+    if (includeCatalog || includeStats) {
+      try {
+        const catalog = await dbGetShopCatalog(shopId);
+        catalogItems = catalog.items;
+      } catch {
+        const { SEED_ITEMS } = await import('@/lib/seed-data');
+        catalogItems = SEED_ITEMS.filter((i) => i.shop_id === shopId);
+      }
     }
-
-    const fullStats = await dbComputeShopRevenueAndInventoryStats(
-      shopId,
-      catalogItems
-    );
 
     const canViewReports = hasShopPermission(auth.membership, 'reports.view');
     const visibleOrders = canViewReports ? orders : orders.filter((order) =>
       order.status !== 'cancelled' && (order.status !== 'completed' || order.payment_status === 'unpaid')
     );
-    const stats = canViewReports
-      ? fullStats
-      : {
-          todayRevenue: null,
-          todayGrossOrderAmount: null,
-          todayUnpaidAmount: null,
-          todayRefundedAmount: null,
-          totalRefundedAmount: null,
-          totalRevenue: null,
-          avgOrderValue: null,
-          todayOrdersCount: fullStats.todayOrdersCount,
-          todayPaidOrdersCount: fullStats.todayPaidOrdersCount,
-          todayCompletedCount: fullStats.todayCompletedCount,
-          completedOrdersCount: fullStats.completedOrdersCount,
-          paidOrdersCount: fullStats.paidOrdersCount,
-          totalOrdersCount: fullStats.totalOrdersCount,
-          newOrdersCount: fullStats.newOrdersCount,
-          preparingOrdersCount: fullStats.preparingOrdersCount,
-          lowStockCount: fullStats.lowStockCount,
-          outOfStockCount: fullStats.outOfStockCount,
-          lowStockItems: fullStats.lowStockItems,
-          dailyRevenue7d: [],
-          dailyRevenue7Days: [],
-          paymentBreakdown: null,
-          sourceBreakdown: null,
-          hourlyBreakdown: [],
-          topSellingItems: [],
-        };
+    let stats: unknown;
+    if (includeStats) {
+      const fullStats = await dbComputeShopRevenueAndInventoryStats(
+        shopId,
+        catalogItems
+      );
+      stats = canViewReports
+        ? fullStats
+        : {
+            todayRevenue: null,
+            todayGrossOrderAmount: null,
+            todayUnpaidAmount: null,
+            todayRefundedAmount: null,
+            totalRefundedAmount: null,
+            totalRevenue: null,
+            avgOrderValue: null,
+            todayOrdersCount: fullStats.todayOrdersCount,
+            todayPaidOrdersCount: fullStats.todayPaidOrdersCount,
+            todayCompletedCount: fullStats.todayCompletedCount,
+            completedOrdersCount: fullStats.completedOrdersCount,
+            paidOrdersCount: fullStats.paidOrdersCount,
+            totalOrdersCount: fullStats.totalOrdersCount,
+            newOrdersCount: fullStats.newOrdersCount,
+            preparingOrdersCount: fullStats.preparingOrdersCount,
+            lowStockCount: fullStats.lowStockCount,
+            outOfStockCount: fullStats.outOfStockCount,
+            lowStockItems: fullStats.lowStockItems,
+            dailyRevenue7d: [],
+            dailyRevenue7Days: [],
+            paymentBreakdown: null,
+            sourceBreakdown: null,
+            hourlyBreakdown: [],
+            topSellingItems: [],
+          };
+    }
 
     return NextResponse.json({
       orders: visibleOrders,
       serviceRequests,
-      stats,
-      items: catalogItems,
+      ...(includeStats ? { stats } : {}),
+      ...(includeCatalog ? { items: catalogItems } : {}),
       membership: auth.membership,
     });
   } catch (error) {

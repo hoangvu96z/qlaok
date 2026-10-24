@@ -261,8 +261,11 @@ export default function CounterOrdersPage() {
       inFlight.current = request;
       if (!silent) setLoading(true);
       try {
+        const ordersUrl = silent
+          ? `/api/orders?shopId=${encodeURIComponent(activeShop.id)}&includeCatalog=0&includeStats=0`
+          : `/api/orders?shopId=${encodeURIComponent(activeShop.id)}`;
         const [ordersRes, catRes] = await Promise.all([
-          fetch(`/api/orders?shopId=${encodeURIComponent(activeShop.id)}`, {
+          fetch(ordersUrl, {
             cache: 'no-store', headers: getAuthHeaders(),
           }),
           silent ? Promise.resolve(null) : fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {

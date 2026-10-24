@@ -30,6 +30,7 @@ import {
   dbGetOrderById,
   dbUpdateOrderStatus,
   resetMposStoreForTests,
+  setMposDbClientForTests,
 } from '../src/lib/mpos-store';
 import {
   getOrderEventsBroker,
@@ -2666,6 +2667,436 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     assert.match(
       layoutSource,
       /\/api\/orders\?shopId=\$\{encodeURIComponent\(shopId\)\}&view=badge/
+    );
+  });
+
+  test('11. GET /api/orders includeCatalog=0 and includeStats=0 opt-outs preserve auth, orders, serviceRequests, and membership while skipping catalog/stats helpers on silent refresh', async () => {
+    const validSigA1 = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const validSigA2 = signTableQr(SHOP_A, 'tbl-fnb-02');
+
+    const catalogOnlyStaffId = 'staff-catalog-only-silent-001';
+    const catalogOnlyStaffToken = issueSessionToken({
+      id: catalogOnlyStaffId,
+      email: 'catalog-only-silent@qlaok.vn',
+      role: 'staff',
+    });
+    await dbUpsertShopMembership({
+      shop_id: SHOP_A,
+      user_id: catalogOnlyStaffId,
+      email: 'catalog-only-silent@qlaok.vn',
+      role: 'staff',
+      permissions: ['catalog.view'],
+      is_active: true,
+    });
+
+    // 1. Permission checks remain intact on the lightweight silent-refresh path
+    const anonSilentRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`
+      )
+    );
+    assert.equal(anonSilentRes.status, 401);
+
+    for (const unauthorizedToken of [
+      OWNER_B_TOKEN,
+      INACTIVE_STAFF_TOKEN,
+      catalogOnlyStaffToken,
+    ]) {
+      const forbiddenRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${unauthorizedToken}` },
+          }
+        )
+      );
+      assert.equal(forbiddenRes.status, 403);
+    }
+
+    // 2. Seed orders and service requests; verify default vs silent-refresh response parity for owner and staff
+    const newOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-01',
+      table_qr_sig: validSigA1,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const cancelledOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_label: 'Bàn 02',
+      source: 'counter_pos',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(cancelledOrder.id, {
+      status: 'cancelled',
+      cancelled_reason: 'Khách hủy',
+    });
+
+    const pendingReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_qr_sig: validSigA1,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(pendingReqRes.status, 201);
+
+    const ackReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-02',
+          table_qr_sig: validSigA2,
+          request_type: 'request_bill',
+        }),
+      })
+    );
+    assert.equal(ackReqRes.status, 201);
+    const { serviceRequest: ackReq } = await ackReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${STAFF_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: ackReq.id,
+          shop_id: SHOP_A,
+          status: 'acknowledged',
+        }),
+      })
+    );
+
+    for (const token of [OWNER_A_TOKEN, STAFF_A_TOKEN] as const) {
+      const defaultRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(defaultRes.status, 200);
+      const defaultData = await defaultRes.json();
+      assert.deepEqual(
+        Object.keys(defaultData).sort(),
+        ['items', 'membership', 'orders', 'serviceRequests', 'stats']
+      );
+      assert.equal(Array.isArray(defaultData.items), true);
+      assert.equal(typeof defaultData.stats, 'object');
+      assert.ok(defaultData.orders.some((o: { id: string }) => o.id === newOrder.id));
+
+      for (const querySuffix of [
+        'includeCatalog=0&includeStats=0',
+        'includeCatalog=false&includeStats=false',
+      ]) {
+        const silentRes = await getOrdersRoute(
+          new Request(
+            `http://localhost/api/orders?shopId=${SHOP_A}&${querySuffix}`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            }
+          )
+        );
+        assert.equal(silentRes.status, 200);
+        const silentData = await silentRes.json();
+
+        assert.deepEqual(
+          Object.keys(silentData).sort(),
+          ['membership', 'orders', 'serviceRequests'],
+          `GET /api/orders with ${querySuffix} must omit items and stats`
+        );
+        assert.equal('items' in silentData, false);
+        assert.equal('stats' in silentData, false);
+        assert.deepEqual(silentData.orders, defaultData.orders);
+        assert.deepEqual(
+          silentData.serviceRequests,
+          defaultData.serviceRequests
+        );
+        const {
+          created_at: _sc,
+          updated_at: _su,
+          ...silentMembershipRest
+        } = silentData.membership || {};
+        const {
+          created_at: _dc,
+          updated_at: _du,
+          ...defaultMembershipRest
+        } = defaultData.membership || {};
+        assert.deepEqual(silentMembershipRest, defaultMembershipRest);
+      }
+    }
+
+    // 3. Prove helper execution: called by default, skipped when disabled (both together and independently)
+    const queriedTables: string[] = [];
+    const calledRpcs: string[] = [];
+    const mockDbClient = {
+      from(table: string) {
+        queriedTables.push(table);
+        const makeResult = () => {
+          if (table === 'shops') {
+            return {
+              data: [
+                {
+                  id: SHOP_A,
+                  owner_id: 'owner-demo-001',
+                  name: 'Phở Hội An',
+                },
+              ],
+              error: null,
+            };
+          }
+          if (table === 'items') {
+            return {
+              data: [
+                {
+                  id: 'item-fnb-2',
+                  shop_id: SHOP_A,
+                  category_id: 'cat-fnb-1',
+                  name_i18n: { vi: 'Mì Quảng Tôm Thịt Trứng Cút' },
+                  price: 55000,
+                  is_available: true,
+                  stock_quantity: 10,
+                  sold_count: 5,
+                },
+              ],
+              error: null,
+            };
+          }
+          if (table === 'profiles') {
+            return {
+              data: [
+                {
+                  id: 'owner-demo-001',
+                  email: 'chuquan@qlaok.vn',
+                  role: 'owner',
+                  plan: 'free',
+                },
+              ],
+              error: null,
+            };
+          }
+          return { data: [], error: null };
+        };
+        const makeSingleResult = () => {
+          if (table === 'shops') {
+            return {
+              data: {
+                id: SHOP_A,
+                owner_id: 'owner-demo-001',
+                name: 'Phở Hội An',
+              },
+              error: null,
+            };
+          }
+          if (table === 'profiles') {
+            return { data: { plan: 'free' }, error: null };
+          }
+          return { data: null, error: null };
+        };
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          maybeSingle: () => Promise.resolve(makeSingleResult()),
+          single: () => Promise.resolve(makeSingleResult()),
+          then: (
+            resolve: (val: unknown) => unknown,
+            reject?: (err: unknown) => unknown
+          ) => Promise.resolve(makeResult()).then(resolve, reject),
+        };
+        return chain;
+      },
+      rpc(fnName: string) {
+        calledRpcs.push(fnName);
+        return Promise.resolve({
+          data: {
+            total_orders_count: 1,
+            completed_orders_count: 0,
+            paid_orders_count: 0,
+            new_orders_count: 1,
+            preparing_orders_count: 0,
+            total_revenue: 0,
+            total_refunded_amount: 0,
+            today_orders_count: 1,
+            today_paid_orders_count: 0,
+            today_completed_count: 0,
+            today_revenue: 0,
+            today_gross_order_amount: 55000,
+            today_unpaid_amount: 55000,
+            today_refunded_amount: 0,
+            daily_revenue_7d: [],
+            payment_breakdown: { cash: 0, vietqr: 0 },
+            source_breakdown: { qr_table: 1, counter_pos: 0 },
+            hourly_breakdown: [],
+            sold_items: [],
+          },
+          error: null,
+        });
+      },
+    };
+
+    setSupabaseDbClientForTests(mockDbClient);
+    setMposDbClientForTests(mockDbClient, true);
+    try {
+      // 3a. Default call invokes both dbGetShopCatalog and dbComputeShopRevenueAndInventoryStats
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const defaultWithMockRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+          headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+        })
+      );
+      assert.equal(defaultWithMockRes.status, 200);
+      const defaultWithMockData = await defaultWithMockRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'default GET /api/orders must call dbGetShopCatalog (categories/items)'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        true,
+        'default GET /api/orders must call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal(Array.isArray(defaultWithMockData.items), true);
+      assert.equal('stats' in defaultWithMockData, true);
+
+      // 3b. Both disabled (includeCatalog=0&includeStats=0) skips both helpers
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const bothDisabledRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(bothDisabledRes.status, 200);
+      const bothDisabledData = await bothDisabledRes.json();
+      assert.equal(
+        queriedTables.includes('categories') || queriedTables.includes('items'),
+        false,
+        'includeCatalog=0&includeStats=0 must not call dbGetShopCatalog'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'includeCatalog=0&includeStats=0 must not call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal('items' in bothDisabledData, false);
+      assert.equal('stats' in bothDisabledData, false);
+
+      // 3c. Independent includeCatalog=0 loads catalog for stats computation, returns identical stats, but omits items from response
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const noCatalogOnlyRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(noCatalogOnlyRes.status, 200);
+      const noCatalogOnlyData = await noCatalogOnlyRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'includeCatalog=0 with stats enabled must still call dbGetShopCatalog for accurate stats'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        true,
+        'includeCatalog=0 alone must still call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal('items' in noCatalogOnlyData, false);
+      assert.equal('stats' in noCatalogOnlyData, true);
+      assert.deepEqual(
+        noCatalogOnlyData.stats,
+        defaultWithMockData.stats,
+        'includeCatalog=0 must preserve equivalent stats to default response'
+      );
+      assert.deepEqual(
+        Object.keys(noCatalogOnlyData).sort(),
+        ['membership', 'orders', 'serviceRequests', 'stats'],
+        'only the items response field must be omitted when includeCatalog=0'
+      );
+
+      // 3d. Independent includeStats=0 skips stats only and still loads catalog
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const noStatsOnlyRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(noStatsOnlyRes.status, 200);
+      const noStatsOnlyData = await noStatsOnlyRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'includeStats=0 alone must still call dbGetShopCatalog'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'includeStats=0 must not call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal(Array.isArray(noStatsOnlyData.items), true);
+      assert.equal('stats' in noStatsOnlyData, false);
+    } finally {
+      setMposDbClientForTests(null, false);
+      setSupabaseDbClientForTests(null);
+      await dbDeleteShopMembership(SHOP_A, catalogOnlyStaffId).catch(() => {});
+    }
+
+    // 4. Dashboard orders page fetchOrdersAndCatalog sends includeCatalog=0&includeStats=0 on silent refresh and keeps full initial load
+    const ordersPageSource = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src/app/(dashboard)/dashboard/orders/page.tsx'
+      ),
+      'utf8'
+    );
+    assert.match(
+      ordersPageSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}&includeCatalog=0&includeStats=0/
+    );
+    assert.match(
+      ordersPageSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}`/
     );
   });
 });
