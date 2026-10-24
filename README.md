@@ -77,7 +77,7 @@ Sao chép mẫu, không commit giá trị thật.
 | Billing VietQR (public legacy) | `NEXT_PUBLIC_SAAS_BANK_BIN`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT`, `NEXT_PUBLIC_SAAS_BANK_ACCOUNT_NAME`, `NEXT_PUBLIC_SAAS_BANK_NAME` | Cấu hình tài khoản đơn lẻ legacy hiển thị QR ở `/dashboard/billing`. Chỉ được dùng khi `NEXT_PUBLIC_SAAS_BANK_ACCOUNTS` vắng mặt hoặc để trống. Thiếu BIN/số TK → trang hiện "chưa cấu hình thanh toán, liên hệ hỗ trợ" thay vì QR giả; `NEXT_PUBLIC_SAAS_BANK_ACCOUNT` làm fallback đối soát cuối cùng cho webhook khi cả hai biến server và biến danh sách công khai chưa đặt |
 | Migration | `SUPABASE_ACCESS_TOKEN` | PAT dùng Management API; không cần cho client |
 | AI | `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`, `AI_VISION_MODEL` | Gateway text/vision |
-| R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `NEXT_PUBLIC_R2_PUBLIC_URL` | Upload và URL ảnh công khai |
+| R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `NEXT_PUBLIC_R2_PUBLIC_URL` | Upload và URL ảnh công khai; nếu R2 thiếu/lỗi, upload báo thất bại và không lưu ảnh Base64 vào DB |
 | Mobile | Theo `mobile/.env.example` (`EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_KEY`, `EXPO_PUBLIC_API_URL`, tùy chọn `EXPO_PUBLIC_EAS_PROJECT_ID`) | Chỉ URL/public key và EAS project ID; không chứa backend secret. Push thiết bị thật cần EAS project ID + APNs/FCM credentials |
 
 Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không dựa vào giá trị mặc định trong code cho deployment thật. Không chép service-role vào biến `NEXT_PUBLIC_*`/`EXPO_PUBLIC_*`.
