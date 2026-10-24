@@ -4,9 +4,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
-import { buildDemoPurgeSql } from '../scripts/demo-reset-purge.mjs';
 import { buildDemoSeedSql } from '../scripts/demo-reset-seed-sql.mjs';
 import { buildDemoSeedRows } from '../scripts/demo-reset-owner-seed.mjs';
+import { buildDemoPublicResetTransactionSql } from '../scripts/demo-reset-transaction.mjs';
 
 test('full migration schema accepts demo seed, purge, and reseed in one transaction', async () => {
   const db = new PGlite({ extensions: { uuid_ossp } });
@@ -34,7 +34,7 @@ test('full migration schema accepts demo seed, purge, and reseed in one transact
       INSERT INTO public.shops(id, owner_id, slug, name) VALUES ('dirty-shop', 'dirty-owner', 'dirty-shop', 'Dirty Shop');`);
     const provincesBefore = Number((await db.query('SELECT COUNT(*)::int AS n FROM public.provinces')).rows[0].n);
 
-    await db.exec(`BEGIN;\n${buildDemoPurgeSql()}\n${seedSql}\nCOMMIT;`);
+    await db.exec(await buildDemoPublicResetTransactionSql());
 
     for (const [table, expected] of Object.entries(expectedCounts)) {
       const actual = Number((await db.query(`SELECT COUNT(*)::int AS n FROM public.${table}`)).rows[0].n);
@@ -45,6 +45,22 @@ test('full migration schema accepts demo seed, purge, and reseed in one transact
     assert.equal((await db.query('SELECT COUNT(*)::int AS n FROM auth.users')).rows[0].n, 1);
     assert.equal((await db.query('SELECT COUNT(*)::int AS n FROM public.schema_migrations')).rows[0].n, 1);
     assert.equal((await db.query('SELECT COUNT(*)::int AS n FROM public.provinces')).rows[0].n, provincesBefore);
+
+    await db.exec("INSERT INTO public.profiles(id) VALUES ('rollback-owner')");
+    const validSql = await buildDemoPublicResetTransactionSql();
+    const profileCheck = 'SELECT COUNT(*) INTO actual_count FROM public.profiles;\n  IF actual_count <> 1 THEN';
+    assert.ok(validSql.includes(profileCheck));
+    const invalidVerificationSql = validSql.replace(
+      profileCheck,
+      'SELECT COUNT(*) INTO actual_count FROM public.profiles;\n  IF actual_count <> 999 THEN'
+    );
+    await assert.rejects(db.exec(invalidVerificationSql), /Demo reset verification failed for public\.profiles/);
+    await db.exec('ROLLBACK;');
+    assert.equal(
+      (await db.query("SELECT COUNT(*)::int AS n FROM public.profiles WHERE id = 'rollback-owner'")).rows[0].n,
+      1,
+      'failed verification must roll back the purge and preserve pre-reset data'
+    );
   } finally {
     await db.close();
   }
