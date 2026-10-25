@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   QrCode,
@@ -25,11 +25,22 @@ import {
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
-import { CatalogItem, SupportedLocale } from '@/types/qlaok';
+import { I18nText, SupportedLocale } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
 import { evaluateShopSetupChecklist } from '@/lib/shop-setup-checklist';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+
+interface AnalyticsTopItemSummary {
+  id: string;
+  name_vi?: string;
+  name_i18n?: I18nText;
+  price: number;
+  is_available: boolean;
+  view_count: number;
+  stock_quantity?: number | null;
+  sold_count?: number;
+}
 
 interface AnalyticsSummary {
   scanDoorCount: number;
@@ -42,7 +53,7 @@ interface AnalyticsSummary {
     count: number;
     percentage: number;
   }>;
-  topItems: CatalogItem[];
+  topItems: AnalyticsTopItemSummary[];
   totalCatalogItems?: number;
   availableCatalogItems?: number;
   activeTablesCount?: number;
@@ -90,53 +101,174 @@ interface AnalyticsSummary {
   }>;
 }
 
+const DASHBOARD_ANALYTICS_FALLBACK_INTERVAL_MS = 60000;
+
+interface DashboardAnalyticsSyncOptions {
+  shopId: string;
+  onFetch: (silent: boolean) => Promise<void> | void;
+}
+
+type DashboardAnalyticsSyncHandle = () => void;
+
+/**
+ * Coordinates Dashboard Overview analytics polling and synchronization:
+ * - Runs initial non-silent fetch immediately when started for an active shop.
+ * - Suppresses polling and broadcasts while the tab is hidden (`document.visibilityState !== 'visible'`).
+ * - Maintains a 60-second fallback timer that only fetches while visible.
+ * - Refreshes immediately when the tab becomes visible again.
+ * - Refreshes on `qlaok_realtime_sync` messages while visible; filters by shop when `shopId` is present in event payload.
+ * - Guards against overlapping fetches while ensuring errors do not leave sync permanently stale.
+ * - Cleans up timer, event listeners, and BroadcastChannel on stop.
+ */
+function startDashboardAnalyticsSync(
+  options: DashboardAnalyticsSyncOptions
+): DashboardAnalyticsSyncHandle {
+  const cleanShopId = (options.shopId || '').trim();
+  if (!cleanShopId) {
+    return () => {};
+  }
+
+  let stopped = false;
+  let inFlight = false;
+  let queued = false;
+
+  const isVisible = () =>
+    typeof document === 'undefined' || document.visibilityState === 'visible';
+
+  const triggerFetch = async (silent: boolean) => {
+    if (stopped) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    inFlight = true;
+    try {
+      await options.onFetch(silent);
+    } catch {
+      // ignore fetch errors; inFlight is reset in finally
+    } finally {
+      inFlight = false;
+      if (queued && !stopped) {
+        queued = false;
+        if (isVisible()) {
+          void triggerFetch(true);
+        }
+      }
+    }
+  };
+
+  // 1. Initial fetch once when active shop is available
+  void triggerFetch(false);
+
+  // 2. 60-second fallback interval (visible-only)
+  const interval = setInterval(() => {
+    if (!isVisible()) return;
+    void triggerFetch(true);
+  }, DASHBOARD_ANALYTICS_FALLBACK_INTERVAL_MS);
+
+  // 3. Tab visibility-return refresh
+  const handleVisibilityChange = () => {
+    if (isVisible()) {
+      void triggerFetch(true);
+    }
+  };
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
+
+  // 4. Realtime BroadcastChannel sync
+  let bc: BroadcastChannel | null = null;
+  if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+    try {
+      bc = new BroadcastChannel('qlaok_realtime_sync');
+      bc.onmessage = (ev) => {
+        const msgShopId =
+          ev.data && typeof ev.data === 'object'
+            ? (ev.data.shopId ?? ev.data.shop_id)
+            : undefined;
+
+        if (
+          typeof msgShopId === 'string' &&
+          msgShopId.trim() &&
+          msgShopId.trim() !== cleanShopId
+        ) {
+          return;
+        }
+
+        if (!isVisible()) {
+          return;
+        }
+
+        void triggerFetch(true);
+      };
+    } catch {
+      bc = null;
+    }
+  }
+
+  // 5. Cleanup
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+}
+
 export default function DashboardOverviewPage() {
   const { activeShop } = useDashboard();
   const { locale, tx } = useAppI18n();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [chartType, setChartType] = useState<'area' | 'bar'>('area');
+  const activeShopRef = useRef(activeShop);
+  activeShopRef.current = activeShop;
 
   const loadAnalytics = useCallback(
     async (silent = false) => {
-      if (!activeShop) return;
+      const targetShopId = activeShopRef.current?.id;
+      if (!targetShopId) return;
       if (!silent) setLoading(true);
       try {
         const res = await fetch(
-          `/api/analytics/track?shopId=${activeShop.id}`,
+          `/api/analytics/track?shopId=${encodeURIComponent(targetShopId)}`,
           { headers: getAuthHeaders(), cache: 'no-store' }
         );
         if (res.ok) {
           const data = await res.json();
-          setSummary(data);
+          if (activeShopRef.current?.id === targetShopId) {
+            setSummary(data);
+          }
         }
       } catch {
         // ignore
       } finally {
-        if (!silent) setLoading(false);
+        if (!silent && activeShopRef.current?.id === targetShopId) {
+          setLoading(false);
+        }
       }
     },
-    [activeShop]
+    []
   );
 
   useEffect(() => {
     setSummary(null);
-    void loadAnalytics(false);
+    if (!activeShop?.id) return;
 
-    let bc: BroadcastChannel | null = null;
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      bc = new BroadcastChannel('qlaok_realtime_sync');
-      bc.onmessage = () => {
-        void loadAnalytics(true);
-      };
-    }
-
-    const interval = setInterval(() => void loadAnalytics(true), 5000);
-    return () => {
-      if (bc) bc.close();
-      clearInterval(interval);
-    };
-  }, [loadAnalytics]);
+    return startDashboardAnalyticsSync({
+      shopId: activeShop.id,
+      onFetch: loadAnalytics,
+    });
+  }, [activeShop?.id, loadAnalytics]);
 
   if (!activeShop) {
     return (

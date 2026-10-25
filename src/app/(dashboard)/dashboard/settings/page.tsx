@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Save,
@@ -38,6 +38,7 @@ import {
   OpeningHours,
   ShopPaymentConfig,
   ShopThemeConfig,
+  ServiceRequestNotificationRule,
   SupportedLocale,
 } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
@@ -66,6 +67,10 @@ import {
   stripVietnameseAccents,
 } from '@/lib/payment-qr';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import {
+  FeedbackToast,
+  type FeedbackToastMessage,
+} from '@/components/ui/FeedbackToast';
 
 // Pure color swatches — no text labels needed
 const BRAND_COLOR_SWATCHES = [
@@ -180,7 +185,7 @@ function resolveSettingsTabFromHash(hash: string): SettingsTabId | null {
 }
 
 export default function DashboardSettingsPage() {
-  const { activeShop, updateActiveShop, refreshDashboard } = useDashboard();
+  const { activeShop, profile, updateActiveShop, refreshDashboard } = useDashboard();
   const { locale, t, tx } = useAppI18n();
 
   const [name, setName] = useState('');
@@ -235,6 +240,8 @@ export default function DashboardSettingsPage() {
         : false
   );
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
+  const [serviceRequestNotificationRule, setServiceRequestNotificationRule] =
+    useState<ServiceRequestNotificationRule>('all_order_staff');
 
   const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
@@ -262,7 +269,9 @@ export default function DashboardSettingsPage() {
   };
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveFeedback, setSaveFeedback] =
+    useState<FeedbackToastMessage | null>(null);
+  const dismissSaveFeedback = useCallback(() => setSaveFeedback(null), []);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSlugConfirmModalOpen, setIsSlugConfirmModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTabId>('store-info');
@@ -352,6 +361,11 @@ export default function DashboardSettingsPage() {
     setWifiPassword(activeShop.wifi_info?.password || '');
 
     const tc = activeShop.theme_config;
+    setServiceRequestNotificationRule(
+      tc?.serviceRequestNotificationRule === 'owner_only'
+        ? 'owner_only'
+        : 'all_order_staff'
+    );
     setPrimaryColor(tc?.primaryColor || '#10b981');
     setLayoutMode(
       tc?.layout || (activeShop.vertical === 'retail' ? 'grid' : 'list')
@@ -470,7 +484,7 @@ export default function DashboardSettingsPage() {
 
     setSaving(true);
     setErrorMsg('');
-    setSavedSuccess(false);
+    setSaveFeedback(null);
 
     try {
       const selectedBank = VIETQR_BANKS.find(
@@ -507,6 +521,9 @@ export default function DashboardSettingsPage() {
         backgroundImageUrl: backgroundImageUrl.trim() || undefined,
         backgroundOverlayOpacity,
         paymentConfig: cleanedPaymentConfig,
+        ...(activeShop.owner_id === profile?.id
+          ? { serviceRequestNotificationRule }
+          : {}),
       };
 
       const nextCoverUrls = coverUrl.trim()
@@ -564,24 +581,36 @@ export default function DashboardSettingsPage() {
       setSlug(normalizedSlug);
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel('qlaok_realtime_sync');
-        bc.postMessage({
-          type: 'shop_updated',
-          shopId: activeShop.id,
-          shop: data?.shop,
-        });
-        bc.close();
+        try {
+          const bc = new BroadcastChannel('qlaok_realtime_sync');
+          bc.postMessage({
+            type: 'shop_updated',
+            shopId: activeShop.id,
+            shop: data?.shop,
+          });
+          bc.close();
+        } catch {
+          // The server has already saved the settings; keep the local result.
+        }
       }
 
-      await refreshDashboard();
-      setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 3000);
+      try {
+        await refreshDashboard();
+      } catch {
+        // The server has already saved the settings; keep the local result.
+      }
+      setSaveFeedback({
+        kind: 'success',
+        message: tx('Đã lưu cài đặt cửa hàng.', 'Store settings saved.'),
+      });
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : tx('Lỗi khi lưu cài đặt', 'Failed to save settings')
-      );
+      setSaveFeedback({
+        kind: 'error',
+        message:
+          err instanceof Error && err.message
+            ? err.message
+            : tx('Lỗi khi lưu cài đặt', 'Failed to save settings'),
+      });
     } finally {
       setSaving(false);
     }
@@ -648,6 +677,12 @@ export default function DashboardSettingsPage() {
         isPreviewSidebarOpen ? 'xl:pr-[385px]' : ''
       }`}
     >
+      <FeedbackToast
+        feedback={saveFeedback}
+        dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
+        onDismiss={dismissSaveFeedback}
+      />
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-black text-slate-900">
@@ -697,21 +732,12 @@ export default function DashboardSettingsPage() {
             disabled={saving}
             className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
           >
-            {savedSuccess ? (
-              <>
-                <Check className="h-4 w-4" />
-                <span>{t('common.saved')}</span>
-              </>
-            ) : (
-              <>
-                <Save className="h-4 w-4" />
-                <span>
-                  {saving
-                    ? t('common.saving')
-                    : tx('Lưu cài đặt', 'Save Settings')}
-                </span>
-              </>
-            )}
+            <Save className="h-4 w-4" />
+            <span>
+              {saving
+                ? t('common.saving')
+                : tx('Lưu cài đặt', 'Save Settings')}
+            </span>
           </button>
         </div>
       </div>
@@ -1905,6 +1931,82 @@ export default function DashboardSettingsPage() {
       >
       {/* 5b. Owner-managed Order Fulfillment Workflow Flowchart Editor */}
       <ShopOrderWorkflowEditor />
+
+      <section
+        data-testid="service-request-notification-settings"
+        className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
+      >
+        <div className="mb-4">
+          <h3 className="text-sm font-black text-slate-900">
+            {tx('Thông báo khách gọi nhân viên', 'Staff call notifications')}
+          </h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {tx(
+              'Chọn người nhận khi khách bấm gọi nhân viên tại bàn. Quy tắc được lưu cùng cài đặt cửa hàng.',
+              'Choose who receives alerts when a guest calls staff from a table. This rule is saved with store settings.'
+            )}
+          </p>
+        </div>
+        {activeShop.owner_id === profile?.id ? (
+          <fieldset disabled={saving} className="grid gap-3 sm:grid-cols-2">
+            <legend className="sr-only">
+              {tx('Người nhận thông báo gọi nhân viên', 'Staff call notification recipients')}
+            </legend>
+            {([
+              {
+                value: 'all_order_staff',
+                title: tx('Tất cả nhân viên nhận đơn', 'All order staff'),
+                description: tx(
+                  'Gửi đến nhân viên có quyền xem đơn hàng của quán.',
+                  'Send to staff who can view this shop’s orders.'
+                ),
+              },
+              {
+                value: 'owner_only',
+                title: tx('Chỉ chủ quán', 'Owner only'),
+                description: tx(
+                  'Chỉ chủ quán nhận thông báo khách gọi nhân viên.',
+                  'Only the shop owner receives staff call alerts.'
+                ),
+              },
+            ] as const).map((option) => (
+              <label
+                key={option.value}
+                data-testid={`service-request-notification-rule-${option.value}`}
+                className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${
+                  serviceRequestNotificationRule === option.value
+                    ? 'border-emerald-500 bg-emerald-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="serviceRequestNotificationRule"
+                  value={option.value}
+                  checked={serviceRequestNotificationRule === option.value}
+                  onChange={() => setServiceRequestNotificationRule(option.value)}
+                  className="mt-0.5 h-4 w-4 accent-emerald-600"
+                />
+                <span>
+                  <span className="block text-xs font-black text-slate-900">
+                    {option.title}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-600">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-4 text-xs text-slate-600">
+            {tx(
+              'Chủ quán đang quản lý quy tắc nhận thông báo này.',
+              'The shop owner manages this notification rule.'
+            )}
+          </p>
+        )}
+      </section>
 
       {/* 5c. Owner-managed Production Labels & Cup Stickers Config */}
       <ShopLabelPrintSettingsEditor />

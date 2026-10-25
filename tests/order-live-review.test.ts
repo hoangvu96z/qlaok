@@ -452,3 +452,84 @@ test('CounterOrdersPage enforces 401/403 session expiration, displays actionable
   );
 });
 
+test('DashboardShell renders the shared full-card new-order toast and dismisses it on open', async () => {
+  const fsMod = await import('node:fs');
+  const pathMod = await import('node:path');
+  const layoutSource = fsMod.readFileSync(
+    pathMod.join(
+      process.cwd(),
+      'src/app/(dashboard)/dashboard/layout.tsx'
+    ),
+    'utf8'
+  );
+
+  const dashboardToastMatch = layoutSource.match(
+    /\{liveToastOrder\s*&&\s*\(\s*<NewOrderToastCard\b([\s\S]*?)\/>\s*\)\s*\}/
+  );
+  assert.ok(
+    dashboardToastMatch,
+    'DashboardShell must render NewOrderToastCard for liveToastOrder'
+  );
+  const dashboardToastProps = dashboardToastMatch[1];
+
+  // The production shell passes the current order/configuration and closes the toast.
+  assert.match(
+    dashboardToastProps,
+    /order=\{liveToastOrder\}/,
+    'DashboardShell must pass the current order into the shared card'
+  );
+  assert.match(
+    dashboardToastProps,
+    /position=\{toastPosition\}/,
+    'DashboardShell must pass the configured toast position'
+  );
+  assert.match(
+    dashboardToastProps,
+    /onOpenOrders=\{\(\)\s*=>\s*setLiveToastOrder\(null\)\}/,
+    'Opening the production toast must clear liveToastOrder'
+  );
+  assert.match(dashboardToastProps, /openOrdersLabel=\{t\(/);
+  assert.match(dashboardToastProps, /newOrderBadgeLabel=\{t\(/);
+  assert.match(dashboardToastProps, /totalLabel=\{tx\(/);
+
+  const componentMatch = layoutSource.match(
+    /export function NewOrderToastCard\([\s\S]*?\n\}\n\nfunction DashboardShell/
+  );
+  assert.ok(componentMatch, 'NewOrderToastCard implementation must exist before DashboardShell');
+  const cardComponent = componentMatch[0];
+
+  // The actual shared component uses one full-card link and one dismiss callback.
+  assert.match(
+    cardComponent,
+    /<Link\s+href=\{targetHref\}/,
+    'The shared card must navigate through one Next Link'
+  );
+  assert.match(
+    cardComponent,
+    /onOpenOrders\(\)/,
+    'The link click must invoke the dismiss callback'
+  );
+  assert.doesNotMatch(
+    dashboardToastProps,
+    /targetHref=/,
+    'The production card should keep its canonical /dashboard/orders target'
+  );
+  assert.match(cardComponent, /aria-live="polite"/);
+  assert.match(cardComponent, /data-testid="new-order-toast-card"/);
+  assert.match(cardComponent, /focus-visible:ring-2/);
+  assert.match(cardComponent, /pointer-events-none/);
+  assert.match(cardComponent, /cursor-pointer/);
+
+  const linkMatches = cardComponent.match(/<Link\b/g);
+  assert.equal(
+    linkMatches?.length,
+    1,
+    'The shared card must have exactly one root Link'
+  );
+  const buttonMatches = cardComponent.match(/<button\b/g);
+  assert.equal(
+    buttonMatches,
+    null,
+    'The shared card must not have nested buttons'
+  );
+});

@@ -66,6 +66,11 @@ import { CatalogTab } from './src/components/tabs/CatalogTab';
 import { PromotionsTab } from './src/components/tabs/PromotionsTab';
 import { SettingsTab } from './src/components/tabs/SettingsTab';
 
+type MobileSaveFeedback = {
+  kind: 'success' | 'error';
+  message: string;
+};
+
 export type MobileActiveWorkspaceRoute =
   | { kind: 'loading' }
   | { kind: 'staff'; staffSession: MobileStaffSession }
@@ -315,6 +320,40 @@ function Workspace({ userId }: { userId: string }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [orderError, setOrderError] = useState('');
+  const [saveFeedback, setSaveFeedback] =
+    useState<MobileSaveFeedback | null>(null);
+  const saveFeedbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const dismissSaveFeedback = useCallback(() => {
+    if (saveFeedbackTimeout.current) {
+      clearTimeout(saveFeedbackTimeout.current);
+      saveFeedbackTimeout.current = null;
+    }
+    setSaveFeedback(null);
+  }, []);
+
+  const showSaveFeedback = useCallback(
+    (kind: MobileSaveFeedback['kind'], message: string) => {
+      if (saveFeedbackTimeout.current) {
+        clearTimeout(saveFeedbackTimeout.current);
+      }
+      setSaveFeedback({ kind, message });
+      saveFeedbackTimeout.current = setTimeout(() => {
+        saveFeedbackTimeout.current = null;
+        setSaveFeedback(null);
+      }, 4000);
+    },
+    []
+  );
+
+  useEffect(
+    () => () => {
+      if (saveFeedbackTimeout.current) {
+        clearTimeout(saveFeedbackTimeout.current);
+      }
+    },
+    []
+  );
 
   const [shops, setShops] = useState<MobileShop[]>([]);
   const [memberships, setMemberships] = useState<
@@ -910,15 +949,15 @@ function Workspace({ userId }: { userId: string }) {
         }),
       });
     } catch (error) {
-      Alert.alert(
-        t('alert.saveErrorTitle'),
+      showSaveFeedback(
+        'error',
         error instanceof Error ? error.message : t('alert.saveErrorDesc')
       );
       return;
     }
 
     if (saveGeneration !== loadGeneration.current) return;
-    Alert.alert(t('alert.saveSuccessTitle'), t('alert.saveSuccessDesc'));
+    showSaveFeedback('success', t('alert.saveSuccessDesc'));
     loadShopsAndData(activeShop.id);
   }, [
     activeShop,
@@ -927,6 +966,7 @@ function Workspace({ userId }: { userId: string }) {
     welcomePopup,
     flashSale,
     loadShopsAndData,
+    showSaveFeedback,
     t,
   ]);
 
@@ -965,15 +1005,15 @@ function Workspace({ userId }: { userId: string }) {
         }),
       });
     } catch (error) {
-      Alert.alert(
-        t('alert.saveErrorTitle'),
+      showSaveFeedback(
+        'error',
         error instanceof Error ? error.message : t('alert.saveErrorDesc')
       );
       return;
     }
 
     if (saveGeneration !== loadGeneration.current) return;
-    Alert.alert(t('alert.saveSuccessTitle'), t('alert.saveSuccessDesc'));
+    showSaveFeedback('success', t('alert.saveSuccessDesc'));
     loadShopsAndData(activeShop.id);
   }, [
     activeShop,
@@ -987,6 +1027,7 @@ function Workspace({ userId }: { userId: string }) {
     editWifiSsid,
     editWifiPass,
     loadShopsAndData,
+    showSaveFeedback,
     t,
   ]);
 
@@ -1019,6 +1060,85 @@ function Workspace({ userId }: { userId: string }) {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
+      {saveFeedback ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: 'absolute',
+            left: 12,
+            right: 12,
+            bottom: 88,
+            zIndex: 10000,
+            elevation: 100,
+          }}
+        >
+          <View
+            accessibilityRole={saveFeedback.kind === 'error' ? 'alert' : 'text'}
+            accessibilityLiveRegion={
+              saveFeedback.kind === 'error' ? 'assertive' : 'polite'
+            }
+            style={{
+              alignSelf: 'center',
+              width: '100%',
+              maxWidth: 520,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+              paddingHorizontal: 16,
+              paddingVertical: 13,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor:
+                saveFeedback.kind === 'error' ? '#fecdd3' : '#a7f3d0',
+              backgroundColor:
+                saveFeedback.kind === 'error' ? '#fff1f2' : '#ecfdf5',
+              elevation: 12,
+            }}
+          >
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text
+                style={{
+                  color: saveFeedback.kind === 'error' ? '#9f1239' : '#065f46',
+                  fontSize: 13,
+                  fontWeight: '900',
+                }}
+              >
+                {saveFeedback.kind === 'error'
+                  ? t('alert.saveErrorTitle')
+                  : t('alert.saveSuccessTitle')}
+              </Text>
+              <Text
+                style={{
+                  color: saveFeedback.kind === 'error' ? '#881337' : '#064e3b',
+                  fontSize: 12,
+                  fontWeight: '600',
+                }}
+              >
+                {saveFeedback.message}
+              </Text>
+            </View>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={
+                locale === 'en' ? 'Dismiss notification' : 'Đóng thông báo'
+              }
+              onPress={dismissSaveFeedback}
+              hitSlop={8}
+            >
+              <Text
+                style={{
+                  color: saveFeedback.kind === 'error' ? '#9f1239' : '#065f46',
+                  fontSize: 22,
+                  fontWeight: '700',
+                  lineHeight: 24,
+                }}
+              >
+                ×
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
       {orderError ? <Text accessibilityRole="alert" style={{ color: '#b91c1c', backgroundColor: '#fee2e2', padding: 12 }}>{orderError}</Text> : null}
 
       {/* Top Header & Store Switcher + Live Status Indicator + VI/EN Switcher + Light/Dark Toggle */}

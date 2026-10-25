@@ -173,6 +173,8 @@ export interface ShopLabelPrintConfig {
   custom_footer_i18n?: I18nText;
 }
 
+export type ServiceRequestNotificationRule = 'all_order_staff' | 'owner_only';
+
 export interface ShopThemeConfig {
   primaryColor: string;
   layout: 'grid' | 'list';
@@ -187,6 +189,7 @@ export interface ShopThemeConfig {
   paymentQr?: ShopPaymentConfig;
   orderWorkflow?: ShopOrderWorkflowConfig;
   labelPrintConfig?: ShopLabelPrintConfig;
+  serviceRequestNotificationRule?: ServiceRequestNotificationRule;
 }
 
 export interface Shop {

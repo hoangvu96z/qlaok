@@ -42,6 +42,7 @@ import {
 import { verifyTableQrSignature } from '@/lib/shop-tables';
 import { validateOrderWorkflowConfig } from '@/lib/order-workflow';
 import { validateLabelPrintConfig } from '@/lib/label-print-config';
+import { isValidServiceRequestNotificationRule } from '@/lib/push-notifications';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -735,7 +736,11 @@ export async function PATCH(req: Request) {
     assertNoSePaySecretInThemeConfig(incomingTheme);
     const bankKeys = ['paymentQr', 'paymentConfig'];
     const promoKeys = ['promoBanner', 'welcomePopup', 'flashSale'];
-    const ownerOnlyKeys = ['orderWorkflow', 'labelPrintConfig'];
+    const ownerOnlyKeys = [
+      'orderWorkflow',
+      'labelPrintConfig',
+      'serviceRequestNotificationRule',
+    ];
     let requiresOwnerOrAdmin = false;
     let nonOwnerThemeKeyChanged = false;
     for (const key of Object.keys(incomingTheme || {})) {
@@ -756,7 +761,9 @@ export async function PATCH(req: Request) {
     }
     const hasExplicitOwnerOnlyKey = Boolean(
       incomingTheme &&
-        ('orderWorkflow' in incomingTheme || 'labelPrintConfig' in incomingTheme)
+        ('orderWorkflow' in incomingTheme ||
+          'labelPrintConfig' in incomingTheme ||
+          'serviceRequestNotificationRule' in incomingTheme)
     );
     if (
       hasExplicitOwnerOnlyKey &&
@@ -825,6 +832,31 @@ export async function PATCH(req: Request) {
       validatedLabelPrintConfig = labelValidation.config;
     }
 
+    let validatedServiceRequestNotificationRule =
+      prevTheme.serviceRequestNotificationRule;
+    if (
+      incomingTheme &&
+      'serviceRequestNotificationRule' in incomingTheme &&
+      incomingTheme.serviceRequestNotificationRule !== undefined
+    ) {
+      if (
+        !isValidServiceRequestNotificationRule(
+          incomingTheme.serviceRequestNotificationRule
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Cấu hình người nhận thông báo gọi phục vụ không hợp lệ (chỉ chấp nhận all_order_staff hoặc owner_only).',
+            code: 'INVALID_SERVICE_REQUEST_NOTIFICATION_RULE',
+          },
+          { status: 400 }
+        );
+      }
+      validatedServiceRequestNotificationRule =
+        incomingTheme.serviceRequestNotificationRule;
+    }
+
     if (
       patch.opening_hours_confirmed !== undefined &&
       typeof patch.opening_hours_confirmed !== 'boolean'
@@ -835,7 +867,7 @@ export async function PATCH(req: Request) {
       );
     }
 
-    // Safely merge theme_config so partial updates do not drop imageUrl, ctaText, paymentQr, orderWorkflow, or labelPrintConfig
+    // Safely merge theme_config so partial updates do not drop imageUrl, ctaText, paymentQr, orderWorkflow, labelPrintConfig, or serviceRequestNotificationRule
     if (incomingTheme) {
       patch.theme_config = {
         ...prevTheme,
@@ -867,6 +899,12 @@ export async function PATCH(req: Request) {
           : {}),
         ...(validatedLabelPrintConfig !== undefined
           ? { labelPrintConfig: validatedLabelPrintConfig }
+          : {}),
+        ...(validatedServiceRequestNotificationRule !== undefined
+          ? {
+              serviceRequestNotificationRule:
+                validatedServiceRequestNotificationRule,
+            }
           : {}),
       };
     }

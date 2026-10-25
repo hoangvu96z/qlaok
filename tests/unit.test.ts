@@ -3090,8 +3090,8 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
 });
 
 describe('Screen flow audit residuals: menu polling, mobile password recovery, setup checklist, slug confirmation', () => {
-  test('R.1 storefront menu polling uses 30s visible interval, pauses when hidden/offline/in-flight, and view=menu omits posts payload', async () => {
-    assert.equal(STOREFRONT_MENU_POLL_INTERVAL_MS, 30_000);
+  test('R.1 storefront menu polling uses 120s visible interval, pauses when hidden/offline/in-flight, and view=menu omits posts payload', async () => {
+    assert.equal(STOREFRONT_MENU_POLL_INTERVAL_MS, 120_000);
     assert.equal(STOREFRONT_MENU_STALE_REFRESH_MS, 10_000);
 
     // Pauses when tab is hidden
@@ -3101,7 +3101,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         isOnline: true,
         isFetchInFlight: false,
         lastFetchedAtMs: 1_000,
-        nowMs: 60_000,
+        nowMs: 200_000,
       }),
       false
     );
@@ -3113,7 +3113,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         isOnline: false,
         isFetchInFlight: false,
         lastFetchedAtMs: 1_000,
-        nowMs: 60_000,
+        nowMs: 200_000,
       }),
       false
     );
@@ -3125,9 +3125,32 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         isOnline: true,
         isFetchInFlight: true,
         lastFetchedAtMs: 1_000,
-        nowMs: 60_000,
+        nowMs: 200_000,
       }),
       false
+    );
+
+    // Default age gate uses STOREFRONT_MENU_POLL_INTERVAL_MS (120s) when minAgeMs is omitted
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 10_000,
+        nowMs: 10_000 + 119_000,
+      }),
+      false
+    );
+
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 10_000,
+        nowMs: 10_000 + 120_001,
+      }),
+      true
     );
 
     // Skips when fetched recently within minAgeMs
@@ -3136,8 +3159,8 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         visibilityState: 'visible',
         isOnline: true,
         isFetchInFlight: false,
-        lastFetchedAtMs: 50_000,
-        nowMs: 55_000,
+        lastFetchedAtMs: 10_000,
+        nowMs: 10_000 + 119_000,
         minAgeMs: STOREFRONT_MENU_POLL_INTERVAL_MS,
       }),
       false
@@ -3150,8 +3173,33 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         isOnline: true,
         isFetchInFlight: false,
         lastFetchedAtMs: 10_000,
-        nowMs: 41_000,
+        nowMs: 10_000 + 120_001,
         minAgeMs: STOREFRONT_MENU_POLL_INTERVAL_MS,
+      }),
+      true
+    );
+
+    // Stale threshold (STOREFRONT_MENU_STALE_REFRESH_MS = 10s) used by modal-open/visibility paths
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 10_000,
+        nowMs: 10_000 + 9_000,
+        minAgeMs: STOREFRONT_MENU_STALE_REFRESH_MS,
+      }),
+      false
+    );
+
+    assert.equal(
+      shouldRefreshStorefrontCatalog({
+        visibilityState: 'visible',
+        isOnline: true,
+        isFetchInFlight: false,
+        lastFetchedAtMs: 10_000,
+        nowMs: 10_000 + 11_000,
+        minAgeMs: STOREFRONT_MENU_STALE_REFRESH_MS,
       }),
       true
     );

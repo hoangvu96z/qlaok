@@ -42,6 +42,10 @@ import {
   TicketPrintType,
 } from '@/types/qlaok';
 import { formatCurrency, LOCALE_META } from '@/lib/i18n-helper';
+import {
+  getUnseenPendingServiceRequests,
+  shouldNotifyBrowserServiceRequest,
+} from '@/lib/service-request-browser-notifications';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { formatChimeSummaryLabel } from '@/lib/app-i18n';
@@ -65,6 +69,7 @@ import {
   getBrowserNotificationPermission,
   loadOrderChimeSettings,
   OrderChimeSettings,
+  type OrderToastPosition,
   playOrderAlertChime,
   requestBrowserNotificationPermission,
   saveOrderChimeSettings,
@@ -110,7 +115,7 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 }
 
 export default function CounterOrdersPage() {
-  const { activeShop } = useDashboard();
+  const { activeShop, profile } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const translateRef = useRef(tx);
   translateRef.current = tx;
@@ -256,8 +261,11 @@ export default function CounterOrdersPage() {
       inFlight.current = request;
       if (!silent) setLoading(true);
       try {
+        const ordersUrl = silent
+          ? `/api/orders?shopId=${encodeURIComponent(activeShop.id)}&includeCatalog=0&includeStats=0`
+          : `/api/orders?shopId=${encodeURIComponent(activeShop.id)}`;
         const [ordersRes, catRes] = await Promise.all([
-          fetch(`/api/orders?shopId=${encodeURIComponent(activeShop.id)}`, {
+          fetch(ordersUrl, {
             cache: 'no-store', headers: getAuthHeaders(),
           }),
           silent ? Promise.resolve(null) : fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {
@@ -291,10 +299,9 @@ export default function CounterOrdersPage() {
               (o) =>
                 o.status === 'new' && !knownOrderIdsRef.current.has(o.id)
             );
-            const brandNewServiceReq = fetchedServiceRequests.find(
-              (r) =>
-                r.status === 'pending' &&
-                !knownServiceRequestIdsRef.current.has(r.id)
+            const brandNewServiceReqs = getUnseenPendingServiceRequests(
+              fetchedServiceRequests,
+              knownServiceRequestIdsRef.current
             );
             if (brandNewOrder) {
               const latestChime = loadOrderChimeSettings();
@@ -325,19 +332,30 @@ export default function CounterOrdersPage() {
                 itemsSummary,
                 shopName: activeShop.name,
               });
-            } else if (brandNewServiceReq) {
+            }
+            const notifiableServiceReqs = brandNewServiceReqs.filter((request) =>
+              shouldNotifyBrowserServiceRequest({
+                rule: activeShop.theme_config?.serviceRequestNotificationRule,
+                requestType: request.request_type,
+                userId: profile?.id,
+                ownerId: activeShop.owner_id,
+              })
+            );
+            if (!brandNewOrder && notifiableServiceReqs.length > 0) {
               const latestChime = loadOrderChimeSettings();
               chimeSettingsRef.current = latestChime;
               if (latestChime.enabled) {
                 playOrderAlertChime(
                   latestChime,
-                  brandNewServiceReq.table_label
+                  notifiableServiceReqs[0].table_label
                 );
               }
+            }
+            for (const serviceRequest of notifiableServiceReqs) {
               sendBrowserServiceRequestNotification({
-                requestId: brandNewServiceReq.id,
-                tableLabel: brandNewServiceReq.table_label,
-                requestType: brandNewServiceReq.request_type,
+                requestId: serviceRequest.id,
+                tableLabel: serviceRequest.table_label,
+                requestType: serviceRequest.request_type,
                 shopName: activeShop.name,
               });
             }
@@ -366,7 +384,7 @@ export default function CounterOrdersPage() {
         if (!silent && !disposedRef.current && scopeRef.current === scope) setLoading(false);
       }
     },
-    [activeShop]
+    [activeShop, profile?.id]
   );
 
   useEffect(() => {
@@ -2361,6 +2379,74 @@ export default function CounterOrdersPage() {
                           : t('header.alertsOff')}
                     </button>
                   )}
+                </div>
+              </div>
+
+              {/* 5. In-App New-Order Toast Position */}
+              <div className="pt-2.5 border-t border-slate-200/80 space-y-2">
+                <label className="block text-xs font-black uppercase tracking-wide text-slate-700">
+                  {tx(
+                    '5. Vị trí bảng báo đơn mới trong ứng dụng:',
+                    '5. In-app new-order toast position:'
+                  )}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'top-left',
+                        title: tx('↖ Trên - Trái', '↖ Top Left'),
+                        sub: tx('Góc trên bên trái', 'Top-left corner'),
+                      },
+                      {
+                        id: 'top-right',
+                        title: tx('↗ Trên - Phải', '↗ Top Right'),
+                        sub: tx('Góc trên bên phải (Mặc định)', 'Top-right (Default)'),
+                      },
+                      {
+                        id: 'bottom-left',
+                        title: tx('↙ Dưới - Trái', '↙ Bottom Left'),
+                        sub: tx('Góc dưới bên trái', 'Bottom-left corner'),
+                      },
+                      {
+                        id: 'bottom-right',
+                        title: tx('↘ Dưới - Phải', '↘ Bottom Right'),
+                        sub: tx('Góc dưới bên phải', 'Bottom-right corner'),
+                      },
+                    ] as Array<{
+                      id: OrderToastPosition;
+                      title: string;
+                      sub: string;
+                    }>
+                  ).map((corner) => {
+                    const active =
+                      (chimeSettings.newOrderToastPosition || 'top-right') ===
+                      corner.id;
+                    return (
+                      <button
+                        key={corner.id}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => {
+                          updateChimeSettings({
+                            newOrderToastPosition: corner.id,
+                          });
+                        }}
+                        className={`rounded-2xl border p-2.5 text-left transition ${
+                          active
+                            ? 'border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500/20'
+                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="text-xs font-black text-slate-900">
+                          {corner.title}
+                        </div>
+                        <div className="text-[10px] font-medium text-slate-500 mt-0.5">
+                          {corner.sub}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>

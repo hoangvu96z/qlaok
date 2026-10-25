@@ -117,7 +117,7 @@ Báo cáo doanh thu/tồn kho ở `computeShopRevenueAndInventoryStats` và `dbC
 - Super Admin cần `requireSuperAdmin`; truy cập DB quản trị cần backend service-role hợp lệ. Mật khẩu khởi tạo chỉ seed khi `INITIAL_SUPER_ADMIN_PASSWORD` được cung cấp, không dùng mật khẩu mẫu trong tài liệu cũ.
 - DB client privileged là server-only. RLS và việc revoke RPC cho public/anon/authenticated bảo vệ truy cập trực tiếp; API vẫn phải kiểm quyền vì service-role có đặc quyền.
 - Khi orders dùng DB, `loadMergedOrders` trả canonical DB rows và lỗi thì throw; không ghép local orders. `.local-db` tồn tại cho legacy/dev, không bảo đảm hoạt động offline hoặc an toàn multi-process.
-- Một số read gọi `ensureSupabaseReadyAndSeeded`; `/api/health` có thể seed nếu DB trống, và trạng thái HTTP không đủ kết luận DB ready.
+- Một số read gọi `ensureSupabaseReadyAndSeeded`; kết quả có shop và seed thành công được cache 60 giây theo DB client trong mỗi process, các lượt kiểm tra đồng thời dùng chung một query. Lỗi và DB trống không được cache; `/api/health` có thể seed nếu DB trống, và trạng thái HTTP không đủ kết luận DB ready.
 
 ## Realtime
 

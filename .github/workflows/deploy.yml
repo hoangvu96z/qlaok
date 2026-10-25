@@ -25,7 +25,7 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix mobile
       - run: npm run typecheck && npm run typecheck --prefix mobile
-      - run: npm run test:unit && npm run test:review && npm run test:sql && npm test --prefix mobile
+      - run: npm run test:unit && npm run test:review && npm run test:sql && npm run test:db-reset && npm test --prefix mobile
       - run: npm run build
 
   migrate:

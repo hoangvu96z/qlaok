@@ -14,6 +14,7 @@ import {
 import type { CatalogItem } from '@/types/qlaok';
 import { ALL_LOCALES, LOCALE_META } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { FeedbackToast, type FeedbackToastMessage } from '@/components/ui/FeedbackToast';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { uploadCompressedImage } from '@/lib/upload-helper';
 import {
@@ -55,6 +56,7 @@ export function QuickItemRow({
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoFeedback, setPhotoFeedback] = useState<FeedbackToastMessage | null>(null);
   const [imgBroken, setImgBroken] = useState(false);
 
   const [stockInput, setStockInput] = useState(
@@ -157,15 +159,28 @@ export function QuickItemRow({
   ) => {
     const file = e.target.files?.[0];
     if (!file || !onUpdateImage) return;
+    setPhotoFeedback(null);
     setUploadingPhoto(true);
     try {
       const publicUrl = await uploadCompressedImage(file);
-      if (publicUrl) {
-        setImgBroken(false);
-        await onUpdateImage(item, publicUrl);
+      const saved = await onUpdateImage(item, publicUrl);
+      if (saved === false) {
+        setPhotoFeedback({
+          kind: 'error',
+          message: tx('Không thể lưu ảnh món. Vui lòng thử lại.', 'Could not save the item photo. Please try again.'),
+        });
+        return;
       }
-    } catch (err) {
-      console.error('Quick photo upload failed:', err);
+      setImgBroken(false);
+      setPhotoFeedback({
+        kind: 'success',
+        message: tx('Đã lưu ảnh món.', 'Item photo saved.'),
+      });
+    } catch {
+      setPhotoFeedback({
+        kind: 'error',
+        message: tx('Không thể tải ảnh món lên. Vui lòng thử lại.', 'Could not upload the item photo. Please try again.'),
+      });
     } finally {
       setUploadingPhoto(false);
       e.target.value = '';
@@ -194,6 +209,11 @@ export function QuickItemRow({
             : 'border-rose-200 bg-rose-50/20 opacity-85'
       }`}
     >
+      <FeedbackToast
+        feedback={photoFeedback}
+        dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
+        onDismiss={() => setPhotoFeedback(null)}
+      />
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-3">
         {/* Left Section: Checkbox + Thumbnail + Item Identity + Metadata */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">

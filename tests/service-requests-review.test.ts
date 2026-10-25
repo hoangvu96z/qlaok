@@ -15,6 +15,11 @@ import {
   POST as postServiceRequestsRoute,
 } from '../src/app/api/service-requests/route';
 import {
+  GET as getShopRoute,
+  PATCH as patchShopsRoute,
+} from '../src/app/api/shops/route';
+import { setSupabaseDbClientForTests } from '../src/lib/db';
+import {
   ALL_LOCALES,
   checkShopOpenStatus,
   getTableServiceRequestLabels,
@@ -23,7 +28,9 @@ import {
 import {
   dbCreateOrder,
   dbGetOrderById,
+  dbUpdateOrderStatus,
   resetMposStoreForTests,
+  setMposDbClientForTests,
 } from '../src/lib/mpos-store';
 import {
   getOrderEventsBroker,
@@ -36,7 +43,14 @@ import {
 } from '../src/lib/order-events';
 import {
   dbUpsertMobilePushToken,
+  isValidServiceRequestNotificationRule,
   resetPushNotificationStateForTests,
+  resolveAuthorizedServiceRequestNotificationUserIds,
+  resolveServiceRequestNotificationRecipientUserIds,
+  resolveShopServiceRequestNotificationRule,
+  type ServiceRequestExpoPushMessagePayload,
+  sendNewGuestOrderPushNotifications,
+  sendServiceRequestPushNotifications,
   setPushDbClientForTests,
   setPushFetchForTests,
   setPushStoreFileForTests,
@@ -51,6 +65,7 @@ import {
 import {
   dbDeleteShopMembership,
   dbUpsertShopMembership,
+  setShopMembershipDbClientForTest,
 } from '../src/lib/shop-permissions';
 import {
   dbCreateShopTable,
@@ -65,6 +80,7 @@ import {
   createScopedTableQrVerification,
   resolveStorefrontMenuTableState,
 } from '../src/lib/table-helpers';
+import type { ShopMembership, ShopThemeConfig } from '../src/types/qlaok';
 
 const SHOP_A = 'shop-fnb-001';
 const SHOP_B = 'shop-service-002';
@@ -1391,5 +1407,1696 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
       __setServiceRequestsDbClientForTests(null, { forceDbMode: false });
       await db.close();
     }
+  });
+
+  test('7. Pure recipient resolver: default/invalid legacy rules, owner_only vs all_order_staff, inactive owner/member, active member without orders.view, and request_bill independence', () => {
+    assert.equal(isValidServiceRequestNotificationRule('all_order_staff'), true);
+    assert.equal(isValidServiceRequestNotificationRule('owner_only'), true);
+    assert.equal(isValidServiceRequestNotificationRule('invalid_rule'), false);
+    assert.equal(isValidServiceRequestNotificationRule(''), false);
+    assert.equal(isValidServiceRequestNotificationRule(null), false);
+    assert.equal(isValidServiceRequestNotificationRule(undefined), false);
+
+    assert.equal(
+      resolveShopServiceRequestNotificationRule(undefined),
+      'all_order_staff'
+    );
+    assert.equal(
+      resolveShopServiceRequestNotificationRule(null),
+      'all_order_staff'
+    );
+    assert.equal(
+      resolveShopServiceRequestNotificationRule({
+        primaryColor: '#10b981',
+        layout: 'grid',
+      }),
+      'all_order_staff'
+    );
+    assert.equal(
+      resolveShopServiceRequestNotificationRule({
+        serviceRequestNotificationRule: 'legacy_bogus_value',
+      }),
+      'all_order_staff'
+    );
+    assert.equal(
+      resolveShopServiceRequestNotificationRule({
+        serviceRequestNotificationRule: 'owner_only',
+      }),
+      'owner_only'
+    );
+
+    const nowIso = '2026-10-24T00:00:00.000Z';
+    const memberships: ShopMembership[] = [
+      {
+        id: 'mem-active-orders',
+        shop_id: SHOP_A,
+        user_id: 'staff-orders-view',
+        role: 'staff',
+        permissions: ['orders.view', 'orders.fulfill'],
+        is_active: true,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+      {
+        id: 'mem-active-cashier',
+        shop_id: SHOP_A,
+        user_id: 'cashier-orders-view',
+        role: 'cashier',
+        permissions: ['orders.view', 'payment.collect'],
+        is_active: true,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+      {
+        id: 'mem-active-catalog-only',
+        shop_id: SHOP_A,
+        user_id: 'staff-no-orders-view',
+        role: 'staff',
+        permissions: ['catalog.manage', 'settings.manage'],
+        is_active: true,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+      {
+        id: 'mem-inactive-orders',
+        shop_id: SHOP_A,
+        user_id: 'staff-inactive-orders',
+        role: 'staff',
+        permissions: ['orders.view', 'orders.fulfill'],
+        is_active: false,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+    ];
+
+    // 1. Missing/default rule on call_staff -> true owner + active members with orders.view
+    for (const rule of [undefined, null, 'invalid_value', 'all_order_staff']) {
+      const recipients = resolveServiceRequestNotificationRecipientUserIds({
+        ownerId: 'owner-true-001',
+        memberships,
+        requestType: 'call_staff',
+        rule,
+      });
+      assert.deepEqual(
+        Array.from(recipients).sort(),
+        ['cashier-orders-view', 'owner-true-001', 'staff-orders-view'],
+        `rule=${String(rule)} should include active owner and active orders.view staff only`
+      );
+      assert.equal(recipients.has('staff-no-orders-view'), false);
+      assert.equal(recipients.has('staff-inactive-orders'), false);
+    }
+
+    // 2. owner_only on call_staff -> only true shop owner
+    const ownerOnlyRecipients =
+      resolveServiceRequestNotificationRecipientUserIds({
+        ownerId: 'owner-true-001',
+        memberships: [
+          ...memberships,
+          {
+            id: 'mem-impostor-owner-role',
+            shop_id: SHOP_A,
+            user_id: 'non-true-owner-999',
+            role: 'owner',
+            permissions: ['orders.view'],
+            is_active: true,
+            created_at: nowIso,
+            updated_at: nowIso,
+          },
+        ],
+        requestType: 'call_staff',
+        rule: 'owner_only',
+      });
+    assert.deepEqual(Array.from(ownerOnlyRecipients), ['owner-true-001']);
+
+    // 3. Inactive owner is excluded under both owner_only and all_order_staff
+    const membershipsWithInactiveOwner: ShopMembership[] = [
+      ...memberships,
+      {
+        id: 'mem-owner-deactivated',
+        shop_id: SHOP_A,
+        user_id: 'owner-true-001',
+        role: 'owner',
+        permissions: ['orders.view'],
+        is_active: false,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+    ];
+    const inactiveOwnerOnly = resolveServiceRequestNotificationRecipientUserIds(
+      {
+        ownerId: 'owner-true-001',
+        memberships: membershipsWithInactiveOwner,
+        requestType: 'call_staff',
+        rule: 'owner_only',
+      }
+    );
+    assert.equal(inactiveOwnerOnly.size, 0);
+
+    const inactiveOwnerAllStaff =
+      resolveServiceRequestNotificationRecipientUserIds({
+        ownerId: 'owner-true-001',
+        memberships: membershipsWithInactiveOwner,
+        requestType: 'call_staff',
+        rule: 'all_order_staff',
+      });
+    assert.deepEqual(Array.from(inactiveOwnerAllStaff).sort(), [
+      'cashier-orders-view',
+      'staff-orders-view',
+    ]);
+
+    // 4. request_bill always fans out to all_order_staff even when rule is owner_only
+    const billUnderOwnerOnly =
+      resolveServiceRequestNotificationRecipientUserIds({
+        ownerId: 'owner-true-001',
+        memberships,
+        requestType: 'request_bill',
+        rule: 'owner_only',
+      });
+    assert.deepEqual(Array.from(billUnderOwnerOnly).sort(), [
+      'cashier-orders-view',
+      'owner-true-001',
+      'staff-orders-view',
+    ]);
+  });
+
+  test('8. Push dispatch for call_staff vs request_bill & new guest orders: multiple localized tokens, owner_only filtering, rule-load error fallback, and non-blocking push failure', async () => {
+    const validSig = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const CATALOG_ONLY_STAFF_ID = 'staff-catalog-only-003';
+
+    await dbUpsertShopMembership({
+      shop_id: SHOP_A,
+      user_id: CATALOG_ONLY_STAFF_ID,
+      email: 'catalog-only@qlaok.vn',
+      role: 'staff',
+      permissions: ['catalog.manage'],
+      is_active: true,
+    });
+
+    try {
+      // Register multiple active tokens across owner (en + vi), active orders.view staff (vi),
+      // active non-orders.view staff, and inactive staff
+      const ownerEnToken = 'ExponentPushToken[OwnerCallStaffEn01]';
+      const ownerViToken = 'ExponentPushToken[OwnerCallStaffVi02]';
+      const staffViToken = 'ExponentPushToken[StaffOrdersViewVi03]';
+      const catalogOnlyToken = 'ExponentPushToken[StaffCatalogOnly04]';
+      const inactiveStaffToken = 'ExponentPushToken[StaffInactive05]';
+
+      await dbUpsertMobilePushToken({
+        user_id: 'owner-demo-001',
+        shop_id: SHOP_A,
+        expo_push_token: ownerEnToken,
+        locale: 'en',
+        platform: 'ios',
+      });
+      await dbUpsertMobilePushToken({
+        user_id: 'owner-demo-001',
+        shop_id: SHOP_A,
+        expo_push_token: ownerViToken,
+        locale: 'vi',
+        platform: 'android',
+      });
+      await dbUpsertMobilePushToken({
+        user_id: STAFF_A_ID,
+        shop_id: SHOP_A,
+        expo_push_token: staffViToken,
+        locale: 'vi',
+        platform: 'ios',
+      });
+      await dbUpsertMobilePushToken({
+        user_id: CATALOG_ONLY_STAFF_ID,
+        shop_id: SHOP_A,
+        expo_push_token: catalogOnlyToken,
+        locale: 'vi',
+        platform: 'android',
+      });
+      await dbUpsertMobilePushToken({
+        user_id: INACTIVE_STAFF_ID,
+        shop_id: SHOP_A,
+        expo_push_token: inactiveStaffToken,
+        locale: 'vi',
+        platform: 'ios',
+      });
+
+      let currentThemeConfig: Record<string, unknown> | null = {};
+      let throwOnThemeSelect = false;
+
+      const tokenRows = [
+        {
+          id: 'tok-1',
+          user_id: 'owner-demo-001',
+          shop_id: SHOP_A,
+          expo_push_token: ownerEnToken,
+          locale: 'en',
+          platform: 'ios',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        },
+        {
+          id: 'tok-2',
+          user_id: 'owner-demo-001',
+          shop_id: SHOP_A,
+          expo_push_token: ownerViToken,
+          locale: 'vi',
+          platform: 'android',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        },
+        {
+          id: 'tok-3',
+          user_id: STAFF_A_ID,
+          shop_id: SHOP_A,
+          expo_push_token: staffViToken,
+          locale: 'vi',
+          platform: 'ios',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        },
+        {
+          id: 'tok-4',
+          user_id: CATALOG_ONLY_STAFF_ID,
+          shop_id: SHOP_A,
+          expo_push_token: catalogOnlyToken,
+          locale: 'vi',
+          platform: 'android',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        },
+        {
+          id: 'tok-5',
+          user_id: INACTIVE_STAFF_ID,
+          shop_id: SHOP_A,
+          expo_push_token: inactiveStaffToken,
+          locale: 'vi',
+          platform: 'ios',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        },
+      ];
+
+      const fullMockPushClient = {
+        from: (table: string) => ({
+          select: (columns = '*') => {
+            const filters: Record<string, unknown> = {};
+            const builder = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return builder;
+              },
+              maybeSingle: async () => {
+                if (table === 'shops' && filters.id === SHOP_A) {
+                  if (columns.includes('theme_config') && throwOnThemeSelect) {
+                    throw new Error('simulated_theme_config_db_error');
+                  }
+                  return {
+                    data: {
+                      owner_id: 'owner-demo-001',
+                      name: 'Phở Hội An',
+                      theme_config: currentThemeConfig,
+                    },
+                    error: null,
+                  };
+                }
+                return { data: null, error: null };
+              },
+              // biome-ignore lint/suspicious/noThenProperty: Supabase query builder mock
+              then: (
+                resolve: (val: unknown) => unknown,
+                reject: (err: unknown) => unknown
+              ) => {
+                if (table === 'mobile_push_tokens') {
+                  return Promise.resolve({
+                    data: tokenRows.filter(
+                      (r) =>
+                        (!filters.shop_id || r.shop_id === filters.shop_id) &&
+                        (filters.is_active === undefined ||
+                          r.is_active === filters.is_active)
+                    ),
+                    error: null,
+                  }).then(resolve, reject);
+                }
+                return Promise.resolve({ data: [], error: null }).then(
+                  resolve,
+                  reject
+                );
+              },
+            };
+            return builder;
+          },
+        }),
+      };
+
+      setPushDbClientForTests(fullMockPushClient as never, true);
+
+      const sentBatches: ServiceRequestExpoPushMessagePayload[][] = [];
+      setPushFetchForTests((async (_url, init) => {
+        const parsed = JSON.parse(
+          String(init?.body || '[]')
+        ) as ServiceRequestExpoPushMessagePayload[];
+        sentBatches.push(parsed);
+        return new Response(
+          JSON.stringify({ data: parsed.map(() => ({ status: 'ok' })) }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch);
+
+      // Case A: Default (missing serviceRequestNotificationRule) -> all_order_staff
+      // Sends localized call_staff messages to all 3 eligible tokens (owner EN, owner VI, staff VI)
+      const defaultRes = await sendServiceRequestPushNotifications({
+        serviceRequest: {
+          id: 'srv-rule-default-01',
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_code: 'T01',
+          table_label: 'Bàn 01',
+          request_type: 'call_staff',
+          status: 'pending',
+          visitor_lang: 'vi',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      });
+      assert.equal(defaultRes.skipped, false);
+      assert.equal(defaultRes.recipientsCount, 2);
+      assert.equal(defaultRes.tokensCount, 3);
+      assert.equal(defaultRes.sent, 3);
+      assert.equal(sentBatches.length, 1);
+
+      const batchA = sentBatches[0];
+      assert.deepEqual(
+        batchA.map((m) => m.to).sort(),
+        [ownerEnToken, ownerViToken, staffViToken].sort()
+      );
+      const ownerEnMsg = batchA.find((m) => m.to === ownerEnToken)!;
+      assert.equal(ownerEnMsg.title, 'Guest calling staff • Bàn 01');
+      assert.equal(
+        ownerEnMsg.body,
+        'Bàn 01 is calling staff to the table.'
+      );
+      const ownerViMsg = batchA.find((m) => m.to === ownerViToken)!;
+      assert.equal(ownerViMsg.title, 'Khách gọi phục vụ • Bàn 01');
+      const staffViMsg = batchA.find((m) => m.to === staffViToken)!;
+      assert.equal(staffViMsg.title, 'Khách gọi phục vụ • Bàn 01');
+
+      // Case B: Shop configured with owner_only -> call_staff sends ONLY to owner's 2 tokens
+      currentThemeConfig = { serviceRequestNotificationRule: 'owner_only' };
+      const ownerOnlyRes = await sendServiceRequestPushNotifications({
+        serviceRequest: {
+          id: 'srv-rule-owner-only-02',
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_code: 'T01',
+          table_label: 'Bàn 01',
+          request_type: 'call_staff',
+          status: 'pending',
+          visitor_lang: 'vi',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      });
+      assert.equal(ownerOnlyRes.skipped, false);
+      assert.equal(ownerOnlyRes.recipientsCount, 1);
+      assert.equal(ownerOnlyRes.tokensCount, 2);
+      assert.equal(ownerOnlyRes.sent, 2);
+      assert.equal(sentBatches.length, 2);
+      assert.deepEqual(
+        sentBatches[1].map((m) => m.to).sort(),
+        [ownerEnToken, ownerViToken].sort()
+      );
+
+      // Case C: request_bill under owner_only STILL fans out to all_order_staff (owner + orders.view staff = 3 tokens)
+      const billUnderOwnerOnlyRes = await sendServiceRequestPushNotifications({
+        serviceRequest: {
+          id: 'srv-rule-bill-unchanged-03',
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_code: 'T01',
+          table_label: 'Bàn 01',
+          request_type: 'request_bill',
+          status: 'pending',
+          visitor_lang: 'vi',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      });
+      assert.equal(billUnderOwnerOnlyRes.recipientsCount, 2);
+      assert.equal(billUnderOwnerOnlyRes.tokensCount, 3);
+      assert.equal(billUnderOwnerOnlyRes.sent, 3);
+      assert.deepEqual(
+        sentBatches[2].map((m) => m.to).sort(),
+        [ownerEnToken, ownerViToken, staffViToken].sort()
+      );
+
+      // Case D: Guest new-order push under owner_only STILL fans out to all_order_staff (owner + orders.view staff = 3 tokens)
+      const newOrderUnderOwnerOnlyRes = await sendNewGuestOrderPushNotifications(
+        {
+          order: {
+            id: 'ord-under-owner-only-04',
+            order_code: 'ORD-904',
+            shop_id: SHOP_A,
+            table_id: 'tbl-fnb-01',
+            table_label: 'Bàn 01',
+            visitor_lang: 'vi',
+            status: 'new',
+            source: 'qr_table',
+            payment_method: 'cash',
+            payment_status: 'unpaid',
+            total_amount: 85000,
+            items: [],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          isGuestOrder: true,
+        }
+      );
+      assert.equal(newOrderUnderOwnerOnlyRes.recipientsCount, 2);
+      assert.equal(newOrderUnderOwnerOnlyRes.tokensCount, 3);
+      assert.equal(newOrderUnderOwnerOnlyRes.sent, 3);
+
+      // Case E: If loading theme_config fails, call_staff falls back to all_order_staff (owner + active orders.view staff, excluding catalog-only & inactive)
+      throwOnThemeSelect = true;
+      const fallbackUsers =
+        await resolveAuthorizedServiceRequestNotificationUserIds(
+          SHOP_A,
+          'call_staff'
+        );
+      assert.equal(fallbackUsers.has('owner-demo-001'), true);
+      assert.equal(fallbackUsers.has(STAFF_A_ID), true);
+      assert.equal(fallbackUsers.has(CATALOG_ONLY_STAFF_ID), false);
+      assert.equal(fallbackUsers.has(INACTIVE_STAFF_ID), false);
+      throwOnThemeSelect = false;
+
+      // Case F: Client spoofing recipient rule in POST /api/service-requests is ignored,
+      // and push/network failure does not prevent the service request from succeeding (201)
+      currentThemeConfig = {
+        serviceRequestNotificationRule: 'all_order_staff',
+      };
+      const postSpoofRes = await postServiceRequestsRoute(
+        new Request('http://localhost/api/service-requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shop_id: SHOP_A,
+            table_id: 'tbl-fnb-01',
+            table_qr_sig: validSig,
+            request_type: 'call_staff',
+            serviceRequestNotificationRule: 'owner_only',
+            recipientUserIds: ['owner-demo-001'],
+          }),
+        })
+      );
+      assert.equal(postSpoofRes.status, 201);
+      const lastBatch = sentBatches[sentBatches.length - 1];
+      assert.deepEqual(
+        lastBatch.map((m) => m.to).sort(),
+        [ownerEnToken, ownerViToken, staffViToken].sort(),
+        'client payload must never override server-side call_staff recipient rule'
+      );
+
+      // Network failure on Expo push still returns 201 for table service request creation
+      setPushFetchForTests((async () => {
+        throw new Error('simulated_expo_network_outage');
+      }) as typeof fetch);
+
+      const postWithPushFailureRes = await postServiceRequestsRoute(
+        new Request('http://localhost/api/service-requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shop_id: SHOP_A,
+            table_id: 'tbl-fnb-01',
+            table_qr_sig: validSig,
+            request_type: 'request_bill',
+          }),
+        })
+      );
+      assert.equal(postWithPushFailureRes.status, 201);
+      const createdDespitePushFailure = await postWithPushFailureRes.json();
+      assert.equal(
+        createdDespitePushFailure.serviceRequest.request_type,
+        'request_bill'
+      );
+    } finally {
+      setPushDbClientForTests(null, false);
+      await dbDeleteShopMembership(SHOP_A, CATALOG_ONLY_STAFF_ID).catch(
+        () => {}
+      );
+    }
+  });
+
+  test('9. PATCH /api/shops validates serviceRequestNotificationRule, enforces owner/admin-only changes, and preserves other theme_config keys', async () => {
+    const db = new PGlite({ extensions: { uuid_ossp } });
+    const ownerId = '00000000-0000-0000-0000-000000000501';
+    const staffId = '00000000-0000-0000-0000-000000000502';
+    const cashierId = '00000000-0000-0000-0000-000000000503';
+    const adminId = '00000000-0000-0000-0000-000000000504';
+    const testShopId = 'sr-rule-shop-1';
+
+    class PgShopQueryBuilder {
+      private table: string;
+      private columns = '*';
+      private eqFilters: Array<[string, unknown]> = [];
+      private singleMode: 'none' | 'maybe' | 'single' = 'none';
+      private updatePayload: Record<string, unknown> | null = null;
+
+      constructor(table: string) {
+        this.table = table;
+      }
+      select(columns = '*') {
+        this.columns = columns;
+        return this;
+      }
+      eq(column: string, value: unknown) {
+        this.eqFilters.push([column, value]);
+        return this;
+      }
+      order() {
+        return this;
+      }
+      maybeSingle() {
+        this.singleMode = 'maybe';
+        return this;
+      }
+      single() {
+        this.singleMode = 'single';
+        return this;
+      }
+      update(payload: Record<string, unknown>) {
+        this.updatePayload = payload;
+        return this;
+      }
+      async execute() {
+        const ident = (value: string) => {
+          assert.match(value, /^[a-z_]+$/i);
+          return `"${value}"`;
+        };
+        const params: unknown[] = [];
+        const clauses = this.eqFilters.map(([col, val]) => {
+          params.push(val);
+          return `${ident(col)} = $${params.length}`;
+        });
+        const whereSql =
+          clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+
+        try {
+          if (this.updatePayload) {
+            const keys = Object.keys(this.updatePayload);
+            const setClauses = keys.map((k) => {
+              const v = this.updatePayload![k];
+              params.push(
+                typeof v === 'object' && v !== null ? JSON.stringify(v) : v
+              );
+              return `${ident(k)} = $${params.length}`;
+            });
+            const { rows } = await db.query(
+              `UPDATE ${ident(this.table)} SET ${setClauses.join(', ')}${whereSql} RETURNING *`,
+              params
+            );
+            return {
+              data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+              error: null,
+            };
+          }
+
+          const selectCols =
+            this.columns === '*'
+              ? '*'
+              : this.columns
+                  .split(',')
+                  .map((c) => ident(c.trim()))
+                  .join(', ');
+          const { rows } = await db.query(
+            `SELECT ${selectCols} FROM ${ident(this.table)}${whereSql}`,
+            params
+          );
+          return {
+            data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+            error: null,
+          };
+        } catch (err) {
+          return {
+            data: null,
+            error: {
+              message: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
+      }
+      // biome-ignore lint/suspicious/noThenProperty: Supabase query builder mock
+      then(
+        resolve: (result: unknown) => unknown,
+        reject: (err: unknown) => unknown
+      ) {
+        return this.execute().then(resolve, reject);
+      }
+    }
+
+    const client = {
+      from: (table: string) => new PgShopQueryBuilder(table),
+    };
+
+    try {
+      await db.exec(`
+        CREATE ROLE anon;
+        CREATE ROLE authenticated;
+        CREATE ROLE service_role BYPASSRLS;
+        CREATE SCHEMA auth;
+        CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+      `);
+      for (const file of fs
+        .readdirSync('supabase/migrations')
+        .filter((f) => f.endsWith('.sql'))
+        .sort()) {
+        await db.exec(
+          fs.readFileSync(path.join('supabase/migrations', file), 'utf8')
+        );
+      }
+
+      await db.exec(`
+        INSERT INTO profiles (id) VALUES
+          ('${ownerId}'),
+          ('${staffId}'),
+          ('${cashierId}'),
+          ('${adminId}');
+        INSERT INTO shops (id, owner_id, slug, name, is_published, theme_config) VALUES (
+          '${testShopId}',
+          '${ownerId}',
+          'sr-rule-shop-1',
+          'Quán Phở Gọi Phục Vụ',
+          true,
+          '{"primaryColor":"#10b981","layout":"grid","fontStyle":"modern","paymentQr":{"bankId":"VCB","accountNo":"998877","accountName":"CHU QUAN"},"promoBanner":{"enabled":true,"discountValue":15,"title":"Giảm 15%"}}'::jsonb
+        );
+        INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
+          ('mem-sr-staff', '${testShopId}', '${staffId}', 'staff', '["orders.view","orders.fulfill","settings.manage"]'::jsonb, true),
+          ('mem-sr-cashier', '${testShopId}', '${cashierId}', 'cashier', '["orders.view","orders.create","payment.collect","settings.manage"]'::jsonb, true);
+      `);
+
+      setSupabaseDbClientForTests(client);
+      setShopMembershipDbClientForTest(client as never);
+
+      const ownerToken = issueSessionToken({
+        id: ownerId,
+        email: 'owner@qlaok.test',
+        role: 'owner',
+      });
+      const staffToken = issueSessionToken({
+        id: staffId,
+        email: 'staff@qlaok.test',
+        role: 'staff',
+      });
+      const cashierToken = issueSessionToken({
+        id: cashierId,
+        email: 'cashier@qlaok.test',
+        role: 'cashier',
+      });
+      const adminToken = issueSessionToken({
+        id: adminId,
+        email: 'hoangvu96z@gmail.com',
+        role: 'admin',
+        is_admin: true,
+      });
+
+      // 1. Staff and cashier (even with settings.manage) are rejected with 403 when changing serviceRequestNotificationRule
+      for (const token of [staffToken, cashierToken]) {
+        const unauthorizedRes = await patchShopsRoute(
+          new Request('http://localhost/api/shops', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              id: testShopId,
+              theme_config: {
+                serviceRequestNotificationRule: 'owner_only',
+              },
+            }),
+          })
+        );
+        assert.equal(unauthorizedRes.status, 403);
+      }
+
+      // 2. Owner sending invalid values receives 400 INVALID_SERVICE_REQUEST_NOTIFICATION_RULE
+      for (const badValue of ['everyone', '', null, 123, {}]) {
+        const badRes = await patchShopsRoute(
+          new Request('http://localhost/api/shops', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${ownerToken}`,
+            },
+            body: JSON.stringify({
+              id: testShopId,
+              theme_config: {
+                serviceRequestNotificationRule: badValue,
+              },
+            }),
+          })
+        );
+        assert.equal(
+          badRes.status,
+          400,
+          `Invalid value ${JSON.stringify(badValue)} must return 400`
+        );
+        const badBody = (await badRes.json()) as { code?: string };
+        assert.equal(
+          badBody.code,
+          'INVALID_SERVICE_REQUEST_NOTIFICATION_RULE'
+        );
+      }
+
+      // 3. Owner saves owner_only; other theme_config keys are preserved
+      const ownerSaveRes = await patchShopsRoute(
+        new Request('http://localhost/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            id: testShopId,
+            theme_config: {
+              serviceRequestNotificationRule: 'owner_only',
+            },
+          }),
+        })
+      );
+      assert.equal(ownerSaveRes.status, 200);
+      const ownerSaveBody = (await ownerSaveRes.json()) as {
+        shop: { theme_config: ShopThemeConfig };
+      };
+      assert.equal(
+        ownerSaveBody.shop.theme_config.serviceRequestNotificationRule,
+        'owner_only'
+      );
+      assert.equal(ownerSaveBody.shop.theme_config.primaryColor, '#10b981');
+      assert.equal(ownerSaveBody.shop.theme_config.fontStyle, 'modern');
+      assert.equal(ownerSaveBody.shop.theme_config.paymentQr?.bankId, 'VCB');
+      assert.equal(
+        ownerSaveBody.shop.theme_config.promoBanner?.discountValue,
+        15
+      );
+
+      const reloadRes = await getShopRoute(
+        new Request(
+          `http://localhost/api/shops?shopId=${encodeURIComponent(testShopId)}`,
+          { headers: { Authorization: `Bearer ${ownerToken}` } }
+        )
+      );
+      assert.equal(reloadRes.status, 200);
+      const reloadBody = (await reloadRes.json()) as {
+        shop: { theme_config: ShopThemeConfig };
+      };
+      assert.equal(
+        reloadBody.shop.theme_config.serviceRequestNotificationRule,
+        'owner_only'
+      );
+
+      // 4. Staff with settings.manage can update general theme keys (fontStyle) while spreading unchanged theme_config, and cannot mutate serviceRequestNotificationRule
+      const staffGeneralRes = await patchShopsRoute(
+        new Request('http://localhost/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${staffToken}`,
+          },
+          body: JSON.stringify({
+            id: testShopId,
+            theme_config: {
+              ...ownerSaveBody.shop.theme_config,
+              fontStyle: 'serif',
+            },
+          }),
+        })
+      );
+      assert.equal(staffGeneralRes.status, 200);
+      const staffGeneralBody = (await staffGeneralRes.json()) as {
+        shop: { theme_config: ShopThemeConfig };
+      };
+      assert.equal(staffGeneralBody.shop.theme_config.fontStyle, 'serif');
+      assert.equal(
+        staffGeneralBody.shop.theme_config.serviceRequestNotificationRule,
+        'owner_only'
+      );
+
+      // Staff trying to flip owner_only -> all_order_staff alongside fontStyle is rejected with 403
+      const staffFlipRes = await patchShopsRoute(
+        new Request('http://localhost/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${staffToken}`,
+          },
+          body: JSON.stringify({
+            id: testShopId,
+            theme_config: {
+              ...staffGeneralBody.shop.theme_config,
+              fontStyle: 'playful',
+              serviceRequestNotificationRule: 'all_order_staff',
+            },
+          }),
+        })
+      );
+      assert.equal(staffFlipRes.status, 403);
+
+      // 5. Super Admin can update serviceRequestNotificationRule back to all_order_staff
+      const adminSaveRes = await patchShopsRoute(
+        new Request('http://localhost/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            id: testShopId,
+            theme_config: {
+              serviceRequestNotificationRule: 'all_order_staff',
+            },
+          }),
+        })
+      );
+      assert.equal(adminSaveRes.status, 200);
+      const adminSaveBody = (await adminSaveRes.json()) as {
+        shop: { theme_config: ShopThemeConfig };
+      };
+      assert.equal(
+        adminSaveBody.shop.theme_config.serviceRequestNotificationRule,
+        'all_order_staff'
+      );
+      assert.equal(adminSaveBody.shop.theme_config.fontStyle, 'serif');
+      assert.equal(adminSaveBody.shop.theme_config.paymentQr?.bankId, 'VCB');
+    } finally {
+      setSupabaseDbClientForTests(null);
+      setShopMembershipDbClientForTest(null);
+      await db.close();
+    }
+  });
+
+  test('10. GET /api/orders?view=badge enforces shopId and orders.view, returns only new orders and pending service requests without catalog/stats work, and preserves default/KDS contracts', async () => {
+    const validSigA1 = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const validSigA2 = signTableQr(SHOP_A, 'tbl-fnb-02');
+    const validSigA3 = signTableQr(SHOP_A, 'tbl-fnb-03');
+
+    const catalogOnlyStaffId = 'staff-catalog-only-badge-001';
+    const catalogOnlyStaffToken = issueSessionToken({
+      id: catalogOnlyStaffId,
+      email: 'catalog-only-badge@qlaok.vn',
+      role: 'staff',
+    });
+    await dbUpsertShopMembership({
+      shop_id: SHOP_A,
+      user_id: catalogOnlyStaffId,
+      email: 'catalog-only-badge@qlaok.vn',
+      role: 'staff',
+      permissions: ['catalog.view'],
+      is_active: true,
+    });
+
+    // Fail-closed checks: missing shopId -> 400 SHOP_ID_REQUIRED, anonymous -> 401, unauthorized -> 403
+    for (const missingUrl of [
+      'http://localhost/api/orders?view=badge',
+      'http://localhost/api/orders?shopId=%20%20&view=badge',
+    ]) {
+      const missingShopRes = await getOrdersRoute(
+        new Request(missingUrl, {
+          headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+        })
+      );
+      assert.equal(missingShopRes.status, 400);
+      const missingShopJson = await missingShopRes.json();
+      assert.equal(missingShopJson.code, 'SHOP_ID_REQUIRED');
+    }
+
+    const anonBadgeRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`)
+    );
+    assert.equal(anonBadgeRes.status, 401);
+
+    for (const unauthorizedToken of [
+      OWNER_B_TOKEN,
+      INACTIVE_STAFF_TOKEN,
+      catalogOnlyStaffToken,
+    ]) {
+      const forbiddenRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${unauthorizedToken}` },
+        })
+      );
+      assert.equal(forbiddenRes.status, 403);
+    }
+
+    // Seed orders across statuses ('new', 'preparing', 'completed', 'cancelled') and shops
+    const newOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-01',
+      table_qr_sig: validSigA1,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 2,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const preparingOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-02',
+      table_qr_sig: validSigA2,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(preparingOrder.id, { status: 'preparing' });
+
+    const completedOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-03',
+      table_qr_sig: validSigA3,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(completedOrder.id, { status: 'completed' });
+
+    const cancelledOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_label: 'Bàn 04',
+      source: 'counter_pos',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(cancelledOrder.id, {
+      status: 'cancelled',
+      cancelled_reason: 'Khách đổi ý',
+    });
+
+    // Seed service requests in pending, acknowledged, and resolved states
+    const pendingReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_qr_sig: validSigA1,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(pendingReqRes.status, 201);
+    const { serviceRequest: pendingReq } = await pendingReqRes.json();
+
+    const ackReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-02',
+          table_qr_sig: validSigA2,
+          request_type: 'request_bill',
+        }),
+      })
+    );
+    assert.equal(ackReqRes.status, 201);
+    const { serviceRequest: ackReq } = await ackReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${STAFF_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: ackReq.id,
+          shop_id: SHOP_A,
+          status: 'acknowledged',
+        }),
+      })
+    );
+
+    const resolvedReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-03',
+          table_qr_sig: validSigA3,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(resolvedReqRes.status, 201);
+    const { serviceRequest: resolvedReq } = await resolvedReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OWNER_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: resolvedReq.id,
+          shop_id: SHOP_A,
+          status: 'resolved',
+        }),
+      })
+    );
+
+    // Valid staff and owner requests to view=badge receive only new orders and pending service requests,
+    // preserving toast fields and omitting top-level stats and items
+    for (const [token, expectedUserId] of [
+      [STAFF_A_TOKEN, STAFF_A_ID],
+      [OWNER_A_TOKEN, 'owner-demo-001'],
+    ] as const) {
+      const badgeRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(badgeRes.status, 200);
+      const badgeData = await badgeRes.json();
+
+      assert.deepEqual(
+        Object.keys(badgeData).sort(),
+        ['membership', 'orders', 'serviceRequests'],
+        'view=badge must return only { orders, serviceRequests, membership }'
+      );
+      assert.equal('stats' in badgeData, false, 'view=badge must omit stats');
+      assert.equal('items' in badgeData, false, 'view=badge must omit catalog items');
+      assert.equal(badgeData.membership?.user_id, expectedUserId);
+
+      assert.ok(
+        badgeData.orders.every((o: { status: string; shop_id: string }) =>
+          o.status === 'new' && o.shop_id === SHOP_A
+        ),
+        'view=badge must return only SHOP_A orders with status === "new"'
+      );
+      assert.deepEqual(
+        badgeData.orders.map((o: { id: string }) => o.id),
+        ['ord-seed-101', newOrder.id],
+        'view=badge must return only orders with status === "new"'
+      );
+      const returnedNewOrder = badgeData.orders.find(
+        (o: { id: string }) => o.id === newOrder.id
+      );
+      assert.ok(returnedNewOrder);
+      assert.equal(returnedNewOrder.id, newOrder.id);
+      assert.equal(returnedNewOrder.order_code, newOrder.order_code);
+      assert.equal(returnedNewOrder.table_label, newOrder.table_label);
+      assert.equal(returnedNewOrder.total_amount, 110000);
+      assert.ok(Array.isArray(returnedNewOrder.items));
+      assert.equal(returnedNewOrder.items.length, 1);
+      assert.equal(returnedNewOrder.items[0].quantity, 2);
+      assert.equal(
+        returnedNewOrder.items[0].name_vi,
+        'Mì Quảng Tôm Thịt Trứng Cút'
+      );
+
+      assert.deepEqual(
+        badgeData.serviceRequests.map((r: { id: string }) => r.id),
+        [pendingReq.id],
+        'view=badge must return only pending service requests'
+      );
+    }
+
+    // Prove view=badge returns before any call to dbGetShopCatalog or dbComputeShopRevenueAndInventoryStats
+    const queriedTables: string[] = [];
+    const calledRpcs: string[] = [];
+    setSupabaseDbClientForTests({
+      from(table: string) {
+        queriedTables.push(table);
+        if (table === 'categories' || table === 'items') {
+          throw new Error(`UNEXPECTED_CATALOG_QUERY_${table}`);
+        }
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  order() {
+                    return Promise.resolve({ data: [], error: null });
+                  },
+                  limit() {
+                    return Promise.resolve({ data: [], error: null });
+                  },
+                  maybeSingle() {
+                    return Promise.resolve({ data: null, error: null });
+                  },
+                };
+              },
+              order() {
+                return Promise.resolve({ data: [], error: null });
+              },
+            };
+          },
+        };
+      },
+      rpc(fnName: string) {
+        calledRpcs.push(fnName);
+        if (fnName === 'get_shop_order_stats_summary') {
+          throw new Error('UNEXPECTED_STATS_RPC');
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+    });
+    try {
+      const noCatalogBadgeRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=badge`, {
+          headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+        })
+      );
+      assert.equal(noCatalogBadgeRes.status, 200);
+      assert.equal(
+        queriedTables.includes('categories') || queriedTables.includes('items'),
+        false,
+        'view=badge must return before calling dbGetShopCatalog (categories/items)'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'view=badge must return before calling dbComputeShopRevenueAndInventoryStats'
+      );
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+
+    // Default and KDS endpoints preserve their existing contracts
+    const defaultRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+        headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+      })
+    );
+    assert.equal(defaultRes.status, 200);
+    const defaultData = await defaultRes.json();
+    assert.equal('stats' in defaultData, true);
+    assert.equal(Array.isArray(defaultData.items), true);
+    assert.deepEqual(
+      defaultData.serviceRequests.map((r: { id: string }) => r.id).sort(),
+      [pendingReq.id, ackReq.id].sort(),
+      'default GET /api/orders continues returning pending and acknowledged service requests'
+    );
+
+    const kdsRes = await getOrdersRoute(
+      new Request(`http://localhost/api/orders?shopId=${SHOP_A}&view=kds`, {
+        headers: { Authorization: `Bearer ${STAFF_A_TOKEN}` },
+      })
+    );
+    assert.equal(kdsRes.status, 200);
+    const kdsData = await kdsRes.json();
+    assert.deepEqual(
+      Object.keys(kdsData).sort(),
+      ['membership', 'orders'],
+      'view=kds contract remains { orders, membership }'
+    );
+    assert.deepEqual(
+      kdsData.orders.map((o: { id: string }) => o.id),
+      ['ord-seed-102', 'ord-seed-101', newOrder.id, preparingOrder.id]
+    );
+
+    // DashboardShell checkLiveOrders polls with view=badge
+    const layoutSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/app/(dashboard)/dashboard/layout.tsx'),
+      'utf8'
+    );
+    assert.match(
+      layoutSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(shopId\)\}&view=badge/
+    );
+  });
+
+  test('11. GET /api/orders includeCatalog=0 and includeStats=0 opt-outs preserve auth, orders, serviceRequests, and membership while skipping catalog/stats helpers on silent refresh', async () => {
+    const validSigA1 = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const validSigA2 = signTableQr(SHOP_A, 'tbl-fnb-02');
+
+    const catalogOnlyStaffId = 'staff-catalog-only-silent-001';
+    const catalogOnlyStaffToken = issueSessionToken({
+      id: catalogOnlyStaffId,
+      email: 'catalog-only-silent@qlaok.vn',
+      role: 'staff',
+    });
+    await dbUpsertShopMembership({
+      shop_id: SHOP_A,
+      user_id: catalogOnlyStaffId,
+      email: 'catalog-only-silent@qlaok.vn',
+      role: 'staff',
+      permissions: ['catalog.view'],
+      is_active: true,
+    });
+
+    // 1. Permission checks remain intact on the lightweight silent-refresh path
+    const anonSilentRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`
+      )
+    );
+    assert.equal(anonSilentRes.status, 401);
+
+    for (const unauthorizedToken of [
+      OWNER_B_TOKEN,
+      INACTIVE_STAFF_TOKEN,
+      catalogOnlyStaffToken,
+    ]) {
+      const forbiddenRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${unauthorizedToken}` },
+          }
+        )
+      );
+      assert.equal(forbiddenRes.status, 403);
+    }
+
+    // 2. Seed orders and service requests; verify default vs silent-refresh response parity for owner and staff
+    const newOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-01',
+      table_qr_sig: validSigA1,
+      require_table_qr_sig: true,
+      source: 'qr_table',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    const cancelledOrder = await dbCreateOrder({
+      shop_id: SHOP_A,
+      table_label: 'Bàn 02',
+      source: 'counter_pos',
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-fnb-2',
+          name_vi: 'Mì Quảng Tôm Thịt Trứng Cút',
+          quantity: 1,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    await dbUpdateOrderStatus(cancelledOrder.id, {
+      status: 'cancelled',
+      cancelled_reason: 'Khách hủy',
+    });
+
+    const pendingReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_qr_sig: validSigA1,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+    assert.equal(pendingReqRes.status, 201);
+
+    const ackReqRes = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-02',
+          table_qr_sig: validSigA2,
+          request_type: 'request_bill',
+        }),
+      })
+    );
+    assert.equal(ackReqRes.status, 201);
+    const { serviceRequest: ackReq } = await ackReqRes.json();
+    await patchServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${STAFF_A_TOKEN}`,
+        },
+        body: JSON.stringify({
+          id: ackReq.id,
+          shop_id: SHOP_A,
+          status: 'acknowledged',
+        }),
+      })
+    );
+
+    for (const token of [OWNER_A_TOKEN, STAFF_A_TOKEN] as const) {
+      const defaultRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(defaultRes.status, 200);
+      const defaultData = await defaultRes.json();
+      assert.deepEqual(
+        Object.keys(defaultData).sort(),
+        ['items', 'membership', 'orders', 'serviceRequests', 'stats']
+      );
+      assert.equal(Array.isArray(defaultData.items), true);
+      assert.equal(typeof defaultData.stats, 'object');
+      assert.ok(defaultData.orders.some((o: { id: string }) => o.id === newOrder.id));
+
+      for (const querySuffix of [
+        'includeCatalog=0&includeStats=0',
+        'includeCatalog=false&includeStats=false',
+      ]) {
+        const silentRes = await getOrdersRoute(
+          new Request(
+            `http://localhost/api/orders?shopId=${SHOP_A}&${querySuffix}`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            }
+          )
+        );
+        assert.equal(silentRes.status, 200);
+        const silentData = await silentRes.json();
+
+        assert.deepEqual(
+          Object.keys(silentData).sort(),
+          ['membership', 'orders', 'serviceRequests'],
+          `GET /api/orders with ${querySuffix} must omit items and stats`
+        );
+        assert.equal('items' in silentData, false);
+        assert.equal('stats' in silentData, false);
+        assert.deepEqual(silentData.orders, defaultData.orders);
+        assert.deepEqual(
+          silentData.serviceRequests,
+          defaultData.serviceRequests
+        );
+        const {
+          created_at: _sc,
+          updated_at: _su,
+          ...silentMembershipRest
+        } = silentData.membership || {};
+        const {
+          created_at: _dc,
+          updated_at: _du,
+          ...defaultMembershipRest
+        } = defaultData.membership || {};
+        assert.deepEqual(silentMembershipRest, defaultMembershipRest);
+      }
+    }
+
+    // 3. Prove helper execution: called by default, skipped when disabled (both together and independently)
+    const queriedTables: string[] = [];
+    const calledRpcs: string[] = [];
+    const mockDbClient = {
+      from(table: string) {
+        queriedTables.push(table);
+        const makeResult = () => {
+          if (table === 'shops') {
+            return {
+              data: [
+                {
+                  id: SHOP_A,
+                  owner_id: 'owner-demo-001',
+                  name: 'Phở Hội An',
+                },
+              ],
+              error: null,
+            };
+          }
+          if (table === 'items') {
+            return {
+              data: [
+                {
+                  id: 'item-fnb-2',
+                  shop_id: SHOP_A,
+                  category_id: 'cat-fnb-1',
+                  name_i18n: { vi: 'Mì Quảng Tôm Thịt Trứng Cút' },
+                  price: 55000,
+                  is_available: true,
+                  stock_quantity: 10,
+                  sold_count: 5,
+                },
+              ],
+              error: null,
+            };
+          }
+          if (table === 'profiles') {
+            return {
+              data: [
+                {
+                  id: 'owner-demo-001',
+                  email: 'chuquan@qlaok.vn',
+                  role: 'owner',
+                  plan: 'free',
+                },
+              ],
+              error: null,
+            };
+          }
+          return { data: [], error: null };
+        };
+        const makeSingleResult = () => {
+          if (table === 'shops') {
+            return {
+              data: {
+                id: SHOP_A,
+                owner_id: 'owner-demo-001',
+                name: 'Phở Hội An',
+              },
+              error: null,
+            };
+          }
+          if (table === 'profiles') {
+            return { data: { plan: 'free' }, error: null };
+          }
+          return { data: null, error: null };
+        };
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          maybeSingle: () => Promise.resolve(makeSingleResult()),
+          single: () => Promise.resolve(makeSingleResult()),
+          then: (
+            resolve: (val: unknown) => unknown,
+            reject?: (err: unknown) => unknown
+          ) => Promise.resolve(makeResult()).then(resolve, reject),
+        };
+        return chain;
+      },
+      rpc(fnName: string) {
+        calledRpcs.push(fnName);
+        return Promise.resolve({
+          data: {
+            total_orders_count: 1,
+            completed_orders_count: 0,
+            paid_orders_count: 0,
+            new_orders_count: 1,
+            preparing_orders_count: 0,
+            total_revenue: 0,
+            total_refunded_amount: 0,
+            today_orders_count: 1,
+            today_paid_orders_count: 0,
+            today_completed_count: 0,
+            today_revenue: 0,
+            today_gross_order_amount: 55000,
+            today_unpaid_amount: 55000,
+            today_refunded_amount: 0,
+            daily_revenue_7d: [],
+            payment_breakdown: { cash: 0, vietqr: 0 },
+            source_breakdown: { qr_table: 1, counter_pos: 0 },
+            hourly_breakdown: [],
+            sold_items: [],
+          },
+          error: null,
+        });
+      },
+    };
+
+    setSupabaseDbClientForTests(mockDbClient);
+    setMposDbClientForTests(mockDbClient, true);
+    try {
+      // 3a. Default call invokes both dbGetShopCatalog and dbComputeShopRevenueAndInventoryStats
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const defaultWithMockRes = await getOrdersRoute(
+        new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+          headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+        })
+      );
+      assert.equal(defaultWithMockRes.status, 200);
+      const defaultWithMockData = await defaultWithMockRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'default GET /api/orders must call dbGetShopCatalog (categories/items)'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        true,
+        'default GET /api/orders must call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal(Array.isArray(defaultWithMockData.items), true);
+      assert.equal('stats' in defaultWithMockData, true);
+
+      // 3b. Both disabled (includeCatalog=0&includeStats=0) skips both helpers
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const bothDisabledRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(bothDisabledRes.status, 200);
+      const bothDisabledData = await bothDisabledRes.json();
+      assert.equal(
+        queriedTables.includes('categories') || queriedTables.includes('items'),
+        false,
+        'includeCatalog=0&includeStats=0 must not call dbGetShopCatalog'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'includeCatalog=0&includeStats=0 must not call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal('items' in bothDisabledData, false);
+      assert.equal('stats' in bothDisabledData, false);
+
+      // 3c. Independent includeCatalog=0 loads catalog for stats computation, returns identical stats, but omits items from response
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const noCatalogOnlyRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeCatalog=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(noCatalogOnlyRes.status, 200);
+      const noCatalogOnlyData = await noCatalogOnlyRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'includeCatalog=0 with stats enabled must still call dbGetShopCatalog for accurate stats'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        true,
+        'includeCatalog=0 alone must still call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal('items' in noCatalogOnlyData, false);
+      assert.equal('stats' in noCatalogOnlyData, true);
+      assert.deepEqual(
+        noCatalogOnlyData.stats,
+        defaultWithMockData.stats,
+        'includeCatalog=0 must preserve equivalent stats to default response'
+      );
+      assert.deepEqual(
+        Object.keys(noCatalogOnlyData).sort(),
+        ['membership', 'orders', 'serviceRequests', 'stats'],
+        'only the items response field must be omitted when includeCatalog=0'
+      );
+
+      // 3d. Independent includeStats=0 skips stats only and still loads catalog
+      queriedTables.length = 0;
+      calledRpcs.length = 0;
+      const noStatsOnlyRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?shopId=${SHOP_A}&includeStats=0`,
+          {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          }
+        )
+      );
+      assert.equal(noStatsOnlyRes.status, 200);
+      const noStatsOnlyData = await noStatsOnlyRes.json();
+      assert.equal(
+        queriedTables.includes('categories') && queriedTables.includes('items'),
+        true,
+        'includeStats=0 alone must still call dbGetShopCatalog'
+      );
+      assert.equal(
+        calledRpcs.includes('get_shop_order_stats_summary'),
+        false,
+        'includeStats=0 must not call dbComputeShopRevenueAndInventoryStats'
+      );
+      assert.equal(Array.isArray(noStatsOnlyData.items), true);
+      assert.equal('stats' in noStatsOnlyData, false);
+    } finally {
+      setMposDbClientForTests(null, false);
+      setSupabaseDbClientForTests(null);
+      await dbDeleteShopMembership(SHOP_A, catalogOnlyStaffId).catch(() => {});
+    }
+
+    // 4. Dashboard orders page fetchOrdersAndCatalog sends includeCatalog=0&includeStats=0 on silent refresh and keeps full initial load
+    const ordersPageSource = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'src/app/(dashboard)/dashboard/orders/page.tsx'
+      ),
+      'utf8'
+    );
+    assert.match(
+      ordersPageSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}&includeCatalog=0&includeStats=0/
+    );
+    assert.match(
+      ordersPageSource,
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}`/
+    );
   });
 });

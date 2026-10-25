@@ -9,6 +9,12 @@ export type ChimeSoundId =
 
 export type ChimeVolumePreset = 'normal' | 'loud' | 'max_boost';
 
+export type OrderToastPosition =
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right';
+
 export interface OrderChimeSettings {
   enabled: boolean;
   soundId: ChimeSoundId;
@@ -16,6 +22,7 @@ export interface OrderChimeSettings {
   repeatCount: 1 | 2 | 3;
   remindUntilAccepted: boolean;
   browserNotificationEnabled: boolean;
+  newOrderToastPosition: OrderToastPosition;
 }
 
 export const DEFAULT_CHIME_SETTINGS: OrderChimeSettings = {
@@ -25,6 +32,7 @@ export const DEFAULT_CHIME_SETTINGS: OrderChimeSettings = {
   repeatCount: 2,
   remindUntilAccepted: true,
   browserNotificationEnabled: true,
+  newOrderToastPosition: 'top-right',
 };
 
 const STORAGE_KEY = 'qlaok_order_chime_settings_v1';
@@ -66,15 +74,40 @@ export const CHIME_SOUND_OPTIONS: Array<{
   },
 ];
 
+const VALID_ORDER_TOAST_POSITIONS: readonly OrderToastPosition[] = [
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+];
+
+export function isValidOrderToastPosition(
+  pos: unknown
+): pos is OrderToastPosition {
+  return (
+    typeof pos === 'string' &&
+    (VALID_ORDER_TOAST_POSITIONS as readonly string[]).includes(pos)
+  );
+}
+
 export function loadOrderChimeSettings(): OrderChimeSettings {
   if (typeof window === 'undefined') return DEFAULT_CHIME_SETTINGS;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_CHIME_SETTINGS;
     const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return DEFAULT_CHIME_SETTINGS;
+    }
+
+    const position = isValidOrderToastPosition(parsed.newOrderToastPosition)
+      ? parsed.newOrderToastPosition
+      : DEFAULT_CHIME_SETTINGS.newOrderToastPosition;
+
     return {
       ...DEFAULT_CHIME_SETTINGS,
       ...parsed,
+      newOrderToastPosition: position,
     };
   } catch {
     return DEFAULT_CHIME_SETTINGS;
