@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readOrderEvents, startOrderLiveSync } from '@/lib/order-live-sync';
+import {
+  createInitialCounterOrdersState,
+  deriveCounterOrdersViewState,
+  readOrderEvents,
+  reconcileCounterOrdersFetch,
+  startOrderLiveSync,
+} from '@/lib/order-live-sync';
 
 test('SSE parser handles split CRLF frames and ignores heartbeats/malformed JSON', async () => {
   const chunks = ['data: {"type":"rea', 'dy"}\r', '\n\r\n: heartbeat\n\ndata: invalid\n\ndata: {"type":"change"}\n\n'];
@@ -532,4 +538,118 @@ test('DashboardShell renders the shared full-card new-order toast and dismisses 
     null,
     'The shared card must not have nested buttons'
   );
+});
+
+test('orders queue does not claim empty after its initial request fails', () => {
+  const initial = createInitialCounterOrdersState('shop-1');
+  const failed = reconcileCounterOrdersFetch(initial, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-1',
+    ok: false,
+    status: 500,
+    errorMessage: 'Could not load orders from server. (HTTP 500)',
+  });
+
+  assert.equal(failed.hasLoaded, false);
+  assert.equal(failed.fetchError, 'Could not load orders from server. (HTTP 500)');
+  const view = deriveCounterOrdersViewState({
+    state: failed,
+    activeShopId: 'shop-1',
+    loading: false,
+    liveStatus: 'connected',
+    sessionExpired: false,
+    filteredCount: 0,
+  });
+  assert.equal(view.hasAuthoritativeSnapshot, false);
+  assert.equal(view.showInitialLoadErrorState, true);
+  assert.equal(view.showRefreshErrorBanner, false);
+  assert.equal(view.showConfirmedEmptyQueue, false);
+});
+
+test('orders queue preserves its successful snapshot state through a failed refresh and clears the warning on recovery', () => {
+  const initial = createInitialCounterOrdersState('shop-1');
+  const loaded = reconcileCounterOrdersFetch(initial, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-1',
+    ok: true,
+  });
+  const failed = reconcileCounterOrdersFetch(loaded, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-1',
+    ok: false,
+    status: 503,
+    errorMessage: 'Could not load orders from server. (HTTP 503)',
+  });
+
+  assert.equal(failed.hasLoaded, true);
+  const staleView = deriveCounterOrdersViewState({
+    state: failed,
+    activeShopId: 'shop-1',
+    loading: false,
+    liveStatus: 'fallback',
+    sessionExpired: false,
+    filteredCount: 1,
+  });
+  assert.equal(staleView.hasAuthoritativeSnapshot, true);
+  assert.equal(staleView.showInitialLoadErrorState, false);
+  assert.equal(staleView.showRefreshErrorBanner, true);
+  assert.equal(staleView.showConfirmedEmptyQueue, false);
+
+  const recovered = reconcileCounterOrdersFetch(failed, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-1',
+    ok: true,
+  });
+  assert.equal(recovered.hasLoaded, true);
+  assert.equal(recovered.fetchError, null);
+});
+
+test('orders 401 and 403 remain on the existing session-expired path', () => {
+  for (const status of [401, 403]) {
+    const failed = reconcileCounterOrdersFetch(
+      createInitialCounterOrdersState('shop-1'),
+      { shopId: 'shop-1', activeShopId: 'shop-1', ok: false, status }
+    );
+    const view = deriveCounterOrdersViewState({
+      state: failed,
+      activeShopId: 'shop-1',
+      loading: false,
+      liveStatus: 'connected',
+      sessionExpired: true,
+      filteredCount: 0,
+    });
+
+    assert.equal(failed.fetchError, null);
+    assert.equal(view.showSessionExpiredBanner, true);
+    assert.equal(view.showInitialLoadErrorState, false);
+    assert.equal(view.showConfirmedEmptyQueue, false);
+  }
+});
+
+test('orders snapshot state ignores stale shop responses and never carries a snapshot across shops', () => {
+  const initial = createInitialCounterOrdersState('shop-1');
+  const loaded = reconcileCounterOrdersFetch(initial, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-1',
+    ok: true,
+  });
+  const stale = reconcileCounterOrdersFetch(loaded, {
+    shopId: 'shop-1',
+    activeShopId: 'shop-2',
+    ok: false,
+    status: 500,
+    errorMessage: 'stale failure',
+  });
+  assert.equal(stale, loaded);
+
+  const switchedView = deriveCounterOrdersViewState({
+    state: loaded,
+    activeShopId: 'shop-2',
+    loading: false,
+    liveStatus: 'connected',
+    sessionExpired: false,
+    filteredCount: 0,
+  });
+  assert.equal(switchedView.hasAuthoritativeSnapshot, false);
+  assert.equal(switchedView.showConfirmedEmptyQueue, false);
 });

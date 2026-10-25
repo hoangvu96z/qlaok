@@ -5,6 +5,7 @@ import { appLanguageName } from '@/lib/app-i18n';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
+  AlertTriangle,
   BellRing,
   CheckCircle2,
   ChefHat,
@@ -26,7 +27,15 @@ import {
   Loader2,
   LogIn,
 } from 'lucide-react';
-import { startOrderLiveSync, type OrderLiveStatus, type OrderLiveSyncHandle } from '@/lib/order-live-sync';
+import {
+  createInitialCounterOrdersState,
+  deriveCounterOrdersViewState,
+  reconcileCounterOrdersFetch,
+  startOrderLiveSync,
+  type CounterOrdersSnapshotState,
+  type OrderLiveStatus,
+  type OrderLiveSyncHandle,
+} from '@/lib/order-live-sync';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
 import {
@@ -127,6 +136,9 @@ export default function CounterOrdersPage() {
   useEffect(() => { disposedRef.current = false; return () => { disposedRef.current = true; }; }, []);
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
+  const [ordersState, setOrdersState] = useState<CounterOrdersSnapshotState>(() =>
+    createInitialCounterOrdersState(activeShop?.id ?? null)
+  );
   const [updatingServiceReqId, setUpdatingServiceReqId] = useState<string | null>(null);
   const [membership, setMembership] = useState<ShopMembership | null>(null);
   const [catalogCategories, setCatalogCategories] = useState<Category[]>([]);
@@ -268,17 +280,45 @@ export default function CounterOrdersPage() {
           fetch(ordersUrl, {
             cache: 'no-store', headers: getAuthHeaders(),
           }),
-          silent ? Promise.resolve(null) : fetch(`/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`, {
-            cache: 'no-store', headers: getAuthHeaders(),
-          }),
+          silent
+            ? Promise.resolve(null)
+            : fetch(
+                `/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`,
+                { cache: 'no-store', headers: getAuthHeaders() }
+              ).catch(() => null),
         ]);
 
         if (disposedRef.current || scopeRef.current !== scope) return;
         if (ordersRes.status === 401 || ordersRes.status === 403) {
           setSessionExpired(true);
+          setOrdersState((prev) =>
+            reconcileCounterOrdersFetch(prev, {
+              shopId: activeShop.id,
+              activeShopId: scopeRef.current.shopId,
+              disposed: disposedRef.current,
+              ok: false,
+              status: ordersRes.status,
+            })
+          );
         } else if (ordersRes.ok) {
           setSessionExpired(false);
           liveSyncRef.current?.reconnect?.();
+        } else {
+          setSessionExpired(false);
+          const errorMessage = `${translateRef.current(
+            'Không thể tải danh sách đơn hàng từ máy chủ.',
+            'Could not load orders from server.'
+          )} (HTTP ${ordersRes.status})`;
+          setOrdersState((prev) =>
+            reconcileCounterOrdersFetch(prev, {
+              shopId: activeShop.id,
+              activeShopId: scopeRef.current.shopId,
+              disposed: disposedRef.current,
+              ok: false,
+              status: ordersRes.status,
+              errorMessage,
+            })
+          );
         }
         if (ordersRes.ok) {
           const data = await ordersRes.json();
@@ -368,16 +408,42 @@ export default function CounterOrdersPage() {
           isFirstLoadRef.current = false;
           setOrders(fetchedOrders);
           setServiceRequests(fetchedServiceRequests);
+          setOrdersState((prev) =>
+            reconcileCounterOrdersFetch(prev, {
+              shopId: activeShop.id,
+              activeShopId: scopeRef.current.shopId,
+              disposed: disposedRef.current,
+              ok: true,
+              errorMessage: null,
+            })
+          );
         }
 
         if (catRes?.ok) {
-          const catData = await catRes.json();
+          const catData = await catRes.json().catch(() => null);
           if (disposedRef.current || scopeRef.current !== scope) return;
-          setCatalogCategories(catData.categories || []);
-          setCatalogItems(catData.items || []);
+          if (catData) {
+            setCatalogCategories(catData.categories || []);
+            setCatalogItems(catData.items || []);
+          }
         }
-      } catch (err) {
-        console.error('Failed to fetch orders:', err);
+      } catch {
+        console.error('Failed to fetch orders');
+        if (!disposedRef.current && scopeRef.current === scope) {
+          setSessionExpired(false);
+          setOrdersState((prev) =>
+            reconcileCounterOrdersFetch(prev, {
+              shopId: activeShop.id,
+              activeShopId: scopeRef.current.shopId,
+              disposed: disposedRef.current,
+              ok: false,
+              errorMessage: translateRef.current(
+                'Không thể kết nối máy chủ để tải đơn hàng.',
+                'Network error while loading orders from server.'
+              ),
+            })
+          );
+        }
       } finally {
         if (inFlight.current === request) inFlight.current = null;
         if (!disposedRef.current && scopeRef.current === scope && request.again) queueMicrotask(() => { void refresh(!request.catalog); });
@@ -391,12 +457,17 @@ export default function CounterOrdersPage() {
     isFirstLoadRef.current = true;
     knownOrderIdsRef.current = new Set();
     knownServiceRequestIdsRef.current = new Set();
+    setSessionExpired(false);
     setOrders([]);
     setServiceRequests([]);
+    setOrdersState(createInitialCounterOrdersState(activeShop?.id ?? null));
     setCatalogItems([]);
     setCatalogCategories([]);
     setMembership(null);
-    if (!activeShop?.id) return;
+    if (!activeShop?.id) {
+      setLoading(false);
+      return;
+    }
     void fetchOrdersAndCatalog(false);
 
     let bc: BroadcastChannel | null = null;
@@ -816,21 +887,24 @@ export default function CounterOrdersPage() {
     );
   }
 
-  const newOrders = orders.filter((o) => o.status === 'new');
-  const preparingOrders = orders.filter((o) => o.status === 'preparing');
-  const activeOrders = orders.filter(
+  const isOrdersStateForActiveShop = ordersState.shopId === activeShop.id;
+  const currentOrders = isOrdersStateForActiveShop ? orders : [];
+  const currentServiceRequests = isOrdersStateForActiveShop ? serviceRequests : [];
+  const newOrders = currentOrders.filter((o) => o.status === 'new');
+  const preparingOrders = currentOrders.filter((o) => o.status === 'preparing');
+  const activeOrders = currentOrders.filter(
     (o) =>
       o.status === 'new' ||
       o.status === 'preparing' ||
       (o.status !== 'cancelled' && o.payment_status === 'unpaid')
   );
-  const completedOrders = orders.filter(
+  const completedOrders = currentOrders.filter(
     (o) => o.status === 'completed' && o.payment_status === 'paid'
   );
-  const cancelledOrders = orders.filter((o) => o.status === 'cancelled');
+  const cancelledOrders = currentOrders.filter((o) => o.status === 'cancelled');
 
   const todayVnKey = getVnDateKey();
-  const todayValidOrders = orders.filter(
+  const todayValidOrders = currentOrders.filter(
     (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
   );
   const todayPaidOrders = todayValidOrders.filter(
@@ -848,7 +922,7 @@ export default function CounterOrdersPage() {
     cancelled: 3,
   };
 
-  const filteredOrders = orders
+  const filteredOrders = currentOrders
     .filter((o) => {
       if (filterTab === 'today') {
         if (todayValidOrders.length > 0) {
@@ -883,6 +957,18 @@ export default function CounterOrdersPage() {
       );
     });
 
+  const ordersViewState = deriveCounterOrdersViewState({
+    state: ordersState,
+    activeShopId: activeShop.id,
+    loading,
+    liveStatus,
+    sessionExpired,
+    filteredCount: filteredOrders.length,
+  });
+  const hasAuthoritativeOrdersSnapshot = ordersViewState.hasAuthoritativeSnapshot;
+  const displayOrdersCount = (count: number) =>
+    hasAuthoritativeOrdersSnapshot ? count : '—';
+
   const chimeSummaryText = formatChimeSummaryLabel(chimeSettings, locale);
   const syncLabel = liveStatus === 'connected'
     ? t('orders.syncLive')
@@ -890,7 +976,7 @@ export default function CounterOrdersPage() {
       ? tx('Cần đăng nhập lại', 'Sign in again')
       : t('orders.syncPolling');
 
-  const activeServiceRequests = serviceRequests.filter(
+  const activeServiceRequests = currentServiceRequests.filter(
     (r) => r.status === 'pending' || r.status === 'acknowledged'
   );
   const pendingServiceRequestsCount = activeServiceRequests.filter(
@@ -1047,6 +1133,61 @@ export default function CounterOrdersPage() {
         </div>
       )}
 
+      {(ordersViewState.showInitialLoadErrorState ||
+        ordersViewState.showRefreshErrorBanner) && (
+        <div
+          role={
+            ordersViewState.showInitialLoadErrorState ? 'alert' : 'status'
+          }
+          data-testid={
+            ordersViewState.showInitialLoadErrorState
+              ? 'orders-initial-error-state'
+              : 'orders-refresh-error-banner'
+          }
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border-2 border-rose-300 bg-rose-50 px-4 py-3 shadow-sm"
+        >
+          <div className="flex items-start gap-2.5 text-rose-950">
+            <AlertTriangle
+              className="mt-0.5 h-5 w-5 shrink-0 text-rose-600"
+              aria-hidden="true"
+            />
+            <div className="space-y-0.5">
+              <p className="text-sm font-black">
+                {ordersViewState.showInitialLoadErrorState
+                  ? tx(
+                      'Không thể tải danh sách đơn hàng.',
+                      'Could not load the order queue.'
+                    )
+                  : tx(
+                      'Dữ liệu đơn hàng có thể đã cũ.',
+                      'Order data may be out of date.'
+                    )}
+              </p>
+              <p
+                data-testid="orders-fetch-error-detail"
+                className="text-xs font-semibold text-rose-800"
+              >
+                {ordersViewState.effectiveState.fetchError}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid={
+              ordersViewState.showInitialLoadErrorState
+                ? 'orders-initial-error-retry'
+                : 'orders-refresh-error-retry'
+            }
+            disabled={loading}
+            onClick={() => void fetchOrdersAndCatalog(false)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white hover:bg-rose-500 disabled:opacity-60"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      )}
+
       {actionToast && (
         <div
           role={actionToast.kind === 'error' ? 'alert' : 'status'}
@@ -1089,7 +1230,9 @@ export default function CounterOrdersPage() {
             {canViewReports && <p className="text-xs text-slate-300 mt-1">
                   {tx('Đã thu hôm nay:', 'Paid today:')}{' '}
                   <strong className="text-emerald-400 font-black">
-                    {formatCurrency(todayRevenue, activeShop.currency)}
+                    {hasAuthoritativeOrdersSnapshot
+                      ? formatCurrency(todayRevenue, activeShop.currency)
+                      : '—'}
                   </strong>
             </p>}
           </div>
@@ -1124,7 +1267,9 @@ export default function CounterOrdersPage() {
                 }`}
               />
               <span>
-                {t('orders.tabQueue', { count: todayValidOrders.length })}
+                {t('orders.tabQueue', {
+                  count: displayOrdersCount(todayValidOrders.length),
+                })}
               </span>
               {newOrders.length > 0 && (
                 <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-black text-white">
@@ -1291,7 +1436,7 @@ export default function CounterOrdersPage() {
             shop={activeShop}
             categories={catalogCategories}
             items={catalogItems}
-            orders={orders}
+            orders={currentOrders}
             editingOrder={editingOrder}
             onCancelEditOrder={() => setEditingOrder(null)}
             autoPrintOnPay={autoPrintOnPay}
@@ -1300,7 +1445,7 @@ export default function CounterOrdersPage() {
               setPrintingOrder(ord);
             }}
             onUpdateOrder={(id, up) => {
-              const target = orders.find((o) => o.id === id);
+              const target = currentOrders.find((o) => o.id === id);
               if (target && up.payment_status === 'paid') {
                 return requestMarkPaid(target, { status: up.status });
               }
@@ -1341,7 +1486,7 @@ export default function CounterOrdersPage() {
                 </span>
               </div>
               <p className="mt-2 text-2xl font-black text-slate-900">
-                {newOrders.length}
+                {displayOrdersCount(newOrders.length)}
               </p>
             </div>
 
@@ -1355,7 +1500,7 @@ export default function CounterOrdersPage() {
                 </span>
               </div>
               <p className="mt-2 text-2xl font-black text-slate-900">
-                {preparingOrders.length}
+                {displayOrdersCount(preparingOrders.length)}
               </p>
             </div>
 
@@ -1369,17 +1514,21 @@ export default function CounterOrdersPage() {
                 </span>
               </div>
               <p className="mt-2 text-2xl font-black text-slate-900">
-                {todayValidOrders.length}
+                {displayOrdersCount(todayValidOrders.length)}
               </p>
               <p className="text-[11px] font-medium text-slate-500">
-                {t('orders.filterCompleted', { count: completedOrders.length })}
+                {t('orders.filterCompleted', {
+                  count: displayOrdersCount(completedOrders.length),
+                })}
               </p>
             </div>
 
             <div className="rounded-3xl bg-white border border-slate-200 p-4 shadow-2xs">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-600">
-                  {t('orders.kpiPaidToday', { count: todayPaidOrders.length })}
+                  {t('orders.kpiPaidToday', {
+                    count: displayOrdersCount(todayPaidOrders.length),
+                  })}
                 </span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
                   <Banknote className="h-4 w-4" />
@@ -1387,7 +1536,9 @@ export default function CounterOrdersPage() {
               </div>
               <p className="mt-2 text-xl sm:text-2xl font-black text-emerald-600">
                 {canViewReports
-                  ? formatCurrency(todayRevenue, activeShop.currency)
+                  ? hasAuthoritativeOrdersSnapshot
+                    ? formatCurrency(todayRevenue, activeShop.currency)
+                    : '—'
                   : tx('🔒 Chỉ Chủ quán / Thu ngân', '🔒 Owner / Cashier only')}
               </p>
               <p className="text-[11px] font-medium text-slate-500">
@@ -1405,38 +1556,46 @@ export default function CounterOrdersPage() {
               {
                 id: 'today',
                 label: tx('Hôm nay ({count})', 'Today ({count})', {
-                  count: todayValidOrders.length,
+                  count: displayOrdersCount(todayValidOrders.length),
                 }),
               },
               {
                 id: 'active',
-                label: t('orders.filterActive', { count: activeOrders.length }),
+                label: t('orders.filterActive', {
+                  count: displayOrdersCount(activeOrders.length),
+                }),
               },
               {
                 id: 'new',
-                label: t('orders.filterNew', { count: newOrders.length }),
+                label: t('orders.filterNew', {
+                  count: displayOrdersCount(newOrders.length),
+                }),
               },
               {
                 id: 'preparing',
                 label: t('orders.filterPreparing', {
-                  count: preparingOrders.length,
+                  count: displayOrdersCount(preparingOrders.length),
                 }),
               },
               {
                 id: 'completed',
                 label: t('orders.filterCompleted', {
-                  count: orders.filter((o) => o.status === 'completed').length,
+                  count: displayOrdersCount(
+                    currentOrders.filter((o) => o.status === 'completed').length
+                  ),
                 }),
               },
               {
                 id: 'cancelled',
                 label: tx('Đã hủy ({count})', 'Cancelled ({count})', {
-                  count: cancelledOrders.length,
+                  count: displayOrdersCount(cancelledOrders.length),
                 }),
               },
               {
                 id: 'all',
-                label: t('orders.filterAll', { count: orders.length }),
+                label: t('orders.filterAll', {
+                  count: displayOrdersCount(currentOrders.length),
+                }),
               },
             ].map((tab) => (
               <button
@@ -1483,8 +1642,11 @@ export default function CounterOrdersPage() {
                 {tx('Vui lòng đợi trong giây lát', 'Please wait a moment')}
               </p>
             </div>
-          ) : filteredOrders.length === 0 ? (
-            <div className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3">
+          ) : ordersViewState.showConfirmedEmptyQueue ? (
+            <div
+              data-testid="orders-empty-queue-state"
+              className="rounded-3xl bg-white border border-slate-200 p-12 text-center space-y-3"
+            >
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
                 <ShoppingBag className="h-6 w-6" />
               </div>

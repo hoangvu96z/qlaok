@@ -5,6 +5,103 @@ export interface OrderLiveSyncHandle {
   reconnect: () => void;
 }
 
+export interface CounterOrdersSnapshotState {
+  shopId: string | null;
+  hasLoaded: boolean;
+  fetchError: string | null;
+}
+
+export interface CounterOrdersFetchOutcome {
+  shopId: string;
+  activeShopId: string | null | undefined;
+  disposed?: boolean;
+  ok: boolean;
+  status?: number;
+  errorMessage?: string | null;
+}
+
+export interface CounterOrdersViewState {
+  effectiveState: CounterOrdersSnapshotState;
+  hasAuthoritativeSnapshot: boolean;
+  showSessionExpiredBanner: boolean;
+  showInitialLoadErrorState: boolean;
+  showRefreshErrorBanner: boolean;
+  showConfirmedEmptyQueue: boolean;
+}
+
+export function createInitialCounterOrdersState(
+  shopId: string | null = null
+): CounterOrdersSnapshotState {
+  const cleanShopId = typeof shopId === 'string' && shopId.trim() ? shopId.trim() : null;
+  return { shopId: cleanShopId, hasLoaded: false, fetchError: null };
+}
+
+export function reconcileCounterOrdersFetch(
+  prevState: CounterOrdersSnapshotState,
+  outcome: CounterOrdersFetchOutcome
+): CounterOrdersSnapshotState {
+  const shopId = outcome.shopId.trim();
+  const activeShopId =
+    typeof outcome.activeShopId === 'string' && outcome.activeShopId.trim()
+      ? outcome.activeShopId.trim()
+      : null;
+
+  if (outcome.disposed || !shopId || shopId !== activeShopId) return prevState;
+
+  const sameShop = prevState.shopId === shopId;
+  const hasLoaded = sameShop && prevState.hasLoaded;
+  if (outcome.ok) return { shopId, hasLoaded: true, fetchError: null };
+
+  // Keep session failures on the existing sign-in banner, without a second generic error.
+  if (outcome.status === 401 || outcome.status === 403) {
+    return { shopId, hasLoaded, fetchError: null };
+  }
+
+  return {
+    shopId,
+    hasLoaded,
+    fetchError: outcome.errorMessage?.trim() || 'Could not load orders from server.',
+  };
+}
+
+export function deriveCounterOrdersViewState(params: {
+  state: CounterOrdersSnapshotState;
+  activeShopId: string | null | undefined;
+  loading: boolean;
+  liveStatus: OrderLiveStatus;
+  sessionExpired: boolean;
+  filteredCount: number;
+}): CounterOrdersViewState {
+  const activeShopId =
+    typeof params.activeShopId === 'string' && params.activeShopId.trim()
+      ? params.activeShopId.trim()
+      : null;
+  const effectiveState =
+    params.state.shopId === activeShopId
+      ? params.state
+      : createInitialCounterOrdersState(activeShopId);
+  const showSessionExpiredBanner =
+    params.sessionExpired || params.liveStatus === 'unauthorized';
+  const hasAuthoritativeSnapshot = Boolean(activeShopId && effectiveState.hasLoaded);
+  const hasFetchError = Boolean(!showSessionExpiredBanner && effectiveState.fetchError);
+  const showInitialLoadErrorState = Boolean(
+    !params.loading && !hasAuthoritativeSnapshot && hasFetchError
+  );
+  const showRefreshErrorBanner = Boolean(hasAuthoritativeSnapshot && hasFetchError);
+  const showConfirmedEmptyQueue = Boolean(
+    !params.loading && hasAuthoritativeSnapshot && params.filteredCount === 0
+  );
+
+  return {
+    effectiveState,
+    hasAuthoritativeSnapshot,
+    showSessionExpiredBanner,
+    showInitialLoadErrorState,
+    showRefreshErrorBanner,
+    showConfirmedEmptyQueue,
+  };
+}
+
 /** SSE frames may span network chunks; never assume one chunk is one event. */
 export async function readOrderEvents(stream: ReadableStream<Uint8Array>, onEvent: (event: { type: string }) => void) {
   const reader = stream.getReader();
