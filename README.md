@@ -158,7 +158,7 @@ Demo seed: `/s/pho-hoi-an`, `/s/linh-spa-nail`, `/s/dac-san-mien-trung`; thêm `
 
 ## Triển khai và giới hạn
 
-Push `main` kích hoạt `.github/workflows/deploy.yml`: verify web/mobile + SQL + build → migration → SSH deploy đúng SHA → kiểm tra subscription orders. Workflow dùng PM2 và runtime env; đọc workflow trước khi sửa cổng hay deploy. Không push chỉ để cập nhật tài liệu nếu chưa có yêu cầu triển khai.
+Push `main` kích hoạt `.github/workflows/deploy.yml`: verify web/mobile + SQL + build → phát hiện thay đổi trong `supabase/migrations/` → chỉ áp dụng migration khi có SQL migration thay đổi → SSH deploy đúng SHA → kiểm tra subscription orders. Chạy thủ công qua `workflow_dispatch` vẫn áp dụng migration. Workflow dùng PM2 và runtime env; đọc workflow trước khi sửa cổng hay deploy. Không push chỉ để cập nhật tài liệu nếu chưa có yêu cầu triển khai.
 
 Máy in thật, thiết bị iOS/Android, giao dịch ngân hàng và trạng thái production cần kiểm chứng riêng. Web print ghi nhận yêu cầu in, không xác nhận đã ra giấy. Webhook nâng gói SaaS khác đối soát tiền khách trả cho merchant. Tổng hợp doanh thu/số lượng đơn của `GET /api/orders`, `dbGetShopAnalyticsSummary` và tab Tổng quan Mobile được tính phía server qua RPC `get_shop_order_stats_summary` (kèm fallback phân trang `.range()`) để không bị giới hạn 1000 dòng mặc định của PostgREST, trong khi danh sách `orders` chung trả về được giới hạn 1000 đơn gần nhất (riêng màn hình bếp KDS dùng `GET /api/orders?shopId=...&view=kds` lọc `new/preparing` tại DB và phân trang `.range()` để không làm khuất đơn đang chờ cũ sau 1000 đơn đã hoàn tất/hủy); audit/payment ledger cho chốt ca chưa hoàn chỉnh.
 
