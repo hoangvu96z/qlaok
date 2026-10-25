@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
   Save,
@@ -286,6 +286,7 @@ export default function DashboardSettingsPage() {
     });
   };
   const [uploadingField, setUploadingField] = useState<string | null>(null);
+  const uploadingFieldRef = useRef<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveFeedback, setSaveFeedback] =
     useState<FeedbackToastMessage | null>(null);
@@ -522,7 +523,8 @@ export default function DashboardSettingsPage() {
     onDone: (publicUrl: string) => void,
     fieldKey: string
   ) => {
-    if (!file) return;
+    if (!file || uploadingFieldRef.current !== null) return;
+    uploadingFieldRef.current = fieldKey;
     setUploadingField(fieldKey);
     try {
       const publicUrl = await uploadCompressedImage(file);
@@ -537,6 +539,7 @@ export default function DashboardSettingsPage() {
         )
       );
     } finally {
+      uploadingFieldRef.current = null;
       setUploadingField(null);
     }
   };
@@ -1034,22 +1037,38 @@ export default function DashboardSettingsPage() {
                 )}
                 className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
-              <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">
-                <Upload className="h-3.5 w-3.5" />
-                <span>
-                  {uploadingField === 'logo' ? '...' : tx('Tải ảnh', 'Upload')}
+              <label
+                aria-busy={uploadingField !== null}
+                aria-disabled={uploadingField !== null}
+                className={`shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 ${
+                  uploadingField !== null
+                    ? 'pointer-events-none cursor-wait opacity-60'
+                    : 'cursor-pointer'
+                }`}
+              >
+                {uploadingField === 'logo' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                <span
+                  role={uploadingField === 'logo' ? 'status' : undefined}
+                  aria-live={uploadingField === 'logo' ? 'polite' : undefined}
+                >
+                  {uploadingField === 'logo'
+                    ? tx('Đang tải...', 'Uploading...')
+                    : tx('Tải ảnh', 'Upload')}
                 </span>
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={uploadingField !== null}
                   className="hidden"
-                  onChange={(e) =>
-                    handleUploadImage(
-                      e.target.files?.[0],
-                      (url) => setLogoUrl(url),
-                      'logo'
-                    )
-                  }
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    void handleUploadImage(file, (url) => setLogoUrl(url), 'logo');
+                  }}
                 />
               </label>
             </div>
@@ -1077,22 +1096,38 @@ export default function DashboardSettingsPage() {
                 )}
                 className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
-              <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">
-                <Upload className="h-3.5 w-3.5" />
-                <span>
-                  {uploadingField === 'cover' ? '...' : tx('Tải ảnh', 'Upload')}
+              <label
+                aria-busy={uploadingField !== null}
+                aria-disabled={uploadingField !== null}
+                className={`shrink-0 inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 ${
+                  uploadingField !== null
+                    ? 'pointer-events-none cursor-wait opacity-60'
+                    : 'cursor-pointer'
+                }`}
+              >
+                {uploadingField === 'cover' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                <span
+                  role={uploadingField === 'cover' ? 'status' : undefined}
+                  aria-live={uploadingField === 'cover' ? 'polite' : undefined}
+                >
+                  {uploadingField === 'cover'
+                    ? tx('Đang tải...', 'Uploading...')
+                    : tx('Tải ảnh', 'Upload')}
                 </span>
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={uploadingField !== null}
                   className="hidden"
-                  onChange={(e) =>
-                    handleUploadImage(
-                      e.target.files?.[0],
-                      (url) => setCoverUrl(url),
-                      'cover'
-                    )
-                  }
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    void handleUploadImage(file, (url) => setCoverUrl(url), 'cover');
+                  }}
                 />
               </label>
             </div>
@@ -1549,22 +1584,38 @@ export default function DashboardSettingsPage() {
                 )}
                 className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
               />
-              <label className="cursor-pointer shrink-0 inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500">
-                <Upload className="h-3.5 w-3.5" />
-                <span>
-                  {uploadingField === 'bg' ? '...' : tx('Tải ảnh', 'Upload')}
+              <label
+                aria-busy={uploadingField !== null}
+                aria-disabled={uploadingField !== null}
+                className={`shrink-0 inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 ${
+                  uploadingField !== null
+                    ? 'pointer-events-none cursor-wait opacity-60'
+                    : 'cursor-pointer'
+                }`}
+              >
+                {uploadingField === 'bg' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                <span
+                  role={uploadingField === 'bg' ? 'status' : undefined}
+                  aria-live={uploadingField === 'bg' ? 'polite' : undefined}
+                >
+                  {uploadingField === 'bg'
+                    ? tx('Đang tải...', 'Uploading...')
+                    : tx('Tải ảnh', 'Upload')}
                 </span>
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={uploadingField !== null}
                   className="hidden"
-                  onChange={(e) =>
-                    handleUploadImage(
-                      e.target.files?.[0],
-                      (url) => setBackgroundImageUrl(url),
-                      'bg'
-                    )
-                  }
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    void handleUploadImage(file, (url) => setBackgroundImageUrl(url), 'bg');
+                  }}
                 />
               </label>
             </div>
@@ -2006,9 +2057,24 @@ export default function DashboardSettingsPage() {
                       )}
                       className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
                     />
-                    <label className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500">
-                      <Upload className="h-3.5 w-3.5" />
-                      <span>
+                    <label
+                      aria-busy={uploadingField !== null}
+                      aria-disabled={uploadingField !== null}
+                      className={`shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white hover:bg-emerald-500 ${
+                        uploadingField !== null
+                          ? 'pointer-events-none cursor-wait opacity-60'
+                          : 'cursor-pointer'
+                      }`}
+                    >
+                      {uploadingField === 'custom_qr' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Upload className="h-3.5 w-3.5" />
+                      )}
+                      <span
+                        role={uploadingField === 'custom_qr' ? 'status' : undefined}
+                        aria-live={uploadingField === 'custom_qr' ? 'polite' : undefined}
+                      >
                         {uploadingField === 'custom_qr'
                           ? tx('Đang tải...', 'Uploading...')
                           : tx('Tải ảnh QR', 'Upload QR')}
@@ -2016,18 +2082,21 @@ export default function DashboardSettingsPage() {
                       <input
                         type="file"
                         accept="image/*"
+                        disabled={uploadingField !== null}
                         className="hidden"
-                        onChange={(e) =>
-                          handleUploadImage(
-                            e.target.files?.[0],
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          void handleUploadImage(
+                            file,
                             (url) =>
                               setPaymentConfig((prev) => ({
                                 ...prev,
                                 customQrUrl: url,
                               })),
                             'custom_qr'
-                          )
-                        }
+                          );
+                        }}
                       />
                     </label>
                   </div>
