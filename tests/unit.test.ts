@@ -152,6 +152,13 @@ import {
   shouldShowKitchenConfirmedEmptyState,
   summarizeKitchenQueue,
 } from '@/lib/kitchen-display';
+import {
+  applyCatalogItemsToFlashSaleDraft,
+  hydrateShopPromotionsState,
+  normalizeShopFlashSaleConfig,
+  normalizeShopPromoBannerConfig,
+  normalizeShopWelcomePopupConfig,
+} from '@/lib/shop-promotions';
 import type {
   CatalogItem,
   Category,
@@ -7547,5 +7554,228 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
     assert.match(menuSource, /view:\s*'menu'/);
     assert.match(menuSource, /searchParams:\s*searchParams\.toString\(\)/);
     assert.match(menuSource, /router\.replace\(canonicalRedirect\.canonicalUrl\)/);
+  });
+});
+
+describe('Suite 32: Web Promotions hydration, shop-switch reset & flash-sale catalog race guard (shop-promotions.ts)', () => {
+  test('32.1 Missing theme_config keys hydrate to disabled, neutral/empty copy and voucher, and safe defaults', () => {
+    const todayIso = '2026-10-25';
+    const hydrated = hydrateShopPromotionsState(undefined, todayIso);
+
+    assert.deepEqual(hydrated.promoBanner, {
+      enabled: false,
+      badgeText: '🔥 ƯU ĐÃI ĐẶC BIỆT',
+      title: '',
+      subtitle: '',
+      bgGradient: 'amber_rose',
+      ctaText: 'Xem chi tiết',
+      discountType: 'percent',
+      discountValue: 15,
+      minOrderAmount: 0,
+      applyScope: 'all',
+      selectedItemIds: [],
+      voucherCode: '',
+    });
+
+    assert.deepEqual(hydrated.welcomePopup, {
+      enabled: false,
+      badgeText: '🎁 VOUCHER CHÀO MỪNG',
+      title: '',
+      content: '',
+      imageUrl: '',
+      voucherCode: '',
+      ctaText: 'Nhận Ưu Đãi & Xem Menu',
+    });
+
+    assert.deepEqual(hydrated.flashSale, {
+      enabled: false,
+      badgeText: '⚡ FLASH SALE GIỜ VÀNG',
+      title: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
+      discountType: 'percent',
+      discountValue: 25,
+      startDate: todayIso,
+      endDate: todayIso,
+      startTime: '11:00',
+      endTime: '22:00',
+      itemIds: [],
+    });
+  });
+
+  test('32.2 Switching from a configured shop to a shop without promoBanner, welcomePopup, or flashSale resets all promotion drafts', () => {
+    const todayIso = '2026-10-25';
+    const shopAState = hydrateShopPromotionsState(
+      {
+        primaryColor: '#10b981',
+        layout: 'list',
+        promoBanner: {
+          enabled: true,
+          badgeText: '🔥 HOT',
+          title: 'Giảm 20% đơn từ 150k',
+          subtitle: 'Áp dụng tại bàn',
+          bgGradient: 'violet_fuchsia',
+          ctaText: 'Đặt ngay',
+          discountType: 'percent',
+          discountValue: 20,
+          minOrderAmount: 150000,
+          applyScope: 'selected_items',
+          selectedItemIds: ['item-a1', 'item-a2'],
+          voucherCode: 'SHOPA20',
+        },
+        welcomePopup: {
+          enabled: true,
+          badgeText: '🎁 QUÀ TẶNG',
+          title: 'Chào mừng đến Shop A',
+          content: 'Nhập mã SHOPA20',
+          imageUrl: 'https://example.com/a.jpg',
+          voucherCode: 'SHOPA20',
+          ctaText: 'Mở menu',
+        },
+        flashSale: {
+          enabled: true,
+          badgeText: '⚡ FLASH',
+          title: 'Flash Sale Shop A',
+          discountType: 'fixed_amount',
+          discountValue: 30000,
+          startDate: '2026-10-20',
+          endDate: '2026-10-30',
+          startTime: '14:00',
+          endTime: '17:00',
+          itemIds: ['item-a1', 'item-a2'],
+        },
+      },
+      todayIso
+    );
+
+    assert.equal(shopAState.promoBanner.enabled, true);
+    assert.equal(shopAState.promoBanner.voucherCode, 'SHOPA20');
+    assert.equal(shopAState.welcomePopup.enabled, true);
+    assert.equal(shopAState.flashSale.enabled, true);
+    assert.deepEqual(shopAState.flashSale.itemIds, ['item-a1', 'item-a2']);
+
+    // Switch to Shop B whose theme_config has no promoBanner, welcomePopup, or flashSale
+    const shopBState = hydrateShopPromotionsState(
+      {
+        primaryColor: '#0ea5e9',
+        layout: 'grid',
+      },
+      todayIso
+    );
+
+    assert.equal(shopBState.promoBanner.enabled, false);
+    assert.equal(shopBState.promoBanner.title, '');
+    assert.equal(shopBState.promoBanner.subtitle, '');
+    assert.equal(shopBState.promoBanner.voucherCode, '');
+    assert.equal(shopBState.promoBanner.minOrderAmount, 0);
+    assert.deepEqual(shopBState.promoBanner.selectedItemIds, []);
+
+    assert.equal(shopBState.welcomePopup.enabled, false);
+    assert.equal(shopBState.welcomePopup.title, '');
+    assert.equal(shopBState.welcomePopup.content, '');
+    assert.equal(shopBState.welcomePopup.voucherCode, '');
+
+    assert.equal(shopBState.flashSale.enabled, false);
+    assert.equal(shopBState.flashSale.discountType, 'percent');
+    assert.equal(shopBState.flashSale.discountValue, 25);
+    assert.equal(shopBState.flashSale.startDate, todayIso);
+    assert.equal(shopBState.flashSale.endDate, todayIso);
+    assert.equal(shopBState.flashSale.startTime, '11:00');
+    assert.equal(shopBState.flashSale.endTime, '22:00');
+    assert.deepEqual(shopBState.flashSale.itemIds, []);
+  });
+
+  test('32.3 Flash-sale catalog prepopulation selects first 3 items of current shop while keeping flashSale disabled, and ignores delayed responses from previous shop', () => {
+    const todayIso = '2026-10-25';
+    const initialShopBFlash = normalizeShopFlashSaleConfig(undefined, todayIso);
+
+    // Delayed catalog response from previous shop-a arrives while shop-b is active -> ignored
+    const afterStaleShopAResponse = applyCatalogItemsToFlashSaleDraft({
+      currentFlashSale: initialShopBFlash,
+      savedFlashSale: undefined,
+      fetchedItems: [
+        { id: 'shop-a-item-1', shop_id: 'shop-a' },
+        { id: 'shop-a-item-2', shop_id: 'shop-a' },
+        { id: 'shop-a-item-3', shop_id: 'shop-a' },
+      ],
+      requestShopId: 'shop-a',
+      activeShopId: 'shop-b',
+      cancelled: false,
+    });
+    assert.deepEqual(afterStaleShopAResponse.itemIds, []);
+    assert.equal(afterStaleShopAResponse.enabled, false);
+
+    // Cancelled effect response -> ignored even if shop IDs match
+    const afterCancelledResponse = applyCatalogItemsToFlashSaleDraft({
+      currentFlashSale: initialShopBFlash,
+      savedFlashSale: undefined,
+      fetchedItems: [{ id: 'shop-b-item-1', shop_id: 'shop-b' }],
+      requestShopId: 'shop-b',
+      activeShopId: 'shop-b',
+      cancelled: true,
+    });
+    assert.deepEqual(afterCancelledResponse.itemIds, []);
+
+    // Current shop-b catalog response prepopulates first 3 items while keeping enabled: false
+    const afterShopBResponse = applyCatalogItemsToFlashSaleDraft({
+      currentFlashSale: initialShopBFlash,
+      savedFlashSale: undefined,
+      fetchedItems: [
+        { id: 'shop-b-item-1', shop_id: 'shop-b' },
+        { id: 'shop-b-item-2', shop_id: 'shop-b' },
+        { id: 'shop-b-item-3', shop_id: 'shop-b' },
+        { id: 'shop-b-item-4', shop_id: 'shop-b' },
+      ],
+      requestShopId: 'shop-b',
+      activeShopId: 'shop-b',
+      cancelled: false,
+    });
+    assert.deepEqual(afterShopBResponse.itemIds, [
+      'shop-b-item-1',
+      'shop-b-item-2',
+      'shop-b-item-3',
+    ]);
+    assert.equal(afterShopBResponse.enabled, false);
+
+    // When shop already has saved flashSale.itemIds, catalog prepopulation does not overwrite them
+    const savedFlash = normalizeShopFlashSaleConfig(
+      {
+        enabled: true,
+        title: 'Saved Flash',
+        discountType: 'percent',
+        discountValue: 30,
+        itemIds: ['shop-b-item-4'],
+      },
+      todayIso
+    );
+    const afterSavedShopResponse = applyCatalogItemsToFlashSaleDraft({
+      currentFlashSale: savedFlash,
+      savedFlashSale: savedFlash,
+      fetchedItems: [
+        { id: 'shop-b-item-1', shop_id: 'shop-b' },
+        { id: 'shop-b-item-2', shop_id: 'shop-b' },
+      ],
+      requestShopId: 'shop-b',
+      activeShopId: 'shop-b',
+      cancelled: false,
+    });
+    assert.deepEqual(afterSavedShopResponse.itemIds, ['shop-b-item-4']);
+    assert.equal(afterSavedShopResponse.enabled, true);
+  });
+
+  test('32.4 DashboardPostsPage wires hydrateShopPromotionsState and applyCatalogItemsToFlashSaleDraft on activeShop changes', async () => {
+    const fsMod = await import('node:fs');
+    const pathMod = await import('node:path');
+    const pageSource = fsMod.readFileSync(
+      pathMod.join(
+        process.cwd(),
+        'src/app/(dashboard)/dashboard/posts/page.tsx'
+      ),
+      'utf8'
+    );
+
+    assert.match(pageSource, /hydrateShopPromotionsState\(activeShop\?\.theme_config\)/);
+    assert.match(pageSource, /applyCatalogItemsToFlashSaleDraft\(/);
+    assert.match(pageSource, /normalizeShopPromoBannerConfig\(/);
+    assert.match(pageSource, /normalizeShopWelcomePopupConfig\(/);
+    assert.match(pageSource, /normalizeShopFlashSaleConfig\(/);
   });
 });

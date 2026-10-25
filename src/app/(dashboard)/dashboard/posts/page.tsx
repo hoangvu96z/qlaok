@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Megaphone,
   Plus,
@@ -44,7 +44,13 @@ import { RightPreviewSidebar } from '@/components/dashboard/RightPreviewSidebar'
 import { FlashSaleSchedulePicker } from '@/components/ui/TimeSchedulePicker';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { useConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { getVietnamDateKey } from '@/lib/date-utils';
+import {
+  applyCatalogItemsToFlashSaleDraft,
+  hydrateShopPromotionsState,
+  normalizeShopFlashSaleConfig,
+  normalizeShopPromoBannerConfig,
+  normalizeShopWelcomePopupConfig,
+} from '@/lib/shop-promotions';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
 
@@ -112,43 +118,19 @@ export default function DashboardPostsPage() {
   };
 
   // 1. Discount & Banner Config
-  const [promoBanner, setPromoBanner] = useState<ShopPromoBannerConfig>({
-    enabled: true,
-    badgeText: '🔥 ƯU ĐÃI ĐẶC BIỆT',
-    title: 'Giảm 15% cho đơn từ 100.000đ khi đặt tại bàn',
-    subtitle: 'Tự động áp dụng khi gọi món qua mã QR',
-    bgGradient: 'amber_rose',
-    ctaText: 'Xem chi tiết',
-    discountType: 'percent',
-    discountValue: 15,
-    minOrderAmount: 100000,
-    applyScope: 'all',
-    selectedItemIds: [],
-    voucherCode: 'QLAOK15',
-  });
+  const [promoBanner, setPromoBanner] = useState<ShopPromoBannerConfig>(() =>
+    normalizeShopPromoBannerConfig(activeShop?.theme_config?.promoBanner)
+  );
 
   // 2. Welcome Popup Config
-  const [welcomePopup, setWelcomePopup] = useState<ShopPopupConfig>({
-    enabled: false,
-    badgeText: '🎁 VOUCHER CHÀO MỪNG',
-    title: 'Giảm ngay 15% cho đơn hàng hôm nay!',
-    content: 'Áp dụng trực tiếp khi bạn chọn món trên Menu QR và đưa màn hình cho nhân viên.',
-    imageUrl: '',
-    voucherCode: 'QLAOK15',
-    ctaText: 'Nhận Ưu Đãi & Xem Menu',
-  });
+  const [welcomePopup, setWelcomePopup] = useState<ShopPopupConfig>(() =>
+    normalizeShopWelcomePopupConfig(activeShop?.theme_config?.welcomePopup)
+  );
 
   // 3. Flash Sale Config
-  const [flashSale, setFlashSale] = useState<ShopFlashSaleConfig>({
-    enabled: false,
-    badgeText: '⚡ FLASH SALE GIỜ VÀNG',
-    title: 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
-    discountType: 'percent',
-    discountValue: 25,
-    startTime: '11:00',
-    endTime: '22:00',
-    itemIds: [],
-  });
+  const [flashSale, setFlashSale] = useState<ShopFlashSaleConfig>(() =>
+    normalizeShopFlashSaleConfig(activeShop?.theme_config?.flashSale)
+  );
 
   // 4. Multilingual Posts State
   const [posts, setPosts] = useState<Post[]>([]);
@@ -173,6 +155,8 @@ export default function DashboardPostsPage() {
   const [postsError, setPostsError] = useState('');
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  const activeShopIdRef = useRef<string | null>(activeShop?.id ?? null);
+  activeShopIdRef.current = activeShop?.id ?? null;
 
   /** Reads the server error message from a failed response, falling back to a generic text. */
   const readResponseError = async (res: Response, fallback: string) => {
@@ -182,104 +166,83 @@ export default function DashboardPostsPage() {
       : fallback;
   };
 
-  const loadPosts = useCallback(async () => {
-    if (!activeShop) return;
-    const res = await fetch(`/api/posts?shopId=${activeShop.id}`, {
-      headers: getAuthHeaders(),
-      cache: 'no-store',
-    });
-    const data = await res.json();
-    setPosts(data.posts || []);
-  }, [activeShop]);
+  const loadPosts = useCallback(
+    async (targetShopId?: string) => {
+      const shopId = targetShopId ?? activeShop?.id;
+      if (!shopId) return;
+      const res = await fetch(`/api/posts?shopId=${shopId}`, {
+        headers: getAuthHeaders(),
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (activeShopIdRef.current !== shopId) return;
+      setPosts(data.posts || []);
+    },
+    [activeShop]
+  );
 
   useEffect(() => {
-    if (!activeShop) return;
+    const hydrated = hydrateShopPromotionsState(activeShop?.theme_config);
+    setPromoBanner(hydrated.promoBanner);
+    setWelcomePopup(hydrated.welcomePopup);
+    setFlashSale(hydrated.flashSale);
+
+    if (!activeShop) {
+      setShopItems([]);
+      setPosts([]);
+      setLoadingData(false);
+      return;
+    }
+
+    const requestShopId = activeShop.id;
+    const savedFlashSale = activeShop.theme_config?.flashSale;
+    let cancelled = false;
+
     setLoadingData(true);
+    setShopItems([]);
+    setPosts([]);
+
     Promise.all([
-      loadPosts().catch(() => {}),
-      fetch(`/api/catalog?shopId=${activeShop.id}`, {
+      loadPosts(requestShopId).catch(() => {}),
+      fetch(`/api/catalog?shopId=${requestShopId}`, {
         headers: getAuthHeaders(),
         cache: 'no-store',
       })
         .then((r) => r.json())
         .then((data) => {
+          if (cancelled || activeShopIdRef.current !== requestShopId) {
+            return;
+          }
           const fetchedItems: CatalogItem[] = Array.isArray(data.items)
             ? data.items
             : [];
-          setShopItems(fetchedItems);
+          const scopedItems = fetchedItems.filter(
+            (item) => !item.shop_id || item.shop_id === requestShopId
+          );
+          setShopItems(scopedItems);
 
           // Pre-populate Flash Sale items with first 3 items if empty
-          const existingFs = activeShop.theme_config?.flashSale;
-          if (
-            (!existingFs || !existingFs.itemIds?.length) &&
-            fetchedItems.length > 0
-          ) {
-            setFlashSale((prev) => ({
-              ...prev,
-              itemIds: fetchedItems.slice(0, 3).map((i) => i.id),
-            }));
-          }
+          setFlashSale((prev) =>
+            applyCatalogItemsToFlashSaleDraft({
+              currentFlashSale: prev,
+              savedFlashSale,
+              fetchedItems: scopedItems,
+              requestShopId,
+              activeShopId: activeShopIdRef.current,
+              cancelled,
+            })
+          );
         })
         .catch(() => {}),
     ]).finally(() => {
-      setLoadingData(false);
+      if (!cancelled && activeShopIdRef.current === requestShopId) {
+        setLoadingData(false);
+      }
     });
 
-    const tc = activeShop.theme_config;
-    if (tc?.promoBanner) {
-      setPromoBanner({
-        enabled: Boolean(tc.promoBanner.enabled),
-        badgeText: tc.promoBanner.badgeText || '🔥 ƯU ĐÃI ĐẶC BIỆT',
-        title: tc.promoBanner.title || '',
-        subtitle: tc.promoBanner.subtitle || '',
-        bgGradient: tc.promoBanner.bgGradient || 'amber_rose',
-        ctaText: tc.promoBanner.ctaText || 'Xem chi tiết',
-        discountType: tc.promoBanner.discountType || 'percent',
-        discountValue:
-          typeof tc.promoBanner.discountValue === 'number'
-            ? tc.promoBanner.discountValue
-            : 15,
-        minOrderAmount:
-          typeof tc.promoBanner.minOrderAmount === 'number'
-            ? tc.promoBanner.minOrderAmount
-            : 0,
-        applyScope: tc.promoBanner.applyScope || 'all',
-        selectedItemIds: tc.promoBanner.selectedItemIds || [],
-        voucherCode: tc.promoBanner.voucherCode || '',
-      });
-    }
-
-    if (tc?.welcomePopup) {
-      setWelcomePopup({
-        enabled: Boolean(tc.welcomePopup.enabled),
-        badgeText: tc.welcomePopup.badgeText || '🎁 VOUCHER CHÀO MỪNG',
-        title: tc.welcomePopup.title || '',
-        content: tc.welcomePopup.content || '',
-        imageUrl: tc.welcomePopup.imageUrl || '',
-        voucherCode: tc.welcomePopup.voucherCode || '',
-        ctaText: tc.welcomePopup.ctaText || 'Nhận Ưu Đãi & Xem Menu',
-      });
-    }
-
-    if (tc?.flashSale) {
-      const todayIso = getVietnamDateKey();
-      setFlashSale({
-        enabled: Boolean(tc.flashSale.enabled),
-        badgeText: tc.flashSale.badgeText || '⚡ FLASH SALE GIỜ VÀNG',
-        title:
-          tc.flashSale.title || 'Giờ Vàng Giá Sốc - Số Lượng Có Hạn',
-        discountType: tc.flashSale.discountType || 'percent',
-        discountValue:
-          typeof tc.flashSale.discountValue === 'number'
-            ? tc.flashSale.discountValue
-            : 25,
-        startDate: tc.flashSale.startDate || todayIso,
-        endDate: tc.flashSale.endDate || tc.flashSale.startDate || todayIso,
-        startTime: tc.flashSale.startTime || '11:00',
-        endTime: tc.flashSale.endTime || '22:00',
-        itemIds: tc.flashSale.itemIds || [],
-      });
-    }
+    return () => {
+      cancelled = true;
+    };
   }, [activeShop, loadPosts]);
 
   if (!activeShop) {
