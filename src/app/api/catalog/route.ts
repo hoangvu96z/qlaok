@@ -151,8 +151,13 @@ async function fetchAndVerifyShopItems(
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const shopId = searchParams.get('shopId') || undefined;
-  const data = await dbGetShopCatalog(shopId);
-  return NextResponse.json(data);
+  const { shop, categories, items, ownerPlan } = await dbGetShopCatalog(shopId);
+  return NextResponse.json({
+    shop,
+    categories,
+    items,
+    ownerPlan,
+  });
 }
 
 export async function POST(req: Request) {

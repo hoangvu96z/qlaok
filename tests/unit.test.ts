@@ -6271,7 +6271,13 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
   interface MockDbGetShopCatalogOptions {
     shops?: Record<string, { id: string; owner_id?: string | null; name?: string }>;
     profiles?: Record<string, { id?: string; plan?: unknown } | null>;
-    firstProfile?: { id?: string; plan?: unknown };
+    firstProfile?: {
+      id?: string;
+      plan?: unknown;
+      email?: string;
+      phone?: string;
+      full_name?: string;
+    };
     categories?: Record<string, Category[]>;
     items?: Record<string, Partial<CatalogItem>[]>;
     recordedColumns?: { profiles?: string[] };
@@ -6434,8 +6440,14 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
         'owner-free-01': { id: 'owner-free-01', plan: 'free' },
         'owner-prem-01': { id: 'owner-prem-01', plan: 'premium' },
       },
-      // The unrelated profile returned by profiles.select('*').limit(1) has plan 'premium'
-      firstProfile: { id: 'unrelated-first-profile', plan: 'premium' },
+      // The unrelated profile returned by profiles.select('*').limit(1) has plan 'premium' and sentinel PII
+      firstProfile: {
+        id: 'unrelated-first-profile',
+        plan: 'premium',
+        email: 'sentinel-leak@example.com',
+        phone: '+84909999888',
+        full_name: 'Sentinel Private Owner',
+      },
       recordedColumns,
     });
 
@@ -6446,6 +6458,8 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       const catalogBasic = await dbGetShopCatalog('shop-owner-basic');
       assert.equal(catalogBasic.ownerPlan, 'basic');
       assert.equal(catalogBasic.profile.plan, 'premium', 'Preserves existing legacy profile field');
+      assert.equal(catalogBasic.profile.email, 'sentinel-leak@example.com');
+      assert.equal(catalogBasic.profile.phone, '+84909999888');
       assert.equal(catalogBasic.shop.id, 'shop-owner-basic');
       assert.ok(Array.isArray(catalogBasic.categories));
       assert.ok(Array.isArray(catalogBasic.items));
@@ -6468,14 +6482,29 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       assert.equal(typeof catalogFree.ownerPlan, 'string');
       assert.equal(typeof catalogPrem.ownerPlan, 'string');
 
-      // 5. GET /api/catalog passes through ownerPlan to client response
+      // 5. GET /api/catalog passes through public catalog fields and redacts profile (no sentinel email/phone leak)
       const apiRes = await catalogGet(
         new Request('http://localhost:3000/api/catalog?shopId=shop-owner-basic')
       );
       assert.equal(apiRes.status, 200);
+      const rawApiText = await apiRes.clone().text();
       const apiBody = await apiRes.json();
       assert.equal(apiBody.ownerPlan, 'basic');
       assert.equal(apiBody.shop.id, 'shop-owner-basic');
+      assert.ok(Array.isArray(apiBody.categories));
+      assert.ok(Array.isArray(apiBody.items));
+      assert.equal('profile' in apiBody, false, 'Public GET /api/catalog must not include profile');
+      assert.equal(apiBody.profile, undefined);
+      assert.equal(
+        rawApiText.includes('sentinel-leak@example.com'),
+        false,
+        'Public GET /api/catalog must not serialize sentinel email'
+      );
+      assert.equal(
+        rawApiText.includes('+84909999888'),
+        false,
+        'Public GET /api/catalog must not serialize sentinel phone'
+      );
     } finally {
       setSupabaseDbClientForTests(null);
     }
@@ -6559,7 +6588,7 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       setSupabaseDbClientForTests(null);
     }
 
-    // 5. Missing shop returns fallback seed with ownerPlan: 'free'
+    // 5. Missing shop returns fallback seed with ownerPlan: 'free' and redacts profile on HTTP response
     const mockEmptyShopDb = createMockSupabaseForGetShopCatalog({
       shops: {},
     });
@@ -6568,6 +6597,25 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       setSupabaseDbClientForTests(mockEmptyShopDb);
       const catalog = await dbGetShopCatalog('shop-nonexistent');
       assert.equal(catalog.ownerPlan, 'free');
+      assert.equal(catalog.profile.email, SEED_PROFILE.email, 'Helper preserves fallback SEED_PROFILE');
+
+      const fallbackApiRes = await catalogGet(
+        new Request('http://localhost:3000/api/catalog?shopId=shop-nonexistent')
+      );
+      assert.equal(fallbackApiRes.status, 200);
+      const rawFallbackText = await fallbackApiRes.clone().text();
+      const fallbackApiBody = await fallbackApiRes.json();
+      assert.equal(fallbackApiBody.shop.id, SEED_SHOPS[0].id);
+      assert.ok(Array.isArray(fallbackApiBody.categories));
+      assert.ok(Array.isArray(fallbackApiBody.items));
+      assert.equal(fallbackApiBody.ownerPlan, 'free');
+      assert.equal('profile' in fallbackApiBody, false, 'Fallback GET /api/catalog must not include profile');
+      assert.equal(fallbackApiBody.profile, undefined);
+      assert.equal(
+        rawFallbackText.includes(SEED_PROFILE.email),
+        false,
+        'Fallback GET /api/catalog must not serialize SEED_PROFILE email'
+      );
     } finally {
       setSupabaseDbClientForTests(null);
     }
