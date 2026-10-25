@@ -36,6 +36,7 @@ import {
   enrichItemsWithInventory,
   setItemStockMetadata,
 } from './mpos-store';
+import { parseCatalogPriceValue } from './catalog-excel';
 
 let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
@@ -1443,6 +1444,15 @@ export async function dbDeleteCategory(categoryId: string): Promise<boolean> {
 export async function dbUpsertItem(
   item: Partial<CatalogItem> & { shop_id: string; category_id: string }
 ): Promise<CatalogItem> {
+  let validatedPrice: number | undefined = undefined;
+  if (item.price !== undefined) {
+    const parsedPrice = parseCatalogPriceValue(item.price);
+    if (!parsedPrice.valid) {
+      throw new Error(`INVALID_ITEM_PRICE: ${parsedPrice.error}`);
+    }
+    validatedPrice = parsedPrice.price;
+  }
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
@@ -1486,15 +1496,20 @@ export async function dbUpsertItem(
             ? dbSafeItem.is_available
             : undefined;
 
+      const updatePatch: Record<string, unknown> = {
+        ...dbSafeItem,
+        is_available: nextAvailable,
+        updated_at: new Date().toISOString(),
+      };
+      if (validatedPrice !== undefined) {
+        updatePatch.price = validatedPrice;
+      } else {
+        delete updatePatch.price;
+      }
+
       const { data, error } = await sb
         .from('items')
-        .update({
-          ...dbSafeItem,
-          is_available: nextAvailable,
-          price:
-            dbSafeItem.price !== undefined ? Number(dbSafeItem.price) : undefined,
-          updated_at: new Date().toISOString(),
-        })
+        .update(updatePatch)
         .eq('id', item.id)
         .select('*')
         .single();
@@ -1557,7 +1572,7 @@ export async function dbUpsertItem(
     shop_id: item.shop_id,
     category_id: item.category_id,
     sort_order: item.sort_order ?? (count || 0) + 1,
-    price: Number(item.price ?? 0),
+    price: validatedPrice ?? 0,
     compare_at_price: item.compare_at_price ?? null,
     unit_i18n: item.unit_i18n || {
       vi: 'phần',
@@ -1614,12 +1629,51 @@ export async function dbBulkImportCatalog(
     }>;
   }>
 ) {
+  if (!Array.isArray(categoriesPayload)) {
+    throw new Error(
+      'INVALID_CATEGORIES_PAYLOAD: Danh sách danh mục nhập hàng loạt không hợp lệ.'
+    );
+  }
+
+  const normalizedCategories = categoriesPayload.map((catData) => {
+    if (
+      !catData ||
+      typeof catData !== 'object' ||
+      !Array.isArray(catData.items)
+    ) {
+      throw new Error(
+        'INVALID_CATEGORIES_PAYLOAD: Danh sách món trong danh mục nhập hàng loạt không hợp lệ.'
+      );
+    }
+
+    const normalizedItems = catData.items.map((itemData) => {
+      if (!itemData || typeof itemData !== 'object') {
+        throw new Error(
+          'INVALID_ITEM_PRICE: Dữ liệu món nhập hàng loạt không hợp lệ.'
+        );
+      }
+      const parsedPrice = parseCatalogPriceValue(itemData.price);
+      if (!parsedPrice.valid) {
+        throw new Error(`INVALID_ITEM_PRICE: ${parsedPrice.error}`);
+      }
+      return {
+        ...itemData,
+        price: parsedPrice.price,
+      };
+    });
+
+    return {
+      ...catData,
+      items: normalizedItems,
+    };
+  });
+
   await ensureSupabaseReadyAndSeeded();
 
   const createdCategories: Category[] = [];
   const createdItems: CatalogItem[] = [];
 
-  for (const catData of categoriesPayload) {
+  for (const catData of normalizedCategories) {
     const categoryId =
       typeof catData.id === 'string' && catData.id.trim()
         ? catData.id.trim()
@@ -1641,7 +1695,7 @@ export async function dbBulkImportCatalog(
         ...(itemId ? { id: itemId } : {}),
         shop_id: shopId,
         category_id: newCat.id,
-        price: Number(itemData.price || 0),
+        price: itemData.price,
         duration_mins: itemData.duration_mins ?? null,
         image_url: itemData.image_url || null,
         name_i18n: itemData.name_i18n,

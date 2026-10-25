@@ -222,12 +222,31 @@ export async function POST(req: Request) {
         auth.membership,
         'catalog.manage'
       );
-      const payload =
-        canManageCatalog || !existing
-          ? body.item
-          : buildInventoryOnlyItemPatch(incoming, existing);
+      let payload: Record<string, unknown>;
+      if (canManageCatalog || !existing) {
+        if (incoming.price !== undefined) {
+          const parsedPrice = parseCatalogPriceValue(incoming.price);
+          if (!parsedPrice.valid) {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'INVALID_ITEM_PRICE',
+                error: parsedPrice.error,
+              },
+              { status: 400 }
+            );
+          }
+          payload = { ...incoming, price: parsedPrice.price };
+        } else {
+          payload = incoming;
+        }
+      } else {
+        payload = buildInventoryOnlyItemPatch(incoming, existing);
+      }
 
-      const item = await dbUpsertItem(payload);
+      const item = await dbUpsertItem(
+        payload as Parameters<typeof dbUpsertItem>[0]
+      );
       return NextResponse.json({ item });
     }
 
@@ -239,6 +258,51 @@ export async function POST(req: Request) {
         'catalog.manage'
       );
       if (auth.errorResponse) return auth.errorResponse;
+
+      if (!Array.isArray(body.categories)) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'INVALID_CATEGORIES_PAYLOAD',
+            error: 'Danh sách danh mục nhập hàng loạt không hợp lệ.',
+          },
+          { status: 400 }
+        );
+      }
+
+      for (const catData of body.categories) {
+        if (
+          !catData ||
+          typeof catData !== 'object' ||
+          !Array.isArray((catData as { items?: unknown }).items)
+        ) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'INVALID_CATEGORIES_PAYLOAD',
+              error: 'Danh sách món trong danh mục nhập hàng loạt không hợp lệ.',
+            },
+            { status: 400 }
+          );
+        }
+        for (const itemData of (catData as { items: unknown[] }).items) {
+          const rawPrice =
+            itemData && typeof itemData === 'object'
+              ? (itemData as Record<string, unknown>).price
+              : undefined;
+          const parsedPrice = parseCatalogPriceValue(rawPrice);
+          if (!parsedPrice.valid) {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'INVALID_ITEM_PRICE',
+                error: parsedPrice.error,
+              },
+              { status: 400 }
+            );
+          }
+        }
+      }
 
       const result = await dbBulkImportCatalog(body.shopId, body.categories);
       return NextResponse.json(result);

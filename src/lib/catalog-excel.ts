@@ -2,6 +2,8 @@ import type { CatalogItem, Category } from '@/types/qlaok';
 
 export const MAX_CATALOG_EXCEL_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 export const MAX_CATALOG_EXCEL_ROWS = 2000;
+export const MIN_CATALOG_ITEM_PRICE = 0;
+export const MAX_CATALOG_ITEM_PRICE = 1_000_000_000;
 
 export interface CatalogImportRowParsed {
   rowNumber: number;
@@ -163,8 +165,13 @@ export function parseCatalogPriceValue(
   }
 
   if (typeof primitive === 'number') {
-    if (Number.isFinite(primitive) && Number.isInteger(primitive) && primitive >= 0 && primitive <= 1_000_000_000) {
-      return { valid: true, price: primitive };
+    if (
+      Number.isFinite(primitive) &&
+      Number.isInteger(primitive) &&
+      primitive >= MIN_CATALOG_ITEM_PRICE &&
+      primitive <= MAX_CATALOG_ITEM_PRICE
+    ) {
+      return { valid: true, price: primitive === 0 ? 0 : primitive };
     }
     if (Number.isFinite(primitive) && !Number.isInteger(primitive)) {
       return {
@@ -172,13 +179,13 @@ export function parseCatalogPriceValue(
         error: 'Giá bán không hợp lệ. Giá bán phải là số nguyên (VND không dùng số thập phân).',
       };
     }
-    if (primitive < 0) {
+    if (primitive < MIN_CATALOG_ITEM_PRICE) {
       return {
         valid: false,
         error: 'Giá bán không hợp lệ. Phải là số nguyên không âm (>= 0).',
       };
     }
-    if (primitive > 1_000_000_000) {
+    if (primitive > MAX_CATALOG_ITEM_PRICE) {
       return {
         valid: false,
         error: 'Giá bán không hợp lệ. Không được vượt quá 1 tỷ đồng.',
@@ -250,11 +257,15 @@ export function parseCatalogPriceValue(
     const digitsOnly = core.replace(/[.,]/g, '');
     const num = Number(digitsOnly);
 
-    if (Number.isSafeInteger(num) && num >= 0 && num <= 1_000_000_000) {
+    if (
+      Number.isSafeInteger(num) &&
+      num >= MIN_CATALOG_ITEM_PRICE &&
+      num <= MAX_CATALOG_ITEM_PRICE
+    ) {
       return { valid: true, price: num };
     }
 
-    if (num > 1_000_000_000) {
+    if (num > MAX_CATALOG_ITEM_PRICE) {
       return {
         valid: false,
         error: 'Giá bán không hợp lệ. Không được vượt quá 1 tỷ đồng.',

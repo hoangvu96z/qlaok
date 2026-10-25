@@ -13,7 +13,7 @@ The bulk bar supports:
 
 ## Permission and shop boundaries
 
-The API is authoritative. Price changes, category moves, and deletes require active membership with `catalog.manage`. Availability changes require active membership with `catalog.manage` or `inventory.adjust`. The availability endpoint validates a boolean target, unique item IDs (maximum 2,000), and verifies every item belongs to the requested shop before writing. It returns an error if the affected row count does not match the request. No schema or environment-variable change is required.
+The API is authoritative. Price changes, category moves, and deletes require active membership with `catalog.manage`. Availability changes require active membership with `catalog.manage` or `inventory.adjust`. Every catalog price write path (`POST /api/catalog` `upsert_item`, `bulk_import`, `bulk_update_price_stock`, and `dbUpsertItem` / `dbBulkImportCatalog`) enforces the shared integer-VND boundary (`0 <= price <= 1,000,000,000` via `parseCatalogPriceValue`) before writing; `bulk_import` validates all imported item prices before the first category or item write. The availability endpoint validates a boolean target, unique item IDs (maximum 2,000), and verifies every item belongs to the requested shop before writing. It returns an error if the affected row count does not match the request. No schema or environment-variable change is required.
 
 ## Verification
 

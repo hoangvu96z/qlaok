@@ -6277,6 +6277,93 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
     }
   });
 
+  test('25.7 dbUpsertItem enforces integer VND price boundaries [0, 1_000_000_000] and preserves omitted update prices', async () => {
+    const mockDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-price-1': { id: 'shop-price-1', owner_id: 'owner-price-1' },
+      },
+      profiles: {
+        'owner-price-1': { id: 'owner-price-1', plan: 'premium' },
+      },
+      categories: {
+        'cat-price-1': { id: 'cat-price-1', shop_id: 'shop-price-1' },
+      },
+      items: {
+        'item-existing-price': {
+          id: 'item-existing-price',
+          shop_id: 'shop-price-1',
+          category_id: 'cat-price-1',
+          name_i18n: { vi: 'Món hiện có' },
+          price: 45000,
+          is_available: true,
+        },
+      },
+      itemCounts: {
+        'shop-price-1': 1,
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockDb);
+
+      for (const badPrice of [-1, -500, 0.5, 1.5, 1_000_000_001, NaN, Infinity, -Infinity]) {
+        await assert.rejects(
+          async () => {
+            await dbUpsertItem({
+              id: 'item-existing-price',
+              shop_id: 'shop-price-1',
+              category_id: 'cat-price-1',
+              price: badPrice,
+            });
+          },
+          /INVALID_ITEM_PRICE/
+        );
+        await assert.rejects(
+          async () => {
+            await dbUpsertItem({
+              shop_id: 'shop-price-1',
+              category_id: 'cat-price-1',
+              name_i18n: { vi: 'Món mới giá lỗi' },
+              price: badPrice,
+            });
+          },
+          /INVALID_ITEM_PRICE/
+        );
+      }
+
+      // Omitted price on update preserves existing price (45000)
+      const updatedNoPrice = await dbUpsertItem({
+        id: 'item-existing-price',
+        shop_id: 'shop-price-1',
+        category_id: 'cat-price-1',
+        is_available: false,
+      });
+      assert.equal(updatedNoPrice.price, 45000);
+      assert.equal(updatedNoPrice.is_available, false);
+
+      // Boundary 0 and 1,000,000,000 succeed
+      const createdZero = await dbUpsertItem({
+        id: 'item-created-0',
+        shop_id: 'shop-price-1',
+        category_id: 'cat-price-1',
+        name_i18n: { vi: 'Món 0đ' },
+        price: 0,
+      });
+      assert.equal(createdZero.price, 0);
+
+      const createdMax = await dbUpsertItem({
+        id: 'item-created-max',
+        shop_id: 'shop-price-1',
+        category_id: 'cat-price-1',
+        name_i18n: { vi: 'Món 1 tỷ' },
+        price: 1_000_000_000,
+      });
+      assert.equal(createdMax.price, 1_000_000_000);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
   interface MockDbGetShopCatalogOptions {
     shops?: Record<string, { id: string; owner_id?: string | null; name?: string }>;
     profiles?: Record<string, { id?: string; plan?: unknown } | null>;

@@ -254,11 +254,14 @@ test('parseCatalogPriceValue parses numbers and formatted strings and rejects in
   // Numbers: finite non-negative integers only (never rounds)
   assert.deepEqual(parseCatalogPriceValue(25000), { valid: true, price: 25000 });
   assert.deepEqual(parseCatalogPriceValue(0), { valid: true, price: 0 });
+  assert.deepEqual(parseCatalogPriceValue(-0), { valid: true, price: 0 });
+  assert.ok(Object.is((parseCatalogPriceValue(-0) as { price: number }).price, 0));
   assert.deepEqual(parseCatalogPriceValue(1_000_000_000), { valid: true, price: 1000000000 });
   // Fractional numbers must be strictly rejected (never rounded)
   assert.equal(parseCatalogPriceValue(45000.4).valid, false);
   assert.equal(parseCatalogPriceValue(35000.5).valid, false);
   assert.equal(parseCatalogPriceValue(0.5).valid, false);
+  assert.equal(parseCatalogPriceValue(-0.5).valid, false);
 
   // Valid formatted strings (thousand separators, currency symbols, whitespace)
   assert.deepEqual(parseCatalogPriceValue('35,000'), { valid: true, price: 35000 });
@@ -277,7 +280,9 @@ test('parseCatalogPriceValue parses numbers and formatted strings and rejects in
   assert.deepEqual(parseCatalogPriceValue('35.000 VND'), { valid: true, price: 35000 });
 
   // Negative / malformed price rejections
+  assert.equal(parseCatalogPriceValue(-1).valid, false);
   assert.equal(parseCatalogPriceValue(-500).valid, false);
+  assert.equal(parseCatalogPriceValue('-1').valid, false);
   assert.equal(parseCatalogPriceValue('-1000').valid, false);
   assert.equal(parseCatalogPriceValue('-50000').valid, false);
   assert.equal(parseCatalogPriceValue('-35.000đ').valid, false);
@@ -290,7 +295,11 @@ test('parseCatalogPriceValue parses numbers and formatted strings and rejects in
   assert.equal(parseCatalogPriceValue('$50').valid, false);
   assert.equal(parseCatalogPriceValue('free').valid, false);
   assert.equal(parseCatalogPriceValue(NaN).valid, false);
+  assert.equal(parseCatalogPriceValue(Infinity).valid, false);
+  assert.equal(parseCatalogPriceValue(-Infinity).valid, false);
   assert.equal(parseCatalogPriceValue(1_000_000_001).valid, false); // exceeds max limit
+  assert.equal(parseCatalogPriceValue('1000000001').valid, false);
+  assert.equal(parseCatalogPriceValue('1.000.000.001').valid, false);
 
   // Fractional and malformed string prices rejected (integer-VND rule)
   assert.equal(parseCatalogPriceValue('12.5').valid, false);
@@ -3057,6 +3066,818 @@ test('POST /api/catalog bulk_update_availability rejects non-boolean availabilit
     assert.equal(dataMismatch.success, false);
     assert.equal(dataMismatch.updatedCount, 0);
     assert.equal(dataMismatch.code, 'BULK_AVAILABILITY_COUNT_MISMATCH');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog upsert_item and dbUpsertItem enforce [0, 1_000_000_000] integer VND price boundary before any DB writes', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { dbUpsertItem, setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+  const staffToken = issueSessionToken({
+    id: 'staff-inv-001',
+    email: 'staff-inv@qlaok.vn',
+    role: 'staff',
+  });
+
+  const itemsStore: CatalogItem[] = [
+    {
+      id: 'item-fnb-001',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-001',
+      name_i18n: { vi: 'Phở bò tái nạm', en: 'Beef Pho' },
+      desc_i18n: { vi: '', en: '' },
+      price: 55000,
+      stock_quantity: 10,
+      is_available: true,
+      is_featured: false,
+      options_json: [],
+      view_count: 10,
+      sold_count: 5,
+      sort_order: 1,
+    },
+  ];
+  let itemUpdateCalls = 0;
+  let itemInsertCalls = 0;
+
+  const mockDbClient = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select(_cols = '*') {
+            return {
+              limit: async () => ({
+                data: [{ id: 'shop-fnb-001' }],
+                error: null,
+              }),
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'shop-fnb-001') {
+                      return {
+                        data: { id: 'shop-fnb-001', owner_id: 'owner-demo-001' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select(_cols = '*') {
+            return {
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'owner-demo-001') {
+                      return {
+                        data: { id: 'owner-demo-001', plan: 'premium' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'shop_memberships') {
+        return {
+          select(_cols = '*') {
+            const filters: Array<[string, unknown]> = [];
+            const staffRow = {
+              id: 'mem-staff-inv-001',
+              shop_id: 'shop-fnb-001',
+              user_id: 'staff-inv-001',
+              role: 'staff',
+              permissions: ['catalog.view', 'inventory.adjust'],
+              is_active: true,
+            };
+            const resolveRows = () =>
+              filters.every(
+                ([k, v]) =>
+                  (staffRow as unknown as Record<string, unknown>)[k] === v
+              )
+                ? [{ ...staffRow }]
+                : [];
+            const builder = {
+              eq(field: string, val: unknown) {
+                filters.push([field, val]);
+                return builder;
+              },
+              order() {
+                return builder;
+              },
+              async maybeSingle() {
+                const rows = resolveRows();
+                return { data: rows[0] || null, error: null };
+              },
+              then(
+                onFulfilled: (v: {
+                  data: Array<typeof staffRow>;
+                  error: null;
+                }) => unknown,
+                onRejected?: (e: unknown) => unknown
+              ) {
+                return Promise.resolve({
+                  data: resolveRows(),
+                  error: null,
+                }).then(onFulfilled, onRejected);
+              },
+            };
+            return builder;
+          },
+        };
+      }
+      if (table === 'categories') {
+        return {
+          select(_cols = '*') {
+            return {
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'cat-fnb-001') {
+                      return {
+                        data: { id: 'cat-fnb-001', shop_id: 'shop-fnb-001' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'items') {
+        return {
+          select(_cols = '*', opts?: { count?: string; head?: boolean }) {
+            if (opts?.head) {
+              return {
+                eq(_field: string, val: unknown) {
+                  const count = itemsStore.filter((i) => i.shop_id === val).length;
+                  return Promise.resolve({ count, error: null });
+                },
+              };
+            }
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const match = itemsStore.find(
+                      (i) =>
+                        (i as unknown as Record<string, unknown>)[field] === val
+                    );
+                    return { data: match ? { ...match } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(patch: Partial<CatalogItem>) {
+            itemUpdateCalls++;
+            return {
+              eq(field: string, val: unknown) {
+                const idx = itemsStore.findIndex(
+                  (i) =>
+                    (i as unknown as Record<string, unknown>)[field] === val
+                );
+                if (idx >= 0) {
+                  itemsStore[idx] = { ...itemsStore[idx], ...patch };
+                }
+                return {
+                  select() {
+                    return {
+                      async single() {
+                        return { data: itemsStore[idx], error: null };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+          insert(payload: CatalogItem) {
+            itemInsertCalls++;
+            itemsStore.push({ ...payload });
+            return {
+              select() {
+                return {
+                  async single() {
+                    return { data: payload, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected table in test mock: ${table}`);
+    },
+  };
+
+  setSupabaseDbClientForTests(mockDbClient);
+  setShopMembershipDbClientForTest(
+    mockDbClient as unknown as Parameters<
+      typeof setShopMembershipDbClientForTest
+    >[0]
+  );
+
+  try {
+    // 1. Invalid supplied prices via POST /api/catalog upsert_item (update & create) -> HTTP 400 before any write
+    const invalidApiPrices: unknown[] = [
+      -1,
+      -500,
+      '-1',
+      '-35.000đ',
+      0.5,
+      1.5,
+      35000.5,
+      '12.5',
+      1_000_000_001,
+      '1000000001',
+      '1.000.000.001',
+      null,
+      '',
+      'abc',
+    ];
+
+    for (const badPrice of invalidApiPrices) {
+      // Update existing item
+      const resUpdate = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'upsert_item',
+            item: {
+              ...itemsStore[0],
+              price: badPrice,
+            },
+          }),
+        })
+      );
+      assert.equal(
+        resUpdate.status,
+        400,
+        `Update with invalid price ${String(badPrice)} must return HTTP 400`
+      );
+      const bodyUpdate = await resUpdate.json();
+      assert.equal(bodyUpdate.success, false);
+      assert.equal(bodyUpdate.code, 'INVALID_ITEM_PRICE');
+
+      // Create new item
+      const resCreate = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'upsert_item',
+            item: {
+              shop_id: 'shop-fnb-001',
+              category_id: 'cat-fnb-001',
+              name_i18n: { vi: 'Món giá lỗi' },
+              price: badPrice,
+            },
+          }),
+        })
+      );
+      assert.equal(
+        resCreate.status,
+        400,
+        `Create with invalid price ${String(badPrice)} must return HTTP 400`
+      );
+      const bodyCreate = await resCreate.json();
+      assert.equal(bodyCreate.success, false);
+      assert.equal(bodyCreate.code, 'INVALID_ITEM_PRICE');
+    }
+
+    assert.equal(itemUpdateCalls, 0, 'No item update may occur for invalid prices');
+    assert.equal(itemInsertCalls, 0, 'No item insert may occur for invalid prices');
+    assert.equal(itemsStore[0].price, 55000);
+
+    // 2. Direct dbUpsertItem rejects negative, fractional, over-limit, and non-finite prices before any DB write
+    const invalidDirectPrices: unknown[] = [
+      -1,
+      -0.5,
+      1.5,
+      1_000_000_001,
+      NaN,
+      Infinity,
+      -Infinity,
+      null,
+      '',
+    ];
+    for (const badPrice of invalidDirectPrices) {
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            id: 'item-fnb-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            price: badPrice as number,
+          });
+        },
+        /INVALID_ITEM_PRICE/
+      );
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            name_i18n: { vi: 'Món mới lỗi' },
+            price: badPrice as number,
+          });
+        },
+        /INVALID_ITEM_PRICE/
+      );
+    }
+    assert.equal(itemUpdateCalls, 0);
+    assert.equal(itemInsertCalls, 0);
+
+    // 3. Valid boundaries 0 and 1,000,000,000 succeed via POST /api/catalog upsert_item
+    for (const boundaryPrice of [0, 1_000_000_000]) {
+      const resBoundary = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'upsert_item',
+            item: {
+              ...itemsStore[0],
+              price: boundaryPrice,
+            },
+          }),
+        })
+      );
+      assert.equal(resBoundary.status, 200);
+      const dataBoundary = await resBoundary.json();
+      assert.equal(dataBoundary.item.price, boundaryPrice);
+      assert.equal(itemsStore[0].price, boundaryPrice);
+    }
+
+    // 4. Omitted price on update preserves current price (1,000,000,000)
+    const resOmittedUpdate = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-fnb-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resOmittedUpdate.status, 200);
+    const dataOmittedUpdate = await resOmittedUpdate.json();
+    assert.equal(dataOmittedUpdate.item.price, 1_000_000_000);
+    assert.equal(dataOmittedUpdate.item.is_available, false);
+    assert.equal(itemsStore[0].price, 1_000_000_000);
+
+    // 5. Omitted price on create defaults to 0
+    const resOmittedCreate = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-created-default-zero',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            name_i18n: { vi: 'Món mặc định 0đ' },
+          },
+        }),
+      })
+    );
+    assert.equal(resOmittedCreate.status, 200);
+    const dataOmittedCreate = await resOmittedCreate.json();
+    assert.equal(dataOmittedCreate.item.price, 0);
+
+    // 6. Staff with inventory.adjust only: price change rejected with 403; stock/availability update preserves price
+    const resStaffPriceAttempt = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...itemsStore[0],
+            price: -1,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaffPriceAttempt.status, 403);
+    const dataStaffPriceAttempt = await resStaffPriceAttempt.json();
+    assert.equal(dataStaffPriceAttempt.code, 'INSUFFICIENT_SHOP_PERMISSION');
+    assert.equal(itemsStore[0].price, 1_000_000_000);
+
+    const resStaffInventoryUpdate = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...itemsStore[0],
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaffInventoryUpdate.status, 200);
+    const dataStaffInv = await resStaffInventoryUpdate.json();
+    assert.equal(dataStaffInv.item.price, 1_000_000_000);
+    assert.equal(dataStaffInv.item.is_available, true);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_import and dbBulkImportCatalog validate all item prices before the first category or item write', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { dbBulkImportCatalog, setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const categoriesStore: Category[] = [];
+  const itemsStore: CatalogItem[] = [];
+  let categoryWriteCalls = 0;
+  let itemWriteCalls = 0;
+
+  const mockDbClient = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select(_cols = '*') {
+            return {
+              limit: async () => ({
+                data: [{ id: 'shop-fnb-001' }],
+                error: null,
+              }),
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'shop-fnb-001') {
+                      return {
+                        data: { id: 'shop-fnb-001', owner_id: 'owner-demo-001' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select(_cols = '*') {
+            return {
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'owner-demo-001') {
+                      return {
+                        data: { id: 'owner-demo-001', plan: 'premium' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'categories') {
+        return {
+          select(_cols = '*', opts?: { count?: string; head?: boolean }) {
+            if (opts?.head) {
+              return {
+                eq(_field: string, val: unknown) {
+                  const count = categoriesStore.filter((c) => c.shop_id === val).length;
+                  return Promise.resolve({ count, error: null });
+                },
+              };
+            }
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const match = categoriesStore.find(
+                      (c) =>
+                        (c as unknown as Record<string, unknown>)[field] === val
+                    );
+                    return { data: match ? { ...match } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(patch: Partial<Category>) {
+            return {
+              eq(field: string, val: unknown) {
+                const idx = categoriesStore.findIndex(
+                  (c) =>
+                    (c as unknown as Record<string, unknown>)[field] === val
+                );
+                if (idx >= 0) {
+                  categoryWriteCalls++;
+                  categoriesStore[idx] = { ...categoriesStore[idx], ...patch };
+                }
+                return {
+                  select() {
+                    return {
+                      async single() {
+                        if (idx >= 0) {
+                          return { data: categoriesStore[idx], error: null };
+                        }
+                        return { data: null, error: { message: 'Not found' } };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+          upsert(payload: Category) {
+            categoryWriteCalls++;
+            const idx = categoriesStore.findIndex((c) => c.id === payload.id);
+            if (idx >= 0) {
+              categoriesStore[idx] = { ...categoriesStore[idx], ...payload };
+            } else {
+              categoriesStore.push({ ...payload });
+            }
+            return {
+              select() {
+                return {
+                  async single() {
+                    return { data: payload, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'items') {
+        return {
+          select(_cols = '*', opts?: { count?: string; head?: boolean }) {
+            if (opts?.head) {
+              return {
+                eq(_field: string, val: unknown) {
+                  const count = itemsStore.filter((i) => i.shop_id === val).length;
+                  return Promise.resolve({ count, error: null });
+                },
+              };
+            }
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const match = itemsStore.find(
+                      (i) =>
+                        (i as unknown as Record<string, unknown>)[field] === val
+                    );
+                    return { data: match ? { ...match } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          insert(payload: CatalogItem) {
+            itemWriteCalls++;
+            itemsStore.push({ ...payload });
+            return {
+              select() {
+                return {
+                  async single() {
+                    return { data: payload, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected table in test mock: ${table}`);
+    },
+  };
+
+  setSupabaseDbClientForTests(mockDbClient);
+
+  try {
+    // 1. Multi-category payload where Category 1 Item 1 is valid, but Category 2 Item 1 has an invalid price:
+    // Must reject with HTTP 400 BEFORE writing Category 1 or Item 1!
+    const invalidBulkApiPrices: unknown[] = [
+      -1,
+      -500,
+      0.5,
+      35000.5,
+      1_000_000_001,
+      null,
+      '',
+      'abc',
+      '-25000',
+      '12.5',
+    ];
+
+    for (const badPrice of invalidBulkApiPrices) {
+      const res = await POST(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify({
+            action: 'bulk_import',
+            shopId: 'shop-fnb-001',
+            categories: [
+              {
+                id: 'cat-valid-first',
+                name_i18n: { vi: 'Danh mục 1 hợp lệ' },
+                items: [
+                  {
+                    id: 'item-valid-first',
+                    price: 35000,
+                    name_i18n: { vi: 'Món 1 hợp lệ' },
+                    desc_i18n: { vi: '' },
+                  },
+                ],
+              },
+              {
+                id: 'cat-second-with-bad-item',
+                name_i18n: { vi: 'Danh mục 2 có món lỗi' },
+                items: [
+                  {
+                    id: 'item-bad-second',
+                    price: badPrice,
+                    name_i18n: { vi: 'Món 2 giá lỗi' },
+                    desc_i18n: { vi: '' },
+                  },
+                ],
+              },
+            ],
+          }),
+        })
+      );
+
+      assert.equal(
+        res.status,
+        400,
+        `bulk_import with invalid price ${String(badPrice)} must return HTTP 400`
+      );
+      const data = await res.json();
+      assert.equal(data.success, false);
+      assert.equal(data.code, 'INVALID_ITEM_PRICE');
+      assert.equal(
+        categoryWriteCalls,
+        0,
+        'No category write may occur when any imported item price is invalid'
+      );
+      assert.equal(
+        itemWriteCalls,
+        0,
+        'No item write may occur when any imported item price is invalid'
+      );
+      assert.equal(categoriesStore.length, 0);
+      assert.equal(itemsStore.length, 0);
+    }
+
+    // 2. Direct dbBulkImportCatalog rejects negative, fractional, over-limit, and non-finite prices before any writes
+    for (const badDirectPrice of [-1, 1.5, 1_000_000_001, NaN, Infinity, -Infinity]) {
+      await assert.rejects(
+        async () => {
+          await dbBulkImportCatalog('shop-fnb-001', [
+            {
+              id: 'cat-direct-1',
+              name_i18n: { vi: 'Danh mục 1' },
+              items: [
+                {
+                  id: 'item-direct-1',
+                  price: 25000,
+                  name_i18n: { vi: 'Món 1' },
+                  desc_i18n: { vi: '' },
+                },
+              ],
+            },
+            {
+              id: 'cat-direct-2',
+              name_i18n: { vi: 'Danh mục 2' },
+              items: [
+                {
+                  id: 'item-direct-2',
+                  price: badDirectPrice,
+                  name_i18n: { vi: 'Món 2 lỗi' },
+                  desc_i18n: { vi: '' },
+                },
+              ],
+            },
+          ]);
+        },
+        /INVALID_ITEM_PRICE/
+      );
+      assert.equal(categoryWriteCalls, 0);
+      assert.equal(itemWriteCalls, 0);
+      assert.equal(categoriesStore.length, 0);
+      assert.equal(itemsStore.length, 0);
+    }
+
+    // 3. Valid boundary prices 0 and 1,000,000,000 succeed cleanly in bulk_import
+    const resValidBulk = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_import',
+          shopId: 'shop-fnb-001',
+          categories: [
+            {
+              id: 'cat-boundary-bulk',
+              name_i18n: { vi: 'Danh mục biên' },
+              items: [
+                {
+                  id: 'item-boundary-zero',
+                  price: 0,
+                  name_i18n: { vi: 'Món 0đ' },
+                  desc_i18n: { vi: '' },
+                },
+                {
+                  id: 'item-boundary-max',
+                  price: 1_000_000_000,
+                  name_i18n: { vi: 'Món 1 tỷ' },
+                  desc_i18n: { vi: '' },
+                },
+              ],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(resValidBulk.status, 200);
+    const dataValidBulk = await resValidBulk.json();
+    assert.equal(dataValidBulk.createdCategories.length, 1);
+    assert.equal(dataValidBulk.createdItems.length, 2);
+    assert.equal(dataValidBulk.createdItems[0].price, 0);
+    assert.equal(dataValidBulk.createdItems[1].price, 1_000_000_000);
   } finally {
     setSupabaseDbClientForTests(null);
   }
