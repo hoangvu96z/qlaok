@@ -28,13 +28,43 @@ jobs:
       - run: npm run test:unit && npm run test:review && npm run test:sql && npm run test:db-reset && npm test --prefix mobile
       - run: npm run build
 
-  migrate:
+  migration-check:
     needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      has_migrations: ${{ steps.detect.outputs.has_migrations }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect SQL migration changes
+        id: detect
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "has_migrations=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed_migrations="$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" -- supabase/migrations/)"
+          if [[ -n "$changed_migrations" ]]; then
+            echo "has_migrations=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_migrations=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  migrate:
+    needs: [verify, migration-check]
+    if: needs.migration-check.outputs.has_migrations == 'true'
     uses: ./.github/workflows/supabase-migrate.yml
     secrets: inherit
 
   deploy:
-    needs: migrate
+    needs: [verify, migration-check, migrate]
+    if: ${{ always() && needs.verify.result == 'success' && needs.migration-check.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
     name: Build & Deploy → qlaok.vunph.click
     runs-on: ubuntu-latest
 
