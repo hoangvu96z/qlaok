@@ -109,9 +109,12 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 017_order_workflow_rpc.sql
 018_shop_staff_accounts.sql
 019_revoke_staff_trigger_execute.sql
+020_remove_legacy_base64_images.sql
 ```
 
 `npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
+
+Migration `020` xóa URI ảnh Base64 cũ khỏi `items.image_url`, `shops.logo_url` và phần tử Base64 trong `shops.cover_urls`; URL ảnh bên ngoài cùng các bản ghi và trường khác được giữ nguyên. Nội dung ảnh Base64 bị xóa, không được chuyển sang Storage.
 
 Khi có cấu hình DB, orders đọc DB làm nguồn chính; lỗi DB không được coi là ghi thành công hoặc ghép đơn local vào dữ liệu thật. `.local-db` còn phục vụ một số phần legacy/dev; không phải cơ chế offline đồng bộ đầy đủ.
 
