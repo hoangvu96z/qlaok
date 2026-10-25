@@ -41,6 +41,12 @@ let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
 let testDbClientOverride: SupabaseClient | null = null;
 let seedingInProgress: Promise<{ ok: boolean; error?: string }> | null = null;
+const READY_SEEDED_CACHE_MS = 60_000;
+let readySeededCache: { client: SupabaseClient; expiresAt: number } | null = null;
+let readySeededInFlight: {
+  client: SupabaseClient;
+  promise: Promise<{ ready: boolean; seeded?: boolean; error?: string }>;
+} | null = null;
 const inMemoryShopSlugAliases = new Map<string, string>(); // normalizedSlug -> shopId
 
 export function dbClearShopSlugAliasesForTests(): void {
@@ -49,6 +55,8 @@ export function dbClearShopSlugAliasesForTests(): void {
 
 export function setSupabaseDbClientForTests(client: unknown | null): void {
   testDbClientOverride = (client as SupabaseClient | null) ?? null;
+  readySeededCache = null;
+  readySeededInFlight = null;
   inMemoryShopSlugAliases.clear();
 }
 
@@ -187,6 +195,14 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
 
   const sb = getSupabaseDbClient();
 
+  if (readySeededCache?.client === sb && readySeededCache.expiresAt > Date.now()) {
+    return { ready: true, seeded: true };
+  }
+  if (readySeededInFlight?.client === sb) {
+    return readySeededInFlight.promise;
+  }
+
+  const verification = (async () => {
   try {
     const { data: shops, error } = await sb
       .from('shops')
@@ -317,6 +333,20 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
       seeded: false,
       error: err instanceof Error ? err.message : 'Unknown Supabase error',
     };
+  }
+  })();
+
+  readySeededInFlight = { client: sb, promise: verification };
+  try {
+    const result = await verification;
+    if (readySeededInFlight?.promise === verification && result.ready && result.seeded) {
+      readySeededCache = { client: sb, expiresAt: Date.now() + READY_SEEDED_CACHE_MS };
+    }
+    return result;
+  } finally {
+    if (readySeededInFlight?.promise === verification) {
+      readySeededInFlight = null;
+    }
   }
 }
 
