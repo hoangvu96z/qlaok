@@ -10,7 +10,7 @@
 | Backend App Router | `src/app/api` | Xác thực, quyền, catalog, đơn, pricing, thanh toán, AI, upload |
 | Mobile Expo SDK 52 / React 18 / RN 0.76 | `mobile/App.tsx`, `mobile/src` | Đăng nhập kép Chủ quán (Supabase JWT) & Nhân viên (`staff-session` / `staff-api`), chọn shop cho chủ quán và gọi món hộ tại bàn cố định theo quán (`StaffWorkspace` + `AssistedOrderScreen`) |
 | Supabase | `supabase/migrations` | PostgreSQL, Auth, RLS, RPC atomic, Realtime |
-| Tích hợp | `src/lib/gemini.ts`, `r2.ts` | Gateway AI text/vision, OCR và ảnh |
+| Tích hợp | `src/lib/gemini.ts`, `src/lib/r2.ts`, `src/lib/supabase-storage.ts` | Gateway AI text/vision, OCR; ảnh ưu tiên Cloudflare R2, dự phòng Supabase Storage `qlaok-media` |
 | Kiểm tra/triển khai | `tests`, `mobile/tests`, `.github/workflows`, `scripts` | Regression cô lập, fixtures, migration và deploy |
 
 Các version trên là dòng dependency trong manifest, không phải khẳng định patch đang chạy trên VPS. Web và mobile có dependency tree/lockfile riêng; không dùng provider React web cho mobile.
