@@ -29,9 +29,10 @@ import {
   Users,
   Loader2,
   AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
-import { getAuthHeaders } from '@/lib/auth-session';
+import { getAuthHeaders, isSuperAdminEmail } from '@/lib/auth-session';
 import {
   BusinessVertical,
   CatalogItem,
@@ -40,6 +41,7 @@ import {
   ShopThemeConfig,
   ServiceRequestNotificationRule,
   SupportedLocale,
+  PlanTier,
 } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import {
@@ -67,6 +69,8 @@ import {
   stripVietnameseAccents,
 } from '@/lib/payment-qr';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { PLAN_CONFIGS, normalizePlanTier } from '@/lib/plan-limits';
+import { PlanUpgradeDialog } from '@/components/ui/PlanUpgradeDialog';
 import {
   FeedbackToast,
   type FeedbackToastMessage,
@@ -227,7 +231,21 @@ export default function DashboardSettingsPage() {
   });
 
   const [supportedLangs, setSupportedLangs] =
-    useState<SupportedLocale[]>(ALL_LOCALES);
+    useState<SupportedLocale[]>(['vi']);
+  const [ownerPlanForShop, setOwnerPlanForShop] = useState<{
+    shopId: string;
+    status: 'resolved';
+    plan: PlanTier;
+  } | {
+    shopId: string;
+    status: 'error';
+  } | null>(null);
+  const [planUpgradeRequest, setPlanUpgradeRequest] = useState<{
+    currentPlan: PlanTier;
+    requiredPlan: PlanTier;
+    feature: 'custom_theme' | 'supported_languages';
+  } | null>(null);
+  const [planLookupRetryKey, setPlanLookupRetryKey] = useState(0);
   const [openingHours, setOpeningHours] = useState<OpeningHours | null>(() =>
     activeShop
       ? createInitialOpeningHoursSettingsState(activeShop).openingHours
@@ -342,8 +360,15 @@ export default function DashboardSettingsPage() {
   };
 
   useEffect(() => {
-    if (!activeShop) return;
+    if (!activeShop) {
+      setOwnerPlanForShop(null);
+      return;
+    }
+    let cancelled = false;
+    const shopId = activeShop.id;
+    setOwnerPlanForShop(null);
     setIsSlugConfirmModalOpen(false);
+    setPlanUpgradeRequest(null);
     setName(activeShop.name);
     setSlug(activeShop.slug);
     setVertical(activeShop.vertical);
@@ -395,7 +420,7 @@ export default function DashboardSettingsPage() {
     setSupportedLangs(
       activeShop.supported_langs?.length
         ? activeShop.supported_langs
-        : ALL_LOCALES
+        : ['vi']
     );
     const initialHoursState =
       createInitialOpeningHoursSettingsState(activeShop);
@@ -403,18 +428,34 @@ export default function DashboardSettingsPage() {
     setOpeningHoursConfirmed(initialHoursState.openingHoursConfirmed);
 
     // Fetch catalog items for the live phone preview
-    fetch(`/api/catalog?shopId=${activeShop.id}`, {
+    fetch(`/api/catalog?shopId=${encodeURIComponent(shopId)}`, {
       headers: getAuthHeaders(),
       cache: 'no-store',
     })
-      .then((res) => res.json())
+      .then(async (res) => {
+        if (!res.ok) throw new Error('PLAN_ACCESS_CHECK_FAILED');
+        return res.json();
+      })
       .then((data) => {
+        if (cancelled) return;
         if (Array.isArray(data.items)) {
           setShopItems(data.items);
         }
+        setOwnerPlanForShop({
+          shopId,
+          status: 'resolved',
+          plan: normalizePlanTier(data.ownerPlan),
+        });
       })
-      .catch(() => {});
-  }, [activeShop]);
+      .catch(() => {
+        if (!cancelled) {
+          setOwnerPlanForShop({ shopId, status: 'error' });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeShop, planLookupRetryKey]);
 
   if (!activeShop || !openingHours) {
     return (
@@ -434,11 +475,46 @@ export default function DashboardSettingsPage() {
     );
   }
 
+  const isSuperAdminBypass = Boolean(
+    profile?.role === 'admin' && isSuperAdminEmail(profile.email)
+  );
+  const ownerPlanResolved =
+    isSuperAdminBypass ||
+    (ownerPlanForShop?.shopId === activeShop.id &&
+      ownerPlanForShop.status === 'resolved');
+  const ownerPlanError =
+    !isSuperAdminBypass &&
+    ownerPlanForShop?.shopId === activeShop.id &&
+    ownerPlanForShop.status === 'error';
+  const currentOwnerPlan = ownerPlanResolved && ownerPlanForShop?.status === 'resolved'
+    ? ownerPlanForShop.plan
+    : 'free';
+  const effectiveOwnerPlan = isSuperAdminBypass ? 'premium' : currentOwnerPlan;
+  const canEditCustomTheme =
+    isSuperAdminBypass ||
+    (ownerPlanResolved && PLAN_CONFIGS[currentOwnerPlan].allowCustomTheme);
+
+  const retryOwnerPlanLookup = () => {
+    setOwnerPlanForShop(null);
+    setPlanLookupRetryKey((current) => current + 1);
+  };
+
   const toggleLocale = (loc: SupportedLocale) => {
     if (loc === 'vi') return;
-    setSupportedLangs((prev) =>
-      prev.includes(loc) ? prev.filter((l) => l !== loc) : [...prev, loc]
-    );
+    if (!ownerPlanResolved) return;
+    if (supportedLangs.includes(loc)) {
+      setSupportedLangs((prev) => prev.filter((language) => language !== loc));
+      return;
+    }
+    if (supportedLangs.length >= PLAN_CONFIGS[effectiveOwnerPlan].maxLangs) {
+      setPlanUpgradeRequest({
+        currentPlan: effectiveOwnerPlan,
+        requiredPlan: effectiveOwnerPlan === 'free' ? 'basic' : 'premium',
+        feature: 'supported_languages',
+      });
+      return;
+    }
+    setSupportedLangs((prev) => [...prev, loc]);
   };
 
   const handleUploadImage = async (
@@ -515,11 +591,15 @@ export default function DashboardSettingsPage() {
       } = activeShop.theme_config || {};
       const nextThemeConfig: ShopThemeConfig = {
         ...restThemeConfig,
-        primaryColor,
-        layout: layoutMode,
-        backgroundStyle,
-        backgroundImageUrl: backgroundImageUrl.trim() || undefined,
-        backgroundOverlayOpacity,
+        ...(canEditCustomTheme
+          ? {
+              primaryColor,
+              layout: layoutMode,
+              backgroundStyle,
+              backgroundImageUrl: backgroundImageUrl.trim() || undefined,
+              backgroundOverlayOpacity,
+            }
+          : {}),
         paymentConfig: cleanedPaymentConfig,
         ...(activeShop.owner_id === profile?.id
           ? { serviceRequestNotificationRule }
@@ -568,6 +648,25 @@ export default function DashboardSettingsPage() {
       });
       const data = await res.json();
       if (!res.ok) {
+        if (
+          (data.code === 'PLAN_FEATURE_LOCKED' ||
+            data.code === 'PLAN_LIMIT_REACHED') &&
+          (data.requiredPlan === 'basic' || data.requiredPlan === 'premium')
+        ) {
+          setPlanUpgradeRequest({
+            currentPlan:
+              data.currentPlan === 'free' ||
+              data.currentPlan === 'basic' ||
+              data.currentPlan === 'premium'
+                ? data.currentPlan
+                : currentOwnerPlan,
+            requiredPlan: data.requiredPlan,
+            feature:
+              data.code === 'PLAN_FEATURE_LOCKED'
+                ? 'custom_theme'
+                : 'supported_languages',
+          });
+        }
         throw new Error(
           data.error || tx('Không thể lưu cài đặt', 'Could not save settings')
         );
@@ -681,6 +780,13 @@ export default function DashboardSettingsPage() {
         feedback={saveFeedback}
         dismissLabel={tx('Đóng thông báo', 'Dismiss notification')}
         onDismiss={dismissSaveFeedback}
+      />
+      <PlanUpgradeDialog
+        open={planUpgradeRequest !== null}
+        currentPlan={planUpgradeRequest?.currentPlan ?? currentOwnerPlan}
+        requiredPlan={planUpgradeRequest?.requiredPlan ?? 'basic'}
+        feature={planUpgradeRequest?.feature ?? 'supported_languages'}
+        onClose={() => setPlanUpgradeRequest(null)}
       />
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1036,6 +1142,39 @@ export default function DashboardSettingsPage() {
               <Languages className="inline h-3.5 w-3.5 mr-1 text-emerald-600" />
               {tx('Ngôn ngữ hiển thị trên thực đơn QR:', 'Languages enabled on QR menu:')}
             </label>
+            <p className="text-[11px] text-slate-500" data-testid="settings-language-plan-limit">
+              {ownerPlanResolved
+                ? tx(
+                    'Gói {plan} hỗ trợ tối đa {count} ngôn ngữ.',
+                    'The {plan} plan supports up to {count} languages.',
+                    {
+                      plan: isSuperAdminBypass
+                        ? tx('Quyền Super Admin', 'Super Admin access')
+                        : currentOwnerPlan === 'free'
+                          ? 'Free'
+                          : currentOwnerPlan === 'basic'
+                            ? 'Basic'
+                            : 'Premium',
+                      count: PLAN_CONFIGS[effectiveOwnerPlan].maxLangs,
+                    }
+                  )
+                : ownerPlanError
+                  ? tx(
+                      'Không thể xác minh gói của chủ quán. Thử lại để mở tùy chọn ngôn ngữ.',
+                      'Could not verify the store owner plan. Retry to enable language options.'
+                    )
+                  : tx('Đang kiểm tra giới hạn ngôn ngữ...', 'Checking language limit...')}
+            </p>
+            {ownerPlanError && (
+              <button
+                type="button"
+                data-testid="settings-plan-retry"
+                onClick={retryOwnerPlanLookup}
+                className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-900 hover:bg-amber-100"
+              >
+                {tx('Thử lại', 'Retry')}
+              </button>
+            )}
             <div className="flex flex-wrap gap-1.5">
               {ALL_LOCALES.map((loc) => {
                 const active = supportedLangs.includes(loc);
@@ -1043,12 +1182,13 @@ export default function DashboardSettingsPage() {
                   <button
                     key={loc}
                     type="button"
+                    disabled={!ownerPlanResolved}
                     onClick={() => toggleLocale(loc)}
                     className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold ${
                       active
                         ? 'border-emerald-600 bg-emerald-50 text-emerald-900'
                         : 'border-slate-200 bg-white text-slate-400'
-                    }`}
+                    } disabled:cursor-wait disabled:opacity-60`}
                   >
                     <FlagIcon locale={loc} title={appLanguageName(loc, locale)} className="h-3.5 w-5" />
                     <span>{appLanguageName(loc, locale)}</span>
@@ -1263,6 +1403,8 @@ export default function DashboardSettingsPage() {
           </span>
         </div>
 
+        {canEditCustomTheme ? (
+          <>
         {/* Pure Color Swatches */}
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-2.5">
@@ -1497,6 +1639,78 @@ export default function DashboardSettingsPage() {
             </button>
           </div>
         </div>
+          </>
+        ) : (
+          <div
+            role={ownerPlanError ? 'alert' : ownerPlanResolved ? 'region' : 'status'}
+            aria-labelledby="settings-theme-plan-lock-title"
+            data-testid="settings-theme-plan-lock"
+            className="flex flex-col items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center"
+          >
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
+              {ownerPlanResolved || ownerPlanError ? <Lock className="h-5 w-5" /> : <Loader2 className="h-5 w-5 animate-spin" />}
+            </div>
+            <div className="max-w-lg space-y-1">
+              <h3
+                id="settings-theme-plan-lock-title"
+                className="text-sm font-black text-slate-900"
+              >
+                {ownerPlanError
+                  ? tx(
+                      'Không thể xác minh gói của chủ quán',
+                      'Unable to verify the store owner plan'
+                    )
+                  : ownerPlanResolved
+                  ? tx(
+                      'Tùy chỉnh giao diện có từ gói Basic',
+                      'Custom themes are available from the Basic plan'
+                    )
+                  : tx('Đang kiểm tra gói cửa hàng...', 'Checking store plan...')}
+              </h3>
+              <p className="text-xs leading-relaxed text-slate-600">
+                {ownerPlanError
+                  ? tx(
+                      'Giao diện đang lưu được giữ nguyên. Hãy thử lại để xác minh quyền nâng cấp.',
+                      'Your saved appearance is preserved. Retry to verify plan access.'
+                    )
+                  : ownerPlanResolved
+                  ? tx(
+                      'Gói Free chưa hỗ trợ đổi màu thương hiệu, nền và bố cục thực đơn. Cấu hình giao diện đang lưu của quán vẫn được giữ nguyên.',
+                      'The Free plan does not include brand colors, backgrounds, or menu layouts. Your saved theme settings are preserved.'
+                    )
+                  : tx(
+                      'Các tùy chọn giao diện sẽ mở sau khi xác minh được gói của chủ quán.',
+                      'Appearance options will unlock after the store owner plan is verified.'
+                    )}
+              </p>
+            </div>
+            {ownerPlanError ? (
+              <button
+                type="button"
+                data-testid="settings-theme-plan-retry"
+                onClick={retryOwnerPlanLookup}
+                className="rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-xs font-black text-amber-900 hover:bg-amber-50"
+              >
+                {tx('Thử xác minh lại', 'Retry verification')}
+              </button>
+            ) : ownerPlanResolved ? (
+              <button
+                type="button"
+                data-testid="settings-theme-upgrade-trigger"
+                onClick={() =>
+                  setPlanUpgradeRequest({
+                    currentPlan: currentOwnerPlan,
+                    requiredPlan: 'basic',
+                    feature: 'custom_theme',
+                  })
+                }
+                className="rounded-xl bg-amber-600 px-4 py-2.5 text-xs font-black text-white hover:bg-amber-700"
+              >
+                {tx('Xem gói Basic', 'View the Basic plan')}
+              </button>
+            ) : null}
+          </div>
+        )}
 
         {/* Shortcut to Promotions & Flash Sale Studio */}
         <div className="rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 via-orange-50 to-rose-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

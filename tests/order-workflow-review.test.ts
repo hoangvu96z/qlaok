@@ -2604,6 +2604,7 @@ test('Slice 3: ShopOrderWorkflowEditor template selection, add/remove/connect ed
       INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
         ('mem-ui-staff', 'wf-ui-shop', '${staffId}', 'staff', '["orders.view","settings.manage"]'::jsonb, true);
     `);
+    await db.query(`UPDATE profiles SET plan = 'basic' WHERE id = $1`, [ownerId]);
 
     setSupabaseDbClientForTests(client);
     setShopMembershipDbClientForTest(client as never);

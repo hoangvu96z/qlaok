@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import imageCompression from 'browser-image-compression';
 import Tesseract from 'tesseract.js';
@@ -13,13 +13,25 @@ import {
   Trash2,
   FileImage,
   FileText,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
-import { getAuthHeaders } from '@/lib/auth-session';
+import {
+  getAuthHeaders,
+  isSuperAdmin,
+  isSuperAdminEmail,
+} from '@/lib/auth-session';
+import { parseCatalogApiResponse } from '@/lib/dashboard-catalog';
+import {
+  resolveAiScannerAccess,
+  type ResolvedShopPlanState,
+} from '@/lib/ai-scanner-access';
 import { I18nText } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
+import { AiScannerPaywall } from '@/components/dashboard/AiScannerPaywall';
 
 interface ExtractedItem {
   price: number;
@@ -35,8 +47,34 @@ interface ExtractedCategory {
 
 export default function DashboardAiScannerPage() {
   const router = useRouter();
-  const { activeShop } = useDashboard();
+  const { activeShop, profile } = useDashboard();
   const { tx } = useAppI18n();
+
+  // Super Admin bypass consistent with server-side requireAiOcrPlan
+  const isSuperAdminBypass = Boolean(
+    profile &&
+      (isSuperAdmin(profile) ||
+        (profile.role === 'admin' && isSuperAdminEmail(profile.email)))
+  );
+
+  const [resolvedShopPlan, setResolvedShopPlan] =
+    useState<ResolvedShopPlanState | null>(null);
+  const [planErrorShopId, setPlanErrorShopId] = useState<string | null>(null);
+  const [planRetryKey, setPlanRetryKey] = useState<number>(0);
+
+  // Derive UI loading and unlocked state strictly by matching active shop ID.
+  // Prevents the previous shop's resolved plan from leaking across activeShop.id switches.
+  const {
+    resolvedPlan,
+    isPlanError,
+    isPlanLoading,
+    isUnlocked,
+  } = resolveAiScannerAccess({
+    activeShopId: activeShop?.id,
+    resolvedShopPlan,
+    planErrorShopId,
+    isSuperAdminBypass,
+  });
 
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [compressedInfo, setCompressedInfo] = useState<string>('');
@@ -49,6 +87,86 @@ export default function DashboardAiScannerPage() {
   >([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  // Resolve active shop owner's plan authoritatively from GET /api/catalog
+  useEffect(() => {
+    // Reset scanner working states on active shop switch
+    setExtractedCategories([]);
+    setPreviewImage(null);
+    setCompressedInfo('');
+    setRawOcrText('');
+    setErrorMsg('');
+    setSuccessMsg('');
+    setScanning(false);
+    setScanStepText('');
+
+    if (isSuperAdminBypass) {
+      if (activeShop?.id) {
+        setResolvedShopPlan({ shopId: activeShop.id, plan: 'premium' });
+      }
+      setPlanErrorShopId(null);
+      return;
+    }
+
+    if (!activeShop?.id) {
+      setResolvedShopPlan(null);
+      setPlanErrorShopId(null);
+      return;
+    }
+
+    const currentTargetShopId = activeShop.id;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function fetchShopOwnerPlan() {
+      try {
+        const res = await fetch(
+          `/api/catalog?shopId=${encodeURIComponent(currentTargetShopId)}`,
+          {
+            headers: getAuthHeaders(),
+            cache: 'no-store',
+            signal: controller.signal,
+          }
+        );
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+
+        const parsed = parseCatalogApiResponse(res.ok, data);
+        if (parsed.ok) {
+          setResolvedShopPlan({
+            shopId: currentTargetShopId,
+            plan: parsed.ownerPlan,
+          });
+          setPlanErrorShopId((prev) =>
+            prev === currentTargetShopId ? null : prev
+          );
+        } else {
+          setPlanErrorShopId(currentTargetShopId);
+          setResolvedShopPlan((prev) =>
+            prev?.shopId === currentTargetShopId ? null : prev
+          );
+        }
+      } catch (err: unknown) {
+        if (
+          cancelled ||
+          (err instanceof DOMException && err.name === 'AbortError')
+        ) {
+          return;
+        }
+        setPlanErrorShopId(currentTargetShopId);
+        setResolvedShopPlan((prev) =>
+          prev?.shopId === currentTargetShopId ? null : prev
+        );
+      }
+    }
+
+    void fetchShopOwnerPlan();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeShop?.id, isSuperAdminBypass, planRetryKey]);
 
   if (!activeShop) {
     return (
@@ -65,10 +183,102 @@ export default function DashboardAiScannerPage() {
     );
   }
 
+  if (isPlanLoading) {
+    return (
+      <div
+        role="status"
+        data-testid="ai-scanner-plan-loading"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-10 text-center"
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
+        <p className="text-sm font-bold text-slate-700">
+          {tx(
+            'Đang kiểm tra quyền sử dụng AI OCR...',
+            'Checking AI OCR access...'
+          )}
+        </p>
+      </div>
+    );
+  }
+
+  if (isPlanError) {
+    return (
+      <div
+        role="alert"
+        data-testid="ai-scanner-plan-error"
+        className="flex min-h-[50vh] flex-col items-center justify-center gap-4 rounded-3xl border border-rose-200 bg-rose-50/50 p-8 text-center"
+      >
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-100 text-rose-600">
+          <AlertCircle className="h-6 w-6" />
+        </div>
+        <div className="max-w-md space-y-1">
+          <h3 className="text-base font-extrabold text-slate-900">
+            {tx(
+              'Không thể kiểm tra thông tin gói cửa hàng',
+              'Unable to verify store plan'
+            )}
+          </h3>
+          <p className="text-xs text-slate-600">
+            {tx(
+              'Đã xảy ra lỗi khi kiểm tra quyền sử dụng tính năng Quét thực đơn AI. Vui lòng thử lại.',
+              'An error occurred while checking access to the AI menu scanner. Please try again.'
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (activeShop?.id) {
+              setPlanErrorShopId(null);
+            }
+            setPlanRetryKey((k) => k + 1);
+          }}
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-slate-800 active:scale-95 transition-all"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          <span>{tx('Thử lại', 'Retry')}</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (!isUnlocked) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-extrabold text-emerald-800 mb-2">
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>{tx('Quét thực đơn tự động', 'Smart Menu Scanner')}</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900">
+            {tx('Quét menu', 'Scan menu')}
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
+            {tx(
+              'Tải ảnh chụp thực đơn hoặc bảng giá dịch vụ. Hệ thống tự động đọc tên món, chia danh mục, chuẩn hóa giá (35k → 35.000đ) và dịch đa ngôn ngữ.',
+              'Upload a photo of your paper menu or price list. We automatically extract items, group categories, normalize prices (35k → 35,000đ), and translate.'
+            )}
+          </p>
+        </div>
+
+        <AiScannerPaywall plan={resolvedPlan} shopName={activeShop.name} />
+      </div>
+    );
+  }
+
   const analyzeTextWithAi = async (
     textToAnalyze: string,
     imgBase64?: string | null
   ) => {
+    if (!isUnlocked) {
+      setErrorMsg(
+        tx(
+          'Tính năng Quét thực đơn AI Vision OCR chỉ dành cho gói Premium.',
+          'AI Vision OCR menu scanning is only available on the Premium plan.'
+        )
+      );
+      return;
+    }
     setScanStepText(
       tx(
         'Bước 2/2: Đang phân loại danh mục, chuẩn hóa giá và dịch tự động...',
@@ -97,6 +307,7 @@ export default function DashboardAiScannerPage() {
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isUnlocked) return;
     const file = e.target.files?.[0];
     if (!file) return;
     setErrorMsg('');
@@ -180,7 +391,7 @@ export default function DashboardAiScannerPage() {
   };
 
   const handleReanalyzeRawText = async () => {
-    if (!rawOcrText.trim()) return;
+    if (!isUnlocked || !rawOcrText.trim()) return;
     setErrorMsg('');
     setSuccessMsg('');
     setScanning(true);
@@ -199,6 +410,7 @@ export default function DashboardAiScannerPage() {
   };
 
   const handleRunDemoScan = async () => {
+    if (!isUnlocked) return;
     setErrorMsg('');
     setSuccessMsg('');
     setScanning(true);
@@ -259,7 +471,7 @@ export default function DashboardAiScannerPage() {
   };
 
   const handleSaveAllToShop = async () => {
-    if (extractedCategories.length === 0) return;
+    if (!isUnlocked || extractedCategories.length === 0) return;
     setSaving(true);
     setErrorMsg('');
     try {

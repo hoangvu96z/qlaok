@@ -43,6 +43,12 @@ import { verifyTableQrSignature } from '@/lib/shop-tables';
 import { validateOrderWorkflowConfig } from '@/lib/order-workflow';
 import { validateLabelPrintConfig } from '@/lib/label-print-config';
 import { isValidServiceRequestNotificationRule } from '@/lib/push-notifications';
+import { isSuperAdminEmail } from '@/lib/auth-session';
+import {
+  getShopSettingsPlanRestriction,
+  normalizePlanTier,
+} from '@/lib/plan-limits';
+import { ALL_LOCALES } from '@/lib/i18n-helper';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -787,6 +793,121 @@ export async function PATCH(req: Request) {
       Array.from(requiredPerms)
     );
     if (auth.errorResponse) return auth.errorResponse;
+
+    const incomingSupportedLangs = patch.supported_langs;
+    if (
+      incomingSupportedLangs !== undefined &&
+      (!Array.isArray(incomingSupportedLangs) ||
+        incomingSupportedLangs.some(
+          (locale) =>
+            typeof locale !== 'string' ||
+            !ALL_LOCALES.includes(locale as (typeof ALL_LOCALES)[number])
+        ))
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Danh sách ngôn ngữ cửa hàng không hợp lệ.',
+          code: 'INVALID_SUPPORTED_LANGS',
+        },
+        { status: 400 }
+      );
+    }
+
+    const currentSupportedLangs =
+      existingShop.supported_langs?.length
+        ? existingShop.supported_langs
+        : ['vi'];
+    const supportedLangsChanged =
+      incomingSupportedLangs !== undefined &&
+      JSON.stringify(incomingSupportedLangs) !==
+        JSON.stringify(currentSupportedLangs);
+    const requestedLanguageCount =
+      incomingSupportedLangs === undefined
+        ? undefined
+        : new Set(incomingSupportedLangs as string[]).size;
+
+    const customThemeKeys: Array<keyof ShopThemeConfig> = [
+      'primaryColor',
+      'layout',
+      'backgroundStyle',
+      'backgroundImageUrl',
+      'backgroundOverlayOpacity',
+    ];
+    const customThemeChanged = Boolean(
+      incomingTheme &&
+        customThemeKeys.some(
+          (key) =>
+            key in incomingTheme &&
+            JSON.stringify(incomingTheme[key]) !==
+              JSON.stringify(prevTheme[key])
+        )
+    );
+
+    const isSuperAdminBypass =
+      auth.user.role === 'admin' && isSuperAdminEmail(auth.user.email);
+    const needsOwnerPlanCheck =
+      customThemeChanged ||
+      (supportedLangsChanged && (requestedLanguageCount ?? 0) > 1);
+
+    if (!isSuperAdminBypass && needsOwnerPlanCheck) {
+      let rawOwnerPlan: unknown;
+      try {
+        const { data: ownerProfile, error: ownerPlanError } =
+          await getSupabaseDbClient()
+            .from('profiles')
+            .select('plan')
+            .eq('id', existingShop.owner_id)
+            .maybeSingle();
+        if (ownerPlanError || !ownerProfile) {
+          return NextResponse.json(
+            {
+              error:
+                'Không thể xác minh gói dịch vụ của chủ cửa hàng. Vui lòng thử lại.',
+              code: 'PLAN_ACCESS_CHECK_FAILED',
+            },
+            { status: 503 }
+          );
+        }
+        rawOwnerPlan = (ownerProfile as { plan?: unknown }).plan;
+      } catch {
+        return NextResponse.json(
+          {
+            error:
+              'Không thể xác minh gói dịch vụ của chủ cửa hàng. Vui lòng thử lại.',
+            code: 'PLAN_ACCESS_CHECK_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+
+      const ownerPlan = normalizePlanTier(rawOwnerPlan);
+      const restriction = getShopSettingsPlanRestriction(ownerPlan, {
+        customThemeChanged,
+        ...(supportedLangsChanged && requestedLanguageCount !== undefined
+          ? { supportedLanguageCount: requestedLanguageCount }
+          : {}),
+      });
+
+      if (restriction) {
+        const error =
+          restriction.feature === 'custom_theme'
+            ? `${restriction.code}: Tùy chỉnh giao diện cửa hàng chỉ có từ gói Basic. Vui lòng nâng cấp gói.`
+            : `${restriction.code}: Gói hiện tại chỉ hỗ trợ tối đa ${restriction.maxLanguages} ngôn ngữ. Vui lòng nâng cấp để thêm ngôn ngữ.`;
+        return NextResponse.json(
+          {
+            error,
+            code: restriction.code,
+            currentPlan: ownerPlan,
+            requiredPlan: restriction.requiredPlan,
+            ...(restriction.maxLanguages !== undefined
+              ? { maxLanguages: restriction.maxLanguages }
+              : {}),
+            upgradeHref: '/dashboard/billing',
+          },
+          { status: 403 }
+        );
+      }
+    }
 
     let validatedOrderWorkflow = prevTheme.orderWorkflow;
     if (incomingTheme && 'orderWorkflow' in incomingTheme && incomingTheme.orderWorkflow !== undefined) {
