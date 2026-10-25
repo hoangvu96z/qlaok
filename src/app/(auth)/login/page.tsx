@@ -910,6 +910,7 @@ function LoginFormContent() {
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="tenquan@gmail.com"
                     required
+                    autoComplete={mode === 'register' ? 'email' : 'username'}
                     className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
@@ -944,6 +945,9 @@ function LoginFormContent() {
                       onChange={(e) => setPassword(e.target.value)}
                       required
                       minLength={6}
+                      autoComplete={
+                        mode === 'register' ? 'new-password' : 'current-password'
+                      }
                       placeholder={tx(
                         'Tối thiểu 6 ký tự',
                         'At least 6 characters'
@@ -981,6 +985,7 @@ function LoginFormContent() {
                         onChange={(e) => setNewPassword(e.target.value)}
                         required
                         minLength={6}
+                        autoComplete="new-password"
                         placeholder={tx(
                           'Tối thiểu 6 ký tự',
                           'At least 6 characters'
@@ -1002,6 +1007,7 @@ function LoginFormContent() {
                         onChange={(e) => setConfirmNewPassword(e.target.value)}
                         required
                         minLength={6}
+                        autoComplete="new-password"
                         placeholder={tx(
                           'Nhập lại mật khẩu mới',
                           'Re-enter new password'
@@ -1050,6 +1056,7 @@ function LoginFormContent() {
                             onChange={(e) => setNewPassword(e.target.value)}
                             required
                             minLength={6}
+                            autoComplete="new-password"
                             placeholder={tx(
                               'Tối thiểu 6 ký tự',
                               'At least 6 characters'
@@ -1070,6 +1077,7 @@ function LoginFormContent() {
                             onChange={(e) => setConfirmNewPassword(e.target.value)}
                             required
                             minLength={6}
+                            autoComplete="new-password"
                             placeholder={tx(
                               'Nhập lại mật khẩu mới',
                               'Re-enter new password'
