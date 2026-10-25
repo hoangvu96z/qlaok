@@ -37,7 +37,15 @@ function loadDashboardAnalyticsSyncFromSource() {
 
   const fn = new Function(
     'exports',
-    `${transpiled}\nreturn { start: startDashboardAnalyticsSync, interval: DASHBOARD_ANALYTICS_FALLBACK_INTERVAL_MS };`
+    `${transpiled}\nreturn {
+      start: startDashboardAnalyticsSync,
+      interval: DASHBOARD_ANALYTICS_FALLBACK_INTERVAL_MS,
+      deriveOverviewMetrics,
+      createInitialOverviewAnalyticsState,
+      applyOverviewAnalyticsFetchStart,
+      applyOverviewAnalyticsFetchSuccess,
+      applyOverviewAnalyticsFetchFailure,
+    };`
   );
 
   const evaluated = fn({}) as {
@@ -46,6 +54,88 @@ function loadDashboardAnalyticsSyncFromSource() {
       onFetch: (silent: boolean) => Promise<void> | void;
     }) => () => void;
     interval: number;
+    deriveOverviewMetrics: (summary: Record<string, unknown> | null | undefined) => {
+      daily7d: Array<{
+        date: string;
+        label: string;
+        revenue: number;
+        cashRevenue: number;
+        vietqrRevenue: number;
+        orders: number;
+        heightPct: number;
+        vqShare: number;
+        cashShare: number;
+      }>;
+      maxDailyRev: number;
+      total7dRev: number;
+      total7dOrders: number;
+      vietqrPct: number;
+      cashPct: number;
+      hasPaymentActivity: boolean;
+      qrSourcePct: number;
+      posSourcePct: number;
+      hasSourceActivity: boolean;
+      hourlySlots: Array<{
+        slot: string;
+        label: string;
+        orders: number;
+        revenue: number;
+        percentage: number;
+        barHeightPct: number;
+      }>;
+      peakSlot: {
+        slot: string;
+        label: string;
+        orders: number;
+        revenue: number;
+        percentage: number;
+        barHeightPct: number;
+      } | null;
+      totalQrScans: number;
+      totalItemViews: number;
+      totalOrdersSubmitted: number;
+      completedOrders: number;
+      funnelSteps: {
+        scanPct: number;
+        itemViewPct: number;
+        ordersSubmittedPct: number;
+        completedOrdersPct: number;
+      };
+    };
+    createInitialOverviewAnalyticsState: () => {
+      summary: Record<string, unknown> | null;
+      loading: boolean;
+      error: string | null;
+    };
+    applyOverviewAnalyticsFetchStart: (
+      prev: {
+        summary: Record<string, unknown> | null;
+        loading: boolean;
+        error: string | null;
+      },
+      silent: boolean
+    ) => {
+      summary: Record<string, unknown> | null;
+      loading: boolean;
+      error: string | null;
+    };
+    applyOverviewAnalyticsFetchSuccess: (data: Record<string, unknown>) => {
+      summary: Record<string, unknown> | null;
+      loading: boolean;
+      error: string | null;
+    };
+    applyOverviewAnalyticsFetchFailure: (
+      prev: {
+        summary: Record<string, unknown> | null;
+        loading: boolean;
+        error: string | null;
+      },
+      errorMessage: string
+    ) => {
+      summary: Record<string, unknown> | null;
+      loading: boolean;
+      error: string | null;
+    };
   };
 
   return { ...evaluated, source };
@@ -1942,5 +2032,247 @@ describe('Dashboard Overview analytics polling rate reduction and sync behavior'
     assert.equal(yesterdayDaily.cashRevenue, 0);
     assert.equal(yesterdayDaily.vietqrRevenue, 165000);
     assert.equal(yesterdayDaily.orders, 1);
+  });
+
+  test('Overview metric derivation never invents funnel, chart, payment, source, or hourly values for zero or missing data', () => {
+    const { deriveOverviewMetrics, source } =
+      loadDashboardAnalyticsSyncFromSource();
+
+    // 1. Missing / empty summary
+    const missingMetrics = deriveOverviewMetrics({});
+    assert.equal(missingMetrics.vietqrPct, 0);
+    assert.equal(missingMetrics.cashPct, 0);
+    assert.equal(missingMetrics.hasPaymentActivity, false);
+    assert.equal(missingMetrics.qrSourcePct, 0);
+    assert.equal(missingMetrics.posSourcePct, 0);
+    assert.equal(missingMetrics.hasSourceActivity, false);
+    assert.deepEqual(missingMetrics.hourlySlots, []);
+    assert.equal(missingMetrics.peakSlot, null);
+    assert.equal(missingMetrics.totalQrScans, 0);
+    assert.equal(missingMetrics.totalItemViews, 0);
+    assert.equal(missingMetrics.totalOrdersSubmitted, 0);
+    assert.equal(missingMetrics.completedOrders, 0);
+    assert.deepEqual(missingMetrics.funnelSteps, {
+      scanPct: 0,
+      itemViewPct: 0,
+      ordersSubmittedPct: 0,
+      completedOrdersPct: 0,
+    });
+
+    // 2. Explicit zero summary with 7 zero-revenue days and 6 zero-revenue hourly slots
+    const zeroMetrics = deriveOverviewMetrics({
+      scanDoorCount: 0,
+      scanTableCount: 0,
+      showToStaffCount: 0,
+      wifiCopyCount: 0,
+      totalScans: 0,
+      totalOrdersCount: 0,
+      completedOrdersCount: 0,
+      topItems: [
+        { id: 'item-1', name_vi: 'Cà phê', price: 30000, is_available: true, view_count: 0 },
+      ],
+      dailyRevenue7d: [
+        { date: '2026-10-25', label: 'Hôm nay', revenue: 0, cashRevenue: 0, vietqrRevenue: 0, orders: 0 },
+      ],
+      paymentBreakdown: {
+        vietqr: { count: 0, revenue: 0, percentage: 0 },
+        cash: { count: 0, revenue: 0, percentage: 0 },
+      },
+      sourceBreakdown: {
+        qr_table: { count: 0, revenue: 0, percentage: 0 },
+        counter_pos: { count: 0, revenue: 0, percentage: 0 },
+      },
+      hourlyBreakdown: [
+        { slot: '06h-09h', label: 'Sáng (6-9h)', orders: 0, revenue: 0, percentage: 0 },
+        { slot: '09h-12h', label: 'Trưa (9-12h)', orders: 0, revenue: 0, percentage: 0 },
+      ],
+    });
+
+    assert.equal(zeroMetrics.vietqrPct, 0);
+    assert.equal(zeroMetrics.cashPct, 0);
+    assert.equal(zeroMetrics.qrSourcePct, 0);
+    assert.equal(zeroMetrics.posSourcePct, 0);
+    assert.equal(zeroMetrics.totalQrScans, 0);
+    assert.equal(zeroMetrics.totalItemViews, 0);
+    assert.equal(zeroMetrics.totalOrdersSubmitted, 0);
+    assert.equal(zeroMetrics.completedOrders, 0);
+    assert.deepEqual(zeroMetrics.funnelSteps, {
+      scanPct: 0,
+      itemViewPct: 0,
+      ordersSubmittedPct: 0,
+      completedOrdersPct: 0,
+    });
+    assert.equal(zeroMetrics.daily7d[0].heightPct, 0);
+    assert.equal(zeroMetrics.daily7d[0].vqShare, 0);
+    assert.equal(zeroMetrics.daily7d[0].cashShare, 0);
+    assert.equal(zeroMetrics.hourlySlots.length, 2);
+    assert.ok(
+      zeroMetrics.hourlySlots.every(
+        (s) => s.orders === 0 && s.revenue === 0 && s.percentage === 0 && s.barHeightPct === 0
+      )
+    );
+    assert.equal(zeroMetrics.peakSlot, null);
+
+    // 3. Nonzero summary preserves genuine metrics
+    const activeMetrics = deriveOverviewMetrics({
+      scanDoorCount: 15,
+      scanTableCount: 25,
+      showToStaffCount: 2,
+      totalScans: 40,
+      totalOrdersCount: 8,
+      completedOrdersCount: 6,
+      topItems: [
+        { id: 'item-1', name_vi: 'Cà phê', price: 30000, is_available: true, view_count: 20 },
+        { id: 'item-2', name_vi: 'Trà đào', price: 40000, is_available: true, view_count: 10 },
+      ],
+      dailyRevenue7d: [
+        { date: '2026-10-25', label: 'Hôm nay', revenue: 200000, cashRevenue: 50000, vietqrRevenue: 150000, orders: 6 },
+      ],
+      paymentBreakdown: {
+        vietqr: { count: 4, revenue: 150000, percentage: 75 },
+        cash: { count: 2, revenue: 50000, percentage: 25 },
+      },
+      sourceBreakdown: {
+        qr_table: { count: 5, revenue: 170000, percentage: 83 },
+        counter_pos: { count: 1, revenue: 30000, percentage: 17 },
+      },
+      hourlyBreakdown: [
+        { slot: '06h-09h', label: 'Sáng (6-9h)', orders: 0, revenue: 0, percentage: 0 },
+        { slot: '09h-12h', label: 'Trưa (9-12h)', orders: 6, revenue: 200000, percentage: 100 },
+      ],
+    });
+
+    assert.equal(activeMetrics.vietqrPct, 75);
+    assert.equal(activeMetrics.cashPct, 25);
+    assert.equal(activeMetrics.hasPaymentActivity, true);
+    assert.equal(activeMetrics.qrSourcePct, 83);
+    assert.equal(activeMetrics.posSourcePct, 17);
+    assert.equal(activeMetrics.hasSourceActivity, true);
+    assert.equal(activeMetrics.totalQrScans, 40);
+    assert.equal(activeMetrics.totalItemViews, 30);
+    assert.equal(activeMetrics.totalOrdersSubmitted, 10);
+    assert.equal(activeMetrics.completedOrders, 6);
+    assert.deepEqual(activeMetrics.funnelSteps, {
+      scanPct: 100,
+      itemViewPct: 75,
+      ordersSubmittedPct: 25,
+      completedOrdersPct: 15,
+    });
+    assert.equal(activeMetrics.daily7d[0].vqShare, 75);
+    assert.equal(activeMetrics.daily7d[0].cashShare, 25);
+    assert.equal(activeMetrics.peakSlot?.slot, '09h-12h');
+    assert.equal(activeMetrics.hourlySlots[0].barHeightPct, 0);
+    assert.equal(activeMetrics.hourlySlots[1].barHeightPct, 100);
+
+    const overcountedViews = deriveOverviewMetrics({
+      scanDoorCount: 10,
+      scanTableCount: 0,
+      totalScans: 10,
+      topItems: [
+        { id: 'item-1', name_vi: 'Cà phê', price: 30000, is_available: true, view_count: 40 },
+      ],
+    });
+    assert.equal(overcountedViews.funnelSteps.scanPct, 100);
+    assert.equal(overcountedViews.funnelSteps.itemViewPct, 100);
+
+    // 4. Source invariants: hardcoded sample fallbacks are absent from page.tsx
+    assert.doesNotMatch(source, /\|\|\s*120\b/);
+    assert.doesNotMatch(source, /\*\s*0\.72\b/);
+    assert.doesNotMatch(source, /\|\|\s*18\b/);
+    assert.doesNotMatch(source, /\|\|\s*12\b/);
+    assert.doesNotMatch(source, /\?\?\s*65\b/);
+    assert.doesNotMatch(source, /\?\?\s*35\b/);
+    assert.doesNotMatch(source, /\?\?\s*75\b/);
+    assert.doesNotMatch(source, /\?\?\s*25\b/);
+  });
+
+  test('Overview analytics fetch state surfaces initial failure, preserves last good snapshot on silent refresh failure, and clears on retry or shop change', () => {
+    const {
+      createInitialOverviewAnalyticsState,
+      applyOverviewAnalyticsFetchStart,
+      applyOverviewAnalyticsFetchSuccess,
+      applyOverviewAnalyticsFetchFailure,
+      source,
+    } = loadDashboardAnalyticsSyncFromSource();
+
+    // 1. Initial load failure: summary remains null (never renders fake success), loading becomes false, error is populated
+    const initial = createInitialOverviewAnalyticsState();
+    assert.deepEqual(initial, { summary: null, loading: true, error: null });
+
+    const afterInitialStart = applyOverviewAnalyticsFetchStart(initial, false);
+    assert.deepEqual(afterInitialStart, {
+      summary: null,
+      loading: true,
+      error: null,
+    });
+
+    const afterInitialError = applyOverviewAnalyticsFetchFailure(
+      afterInitialStart,
+      'HTTP_500'
+    );
+    assert.equal(afterInitialError.summary, null);
+    assert.equal(afterInitialError.loading, false);
+    assert.equal(afterInitialError.error, 'HTTP_500');
+
+    // 2. Manual retry succeeds: clears error and populates summary
+    const afterRetryStart = applyOverviewAnalyticsFetchStart(
+      afterInitialError,
+      false
+    );
+    assert.equal(afterRetryStart.loading, true);
+    assert.equal(afterRetryStart.error, null);
+
+    const goodSnapshot = { todayRevenue: 180000, totalOrdersCount: 4 };
+    const afterRetrySuccess = applyOverviewAnalyticsFetchSuccess(goodSnapshot);
+    assert.deepEqual(afterRetrySuccess, {
+      summary: goodSnapshot,
+      loading: false,
+      error: null,
+    });
+
+    // 3. Background (silent) refresh fails: preserves last good snapshot while exposing refresh error
+    const afterSilentStart = applyOverviewAnalyticsFetchStart(
+      afterRetrySuccess,
+      true
+    );
+    assert.deepEqual(afterSilentStart, {
+      summary: goodSnapshot,
+      loading: false,
+      error: null,
+    });
+
+    const afterSilentFailure = applyOverviewAnalyticsFetchFailure(
+      afterSilentStart,
+      'NETWORK_ERROR'
+    );
+    assert.deepEqual(afterSilentFailure.summary, goodSnapshot);
+    assert.equal(afterSilentFailure.loading, false);
+    assert.equal(afterSilentFailure.error, 'NETWORK_ERROR');
+
+    // 4. Subsequent refresh succeeds: clears refresh error
+    const afterRecovery = applyOverviewAnalyticsFetchSuccess({
+      todayRevenue: 220000,
+      totalOrdersCount: 5,
+    });
+    assert.equal(afterRecovery.error, null);
+    assert.equal(afterRecovery.loading, false);
+    assert.deepEqual(afterRecovery.summary, {
+      todayRevenue: 220000,
+      totalOrdersCount: 5,
+    });
+
+    // 5. Shop change resets summary and error
+    const afterShopSwitch = createInitialOverviewAnalyticsState();
+    assert.deepEqual(afterShopSwitch, {
+      summary: null,
+      loading: true,
+      error: null,
+    });
+
+    // 6. Verify error & retry UI testids exist in page.tsx
+    assert.match(source, /data-testid="overview-error-state"/);
+    assert.match(source, /data-testid="overview-retry-button"/);
+    assert.match(source, /data-testid="overview-refresh-error-banner"/);
+    assert.match(source, /data-testid="overview-refresh-retry-button"/);
   });
 });

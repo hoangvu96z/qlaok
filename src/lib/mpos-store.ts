@@ -3082,9 +3082,11 @@ export function computeShopRevenueAndInventoryStats(
     (s, o) => s + Number(o.total_amount || 0),
     0
   );
-  const vietqrPct =
-    totalRevenue > 0 ? Math.round((vietqrRevenueTotal / totalRevenue) * 100) : 65;
-  const cashPct = totalRevenue > 0 ? Math.max(0, 100 - vietqrPct) : 35;
+  const hasCollectedRevenue = paidOrders.length > 0 && totalRevenue > 0;
+  const vietqrPct = hasCollectedRevenue
+    ? Math.round((vietqrRevenueTotal / totalRevenue) * 100)
+    : 0;
+  const cashPct = hasCollectedRevenue ? Math.max(0, 100 - vietqrPct) : 0;
 
   const paymentBreakdown = {
     vietqr: {
@@ -3110,12 +3112,12 @@ export function computeShopRevenueAndInventoryStats(
     (s, o) => s + Number(o.total_amount || 0),
     0
   );
-  const qrTablePct =
-    paidOrders.length > 0
-      ? Math.round((qrTableOrders.length / paidOrders.length) * 100)
-      : 75;
-  const counterPosPct =
-    paidOrders.length > 0 ? Math.max(0, 100 - qrTablePct) : 25;
+  const qrTablePct = hasCollectedRevenue
+    ? Math.round((qrTableOrders.length / paidOrders.length) * 100)
+    : 0;
+  const counterPosPct = hasCollectedRevenue
+    ? Math.max(0, 100 - qrTablePct)
+    : 0;
 
   const sourceBreakdown = {
     qr_table: {
@@ -3158,7 +3160,7 @@ export function computeShopRevenueAndInventoryStats(
   const hourlyBreakdown = rawHourly.map((h) => ({
     ...h,
     percentage:
-      h.revenue > 0 ? Math.max(14, Math.round((h.revenue / maxSlotRev) * 100)) : 8,
+      h.revenue > 0 ? Math.max(14, Math.round((h.revenue / maxSlotRev) * 100)) : 0,
   }));
 
   // Compute real item sold counts & revenue from validOrders so stats are never out of sync
@@ -3388,20 +3390,43 @@ function normalizeStatsFromRpcPayload(
       })
     : [];
 
+  const paidOrdersCount = Math.max(0, Number(rawPayload.paidOrdersCount || 0));
+  const totalRevenue = Math.max(0, Number(rawPayload.totalRevenue || 0));
+  const hasCollectedRevenue = paidOrdersCount > 0 && totalRevenue > 0;
+
   const rawPayment = (rawPayload.paymentBreakdown || {}) as Record<
     string,
     Record<string, unknown>
   >;
+  const vietqrCount = Math.max(0, Number(rawPayment.vietqr?.count || 0));
+  const vietqrRevenue = Math.max(0, Number(rawPayment.vietqr?.revenue || 0));
+  const cashCount = Math.max(0, Number(rawPayment.cash?.count || 0));
+  const cashRevenue = Math.max(0, Number(rawPayment.cash?.revenue || 0));
+  const hasPaymentRevenue =
+    hasCollectedRevenue || vietqrRevenue + cashRevenue > 0;
+  const vietqrPct = hasPaymentRevenue
+    ? Number(
+        rawPayment.vietqr?.percentage ??
+          Math.round(
+            (vietqrRevenue /
+              Math.max(totalRevenue, vietqrRevenue + cashRevenue, 1)) *
+              100
+          )
+      )
+    : 0;
+  const cashPct = hasPaymentRevenue
+    ? Number(rawPayment.cash?.percentage ?? Math.max(0, 100 - vietqrPct))
+    : 0;
   const paymentBreakdown = {
     vietqr: {
-      count: Math.max(0, Number(rawPayment.vietqr?.count || 0)),
-      revenue: Math.max(0, Number(rawPayment.vietqr?.revenue || 0)),
-      percentage: Number(rawPayment.vietqr?.percentage ?? 65),
+      count: vietqrCount,
+      revenue: vietqrRevenue,
+      percentage: vietqrPct,
     },
     cash: {
-      count: Math.max(0, Number(rawPayment.cash?.count || 0)),
-      revenue: Math.max(0, Number(rawPayment.cash?.revenue || 0)),
-      percentage: Number(rawPayment.cash?.percentage ?? 35),
+      count: cashCount,
+      revenue: cashRevenue,
+      percentage: cashPct,
     },
   };
 
@@ -3409,28 +3434,57 @@ function normalizeStatsFromRpcPayload(
     string,
     Record<string, unknown>
   >;
+  const qrTableCount = Math.max(0, Number(rawSource.qr_table?.count || 0));
+  const qrTableRevenue = Math.max(0, Number(rawSource.qr_table?.revenue || 0));
+  const counterPosCount = Math.max(
+    0,
+    Number(rawSource.counter_pos?.count || 0)
+  );
+  const counterPosRevenue = Math.max(
+    0,
+    Number(rawSource.counter_pos?.revenue || 0)
+  );
+  const hasSourceOrders =
+    (hasCollectedRevenue || qrTableRevenue + counterPosRevenue > 0) &&
+    (paidOrdersCount > 0 || qrTableCount + counterPosCount > 0);
+  const qrTablePct = hasSourceOrders
+    ? Number(
+        rawSource.qr_table?.percentage ??
+          Math.round(
+            (qrTableCount /
+              Math.max(paidOrdersCount, qrTableCount + counterPosCount, 1)) *
+              100
+          )
+      )
+    : 0;
+  const counterPosPct = hasSourceOrders
+    ? Number(rawSource.counter_pos?.percentage ?? Math.max(0, 100 - qrTablePct))
+    : 0;
   const sourceBreakdown = {
     qr_table: {
-      count: Math.max(0, Number(rawSource.qr_table?.count || 0)),
-      revenue: Math.max(0, Number(rawSource.qr_table?.revenue || 0)),
-      percentage: Number(rawSource.qr_table?.percentage ?? 75),
+      count: qrTableCount,
+      revenue: qrTableRevenue,
+      percentage: qrTablePct,
     },
     counter_pos: {
-      count: Math.max(0, Number(rawSource.counter_pos?.count || 0)),
-      revenue: Math.max(0, Number(rawSource.counter_pos?.revenue || 0)),
-      percentage: Number(rawSource.counter_pos?.percentage ?? 25),
+      count: counterPosCount,
+      revenue: counterPosRevenue,
+      percentage: counterPosPct,
     },
   };
 
   const hourlyBreakdown = Array.isArray(rawPayload.hourlyBreakdown)
     ? rawPayload.hourlyBreakdown.map((rawSlot) => {
         const slot = (rawSlot || {}) as Record<string, unknown>;
+        const orders = Math.max(0, Number(slot.orders || 0));
+        const revenue = Math.max(0, Number(slot.revenue || 0));
         return {
           slot: String(slot.slot || ''),
           label: String(slot.label || ''),
-          orders: Math.max(0, Number(slot.orders || 0)),
-          revenue: Math.max(0, Number(slot.revenue || 0)),
-          percentage: Math.max(8, Number(slot.percentage || 8)),
+          orders,
+          revenue,
+          percentage:
+            revenue > 0 ? Math.max(14, Number(slot.percentage || 14)) : 0,
         };
       })
     : [];

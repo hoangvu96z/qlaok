@@ -22,6 +22,8 @@ import {
   CheckCircle2,
   Circle,
   ListChecks,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
@@ -224,11 +226,295 @@ function startDashboardAnalyticsSync(
   };
 }
 
+interface OverviewDailyBarPoint {
+  date: string;
+  label: string;
+  revenue: number;
+  cashRevenue: number;
+  vietqrRevenue: number;
+  orders: number;
+  heightPct: number;
+  vqShare: number;
+  cashShare: number;
+}
+
+interface OverviewHourlySlotPoint {
+  slot: string;
+  label: string;
+  orders: number;
+  revenue: number;
+  percentage: number;
+  barHeightPct: number;
+}
+
+interface OverviewDerivedMetrics {
+  daily7d: OverviewDailyBarPoint[];
+  maxDailyRev: number;
+  total7dRev: number;
+  total7dOrders: number;
+  vietqrPct: number;
+  cashPct: number;
+  hasPaymentActivity: boolean;
+  qrSourcePct: number;
+  posSourcePct: number;
+  hasSourceActivity: boolean;
+  hourlySlots: OverviewHourlySlotPoint[];
+  peakSlot: OverviewHourlySlotPoint | null;
+  totalQrScans: number;
+  totalItemViews: number;
+  totalOrdersSubmitted: number;
+  completedOrders: number;
+  funnelSteps: {
+    scanPct: number;
+    itemViewPct: number;
+    ordersSubmittedPct: number;
+    completedOrdersPct: number;
+  };
+}
+
+function deriveOverviewMetrics(
+  summary: AnalyticsSummary | null | undefined
+): OverviewDerivedMetrics {
+  const rawDaily7d = Array.isArray(summary?.dailyRevenue7d)
+    ? summary.dailyRevenue7d
+    : [];
+  const maxDailyRev = Math.max(
+    ...rawDaily7d.map((d) => Math.max(0, Number(d?.revenue ?? 0))),
+    100000
+  );
+  const total7dRev = rawDaily7d.reduce(
+    (s, d) => s + Math.max(0, Number(d?.revenue ?? 0)),
+    0
+  );
+  const total7dOrders = rawDaily7d.reduce(
+    (s, d) => s + Math.max(0, Number(d?.orders ?? 0)),
+    0
+  );
+
+  const daily7d: OverviewDailyBarPoint[] = rawDaily7d.map((day) => {
+    const revenue = Math.max(0, Number(day?.revenue ?? 0));
+    const orders = Math.max(0, Number(day?.orders ?? 0));
+    const vietqrRevenue = Math.max(0, Number(day?.vietqrRevenue ?? 0));
+    const cashRevenue = Math.max(0, Number(day?.cashRevenue ?? 0));
+    const heightPct =
+      revenue > 0
+        ? Math.max(Math.round((revenue / maxDailyRev) * 100), 16)
+        : 0;
+    const vqShare =
+      revenue > 0
+        ? Math.min(
+            100,
+            Math.max(0, Math.round((vietqrRevenue / revenue) * 100))
+          )
+        : 0;
+    const cashShare = revenue > 0 ? Math.max(0, 100 - vqShare) : 0;
+
+    return {
+      date: String(day?.date ?? ''),
+      label: String(day?.label ?? ''),
+      revenue,
+      cashRevenue,
+      vietqrRevenue,
+      orders,
+      heightPct,
+      vqShare,
+      cashShare,
+    };
+  });
+
+  const vietqrRev = Math.max(
+    0,
+    Number(summary?.paymentBreakdown?.vietqr?.revenue ?? 0)
+  );
+  const cashRev = Math.max(
+    0,
+    Number(summary?.paymentBreakdown?.cash?.revenue ?? 0)
+  );
+  const vietqrCount = Math.max(
+    0,
+    Number(summary?.paymentBreakdown?.vietqr?.count ?? 0)
+  );
+  const cashCount = Math.max(
+    0,
+    Number(summary?.paymentBreakdown?.cash?.count ?? 0)
+  );
+  const rawVietqrPct = Math.min(
+    100,
+    Math.max(0, Math.round(Number(summary?.paymentBreakdown?.vietqr?.percentage ?? 0)))
+  );
+  const rawCashPct = Math.min(
+    100,
+    Math.max(0, Math.round(Number(summary?.paymentBreakdown?.cash?.percentage ?? 0)))
+  );
+  const hasPaymentActivity =
+    vietqrRev + cashRev > 0 ||
+    (vietqrCount + cashCount > 0 && rawVietqrPct + rawCashPct > 0);
+  const vietqrPct = hasPaymentActivity ? rawVietqrPct : 0;
+  const cashPct = hasPaymentActivity ? rawCashPct : 0;
+
+  const qrSourceRev = Math.max(
+    0,
+    Number(summary?.sourceBreakdown?.qr_table?.revenue ?? 0)
+  );
+  const posSourceRev = Math.max(
+    0,
+    Number(summary?.sourceBreakdown?.counter_pos?.revenue ?? 0)
+  );
+  const qrSourceCount = Math.max(
+    0,
+    Number(summary?.sourceBreakdown?.qr_table?.count ?? 0)
+  );
+  const posSourceCount = Math.max(
+    0,
+    Number(summary?.sourceBreakdown?.counter_pos?.count ?? 0)
+  );
+  const rawQrSourcePct = Math.min(
+    100,
+    Math.max(0, Math.round(Number(summary?.sourceBreakdown?.qr_table?.percentage ?? 0)))
+  );
+  const rawPosSourcePct = Math.min(
+    100,
+    Math.max(0, Math.round(Number(summary?.sourceBreakdown?.counter_pos?.percentage ?? 0)))
+  );
+  const hasSourceActivity =
+    qrSourceRev + posSourceRev > 0 ||
+    (qrSourceCount + posSourceCount > 0 && rawQrSourcePct + rawPosSourcePct > 0);
+  const qrSourcePct = hasSourceActivity ? rawQrSourcePct : 0;
+  const posSourcePct = hasSourceActivity ? rawPosSourcePct : 0;
+
+  const rawHourly = Array.isArray(summary?.hourlyBreakdown)
+    ? summary.hourlyBreakdown
+    : [];
+  const hourlySlots: OverviewHourlySlotPoint[] = rawHourly.map((slot) => {
+    const orders = Math.max(0, Number(slot?.orders ?? 0));
+    const revenue = Math.max(0, Number(slot?.revenue ?? 0));
+    const percentage =
+      revenue > 0
+        ? Math.min(100, Math.max(0, Math.round(Number(slot?.percentage ?? 0))))
+        : 0;
+    const barHeightPct = revenue > 0 ? Math.max(percentage, 10) : 0;
+    return {
+      slot: String(slot?.slot ?? ''),
+      label: String(slot?.label ?? ''),
+      orders,
+      revenue,
+      percentage,
+      barHeightPct,
+    };
+  });
+
+  const peakSlot =
+    [...hourlySlots]
+      .filter((slot) => slot.revenue > 0)
+      .sort((a, b) => b.revenue - a.revenue)[0] || null;
+
+  const scanDoorCount = Math.max(0, Number(summary?.scanDoorCount ?? 0));
+  const scanTableCount = Math.max(0, Number(summary?.scanTableCount ?? 0));
+  const totalScans = Math.max(0, Number(summary?.totalScans ?? 0));
+  const totalQrScans =
+    scanDoorCount + scanTableCount > 0
+      ? scanDoorCount + scanTableCount
+      : totalScans;
+
+  const totalItemViews = (
+    Array.isArray(summary?.topItems) ? summary.topItems : []
+  ).reduce((s, item) => s + Math.max(0, Number(item?.view_count ?? 0)), 0);
+
+  const totalOrdersCount = Math.max(0, Number(summary?.totalOrdersCount ?? 0));
+  const showToStaffCount = Math.max(0, Number(summary?.showToStaffCount ?? 0));
+  const totalOrdersSubmitted = totalOrdersCount + showToStaffCount;
+  const completedOrders = Math.max(
+    0,
+    Number(summary?.completedOrdersCount ?? 0)
+  );
+
+  const toFunnelPct = (value: number): number =>
+    totalQrScans > 0
+      ? Math.min(100, Math.max(0, Math.round((value / totalQrScans) * 100)))
+      : 0;
+
+  return {
+    daily7d,
+    maxDailyRev,
+    total7dRev,
+    total7dOrders,
+    vietqrPct,
+    cashPct,
+    hasPaymentActivity,
+    qrSourcePct,
+    posSourcePct,
+    hasSourceActivity,
+    hourlySlots,
+    peakSlot,
+    totalQrScans,
+    totalItemViews,
+    totalOrdersSubmitted,
+    completedOrders,
+    funnelSteps: {
+      scanPct: toFunnelPct(totalQrScans),
+      itemViewPct: toFunnelPct(totalItemViews),
+      ordersSubmittedPct: toFunnelPct(totalOrdersSubmitted),
+      completedOrdersPct: toFunnelPct(completedOrders),
+    },
+  };
+}
+
+interface OverviewAnalyticsState {
+  summary: AnalyticsSummary | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function createInitialOverviewAnalyticsState(): OverviewAnalyticsState {
+  return {
+    summary: null,
+    loading: true,
+    error: null,
+  };
+}
+
+function applyOverviewAnalyticsFetchStart(
+  prev: OverviewAnalyticsState,
+  silent: boolean
+): OverviewAnalyticsState {
+  if (silent) {
+    return prev;
+  }
+  return {
+    ...prev,
+    loading: true,
+    error: null,
+  };
+}
+
+function applyOverviewAnalyticsFetchSuccess(
+  data: AnalyticsSummary
+): OverviewAnalyticsState {
+  return {
+    summary: data,
+    loading: false,
+    error: null,
+  };
+}
+
+function applyOverviewAnalyticsFetchFailure(
+  prev: OverviewAnalyticsState,
+  errorMessage: string
+): OverviewAnalyticsState {
+  return {
+    summary: prev.summary,
+    loading: false,
+    error: errorMessage || 'ANALYTICS_LOAD_FAILED',
+  };
+}
+
 export default function DashboardOverviewPage() {
   const { activeShop } = useDashboard();
   const { locale, tx } = useAppI18n();
-  const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [analyticsState, setAnalyticsState] = useState<OverviewAnalyticsState>(
+    createInitialOverviewAnalyticsState
+  );
+  const { summary, loading, error } = analyticsState;
   const [chartType, setChartType] = useState<'area' | 'bar'>('area');
   const activeShopRef = useRef(activeShop);
   activeShopRef.current = activeShop;
@@ -237,7 +523,9 @@ export default function DashboardOverviewPage() {
     async (silent = false) => {
       const targetShopId = activeShopRef.current?.id;
       if (!targetShopId) return;
-      if (!silent) setLoading(true);
+      setAnalyticsState((prev) =>
+        applyOverviewAnalyticsFetchStart(prev, silent)
+      );
       try {
         const res = await fetch(
           `/api/analytics/track?shopId=${encodeURIComponent(targetShopId)}`,
@@ -246,14 +534,29 @@ export default function DashboardOverviewPage() {
         if (res.ok) {
           const data = await res.json();
           if (activeShopRef.current?.id === targetShopId) {
-            setSummary(data);
+            setAnalyticsState(applyOverviewAnalyticsFetchSuccess(data));
+          }
+        } else {
+          const errBody = await res.json().catch(() => null);
+          const errMessage =
+            typeof errBody?.error === 'string' && errBody.error.trim()
+              ? errBody.error.trim()
+              : `HTTP_${res.status}`;
+          if (activeShopRef.current?.id === targetShopId) {
+            setAnalyticsState((prev) =>
+              applyOverviewAnalyticsFetchFailure(prev, errMessage)
+            );
           }
         }
-      } catch {
-        // ignore
-      } finally {
-        if (!silent && activeShopRef.current?.id === targetShopId) {
-          setLoading(false);
+      } catch (err) {
+        const errMessage =
+          err instanceof Error && err.message.trim()
+            ? err.message.trim()
+            : 'NETWORK_ERROR';
+        if (activeShopRef.current?.id === targetShopId) {
+          setAnalyticsState((prev) =>
+            applyOverviewAnalyticsFetchFailure(prev, errMessage)
+          );
         }
       }
     },
@@ -261,7 +564,7 @@ export default function DashboardOverviewPage() {
   );
 
   useEffect(() => {
-    setSummary(null);
+    setAnalyticsState(createInitialOverviewAnalyticsState());
     if (!activeShop?.id) return;
 
     return startDashboardAnalyticsSync({
@@ -302,10 +605,64 @@ export default function DashboardOverviewPage() {
     );
   }
 
-  const daily7d = summary?.dailyRevenue7d || [];
-  const maxDailyRev = Math.max(...daily7d.map((d) => d.revenue), 100000);
-  const total7dRev = daily7d.reduce((s, d) => s + d.revenue, 0);
-  const total7dOrders = daily7d.reduce((s, d) => s + d.orders, 0);
+  if (!summary) {
+    return (
+      <div
+        role="alert"
+        data-testid="overview-error-state"
+        className="rounded-3xl border border-rose-200 bg-white p-10 text-center space-y-4 shadow-2xs"
+      >
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
+          <AlertCircle className="h-6 w-6" />
+        </div>
+        <div className="space-y-1.5 max-w-md mx-auto">
+          <h2 className="text-base font-extrabold text-slate-900">
+            {tx(
+              'Không thể tải dữ liệu tổng quan & thống kê',
+              'Unable to load overview & analytics data'
+            )}
+          </h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            {tx(
+              'Đã xảy ra lỗi khi tải số liệu thống kê cửa hàng. Hệ thống không hiển thị số liệu mẫu giả lập khi chưa có dữ liệu thực tế.',
+              'An error occurred while loading store analytics. Sample placeholder numbers are never shown when live data is unavailable.'
+            )}
+          </p>
+        </div>
+        <div className="pt-1">
+          <button
+            type="button"
+            data-testid="overview-retry-button"
+            onClick={() => void loadAnalytics(false)}
+            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 transition-colors"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const {
+    daily7d,
+    maxDailyRev,
+    total7dRev,
+    total7dOrders,
+    vietqrPct,
+    cashPct,
+    hasPaymentActivity,
+    qrSourcePct,
+    posSourcePct,
+    hasSourceActivity,
+    hourlySlots,
+    peakSlot,
+    totalQrScans,
+    totalItemViews,
+    totalOrdersSubmitted,
+    completedOrders,
+    funnelSteps,
+  } = deriveOverviewMetrics(summary);
 
   // Compute SVG polyline / area coordinates for 7-day trend chart (viewBox 560 x 170)
   const svgWidth = 560;
@@ -334,67 +691,6 @@ export default function DashboardOverviewPage() {
         ` L ${chartPoints[chartPoints.length - 1].x},${padTop + plotH} Z`
       : '';
 
-  const vietqrPct = summary?.paymentBreakdown?.vietqr.percentage ?? 65;
-  const cashPct = summary?.paymentBreakdown?.cash.percentage ?? 35;
-  const qrSourcePct = summary?.sourceBreakdown?.qr_table.percentage ?? 75;
-  const posSourcePct = summary?.sourceBreakdown?.counter_pos.percentage ?? 25;
-
-  const hourlySlots = summary?.hourlyBreakdown || [
-    {
-      slot: '06h-09h',
-      label: tx('Sáng (6-9h)', 'Morning (6-9h)'),
-      orders: 2,
-      revenue: 165000,
-      percentage: 45,
-    },
-    {
-      slot: '09h-12h',
-      label: tx('Trưa (9-12h)', 'Midday (9-12h)'),
-      orders: 4,
-      revenue: 380000,
-      percentage: 100,
-    },
-    {
-      slot: '12h-15h',
-      label: tx('Chiều (12-15h)', 'Afternoon (12-15h)'),
-      orders: 3,
-      revenue: 290000,
-      percentage: 76,
-    },
-    {
-      slot: '15h-18h',
-      label: tx('Xế (15-18h)', 'Late afternoon (15-18h)'),
-      orders: 2,
-      revenue: 185000,
-      percentage: 48,
-    },
-    {
-      slot: '18h-21h',
-      label: tx('Tối (18-21h)', 'Evening (18-21h)'),
-      orders: 4,
-      revenue: 350000,
-      percentage: 92,
-    },
-    {
-      slot: '21h-24h',
-      label: tx('Đêm (21-24h)', 'Night (21-24h)'),
-      orders: 1,
-      revenue: 95000,
-      percentage: 25,
-    },
-  ];
-  const peakSlot = [...hourlySlots].sort((a, b) => b.revenue - a.revenue)[0];
-
-  // Funnel numbers
-  const totalQrScans =
-    (summary?.scanDoorCount || 0) + (summary?.scanTableCount || 0) || 120;
-  const totalItemViews =
-    (summary?.topItems || []).reduce((s, i) => s + (i.view_count || 0), 0) ||
-    Math.round(totalQrScans * 0.72);
-  const totalOrdersSubmitted =
-    (summary?.totalOrdersCount || 0) + (summary?.showToStaffCount || 0) || 18;
-  const completedOrders = summary?.completedOrdersCount || 12;
-
   const setupChecklist = evaluateShopSetupChecklist({
     shop: activeShop,
     totalCatalogItems: summary?.totalCatalogItems,
@@ -406,6 +702,35 @@ export default function DashboardOverviewPage() {
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div
+          role="alert"
+          data-testid="overview-refresh-error-banner"
+          className="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="flex items-start sm:items-center gap-2.5 text-xs">
+            <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
+            <span>
+              {tx(
+                'Không thể làm mới số liệu mới nhất. Đang hiển thị bản chụp dữ liệu gần nhất.',
+                'Could not refresh the latest analytics. Showing the last loaded snapshot.'
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            data-testid="overview-refresh-retry-button"
+            disabled={loading}
+            onClick={() => void loadAnalytics(false)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100/70 disabled:opacity-60 transition-colors shrink-0"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
+            />
+            <span>{tx('Thử lại', 'Retry')}</span>
+          </button>
+        </div>
+      )}
       {/* Welcome Banner */}
       <div className="rounded-3xl bg-gradient-to-r from-emerald-700 via-emerald-800 to-slate-900 p-6 text-white shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="space-y-1.5">
@@ -768,7 +1093,17 @@ export default function DashboardOverviewPage() {
             </div>
           </div>
 
-          {chartType === 'area' ? (
+          {daily7d.length === 0 ? (
+            <div
+              data-testid="overview-daily7d-empty"
+              className="flex h-48 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-center text-xs font-semibold text-slate-500"
+            >
+              {tx(
+                'Chưa có dữ liệu doanh thu 7 ngày qua.',
+                'No 7-day revenue data available yet.'
+              )}
+            </div>
+          ) : chartType === 'area' ? (
             <div className="w-full overflow-hidden">
               <svg
                 viewBox={`0 0 ${svgWidth} ${svgHeight}`}
@@ -854,65 +1189,48 @@ export default function DashboardOverviewPage() {
             </div>
           ) : (
             <div className="grid grid-cols-7 gap-2 items-end h-48 pt-6 border-b border-slate-100 pb-2">
-              {daily7d.map((day) => {
-                const heightPct =
-                  day.revenue > 0
-                    ? Math.max(
-                        Math.round((day.revenue / maxDailyRev) * 100),
-                        16
-                      )
-                    : 6;
-                const vqShare =
-                  day.revenue > 0
-                    ? Math.round(
-                        ((day.vietqrRevenue ?? day.revenue * 0.65) /
-                          day.revenue) *
-                          100
-                      )
-                    : 50;
-                return (
-                  <div
-                    key={day.date}
-                    className="flex flex-col items-center justify-end h-full gap-1.5 group"
-                  >
-                    <span className="text-[9px] font-bold text-slate-600 truncate max-w-full">
-                      {day.revenue > 0
-                        ? `${Math.round(day.revenue / 1000)}k`
-                        : '0'}
-                    </span>
-                    <div className="w-full flex items-end justify-center h-32 bg-slate-50 rounded-xl overflow-hidden p-1">
+              {daily7d.map((day) => (
+                <div
+                  key={day.date}
+                  className="flex flex-col items-center justify-end h-full gap-1.5 group"
+                >
+                  <span className="text-[9px] font-bold text-slate-600 truncate max-w-full">
+                    {day.revenue > 0
+                      ? `${Math.round(day.revenue / 1000)}k`
+                      : '0'}
+                  </span>
+                  <div className="w-full flex items-end justify-center h-32 bg-slate-50 rounded-xl overflow-hidden p-1">
+                    <div
+                      style={{ height: `${day.heightPct}%` }}
+                      className="w-full rounded-lg overflow-hidden flex flex-col justify-end transition-all duration-500"
+                      title={tx(
+                        '{label}: {rev} ({orders} đơn)',
+                        '{label}: {rev} ({orders} orders)',
+                        {
+                          label: day.label,
+                          rev: formatCurrency(
+                            day.revenue,
+                            activeShop.currency
+                          ),
+                          orders: day.orders,
+                        }
+                      )}
+                    >
                       <div
-                        style={{ height: `${heightPct}%` }}
-                        className="w-full rounded-lg overflow-hidden flex flex-col justify-end transition-all duration-500"
-                        title={tx(
-                          '{label}: {rev} ({orders} đơn)',
-                          '{label}: {rev} ({orders} orders)',
-                          {
-                            label: day.label,
-                            rev: formatCurrency(
-                              day.revenue,
-                              activeShop.currency
-                            ),
-                            orders: day.orders,
-                          }
-                        )}
-                      >
-                        <div
-                          style={{ height: `${100 - vqShare}%` }}
-                          className="w-full bg-amber-400"
-                        />
-                        <div
-                          style={{ height: `${vqShare}%` }}
-                          className="w-full bg-emerald-500"
-                        />
-                      </div>
+                        style={{ height: `${day.cashShare}%` }}
+                        className="w-full bg-amber-400"
+                      />
+                      <div
+                        style={{ height: `${day.vqShare}%` }}
+                        className="w-full bg-emerald-500"
+                      />
                     </div>
-                    <span className="text-[10px] font-extrabold text-slate-700">
-                      {day.label}
-                    </span>
                   </div>
-                );
-              })}
+                  <span className="text-[10px] font-extrabold text-slate-700">
+                    {day.label}
+                  </span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -968,19 +1286,21 @@ export default function DashboardOverviewPage() {
                     cy="18"
                     r="15.9155"
                     fill="transparent"
-                    stroke="#f59e0b"
+                    stroke={hasPaymentActivity ? '#f59e0b' : '#e2e8f0'}
                     strokeWidth="3.8"
                   />
-                  <circle
-                    cx="18"
-                    cy="18"
-                    r="15.9155"
-                    fill="transparent"
-                    stroke="#10b981"
-                    strokeWidth="3.8"
-                    strokeDasharray={`${vietqrPct} ${100 - vietqrPct}`}
-                    strokeLinecap="round"
-                  />
+                  {vietqrPct > 0 && (
+                    <circle
+                      cx="18"
+                      cy="18"
+                      r="15.9155"
+                      fill="transparent"
+                      stroke="#10b981"
+                      strokeWidth="3.8"
+                      strokeDasharray={`${vietqrPct} ${100 - vietqrPct}`}
+                      strokeLinecap="round"
+                    />
+                  )}
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-sm font-black text-slate-900">
@@ -1018,19 +1338,21 @@ export default function DashboardOverviewPage() {
                     cy="18"
                     r="15.9155"
                     fill="transparent"
-                    stroke="#8b5cf6"
+                    stroke={hasSourceActivity ? '#8b5cf6' : '#e2e8f0'}
                     strokeWidth="3.8"
                   />
-                  <circle
-                    cx="18"
-                    cy="18"
-                    r="15.9155"
-                    fill="transparent"
-                    stroke="#0284c7"
-                    strokeWidth="3.8"
-                    strokeDasharray={`${qrSourcePct} ${100 - qrSourcePct}`}
-                    strokeLinecap="round"
-                  />
+                  {qrSourcePct > 0 && (
+                    <circle
+                      cx="18"
+                      cy="18"
+                      r="15.9155"
+                      fill="transparent"
+                      stroke="#0284c7"
+                      strokeWidth="3.8"
+                      strokeDasharray={`${qrSourcePct} ${100 - qrSourcePct}`}
+                      strokeLinecap="round"
+                    />
+                  )}
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-sm font-black text-slate-900">
@@ -1102,51 +1424,63 @@ export default function DashboardOverviewPage() {
             )}
           </div>
 
-          <div className="grid grid-cols-6 gap-2 items-end h-40 pt-4 border-b border-slate-100 pb-2">
-            {hourlySlots.map((slot) => {
-              const isPeak =
-                peakSlot &&
-                slot.slot === peakSlot.slot &&
-                peakSlot.revenue > 0;
-              return (
-                <div
-                  key={slot.slot}
-                  className="flex flex-col items-center justify-end h-full gap-1.5"
-                >
-                  <span className="text-[9px] font-bold text-slate-500">
-                    {tx('{count} đơn', '{count} ord', { count: slot.orders })}
-                  </span>
-                  <div className="w-full flex items-end justify-center h-24 bg-slate-50 rounded-xl overflow-hidden p-1">
-                    <div
-                      style={{ height: `${Math.max(slot.percentage, 10)}%` }}
-                      className={`w-full rounded-lg transition-all duration-500 ${
-                        isPeak
-                          ? 'bg-gradient-to-t from-amber-500 to-amber-400'
-                          : slot.orders > 0
-                            ? 'bg-emerald-500'
-                            : 'bg-slate-200'
-                      }`}
-                      title={tx(
-                        '{label}: {rev} ({orders} đơn)',
-                        '{label}: {rev} ({orders} orders)',
-                        {
-                          label: slot.label,
-                          rev: formatCurrency(
-                            slot.revenue,
-                            activeShop.currency
-                          ),
-                          orders: slot.orders,
-                        }
-                      )}
-                    />
+          {hourlySlots.length === 0 ? (
+            <div
+              data-testid="overview-hourly-empty"
+              className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-center text-xs font-semibold text-slate-500"
+            >
+              {tx(
+                'Chưa có dữ liệu khung giờ trong ngày.',
+                'No hourly activity recorded yet.'
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-6 gap-2 items-end h-40 pt-4 border-b border-slate-100 pb-2">
+              {hourlySlots.map((slot) => {
+                const isPeak =
+                  peakSlot &&
+                  slot.slot === peakSlot.slot &&
+                  peakSlot.revenue > 0;
+                return (
+                  <div
+                    key={slot.slot}
+                    className="flex flex-col items-center justify-end h-full gap-1.5"
+                  >
+                    <span className="text-[9px] font-bold text-slate-500">
+                      {tx('{count} đơn', '{count} ord', { count: slot.orders })}
+                    </span>
+                    <div className="w-full flex items-end justify-center h-24 bg-slate-50 rounded-xl overflow-hidden p-1">
+                      <div
+                        style={{ height: `${slot.barHeightPct}%` }}
+                        className={`w-full rounded-lg transition-all duration-500 ${
+                          isPeak
+                            ? 'bg-gradient-to-t from-amber-500 to-amber-400'
+                            : slot.orders > 0
+                              ? 'bg-emerald-500'
+                              : 'bg-slate-200'
+                        }`}
+                        title={tx(
+                          '{label}: {rev} ({orders} đơn)',
+                          '{label}: {rev} ({orders} orders)',
+                          {
+                            label: slot.label,
+                            rev: formatCurrency(
+                              slot.revenue,
+                              activeShop.currency
+                            ),
+                            orders: slot.orders,
+                          }
+                        )}
+                      />
+                    </div>
+                    <span className="text-[10px] font-extrabold text-slate-700">
+                      {slot.slot}
+                    </span>
                   </div>
-                  <span className="text-[10px] font-extrabold text-slate-700">
-                    {slot.slot}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>
@@ -1200,7 +1534,7 @@ export default function DashboardOverviewPage() {
                     table: summary?.scanTableCount ?? 0,
                   }
                 ),
-                pct: 100,
+                pct: funnelSteps.scanPct,
                 color: 'bg-sky-500',
               },
               {
@@ -1210,15 +1544,7 @@ export default function DashboardOverviewPage() {
                 ),
                 value: totalItemViews,
                 unit: tx('lượt xem món', 'item views'),
-                pct: Math.min(
-                  95,
-                  Math.max(
-                    45,
-                    Math.round(
-                      (totalItemViews / Math.max(totalQrScans, 1)) * 100
-                    )
-                  )
-                ),
+                pct: funnelSteps.itemViewPct,
                 color: 'bg-indigo-500',
               },
               {
@@ -1228,15 +1554,7 @@ export default function DashboardOverviewPage() {
                 ),
                 value: totalOrdersSubmitted,
                 unit: tx('lượt gọi món', 'orders placed'),
-                pct: Math.min(
-                  85,
-                  Math.max(
-                    28,
-                    Math.round(
-                      (totalOrdersSubmitted / Math.max(totalQrScans, 1)) * 100
-                    )
-                  )
-                ),
+                pct: funnelSteps.ordersSubmittedPct,
                 color: 'bg-amber-500',
               },
               {
@@ -1246,15 +1564,7 @@ export default function DashboardOverviewPage() {
                 ),
                 value: completedOrders,
                 unit: tx('đơn hoàn tất', 'completed orders'),
-                pct: Math.min(
-                  75,
-                  Math.max(
-                    20,
-                    Math.round(
-                      (completedOrders / Math.max(totalQrScans, 1)) * 100
-                    )
-                  )
-                ),
+                pct: funnelSteps.completedOrdersPct,
                 color: 'bg-emerald-500',
               },
             ].map((row) => (
@@ -1308,63 +1618,75 @@ export default function DashboardOverviewPage() {
             </Link>
           </div>
 
-          <div className="divide-y divide-slate-100">
-            {(summary?.topSellingItems || []).slice(0, 5).map((item, idx) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between gap-3 py-2.5"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span
-                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs font-black ${
-                      idx === 0
-                        ? 'bg-amber-400 text-slate-950'
-                        : idx === 1
-                          ? 'bg-slate-200 text-slate-800'
-                          : 'bg-slate-100 text-slate-500'
-                    }`}
-                  >
-                    {idx + 1}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-bold text-slate-900">
-                      {item.name_vi}
-                    </p>
-                    <p className="truncate text-[11px] text-slate-500">
-                      {tx('Doanh thu:', 'Revenue:')}{' '}
-                      <strong className="text-emerald-600">
-                        {formatCurrency(item.revenue, activeShop.currency)}
-                      </strong>
-                    </p>
+          {(summary?.topSellingItems || []).length === 0 ? (
+            <div
+              data-testid="overview-bestsellers-empty"
+              className="flex h-36 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-center text-xs font-semibold text-slate-500"
+            >
+              {tx(
+                'Chưa có dữ liệu món bán chạy.',
+                'No best-selling items recorded yet.'
+              )}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {(summary?.topSellingItems || []).slice(0, 5).map((item, idx) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 py-2.5"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs font-black ${
+                        idx === 0
+                          ? 'bg-amber-400 text-slate-950'
+                          : idx === 1
+                            ? 'bg-slate-200 text-slate-800'
+                            : 'bg-slate-100 text-slate-500'
+                      }`}
+                    >
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-slate-900">
+                        {item.name_vi}
+                      </p>
+                      <p className="truncate text-[11px] text-slate-500">
+                        {tx('Doanh thu:', 'Revenue:')}{' '}
+                        <strong className="text-emerald-600">
+                          {formatCurrency(item.revenue, activeShop.currency)}
+                        </strong>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="rounded-lg bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[11px] font-bold text-emerald-800">
+                      {tx('Đã bán: {count}', 'Sold: {count}', {
+                        count: item.sold_count,
+                      })}
+                    </span>
+                    <span
+                      className={`rounded-lg px-2 py-0.5 text-[11px] font-bold border ${
+                        item.stock_quantity === 0
+                          ? 'bg-rose-50 border-rose-200 text-rose-700'
+                          : typeof item.stock_quantity === 'number' &&
+                              item.stock_quantity <= 5
+                            ? 'bg-amber-50 border-amber-200 text-amber-800'
+                            : 'bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {tx('Tồn:', 'Stock:')}{' '}
+                      {item.stock_quantity === null ||
+                      item.stock_quantity === undefined
+                        ? '∞'
+                        : item.stock_quantity}
+                    </span>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="rounded-lg bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[11px] font-bold text-emerald-800">
-                    {tx('Đã bán: {count}', 'Sold: {count}', {
-                      count: item.sold_count,
-                    })}
-                  </span>
-                  <span
-                    className={`rounded-lg px-2 py-0.5 text-[11px] font-bold border ${
-                      item.stock_quantity === 0
-                        ? 'bg-rose-50 border-rose-200 text-rose-700'
-                        : typeof item.stock_quantity === 'number' &&
-                            item.stock_quantity <= 5
-                          ? 'bg-amber-50 border-amber-200 text-amber-800'
-                          : 'bg-slate-100 border-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {tx('Tồn:', 'Stock:')}{' '}
-                    {item.stock_quantity === null ||
-                    item.stock_quantity === undefined
-                      ? '∞'
-                      : item.stock_quantity}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Language Breakdown Chart */}
@@ -1389,36 +1711,52 @@ export default function DashboardOverviewPage() {
             </span>
           </div>
 
-          <div className="space-y-3 pt-1">
-            {(summary?.langBreakdown || []).map((entry) => {
-              const meta = LOCALE_META[entry.lang];
-              return (
-                <div key={entry.lang} className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-800 flex items-center gap-2">
-                      <FlagIcon locale={entry.lang} className="h-4 w-5.5" />
-                      <span>
-                        {appLanguageName(entry.lang, locale)} ({meta.nativeName})
+          {(summary?.langBreakdown || []).length === 0 ? (
+            <div
+              data-testid="overview-lang-empty"
+              className="flex h-36 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 text-center text-xs font-semibold text-slate-500"
+            >
+              {tx(
+                'Chưa có dữ liệu ngôn ngữ khách truy cập.',
+                'No visitor language data recorded yet.'
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3 pt-1">
+              {(summary?.langBreakdown || []).map((entry) => {
+                const meta = LOCALE_META[entry.lang];
+                const barWidth =
+                  entry.count > 0 && entry.percentage > 0
+                    ? Math.max(entry.percentage, 4)
+                    : 0;
+                return (
+                  <div key={entry.lang} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-800 flex items-center gap-2">
+                        <FlagIcon locale={entry.lang} className="h-4 w-5.5" />
+                        <span>
+                          {appLanguageName(entry.lang, locale)} ({meta.nativeName})
+                        </span>
                       </span>
-                    </span>
-                    <span className="font-extrabold text-slate-900">
-                      {entry.percentage}% (
-                      {tx('{count} lượt', '{count} views', {
-                        count: entry.count,
-                      })}
-                      )
-                    </span>
+                      <span className="font-extrabold text-slate-900">
+                        {entry.percentage}% (
+                        {tx('{count} lượt', '{count} views', {
+                          count: entry.count,
+                        })}
+                        )
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                        style={{ width: `${barWidth}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
-                    <div
-                      className="h-full rounded-full bg-emerald-500 transition-all duration-500"
-                      style={{ width: `${Math.max(entry.percentage, 4)}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

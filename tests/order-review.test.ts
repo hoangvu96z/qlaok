@@ -392,6 +392,22 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     assert.equal(rpcStats.todayUnpaidAmount, 1109000);
     assert.equal(rpcStats.newOrdersCount, 1);
     assert.equal(rpcStats.preparingOrdersCount, 1);
+    const emptyRpcStats = await dbComputeShopRevenueAndInventoryStats(
+      'stats-empty-shop',
+      []
+    );
+    assert.equal(emptyRpcStats.totalRevenue, 0);
+    assert.equal(emptyRpcStats.paidOrdersCount, 0);
+    assert.equal(emptyRpcStats.paymentBreakdown.vietqr.percentage, 0);
+    assert.equal(emptyRpcStats.paymentBreakdown.cash.percentage, 0);
+    assert.equal(emptyRpcStats.sourceBreakdown.qr_table.percentage, 0);
+    assert.equal(emptyRpcStats.sourceBreakdown.counter_pos.percentage, 0);
+    assert.equal(emptyRpcStats.hourlyBreakdown.length, 6);
+    assert.ok(
+      emptyRpcStats.hourlyBreakdown.every(
+        (slot) => slot.revenue === 0 && slot.percentage === 0
+      )
+    );
     const rpcDay3dAgo = rpcStats.dailyRevenue7d.find(
       (d) => d.date === threeDaysAgoVn
     );

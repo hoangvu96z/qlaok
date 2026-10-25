@@ -7779,3 +7779,125 @@ describe('Suite 32: Web Promotions hydration, shop-switch reset & flash-sale cat
     assert.match(pageSource, /normalizeShopFlashSaleConfig\(/);
   });
 });
+
+// ============================================================================
+// SUITE 33: EMPTY & ZERO ANALYTICS STATS REGRESSION
+// ============================================================================
+describe('Suite 33: computeShopRevenueAndInventoryStats zero/empty regression', () => {
+  test('33.1 computeShopRevenueAndInventoryStats(..., []) returns zero counts, amounts, and percentages for an empty shop', () => {
+    const stats = computeShopRevenueAndInventoryStats('shop-empty-test', [], []);
+
+    assert.equal(stats.todayRevenue, 0);
+    assert.equal(stats.totalRevenue, 0);
+    assert.equal(stats.todayOrdersCount, 0);
+    assert.equal(stats.totalOrdersCount, 0);
+    assert.equal(stats.newOrdersCount, 0);
+    assert.equal(stats.preparingOrdersCount, 0);
+    assert.equal(stats.completedOrdersCount, 0);
+    assert.equal(stats.avgOrderValue, 0);
+    assert.equal(stats.lowStockCount, 0);
+    assert.equal(stats.outOfStockCount, 0);
+
+    assert.deepEqual(stats.paymentBreakdown, {
+      vietqr: { count: 0, revenue: 0, percentage: 0 },
+      cash: { count: 0, revenue: 0, percentage: 0 },
+    });
+    assert.deepEqual(stats.sourceBreakdown, {
+      qr_table: { count: 0, revenue: 0, percentage: 0 },
+      counter_pos: { count: 0, revenue: 0, percentage: 0 },
+    });
+
+    assert.equal(stats.hourlyBreakdown.length, 6);
+    for (const slot of stats.hourlyBreakdown) {
+      assert.equal(slot.orders, 0, `Expected 0 orders for slot ${slot.slot}`);
+      assert.equal(slot.revenue, 0, `Expected 0 revenue for slot ${slot.slot}`);
+      assert.equal(
+        slot.percentage,
+        0,
+        `Expected 0% for empty slot ${slot.slot}`
+      );
+    }
+  });
+
+  test('33.2 computeShopRevenueAndInventoryStats returns zero payment/source percentages when orders are unpaid and preserves percentages for paid orders', () => {
+    const unpaidOrder: ShopOrder = {
+      id: 'ord-unpaid-1',
+      shop_id: 'shop-stats-test',
+      order_code: 'ORD-001',
+      table_label: 'Bàn 1',
+      customer_note: '',
+      visitor_lang: 'vi',
+      source: 'qr_table',
+      status: 'new',
+      payment_method: 'vietqr',
+      payment_status: 'unpaid',
+      subtotal_amount: 120000,
+      discount_amount: 0,
+      total_amount: 120000,
+      items: [],
+      created_at: '2026-10-25T03:00:00.000Z',
+      updated_at: '2026-10-25T03:00:00.000Z',
+    };
+
+    const unpaidStats = computeShopRevenueAndInventoryStats(
+      'shop-stats-test',
+      [],
+      [unpaidOrder]
+    );
+    assert.equal(unpaidStats.totalOrdersCount, 1);
+    assert.equal(unpaidStats.totalRevenue, 0);
+    assert.equal(unpaidStats.paymentBreakdown.vietqr.percentage, 0);
+    assert.equal(unpaidStats.paymentBreakdown.cash.percentage, 0);
+    assert.equal(unpaidStats.sourceBreakdown.qr_table.percentage, 0);
+    assert.equal(unpaidStats.sourceBreakdown.counter_pos.percentage, 0);
+
+    const paidOrders: ShopOrder[] = [
+      {
+        ...unpaidOrder,
+        id: 'ord-paid-vq',
+        status: 'completed',
+        payment_status: 'paid',
+        payment_method: 'vietqr',
+        source: 'qr_table',
+        total_amount: 150000,
+        subtotal_amount: 150000,
+        created_at: '2026-10-25T03:30:00.000Z', // 10:30 ICT -> 09h-12h
+      },
+      {
+        ...unpaidOrder,
+        id: 'ord-paid-cash',
+        status: 'completed',
+        payment_status: 'paid',
+        payment_method: 'cash',
+        source: 'counter_pos',
+        total_amount: 50000,
+        subtotal_amount: 50000,
+        created_at: '2026-10-25T11:30:00.000Z', // 18:30 ICT -> 18h-21h
+      },
+    ];
+
+    const paidStats = computeShopRevenueAndInventoryStats(
+      'shop-stats-test',
+      [],
+      paidOrders
+    );
+    assert.equal(paidStats.totalRevenue, 200000);
+    assert.equal(paidStats.paymentBreakdown.vietqr.percentage, 75);
+    assert.equal(paidStats.paymentBreakdown.cash.percentage, 25);
+    assert.equal(paidStats.sourceBreakdown.qr_table.percentage, 50);
+    assert.equal(paidStats.sourceBreakdown.counter_pos.percentage, 50);
+
+    const middaySlot = paidStats.hourlyBreakdown.find(
+      (s) => s.slot === '09h-12h'
+    );
+    const eveningSlot = paidStats.hourlyBreakdown.find(
+      (s) => s.slot === '18h-21h'
+    );
+    const morningSlot = paidStats.hourlyBreakdown.find(
+      (s) => s.slot === '06h-09h'
+    );
+    assert.equal(middaySlot?.percentage, 100);
+    assert.equal(eveningSlot?.percentage, 33);
+    assert.equal(morningSlot?.percentage, 0);
+  });
+});
