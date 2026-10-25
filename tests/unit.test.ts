@@ -158,6 +158,8 @@ import {
   normalizeShopFlashSaleConfig,
   normalizeShopPromoBannerConfig,
   normalizeShopWelcomePopupConfig,
+  resolveWelcomePopupPreviewConfig,
+  WELCOME_POPUP_PREVIEW_FALLBACK_TITLES,
 } from '@/lib/shop-promotions';
 import type {
   CatalogItem,
@@ -7777,6 +7779,68 @@ describe('Suite 32: Web Promotions hydration, shop-switch reset & flash-sale cat
     assert.match(pageSource, /normalizeShopPromoBannerConfig\(/);
     assert.match(pageSource, /normalizeShopWelcomePopupConfig\(/);
     assert.match(pageSource, /normalizeShopFlashSaleConfig\(/);
+    assert.match(pageSource, /resolveWelcomePopupPreviewConfig\(/);
+  });
+
+  test('32.5 resolveWelcomePopupPreviewConfig supplies localized preview fallback for empty/whitespace titles while preserving non-empty merchant title and draft fields without mutating draft', () => {
+    // Empty or whitespace titles get preview fallback (localized VI/EN)
+    const emptyVi = resolveWelcomePopupPreviewConfig({ title: '' }, 'vi');
+    assert.equal(emptyVi.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.vi);
+    assert.equal(emptyVi.enabled, true);
+
+    const whitespaceVi = resolveWelcomePopupPreviewConfig({ title: '   \t  ' }, 'vi');
+    assert.equal(whitespaceVi.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.vi);
+    assert.equal(whitespaceVi.enabled, true);
+
+    const emptyEn = resolveWelcomePopupPreviewConfig({ title: '' }, 'en');
+    assert.equal(emptyEn.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.en);
+    assert.equal(emptyEn.enabled, true);
+
+    const whitespaceEn = resolveWelcomePopupPreviewConfig({ title: '   ' }, 'en');
+    assert.equal(whitespaceEn.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.en);
+    assert.equal(whitespaceEn.enabled, true);
+
+    const undefinedConfig = resolveWelcomePopupPreviewConfig(undefined, 'vi');
+    assert.equal(undefinedConfig.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.vi);
+    assert.equal(undefinedConfig.enabled, true);
+
+    // Non-empty titles remain intact
+    const customVi = resolveWelcomePopupPreviewConfig(
+      { title: 'Quán Giảm 30% Hôm Nay' },
+      'vi'
+    );
+    assert.equal(customVi.title, 'Quán Giảm 30% Hôm Nay');
+
+    const customEn = resolveWelcomePopupPreviewConfig(
+      { title: 'Grand Opening Special' },
+      'en'
+    );
+    assert.equal(customEn.title, 'Grand Opening Special');
+
+    // Existing fields are preserved and source draft is not mutated
+    const originalDraft = Object.freeze({
+      enabled: false,
+      badgeText: '🎁 ƯU ĐÃI TẾT',
+      title: '   ',
+      content: 'Nhận lì xì 50k khi gọi món',
+      imageUrl: 'https://images.unsplash.com/promo-banner.jpg',
+      voucherCode: 'LIXI50K',
+      ctaText: 'Xem thực đơn ngay',
+    });
+
+    const resolved = resolveWelcomePopupPreviewConfig(originalDraft, 'vi');
+    assert.equal(resolved.enabled, true);
+    assert.equal(resolved.title, WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.vi);
+    assert.equal(resolved.badgeText, '🎁 ƯU ĐÃI TẾT');
+    assert.equal(resolved.content, 'Nhận lì xì 50k khi gọi món');
+    assert.equal(resolved.imageUrl, 'https://images.unsplash.com/promo-banner.jpg');
+    assert.equal(resolved.voucherCode, 'LIXI50K');
+    assert.equal(resolved.ctaText, 'Xem thực đơn ngay');
+
+    // Verify draft was not mutated
+    assert.equal(originalDraft.enabled, false);
+    assert.equal(originalDraft.title, '   ');
+    assert.equal(originalDraft.voucherCode, 'LIXI50K');
   });
 });
 

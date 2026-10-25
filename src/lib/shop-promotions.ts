@@ -5,6 +5,7 @@ import type {
   ShopPopupConfig,
   ShopPromoBannerConfig,
   ShopThemeConfig,
+  SupportedLocale,
 } from '@/types/qlaok';
 
 export interface ShopPromotionsDraftState {
@@ -53,6 +54,29 @@ export function normalizeShopWelcomePopupConfig(
     imageUrl: raw?.imageUrl || '',
     voucherCode: raw?.voucherCode || '',
     ctaText: raw?.ctaText || 'Nhận Ưu Đãi & Xem Menu',
+  };
+}
+
+export const WELCOME_POPUP_PREVIEW_FALLBACK_TITLES: Record<'vi' | 'en', string> = {
+  vi: 'Ưu đãi chào mừng',
+  en: 'Welcome Offer',
+};
+
+export function resolveWelcomePopupPreviewConfig(
+  draft?: Partial<ShopPopupConfig> | null,
+  locale: SupportedLocale = 'vi'
+): ShopPopupConfig {
+  const normalized = normalizeShopWelcomePopupConfig(draft);
+  const isTitleBlank = !normalized.title || normalized.title.trim().length === 0;
+  const fallbackTitle =
+    locale === 'vi'
+      ? WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.vi
+      : WELCOME_POPUP_PREVIEW_FALLBACK_TITLES.en;
+
+  return {
+    ...normalized,
+    enabled: true,
+    title: isTitleBlank ? fallbackTitle : normalized.title,
   };
 }
 

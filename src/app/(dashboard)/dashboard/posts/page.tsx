@@ -50,6 +50,7 @@ import {
   normalizeShopFlashSaleConfig,
   normalizeShopPromoBannerConfig,
   normalizeShopWelcomePopupConfig,
+  resolveWelcomePopupPreviewConfig,
 } from '@/lib/shop-promotions';
 
 const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
@@ -533,6 +534,17 @@ export default function DashboardPostsPage() {
         voucherCode: promoBanner.voucherCode || welcomePopup.voucherCode,
       },
       flashSale,
+    },
+  };
+
+  const fullScreenPreviewShop = {
+    ...previewShop,
+    theme_config: {
+      ...previewShop.theme_config,
+      welcomePopup: resolveWelcomePopupPreviewConfig(
+        previewShop.theme_config.welcomePopup,
+        locale
+      ),
     },
   };
 
@@ -1666,7 +1678,8 @@ export default function DashboardPostsPage() {
 
       {/* Welcome Popup Preview Modal */}
       <StorefrontWelcomePopup
-        shop={previewShop}
+        shop={fullScreenPreviewShop}
+        locale={locale}
         isOpen={previewPopupOpen}
         onClose={() => setPreviewPopupOpen(false)}
       />
