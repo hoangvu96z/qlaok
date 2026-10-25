@@ -103,6 +103,51 @@ export function getAllowedLocalesForPlan(
   return base.slice(0, max);
 }
 
+export type ShopSettingsPlanFeature = 'custom_theme' | 'supported_languages';
+
+export interface ShopSettingsPlanRestriction {
+  code: typeof PLAN_FEATURE_LOCKED_CODE | typeof PLAN_LIMIT_REACHED_CODE;
+  feature: ShopSettingsPlanFeature;
+  requiredPlan: PlanTier;
+  maxLanguages?: number;
+}
+
+/** Returns the plan restriction for a requested Settings change, if any. */
+export function getShopSettingsPlanRestriction(
+  plan: PlanTier,
+  changes: {
+    customThemeChanged?: boolean;
+    supportedLanguageCount?: number;
+  }
+): ShopSettingsPlanRestriction | null {
+  const safePlan = normalizePlanTier(plan);
+  const config = PLAN_CONFIGS[safePlan];
+  const languageCount = changes.supportedLanguageCount;
+
+  if (
+    typeof languageCount === 'number' &&
+    languageCount > config.maxLangs
+  ) {
+    return {
+      code: PLAN_LIMIT_REACHED_CODE,
+      feature: 'supported_languages',
+      requiredPlan:
+        languageCount <= PLAN_CONFIGS.basic.maxLangs ? 'basic' : 'premium',
+      maxLanguages: config.maxLangs,
+    };
+  }
+
+  if (changes.customThemeChanged && !config.allowCustomTheme) {
+    return {
+      code: PLAN_FEATURE_LOCKED_CODE,
+      feature: 'custom_theme',
+      requiredPlan: 'basic',
+    };
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Plan limit / feature-lock error helpers (shared by API routes and UI)
 // ---------------------------------------------------------------------------

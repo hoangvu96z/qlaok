@@ -19,7 +19,7 @@
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts tests/supabase-readiness-cache.test.ts",
     "test:e2e": "node --test tests/e2e.test.mjs",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:review": "node --experimental-strip-types --import ./tests/register-ts.mjs --test --test-concurrency=1 tests/*review.test.ts tests/shop-permissions-and-rls.test.ts",
+    "test:review": "node --experimental-strip-types --import ./tests/register-ts.mjs --import ./tests/tsx-review-loader.mjs --test --test-concurrency=1 tests/*review.test.ts tests/shop-permissions-and-rls.test.ts",
     "test:sql": "node --test tests/sql-review.test.mjs"
   },
   "dependencies": {

@@ -623,7 +623,9 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
           const setClauses = keys.map((k) => {
             const v = this.updatePayload![k];
             params.push(
-              typeof v === 'object' && v !== null ? JSON.stringify(v) : v
+              typeof v === 'object' && v !== null && !Array.isArray(v)
+                ? JSON.stringify(v)
+                : v
             );
             return `${ident(k)} = $${params.length}`;
           });
@@ -691,6 +693,7 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
       INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
         ('mem-staff-label', '${testShopId}', '${staffId}', 'staff', '["orders.view","settings.manage"]'::jsonb, true);
     `);
+    await db.query(`UPDATE profiles SET plan = 'basic' WHERE id = $1`, [ownerId]);
 
     setSupabaseDbClientForTests(client);
     setShopMembershipDbClientForTest(client as never);
@@ -859,6 +862,92 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
     );
     // orderWorkflow was also preserved
     assert.equal(postGenTheme.orderWorkflow.template_id, 'classic_kitchen');
+
+    // D. Server-side plan enforcement uses the shop owner's plan and rejects
+    // restricted Settings changes without mutating their saved configuration.
+    await db.query(`UPDATE profiles SET plan = 'free' WHERE id = $1`, [ownerId]);
+    const patchAsOwner = (body: unknown) =>
+      patchShops(
+        new Request('http://localhost/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`,
+          },
+          body: JSON.stringify(body),
+        })
+      );
+
+    const freeThemeResponse = await patchAsOwner({
+      id: testShopId,
+      theme_config: { primaryColor: '#ef4444' },
+    });
+    assert.equal(freeThemeResponse.status, 403);
+    const freeThemeError = await freeThemeResponse.json();
+    assert.equal(freeThemeError.code, 'PLAN_FEATURE_LOCKED');
+    assert.equal(freeThemeError.currentPlan, 'free');
+    assert.equal(freeThemeError.requiredPlan, 'basic');
+
+    const freeLanguagesResponse = await patchAsOwner({
+      id: testShopId,
+      supported_langs: ['vi', 'en'],
+    });
+    assert.equal(freeLanguagesResponse.status, 403);
+    const freeLanguagesError = await freeLanguagesResponse.json();
+    assert.equal(freeLanguagesError.code, 'PLAN_LIMIT_REACHED');
+    assert.equal(freeLanguagesError.currentPlan, 'free');
+    assert.equal(freeLanguagesError.requiredPlan, 'basic');
+    assert.equal(freeLanguagesError.maxLanguages, 1);
+
+    const afterFreeDenials = await db.query<{
+      theme_config: string | Record<string, unknown>;
+      supported_langs: string[] | null;
+    }>(`SELECT theme_config, supported_langs FROM shops WHERE id = $1`, [testShopId]);
+    const preservedFreeState = afterFreeDenials.rows[0];
+    assert.ok(preservedFreeState);
+    const preservedFreeTheme =
+      typeof preservedFreeState.theme_config === 'string'
+        ? JSON.parse(preservedFreeState.theme_config)
+        : preservedFreeState.theme_config;
+    assert.equal(preservedFreeTheme.primaryColor, '#10b981');
+    assert.deepEqual(preservedFreeState.supported_langs, ['vi']);
+
+    // Basic can save custom theme and its three supported languages.
+    await db.query(`UPDATE profiles SET plan = 'basic' WHERE id = $1`, [ownerId]);
+    const basicSaveResponse = await patchAsOwner({
+      id: testShopId,
+      theme_config: { primaryColor: '#f97316' },
+      supported_langs: ['vi', 'en', 'ko'],
+    });
+    assert.equal(
+      basicSaveResponse.status,
+      200,
+      JSON.stringify(await basicSaveResponse.clone().json())
+    );
+
+    const basicOverflowResponse = await patchAsOwner({
+      id: testShopId,
+      supported_langs: ['vi', 'en', 'ko', 'ja'],
+    });
+    assert.equal(basicOverflowResponse.status, 403);
+    const basicOverflowError = await basicOverflowResponse.json();
+    assert.equal(basicOverflowError.code, 'PLAN_LIMIT_REACHED');
+    assert.equal(basicOverflowError.currentPlan, 'basic');
+    assert.equal(basicOverflowError.requiredPlan, 'premium');
+    assert.equal(basicOverflowError.maxLanguages, 3);
+
+    const afterBasic = await db.query<{
+      theme_config: string | Record<string, unknown>;
+      supported_langs: string[] | null;
+    }>(`SELECT theme_config, supported_langs FROM shops WHERE id = $1`, [testShopId]);
+    const savedBasicState = afterBasic.rows[0];
+    assert.ok(savedBasicState);
+    const savedBasicTheme =
+      typeof savedBasicState.theme_config === 'string'
+        ? JSON.parse(savedBasicState.theme_config)
+        : savedBasicState.theme_config;
+    assert.equal(savedBasicTheme.primaryColor, '#f97316');
+    assert.deepEqual(savedBasicState.supported_langs, ['vi', 'en', 'ko']);
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

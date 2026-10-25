@@ -36,6 +36,8 @@ Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào 
 | Basic | 39.000đ | 25 | 3 | Không | Có |
 | Premium | 69.000đ | 999999 (hiển thị không giới hạn) | 8 | Có | Có |
 
+Dashboard khóa AI OCR ở Free/Basic, giới hạn theme từ Basic và số ngôn ngữ theo gói; API kiểm tra lại quyền trước khi lưu, còn thao tác bị chặn dẫn tới lựa chọn nâng cấp gói phù hợp.
+
 Nguồn cấu hình: `src/lib/plan-limits.ts`; copy dùng chung ở `src/lib/plan-copy.ts`, giá thanh toán server ở `src/lib/db.ts`.
 
 ## Chạy local
