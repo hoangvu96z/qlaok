@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Languages,
   Trash2,
@@ -56,6 +56,7 @@ export function QuickItemRow({
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const uploadingPhotoRef = useRef(false);
   const [photoFeedback, setPhotoFeedback] = useState<FeedbackToastMessage | null>(null);
   const [imgBroken, setImgBroken] = useState(false);
 
@@ -158,7 +159,11 @@ export function QuickItemRow({
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
-    if (!file || !onUpdateImage) return;
+    if (!file || !onUpdateImage || uploadingPhotoRef.current) {
+      e.target.value = '';
+      return;
+    }
+    uploadingPhotoRef.current = true;
     setPhotoFeedback(null);
     setUploadingPhoto(true);
     try {
@@ -182,6 +187,7 @@ export function QuickItemRow({
         message: tx('Không thể tải ảnh món lên. Vui lòng thử lại.', 'Could not upload the item photo. Please try again.'),
       });
     } finally {
+      uploadingPhotoRef.current = false;
       setUploadingPhoto(false);
       e.target.value = '';
     }
@@ -245,7 +251,11 @@ export function QuickItemRow({
               'Bấm để tải lên hoặc đổi ảnh món',
               'Click to upload or change item photo'
             )}
-            className="group relative h-11 w-11 sm:h-12 sm:w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+            aria-busy={uploadingPhoto}
+            aria-disabled={uploadingPhoto}
+            className={`group relative h-11 w-11 sm:h-12 sm:w-12 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 ${
+              uploadingPhoto ? 'cursor-wait pointer-events-none' : 'cursor-pointer'
+            }`}
           >
             {hasValidImage ? (
               <img
@@ -268,9 +278,24 @@ export function QuickItemRow({
               )}
             </span>
 
+            {uploadingPhoto && (
+              <span
+                role="status"
+                aria-live="polite"
+                aria-label={tx('Đang tải ảnh món lên', 'Uploading item photo')}
+                className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 bg-slate-950/75 text-white"
+              >
+                <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+                <span className="text-[7px] font-bold leading-none">
+                  {tx('Đang tải', 'Uploading')}
+                </span>
+              </span>
+            )}
+
             <input
               type="file"
               accept="image/*"
+              disabled={uploadingPhoto}
               className="hidden"
               onChange={handleDirectPhotoSelect}
             />
@@ -573,9 +598,13 @@ export function QuickItemRow({
 
             {/* Photo upload action */}
             <label
-              className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 ${
+                uploadingPhoto ? 'pointer-events-none cursor-wait opacity-60' : 'cursor-pointer'
+              }`}
               title={tx('Đổi ảnh món', 'Change photo')}
               aria-label={tx('Đổi ảnh món', 'Change photo')}
+              aria-busy={uploadingPhoto}
+              aria-disabled={uploadingPhoto}
             >
               {uploadingPhoto ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
@@ -585,6 +614,7 @@ export function QuickItemRow({
               <input
                 type="file"
                 accept="image/*"
+                disabled={uploadingPhoto}
                 className="hidden"
                 onChange={handleDirectPhotoSelect}
               />
