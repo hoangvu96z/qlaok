@@ -45,6 +45,7 @@ import {
 import {
   enrichItemsWithInventory,
   setItemStockMetadata,
+  setMposDbClientForTests,
   dbCreateOrder,
   dbUpdateOrderStatus,
   dbGetOrderById,
@@ -5618,6 +5619,7 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       Partial<CatalogItem> & { id: string; shop_id: string; category_id?: string }
     >;
     itemCounts?: Record<string, number>;
+    recordedItemUpdates?: Array<{ id: string; patch: Record<string, unknown> }>;
     errors?: {
       shop?: { message: string };
       profile?: { message: string };
@@ -5725,7 +5727,7 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
         if (table === 'items') {
           return {
             select(
-              _cols?: string,
+              cols?: string,
               selectOpts?: { count?: string; head?: boolean }
             ) {
               return {
@@ -5754,7 +5756,25 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
                       if (col === 'id') {
                         const item = itemsStore[val];
                         if (!item) return { data: null, error: null };
-                        return { data: item, error: null };
+                        const selectedCols = cols
+                          ? cols
+                              .split(',')
+                              .map((c) => c.trim())
+                              .filter(Boolean)
+                          : ['*'];
+                        if (
+                          selectedCols.length > 0 &&
+                          !selectedCols.includes('*')
+                        ) {
+                          const projected: Record<string, unknown> = {};
+                          for (const key of selectedCols) {
+                            if (key in item) {
+                              projected[key] = item[key as keyof typeof item];
+                            }
+                          }
+                          return { data: projected, error: null };
+                        }
+                        return { data: { ...item }, error: null };
                       }
                       return { data: null, error: null };
                     },
@@ -5765,30 +5785,70 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
             update(patch: Partial<CatalogItem>) {
               return {
                 eq(col: string, val: string) {
+                  let appliedResult: Promise<{
+                    data:
+                      | (Partial<CatalogItem> & { id: string; shop_id: string })
+                      | null;
+                    error: { message: string } | null;
+                  }> | null = null;
+                  const runUpdate = async () => {
+                    if (opts.errors?.itemUpdate) {
+                      return { data: null, error: opts.errors.itemUpdate };
+                    }
+                    if (col === 'id') {
+                      const existing = itemsStore[val];
+                      if (!existing) {
+                        return {
+                          data: null,
+                          error: { message: 'Item not found' },
+                        };
+                      }
+                      opts.recordedItemUpdates?.push({
+                        id: val,
+                        patch: { ...(patch as Record<string, unknown>) },
+                      });
+                      const definedPatch = Object.fromEntries(
+                        Object.entries(patch).filter(([, v]) => v !== undefined)
+                      );
+                      const updated = { ...existing, ...definedPatch };
+                      itemsStore[val] = updated;
+                      return { data: updated, error: null };
+                    }
+                    return {
+                      data: null,
+                      error: { message: 'Item not found' },
+                    };
+                  };
+                  const ensureUpdate = () => {
+                    if (!appliedResult) {
+                      appliedResult = runUpdate();
+                    }
+                    return appliedResult;
+                  };
                   return {
+                    then<TResult1 = unknown, TResult2 = never>(
+                      onfulfilled?:
+                        | ((value: {
+                            data:
+                              | (Partial<CatalogItem> & {
+                                  id: string;
+                                  shop_id: string;
+                                })
+                              | null;
+                            error: { message: string } | null;
+                          }) => TResult1 | PromiseLike<TResult1>)
+                        | null,
+                      onrejected?:
+                        | ((
+                            reason: unknown
+                          ) => TResult2 | PromiseLike<TResult2>)
+                        | null
+                    ) {
+                      return ensureUpdate().then(onfulfilled, onrejected);
+                    },
                     select() {
                       return {
-                        single: async () => {
-                          if (opts.errors?.itemUpdate) {
-                            return { data: null, error: opts.errors.itemUpdate };
-                          }
-                          if (col === 'id') {
-                            const existing = itemsStore[val];
-                            if (!existing) {
-                              return {
-                                data: null,
-                                error: { message: 'Item not found' },
-                              };
-                            }
-                            const updated = { ...existing, ...patch };
-                            itemsStore[val] = updated;
-                            return { data: updated, error: null };
-                          }
-                          return {
-                            data: null,
-                            error: { message: 'Item not found' },
-                          };
-                        },
+                        single: () => ensureUpdate(),
                       };
                     },
                   };
@@ -6360,6 +6420,136 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       });
       assert.equal(createdMax.price, 1_000_000_000);
     } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.10 dbUpsertItem preserves zero-stock unavailable invariant when stock_quantity is omitted while allowing availability updates for positive and unlimited stock', async () => {
+    const recordedItemUpdates: Array<{
+      id: string;
+      patch: Record<string, unknown>;
+    }> = [];
+    const mockDb = createMockSupabaseForUpsertItem({
+      shops: {
+        'shop-stock-1': { id: 'shop-stock-1', owner_id: 'owner-stock-1' },
+      },
+      profiles: {
+        'owner-stock-1': { id: 'owner-stock-1', plan: 'premium' },
+      },
+      categories: {
+        'cat-stock-1': { id: 'cat-stock-1', shop_id: 'shop-stock-1' },
+      },
+      items: {
+        'item-zero-stock': {
+          id: 'item-zero-stock',
+          shop_id: 'shop-stock-1',
+          category_id: 'cat-stock-1',
+          name_i18n: { vi: 'Món hết hàng' },
+          price: 40000,
+          stock_quantity: 0,
+          is_available: false,
+        },
+        'item-positive-stock': {
+          id: 'item-positive-stock',
+          shop_id: 'shop-stock-1',
+          category_id: 'cat-stock-1',
+          name_i18n: { vi: 'Món còn hàng' },
+          price: 50000,
+          stock_quantity: 7,
+          is_available: false,
+        },
+        'item-unlimited-stock': {
+          id: 'item-unlimited-stock',
+          shop_id: 'shop-stock-1',
+          category_id: 'cat-stock-1',
+          name_i18n: { vi: 'Món không giới hạn' },
+          price: 30000,
+          stock_quantity: null,
+          is_available: false,
+        },
+      },
+      recordedItemUpdates,
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockDb);
+      setMposDbClientForTests(mockDb, true);
+
+      // 1. Reproduced zero-stock case: omitting stock_quantity with is_available: true must stay unavailable and not write stock metadata
+      const zeroAttempt = await dbUpsertItem({
+        id: 'item-zero-stock',
+        shop_id: 'shop-stock-1',
+        category_id: 'cat-stock-1',
+        name_i18n: { vi: 'Món hết hàng (đổi tên)' },
+        is_available: true,
+      });
+      assert.equal(zeroAttempt.stock_quantity, 0);
+      assert.equal(
+        zeroAttempt.is_available,
+        false,
+        'Existing item with stock_quantity === 0 must not become available when stock_quantity is omitted'
+      );
+      assert.equal(zeroAttempt.name_i18n.vi, 'Món hết hàng (đổi tên)');
+      assert.equal(
+        recordedItemUpdates.length,
+        1,
+        'Omitting stock_quantity must not trigger a separate setItemStockMetadata write'
+      );
+      assert.equal(recordedItemUpdates[0].id, 'item-zero-stock');
+      assert.equal(recordedItemUpdates[0].patch.is_available, false);
+      assert.equal(
+        'stock_quantity' in recordedItemUpdates[0].patch,
+        false,
+        'Update patch must not write stock_quantity when omitted'
+      );
+
+      // 2. Positive stock case: omitting stock_quantity with is_available: true marks item available without writing stock metadata
+      recordedItemUpdates.length = 0;
+      const positiveAvailable = await dbUpsertItem({
+        id: 'item-positive-stock',
+        shop_id: 'shop-stock-1',
+        category_id: 'cat-stock-1',
+        is_available: true,
+      });
+      assert.equal(positiveAvailable.stock_quantity, 7);
+      assert.equal(positiveAvailable.is_available, true);
+      assert.equal(recordedItemUpdates.length, 1);
+      assert.equal(recordedItemUpdates[0].patch.is_available, true);
+      assert.equal('stock_quantity' in recordedItemUpdates[0].patch, false);
+
+      // 3. Unlimited (null) stock case: omitting stock_quantity with is_available: true marks item available without writing stock metadata
+      recordedItemUpdates.length = 0;
+      const unlimitedAvailable = await dbUpsertItem({
+        id: 'item-unlimited-stock',
+        shop_id: 'shop-stock-1',
+        category_id: 'cat-stock-1',
+        is_available: true,
+      });
+      assert.equal(unlimitedAvailable.stock_quantity, null);
+      assert.equal(unlimitedAvailable.is_available, true);
+      assert.equal(recordedItemUpdates.length, 1);
+      assert.equal(recordedItemUpdates[0].patch.is_available, true);
+      assert.equal('stock_quantity' in recordedItemUpdates[0].patch, false);
+
+      // 4. Explicit stock update behavior preserved: restocking zero-stock item to positive stock allows availability
+      recordedItemUpdates.length = 0;
+      const restocked = await dbUpsertItem({
+        id: 'item-zero-stock',
+        shop_id: 'shop-stock-1',
+        category_id: 'cat-stock-1',
+        stock_quantity: 5,
+        is_available: true,
+      });
+      assert.equal(restocked.stock_quantity, 5);
+      assert.equal(restocked.is_available, true);
+      assert.equal(
+        recordedItemUpdates.length,
+        2,
+        'Explicit stock_quantity must invoke setItemStockMetadata before item update'
+      );
+      assert.equal(recordedItemUpdates[0].patch.stock_quantity, 5);
+    } finally {
+      setMposDbClientForTests(null);
       setSupabaseDbClientForTests(null);
     }
   });

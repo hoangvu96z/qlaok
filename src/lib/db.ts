@@ -1480,7 +1480,7 @@ export async function dbUpsertItem(
   if (item.id) {
     const { data: existing } = await sb
       .from('items')
-      .select('id')
+      .select('id, stock_quantity')
       .eq('id', item.id)
       .maybeSingle();
 
@@ -1489,8 +1489,10 @@ export async function dbUpsertItem(
         await setItemStockMetadata(item.id, incomingStock, incomingSold);
       }
 
+      const effectiveStock =
+        incomingStock !== undefined ? incomingStock : existing.stock_quantity;
       const nextAvailable =
-        incomingStock === 0
+        effectiveStock === 0
           ? false
           : dbSafeItem.is_available !== undefined
             ? dbSafeItem.is_available
@@ -1501,6 +1503,9 @@ export async function dbUpsertItem(
         is_available: nextAvailable,
         updated_at: new Date().toISOString(),
       };
+      if (nextAvailable === undefined) {
+        delete updatePatch.is_available;
+      }
       if (validatedPrice !== undefined) {
         updatePatch.price = validatedPrice;
       } else {
