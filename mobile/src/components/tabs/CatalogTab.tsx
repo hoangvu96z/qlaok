@@ -40,7 +40,7 @@ export const CatalogTab = memo(function CatalogTab({
   canAdjustInventory = true,
   theme,
 }: CatalogTabProps) {
-  const { t } = useMobileI18n();
+  const { t, tb } = useMobileI18n();
   // Local state isolated inside CatalogTab so typing never triggers re-renders on other tabs!
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
@@ -61,7 +61,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const res = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -72,7 +72,57 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+
+      const data = await res.json().catch(() => null);
+      const rawItem =
+        data && typeof data === 'object'
+          ? (data as { item?: unknown }).item
+          : null;
+      const isValidServerItem =
+        rawItem !== null &&
+        typeof rawItem === 'object' &&
+        typeof (rawItem as { id?: unknown }).id === 'string' &&
+        (rawItem as { id: string }).id === item.id &&
+        typeof (rawItem as { is_available?: unknown }).is_available === 'boolean';
+
+      if (!isValidServerItem) {
+        setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)));
+        Alert.alert(
+          t('catalog.errUpdateTitle'),
+          tb(
+            'Phản hồi từ máy chủ không hợp lệ.',
+            'Invalid response from server.'
+          )
+        );
+        onReloadShopData(activeShop?.id);
+        return;
+      }
+
+      const serverItem = rawItem as MobileCatalogItem;
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? { ...i, ...serverItem } : i))
+      );
+
+      if (serverItem.is_available !== nextVal) {
+        const itemName =
+          (serverItem.name_i18n && typeof serverItem.name_i18n === 'object'
+            ? serverItem.name_i18n.vi || serverItem.name_i18n.en
+            : '') ||
+          item.name_i18n?.vi ||
+          item.name_i18n?.en ||
+          '';
+
+        Alert.alert(
+          tb('Hết hàng', 'Sold Out'),
+          tb(
+            'Món "{name}" có tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng. Vui lòng kiểm tra tồn kho.',
+            'Item "{name}" has 0 stock quantity, so the server kept it sold out. Please check inventory.',
+            { name: itemName }
+          )
+        );
+      }
     } catch (error) {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)));
       Alert.alert(
         t('catalog.errUpdateTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')

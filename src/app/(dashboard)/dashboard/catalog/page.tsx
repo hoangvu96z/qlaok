@@ -262,22 +262,105 @@ export default function DashboardCatalogPage() {
         i.id === item.id ? { ...i, is_available: nextAvailable } : i
       )
     );
-    const ok = await upsertItem({ ...item, is_available: nextAvailable });
-    if (!ok) {
+    try {
+      const res = await fetch('/api/catalog', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: { ...item, is_available: nextAvailable },
+        }),
+      });
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        rollbackItem(item);
+        setMutationError(
+          toMutationError(
+            payload,
+            tx('Không thể lưu thay đổi món', 'Could not save item changes')
+          )
+        );
+        return false;
+      }
+
+      const payload = await res.json().catch(() => null);
+      const rawItem =
+        payload && typeof payload === 'object'
+          ? (payload as { item?: unknown }).item
+          : null;
+      const isValidServerItem =
+        rawItem !== null &&
+        typeof rawItem === 'object' &&
+        typeof (rawItem as { id?: unknown }).id === 'string' &&
+        (rawItem as { id: string }).id === item.id &&
+        typeof (rawItem as { is_available?: unknown }).is_available === 'boolean';
+
+      if (!isValidServerItem) {
+        rollbackItem(item);
+        setMutationError(
+          toMutationError(
+            null,
+            tx(
+              'Phản hồi từ máy chủ không hợp lệ.',
+              'Invalid response from server.'
+            )
+          )
+        );
+        return false;
+      }
+
+      const serverItem = rawItem as CatalogItem;
+
+      // Replace optimistic item with server-returned item
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? { ...i, ...serverItem } : i))
+      );
+
+      const itemName =
+        (locale === 'en' && serverItem.name_i18n?.en)
+          ? serverItem.name_i18n.en
+          : (serverItem.name_i18n?.vi || item.name_i18n?.vi || '');
+
+      if (serverItem.is_available !== nextAvailable) {
+        // Server state differs from requested state (e.g. zero-stock normalized to false)
+        // Keep the canonical state (already replaced above)
+        // Do NOT show the "marked available" success toast
+        // Show clear localized inline explanation that the server kept the item sold out and its stock should be checked
+        setMutationError({
+          message: tx(
+            'Món "{name}" có tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng. Vui lòng kiểm tra tồn kho.',
+            'Item "{name}" has 0 stock quantity, so the server kept it sold out. Please check inventory.',
+            { name: itemName }
+          ),
+        });
+        notifyRealtime();
+        return false;
+      }
+
+      // Normal accepted toggle: clear any prior mutation error, notify realtime, show success toast
+      setMutationError(null);
+      notifyRealtime();
+      showToast(
+        nextAvailable
+          ? tx('Đã bật còn món: {name}', 'Marked available: {name}', {
+              name: itemName,
+            })
+          : tx('Đã chuyển tạm hết: {name}', 'Marked sold out: {name}', {
+              name: itemName,
+            })
+      );
+      return true;
+    } catch (err) {
       rollbackItem(item);
+      setMutationError(
+        toMutationError(
+          err,
+          tx('Không thể lưu thay đổi món', 'Could not save item changes')
+        )
+      );
       return false;
     }
-    notifyRealtime();
-    showToast(
-      nextAvailable
-        ? tx('Đã bật còn món: {name}', 'Marked available: {name}', {
-            name: item.name_i18n.vi,
-          })
-        : tx('Đã chuyển tạm hết: {name}', 'Marked sold out: {name}', {
-            name: item.name_i18n.vi,
-          })
-    );
-    return true;
   };
 
   const handleUpdatePrice = async (
