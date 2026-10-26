@@ -90,14 +90,24 @@ async function fetchAndVerifyShopItems(
       ok: true;
       itemsById: Map<
         string,
-        { id: string; shop_id: string; category_id: string }
+        {
+          id: string;
+          shop_id: string;
+          category_id: string;
+          stock_quantity: number | null;
+        }
       >;
     }
   | { ok: false; status: number; code: string; error: string }
 > {
   const itemsById = new Map<
     string,
-    { id: string; shop_id: string; category_id: string }
+    {
+      id: string;
+      shop_id: string;
+      category_id: string;
+      stock_quantity: number | null;
+    }
   >();
 
   for (
@@ -108,7 +118,7 @@ async function fetchAndVerifyShopItems(
     const chunk = itemIds.slice(offset, offset + BULK_SELECT_CHUNK_SIZE);
     const { data: rows, error: selectErr } = await sb
       .from('items')
-      .select('id, shop_id, category_id')
+      .select('id, shop_id, category_id, stock_quantity')
       .eq('shop_id', shopId)
       .in('id', chunk);
 
@@ -128,6 +138,8 @@ async function fetchAndVerifyShopItems(
           shop_id: row.shop_id,
           category_id:
             typeof row.category_id === 'string' ? row.category_id : '',
+          stock_quantity:
+            typeof row.stock_quantity === 'number' ? row.stock_quantity : null,
         });
       }
     }
@@ -868,6 +880,26 @@ export async function POST(req: Request) {
           },
           { status: verifiedItems.status }
         );
+      }
+
+      if (targetAvailable) {
+        const zeroStockItemIds = normalizedItemIds.filter(
+          (id) => verifiedItems.itemsById.get(id)?.stock_quantity === 0
+        );
+        if (zeroStockItemIds.length > 0) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'ZERO_STOCK_CANNOT_MARK_AVAILABLE',
+              updatedCount: 0,
+              count: 0,
+              zeroStockItemIds,
+              error:
+                'Không thể bật còn hàng cho món có tồn kho bằng 0. Vui lòng nhập thêm tồn kho hoặc chuyển món sang tồn kho không giới hạn (∞) trước.',
+            },
+            { status: 409 }
+          );
+        }
       }
 
       const {

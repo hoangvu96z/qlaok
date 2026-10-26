@@ -2666,7 +2666,7 @@ test('POST /api/catalog bulk_update_availability updates only is_available with 
       beforeItem2
     );
 
-    // 2. Staff with inventory.adjust (without catalog.manage) marks items available
+    // 2. Staff with inventory.adjust (without catalog.manage) marks positive-stock and unlimited-stock items available
     const resStaffAvailable = await POST(
       new Request('http://localhost:3000/api/catalog', {
         method: 'POST',
@@ -2677,7 +2677,7 @@ test('POST /api/catalog bulk_update_availability updates only is_available with 
         body: JSON.stringify({
           action: 'bulk_update_availability',
           shopId: 'shop-fnb-001',
-          itemIds: ['item-fnb-001', 'item-fnb-003'],
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
           isAvailable: true,
         }),
       })
@@ -2688,14 +2688,24 @@ test('POST /api/catalog bulk_update_availability updates only is_available with 
     assert.equal(dataStaffAvailable.success, true);
     assert.equal(dataStaffAvailable.updatedCount, 2);
     assert.equal(dataStaffAvailable.is_available, true);
+    assert.equal(dataStaffAvailable.isAvailable, true);
+    assert.equal(updateCalls.length, 2);
+    assert.deepEqual(updateCalls[1].patch, { is_available: true });
+    assert.deepEqual(Object.keys(updateCalls[1].patch), ['is_available']);
 
-    // item-fnb-003 had stock_quantity: 0; availability change must NOT alter stock_quantity
-    const afterItem3 = itemsStore.find((i) => i.id === 'item-fnb-003')!;
-    assert.equal(afterItem3.is_available, true);
+    const restoredItem1 = itemsStore.find((i) => i.id === 'item-fnb-001')!;
+    const restoredItem2 = itemsStore.find((i) => i.id === 'item-fnb-002')!;
+    assert.equal(restoredItem1.is_available, true);
     assert.equal(
-      afterItem3.stock_quantity,
-      0,
-      'Stock quantity 0 must remain untouched by availability toggle'
+      restoredItem1.stock_quantity,
+      15,
+      'Positive stock_quantity must remain untouched by availability toggle'
+    );
+    assert.equal(restoredItem2.is_available, true);
+    assert.equal(
+      restoredItem2.stock_quantity,
+      null,
+      'Unlimited stock_quantity must remain untouched by availability toggle'
     );
 
     // 3. Cashier with catalog.manage (without inventory.adjust) can also update availability
@@ -2718,6 +2728,232 @@ test('POST /api/catalog bulk_update_availability updates only is_available with 
     const dataCashier = await resCashier.json();
     assert.equal(dataCashier.success, true);
     assert.equal(dataCashier.updatedCount, 1);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/catalog bulk_update_availability and bulk_set_availability reject zero-stock items when marking available before any write, while preserving sold-out and positive/unlimited stock behavior', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const { mockDbClient, itemsStore, updateCalls } =
+    createBulkCatalogMockHarness();
+  setSupabaseDbClientForTests(mockDbClient);
+  setShopMembershipDbClientForTest(
+    mockDbClient as unknown as Parameters<
+      typeof setShopMembershipDbClientForTest
+    >[0]
+  );
+
+  try {
+    // Prepare initial state: item-fnb-001 (stock 15) and item-fnb-002 (stock null) are sold out;
+    // item-fnb-003 has stock_quantity = 0 and is_available = false.
+    const item1 = itemsStore.find((i) => i.id === 'item-fnb-001')!;
+    const item2 = itemsStore.find((i) => i.id === 'item-fnb-002')!;
+    const item3 = itemsStore.find((i) => i.id === 'item-fnb-003')!;
+    item1.is_available = false;
+    item2.is_available = false;
+    item3.is_available = false;
+    item3.stock_quantity = 0;
+
+    const snapshotBeforeReject = structuredClone(itemsStore);
+
+    // (1a) Single zero-stock item rejected before any write (bulk_update_availability)
+    const resZeroSingle = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-003'],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resZeroSingle.status, 409);
+    const dataZeroSingle = await resZeroSingle.json();
+    assert.equal(dataZeroSingle.success, false);
+    assert.equal(dataZeroSingle.code, 'ZERO_STOCK_CANNOT_MARK_AVAILABLE');
+    assert.equal(dataZeroSingle.updatedCount, 0);
+    assert.equal(dataZeroSingle.count, 0);
+    assert.deepEqual(dataZeroSingle.zeroStockItemIds, ['item-fnb-003']);
+    assert.equal(typeof dataZeroSingle.error, 'string');
+    assert.ok(
+      dataZeroSingle.error.includes('tồn kho') &&
+        dataZeroSingle.error.includes('không giới hạn'),
+      'Error message must instruct user in Vietnamese to add stock or switch to unlimited stock'
+    );
+    assert.equal(
+      updateCalls.length,
+      0,
+      'Must not issue any DB update when rejecting zero-stock item'
+    );
+    assert.deepEqual(itemsStore, snapshotBeforeReject);
+
+    // (1b) Mixed batch containing positive-stock, unlimited-stock, and zero-stock item rejected before any write (bulk_set_availability alias)
+    const resZeroMixed = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_set_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002', 'item-fnb-003'],
+          isAvailable: true,
+          stock_quantity: 99,
+          price: 12345,
+        }),
+      })
+    );
+    assert.equal(resZeroMixed.status, 409);
+    const dataZeroMixed = await resZeroMixed.json();
+    assert.equal(dataZeroMixed.success, false);
+    assert.equal(dataZeroMixed.code, 'ZERO_STOCK_CANNOT_MARK_AVAILABLE');
+    assert.equal(dataZeroMixed.updatedCount, 0);
+    assert.equal(dataZeroMixed.count, 0);
+    assert.deepEqual(dataZeroMixed.zeroStockItemIds, ['item-fnb-003']);
+    assert.equal(
+      updateCalls.length,
+      0,
+      'Entire batch must be rejected before issuing any update'
+    );
+    assert.deepEqual(
+      itemsStore,
+      snapshotBeforeReject,
+      'All rows in mixed batch must remain completely unchanged'
+    );
+
+    // (2) Positive-stock (15) and unlimited-stock (null) items can still be marked available
+    const resValidAvailable = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_set_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          isAvailable: true,
+          stock_quantity: 999,
+          price: 88888,
+          category_id: 'cat-fnb-002',
+        }),
+      })
+    );
+    assert.equal(resValidAvailable.status, 200);
+    const dataValidAvailable = await resValidAvailable.json();
+    assert.equal(dataValidAvailable.success, true);
+    assert.equal(dataValidAvailable.updatedCount, 2);
+    assert.equal(dataValidAvailable.count, 2);
+    assert.equal(dataValidAvailable.is_available, true);
+    assert.equal(dataValidAvailable.isAvailable, true);
+    assert.deepEqual(dataValidAvailable.itemIds, [
+      'item-fnb-001',
+      'item-fnb-002',
+    ]);
+    assert.equal(updateCalls.length, 1);
+    assert.deepEqual(updateCalls[0].patch, { is_available: true });
+    assert.deepEqual(Object.keys(updateCalls[0].patch), ['is_available']);
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.is_available,
+      true
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.stock_quantity,
+      15
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-002')?.is_available,
+      true
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-002')?.stock_quantity,
+      null
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-003')?.is_available,
+      false
+    );
+
+    // (3) Zero-stock items (alone and in a mixed batch) can still be marked temporarily sold out (is_available = false)
+    // and (4) the update patch remains only { is_available }
+    const resZeroSoldOut = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-003'],
+          is_available: false,
+          stock_quantity: 50,
+          price: 10000,
+          category_id: 'cat-fnb-001',
+        }),
+      })
+    );
+    assert.equal(resZeroSoldOut.status, 200);
+    const dataZeroSoldOut = await resZeroSoldOut.json();
+    assert.equal(dataZeroSoldOut.success, true);
+    assert.equal(dataZeroSoldOut.updatedCount, 2);
+    assert.equal(dataZeroSoldOut.count, 2);
+    assert.equal(dataZeroSoldOut.is_available, false);
+    assert.equal(dataZeroSoldOut.isAvailable, false);
+    assert.deepEqual(dataZeroSoldOut.itemIds, [
+      'item-fnb-001',
+      'item-fnb-003',
+    ]);
+    assert.equal(updateCalls.length, 2);
+    assert.deepEqual(updateCalls[1].patch, { is_available: false });
+    assert.deepEqual(Object.keys(updateCalls[1].patch), ['is_available']);
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.is_available,
+      false
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-001')?.stock_quantity,
+      15
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-003')?.is_available,
+      false
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-003')?.stock_quantity,
+      0
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-003')?.price,
+      29000
+    );
+    assert.equal(
+      itemsStore.find((i) => i.id === 'item-fnb-003')?.category_id,
+      'cat-fnb-002'
+    );
   } finally {
     setShopMembershipDbClientForTest(null);
     setSupabaseDbClientForTests(null);
