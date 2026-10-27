@@ -88,15 +88,38 @@ function LoginContent() {
     searchParams.get('authRequestID') ||
     '';
 
+  const initialResetUserId = (
+    searchParams.get('userID') ||
+    searchParams.get('userId') ||
+    ''
+  ).trim();
+  const initialResetCode = (
+    searchParams.get('code') ||
+    searchParams.get('verificationCode') ||
+    ''
+  ).trim();
+  const hasInitialResetCredentials = Boolean(
+    initialResetUserId && initialResetCode
+  );
+
   const initialMode = (): AuthMode => {
     const modeParam = searchParams.get('mode');
     if (modeParam === 'staff') return 'staff';
     if (modeParam === 'register') return 'register';
-    if (modeParam === 'reset') return 'reset';
+    if (modeParam === 'reset' || hasInitialResetCredentials) return 'reset';
     return 'login';
   };
 
   const [mode, setMode] = useState<AuthMode>(initialMode);
+  const [resetStep, setResetStep] = useState<
+    'request_form' | 'request_sent' | 'complete_form' | 'complete_success'
+  >(() => (hasInitialResetCredentials ? 'complete_form' : 'request_form'));
+  const [resetUserId, setResetUserId] = useState(initialResetUserId);
+  const [resetCode, setResetCode] = useState(initialResetCode);
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [ownerPassword, setOwnerPassword] = useState('');
@@ -188,6 +211,47 @@ function LoginContent() {
       }
     }
   }, [router, searchParams, mode, tx]);
+
+  useEffect(() => {
+    const qUserId = (
+      searchParams.get('userID') ||
+      searchParams.get('userId') ||
+      ''
+    ).trim();
+    const qCode = (
+      searchParams.get('code') ||
+      searchParams.get('verificationCode') ||
+      ''
+    ).trim();
+
+    if (qUserId && qCode) {
+      setResetUserId(qUserId);
+      setResetCode(qCode);
+      setResetStep('complete_form');
+      setMode('reset');
+      setMessage(null);
+    }
+
+    if (qUserId || qCode) {
+      if (typeof window !== 'undefined') {
+        try {
+          const currentUrl = new URL(window.location.href);
+          currentUrl.searchParams.delete('userID');
+          currentUrl.searchParams.delete('userId');
+          currentUrl.searchParams.delete('code');
+          currentUrl.searchParams.delete('verificationCode');
+          const nextQuery = currentUrl.searchParams.toString();
+          const nextUrl =
+            currentUrl.pathname +
+            (nextQuery ? `?${nextQuery}` : '') +
+            currentUrl.hash;
+          window.history.replaceState({}, '', nextUrl);
+        } catch {
+          // ignore history state errors
+        }
+      }
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const langParam = searchParams.get('lang') || searchParams.get('locale');
@@ -755,6 +819,175 @@ function LoginContent() {
       return;
     }
 
+    if (mode === 'reset') {
+      if (resetStep === 'complete_form') {
+        const cleanNewPassword = resetNewPassword;
+        if (!resetUserId || !resetCode) {
+          setMessage({
+            type: 'error',
+            text: tx(
+              'Liên kết đặt lại mật khẩu không hợp lệ hoặc thiếu thông tin xác thực. Vui lòng thử yêu cầu liên kết mới.',
+              'The password reset link is invalid or missing verification information. Please request a new link.'
+            ),
+          });
+          return;
+        }
+        if (
+          cleanNewPassword.length < 8 ||
+          cleanNewPassword.length > 256 ||
+          !/[a-z]/.test(cleanNewPassword) ||
+          !/[A-Z]/.test(cleanNewPassword) ||
+          !/[0-9]/.test(cleanNewPassword) ||
+          !/[^A-Za-z0-9\s]/.test(cleanNewPassword)
+        ) {
+          setMessage({
+            type: 'error',
+            text: tx(
+              'Mật khẩu cần tối thiểu 8 ký tự, bao gồm chữ hoa, chữ thường, chữ số và ký tự đặc biệt.',
+              'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.'
+            ),
+          });
+          return;
+        }
+        if (cleanNewPassword !== resetConfirmPassword) {
+          setMessage({
+            type: 'error',
+            text: tx(
+              'Mật khẩu xác nhận chưa khớp.',
+              'Password confirmation does not match.'
+            ),
+          });
+          return;
+        }
+
+        setLoading(true);
+        try {
+          const response = await fetch(
+            `/api/auth/login-ui?lang=${locale === 'en' ? 'en' : 'vi'}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              cache: 'no-store',
+              body: JSON.stringify({
+                action: 'password_reset_complete',
+                userID: resetUserId,
+                code: resetCode,
+                password: cleanNewPassword,
+                confirmPassword: resetConfirmPassword,
+                lang: locale === 'en' ? 'en' : 'vi',
+              }),
+            }
+          );
+          const data = (await response.json()) as {
+            ok?: boolean;
+            error?: string;
+            code?: string;
+          };
+          if (!response.ok || !data.ok) {
+            throw new Error(
+              data.error ||
+                tx(
+                  'Chưa thể đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+                  'Could not complete password reset right now. Please try again.'
+                )
+            );
+          }
+          setResetStep('complete_success');
+          setResetNewPassword('');
+          setResetConfirmPassword('');
+          setResetUserId('');
+          setResetCode('');
+          setMessage({
+            type: 'success',
+            text: tx(
+              'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập bằng mật khẩu mới.',
+              'Password reset successfully! You can now sign in with your new password.'
+            ),
+          });
+        } catch (error) {
+          setMessage({
+            type: 'error',
+            text:
+              error instanceof Error && error.message
+                ? error.message
+                : tx(
+                    'Chưa thể đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+                    'Could not complete password reset right now. Please try again.'
+                  ),
+          });
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (resetStep === 'complete_success') {
+        setMode('login');
+        setResetStep('request_form');
+        setMessage(null);
+        return;
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+        setMessage({
+          type: 'error',
+          text: tx(
+            'Vui lòng nhập địa chỉ email hợp lệ.',
+            'Please enter a valid email address.'
+          ),
+        });
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const response = await fetch(
+          `/api/auth/login-ui?lang=${locale === 'en' ? 'en' : 'vi'}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+              action: 'password_reset_request',
+              email: cleanEmail,
+              lang: locale === 'en' ? 'en' : 'vi',
+            }),
+          }
+        );
+        const data = (await response.json()) as {
+          ok?: boolean;
+          error?: string;
+          code?: string;
+        };
+        if (!response.ok || !data.ok) {
+          throw new Error(
+            data.error ||
+              tx(
+                'Chưa thể gửi yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+                'Could not process password reset request right now. Please try again.'
+              )
+          );
+        }
+        setResetStep('request_sent');
+        setMessage(null);
+      } catch (error) {
+        setMessage({
+          type: 'error',
+          text:
+            error instanceof Error && error.message
+              ? error.message
+              : tx(
+                  'Chưa thể gửi yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+                  'Could not process password reset request right now. Please try again.'
+                ),
+        });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     handleOwnerOidcRedirect(mode);
   };
 
@@ -845,10 +1078,16 @@ function LoginContent() {
                     'Create your free shop'
                   )
                 : mode === 'reset'
-                  ? tx(
-                      'Khôi phục mật khẩu Chủ quán',
-                      'Reset Shop Owner Password'
-                    )
+                  ? resetStep === 'complete_form'
+                    ? tx('Đặt lại mật khẩu', 'Reset password')
+                    : resetStep === 'complete_success'
+                      ? tx('Thành công', 'Success')
+                      : resetStep === 'request_sent'
+                        ? tx('Kiểm tra email', 'Check your email')
+                        : tx(
+                            'Khôi phục mật khẩu Chủ quán',
+                            'Reset Shop Owner Password'
+                          )
                   : mode === 'staff'
                     ? tx(
                         'Đăng nhập Nhân viên / Thu ngân tại quán',
@@ -864,10 +1103,19 @@ function LoginContent() {
                 : authRequestId
                   ? tx('Đăng nhập để tiếp tục', 'Sign in to continue')
                   : mode === 'reset'
-                    ? tx(
-                        'Đặt lại mật khẩu Chủ quán',
-                        'Reset Shop Owner Password'
-                      )
+                    ? resetStep === 'complete_form'
+                      ? tx('Tạo mật khẩu mới', 'Create new password')
+                      : resetStep === 'complete_success'
+                        ? tx(
+                            'Đã đổi mật khẩu thành công',
+                            'Password changed successfully'
+                          )
+                        : resetStep === 'request_sent'
+                          ? tx('Kiểm tra hộp thư', 'Check your inbox')
+                          : tx(
+                              'Đặt lại mật khẩu Chủ quán',
+                              'Reset Shop Owner Password'
+                            )
                     : mode === 'staff'
                       ? tx('Đăng nhập Nhân viên', 'Staff Sign In')
                       : tx('Đăng nhập Chủ quán', 'Sign in as Owner')}
@@ -889,10 +1137,25 @@ function LoginContent() {
                       'Enter your email and password to manage your store.'
                     )
                   : mode === 'reset'
-                    ? tx(
-                        'Tiếp tục trên trang đăng nhập bảo mật để đặt lại mật khẩu cho tài khoản Chủ quán của bạn.',
-                        'Continue on the secure sign-in page to reset your owner account password.'
-                      )
+                    ? resetStep === 'complete_form'
+                      ? tx(
+                          'Nhập mật khẩu mới cho tài khoản Chủ quán của bạn.',
+                          'Enter a new password for your shop owner account.'
+                        )
+                      : resetStep === 'complete_success'
+                        ? tx(
+                            'Mật khẩu của bạn đã được cập nhật. Bạn có thể đăng nhập bằng mật khẩu mới.',
+                            'Your password has been updated. You can now sign in with your new password.'
+                          )
+                        : resetStep === 'request_sent'
+                          ? tx(
+                              'Chúng tôi đã gửi hướng dẫn đặt lại mật khẩu tới hộp thư của bạn.',
+                              'We have sent password reset instructions to your inbox.'
+                            )
+                          : tx(
+                              'Nhập email tài khoản để nhận liên kết đặt lại mật khẩu.',
+                              'Enter your account email to receive a password reset link.'
+                            )
                     : mode === 'staff'
                       ? tx(
                           'Nhập tên cửa hàng hoặc liên kết, tài khoản và mật khẩu do chủ quán cấp để vào quầy đơn hàng.',
@@ -917,6 +1180,9 @@ function LoginContent() {
                 setRegistrationStep('form');
                 setDuplicateEmailDetected(false);
                 setMessage(null);
+                if (resetStep === 'complete_success') {
+                  setResetStep('request_form');
+                }
               }}
               className={`py-2 rounded-lg text-xs font-bold transition ${
                 mode === 'login'
@@ -933,6 +1199,9 @@ function LoginContent() {
                 setMode('register');
                 setDuplicateEmailDetected(false);
                 setMessage(null);
+                if (resetStep === 'complete_success') {
+                  setResetStep('request_form');
+                }
               }}
               className={`py-2 rounded-lg text-xs font-bold transition ${
                 mode === 'register'
@@ -950,6 +1219,9 @@ function LoginContent() {
                 setRegistrationStep('form');
                 setDuplicateEmailDetected(false);
                 setMessage(null);
+                if (resetStep === 'complete_success') {
+                  setResetStep('request_form');
+                }
               }}
               className={`py-2 rounded-lg text-xs font-bold transition ${
                 mode === 'reset'
@@ -1209,6 +1481,314 @@ function LoginContent() {
                   </button>
                 </div>
               </>
+            ) : mode === 'reset' ? (
+              resetStep === 'complete_success' ? (
+                <>
+                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs leading-relaxed flex flex-col gap-2">
+                    <div className="flex items-center gap-2 font-semibold text-emerald-200">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                      <span>
+                        {tx(
+                          'Mật khẩu đã được cập nhật thành công!',
+                          'Password updated successfully!'
+                        )}
+                      </span>
+                    </div>
+                    <p className="text-stone-300">
+                      {tx(
+                        'Bây giờ bạn có thể đăng nhập vào tài khoản Chủ quán của mình bằng mật khẩu mới vừa tạo.',
+                        'You can now sign in to your Shop Owner account with your newly created password.'
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="login-reset-back-to-signin-btn"
+                    onClick={() => {
+                      setMode('login');
+                      setResetStep('request_form');
+                      setMessage(null);
+                    }}
+                    className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+                  >
+                    <span>{tx('Đăng nhập ngay', 'Sign in now')}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </>
+              ) : resetStep === 'request_sent' ? (
+                <>
+                  <div className="p-4 rounded-2xl bg-stone-950/90 border border-stone-800/90 flex items-start gap-3">
+                    <Mail className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-xs text-stone-300 leading-relaxed">
+                      <p className="font-semibold text-white mb-1">
+                        {tx('Kiểm tra hộp thư của bạn', 'Check your email inbox')}
+                      </p>
+                      <p className="text-stone-400">
+                        {tx(
+                          `Nếu ${email.trim().toLowerCase()} đã được đăng ký tài khoản, chúng tôi đã gửi liên kết đặt lại mật khẩu tới hộp thư này. Vui lòng kiểm tra email (bao gồm cả thư mục Thư rác / Spam) và bấm vào liên kết để tạo mật khẩu mới.`,
+                          `If ${email.trim().toLowerCase()} is registered with Qlaok, we have sent a password reset link to this address. Please check your inbox (including Spam/Junk folder) and follow the link to set a new password.`
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 pt-2">
+                    <button
+                      type="button"
+                      data-testid="login-reset-resend-btn"
+                      onClick={() => {
+                        setResetStep('request_form');
+                        setMessage(null);
+                      }}
+                      className="w-full py-3 rounded-xl bg-stone-950 hover:bg-stone-800/80 border border-stone-800 text-xs font-semibold text-amber-300 transition flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>
+                        {tx(
+                          'Gửi lại hoặc nhập email khác',
+                          'Resend or enter another email'
+                        )}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="login-reset-back-to-signin-btn"
+                      onClick={() => {
+                        setMode('login');
+                        setResetStep('request_form');
+                        setMessage(null);
+                      }}
+                      className="text-center text-xs text-stone-400 hover:text-white font-medium py-2"
+                    >
+                      {tx('← Quay lại Đăng nhập', '← Back to Sign In')}
+                    </button>
+                  </div>
+                </>
+              ) : resetStep === 'complete_form' ? (
+                <>
+                  <div className="p-3.5 rounded-2xl bg-stone-950/90 border border-stone-800/90 flex items-start gap-3">
+                    <KeyRound className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-xs text-stone-300 leading-relaxed">
+                      <p className="font-semibold text-white mb-0.5">
+                        {tx('Thiết lập mật khẩu mới', 'Set your new password')}
+                      </p>
+                      <p className="text-stone-400">
+                        {tx(
+                          'Vui lòng nhập mật khẩu mới cho tài khoản của bạn để hoàn tất đặt lại.',
+                          'Please enter a new password for your account to complete the reset.'
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="owner-reset-new-password"
+                      className="block text-xs font-medium text-stone-300 mb-1.5"
+                    >
+                      {tx('Mật khẩu mới *', 'New password *')}
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        id="owner-reset-new-password"
+                        data-testid="login-reset-new-password-input"
+                        type={showResetNewPassword ? 'text' : 'password'}
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        aria-describedby="reset-password-rules"
+                        enterKeyHint="next"
+                        value={resetNewPassword}
+                        onChange={(e) => setResetNewPassword(e.target.value)}
+                        placeholder={tx('Tối thiểu 8 ký tự', 'At least 8 characters')}
+                        className="w-full pl-10 pr-12 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        type="button"
+                        aria-label={
+                          showResetNewPassword
+                            ? tx('Ẩn mật khẩu', 'Hide password')
+                            : tx('Hiện mật khẩu', 'Show password')
+                        }
+                        aria-pressed={showResetNewPassword}
+                        onClick={() => setShowResetNewPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-stone-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        {showResetNewPassword ? (
+                          <EyeOff className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                    <p
+                      id="reset-password-rules"
+                      className="mt-1.5 text-[11px] text-stone-400 leading-relaxed"
+                    >
+                      {tx(
+                        'Tối thiểu 8 ký tự, gồm chữ hoa, chữ thường, chữ số và ký tự đặc biệt.',
+                        'At least 8 characters, including uppercase, lowercase, number, and special character.'
+                      )}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="owner-reset-confirm-password"
+                      className="block text-xs font-medium text-stone-300 mb-1.5"
+                    >
+                      {tx('Xác nhận mật khẩu mới *', 'Confirm new password *')}
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        id="owner-reset-confirm-password"
+                        data-testid="login-reset-confirm-password-input"
+                        type={showResetConfirmPassword ? 'text' : 'password'}
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        enterKeyHint="done"
+                        value={resetConfirmPassword}
+                        onChange={(e) => setResetConfirmPassword(e.target.value)}
+                        placeholder={tx('Nhập lại mật khẩu mới', 'Re-enter new password')}
+                        className="w-full pl-10 pr-12 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        type="button"
+                        aria-label={
+                          showResetConfirmPassword
+                            ? tx('Ẩn mật khẩu xác nhận', 'Hide confirm password')
+                            : tx('Hiện mật khẩu xác nhận', 'Show confirm password')
+                        }
+                        aria-pressed={showResetConfirmPassword}
+                        onClick={() => setShowResetConfirmPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-stone-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        {showResetConfirmPassword ? (
+                          <EyeOff className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs pt-1">
+                    <button
+                      type="button"
+                      data-testid="login-reset-request-new-btn"
+                      onClick={() => {
+                        setResetStep('request_form');
+                        setMessage(null);
+                      }}
+                      className="text-amber-400 hover:underline font-medium inline-flex items-center gap-1"
+                    >
+                      {tx('Gửi lại yêu cầu đặt lại mật khẩu', 'Request new reset email')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="login-reset-back-to-signin-btn"
+                      onClick={() => {
+                        setMode('login');
+                        setResetStep('request_form');
+                        setMessage(null);
+                      }}
+                      className="text-stone-400 hover:text-white font-medium"
+                    >
+                      {tx('← Quay lại Đăng nhập', '← Back to Sign In')}
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    data-testid="login-reset-complete-submit-btn"
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+                  >
+                    <span>
+                      {loading
+                        ? tx('Đang cập nhật mật khẩu...', 'Updating password...')
+                        : tx('Cập nhật mật khẩu mới', 'Update password')}
+                    </span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="p-3.5 rounded-2xl bg-stone-950/90 border border-stone-800/90 flex items-start gap-3">
+                    <ShieldCheck className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-xs text-stone-300 leading-relaxed">
+                      <p className="font-semibold text-white mb-0.5">
+                        {tx('Khôi phục tài khoản Chủ quán', 'Shop Owner Account Recovery')}
+                      </p>
+                      <p className="text-stone-400">
+                        {tx(
+                          'Nhập địa chỉ email tài khoản của bạn. Chúng tôi sẽ gửi liên kết bảo mật để bạn thiết lập lại mật khẩu.',
+                          'Enter your account email. We will send a secure link for you to reset your password.'
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="owner-reset-email"
+                      className="block text-xs font-medium text-stone-300 mb-1.5"
+                    >
+                      {tx('Email tài khoản *', 'Account email *')}
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        id="owner-reset-email"
+                        data-testid="login-reset-email-input"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        enterKeyHint="done"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="chuquan@tenquan.vn"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs pt-1">
+                    <button
+                      type="button"
+                      data-testid="login-owner-back-from-reset-btn"
+                      onClick={() => {
+                        setMode('login');
+                        setMessage(null);
+                      }}
+                      className="text-amber-400 hover:underline font-medium"
+                    >
+                      {tx('← Quay lại Đăng nhập', '← Back to Sign In')}
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    data-testid="login-reset-submit-btn"
+                    disabled={loading || !email.trim()}
+                    className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+                  >
+                    <span>
+                      {loading
+                        ? tx('Đang gửi yêu cầu...', 'Sending request...')
+                        : tx('Gửi liên kết đặt lại mật khẩu', 'Send password reset link')}
+                    </span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </>
+              )
             ) : (
               <>
                 <div className="p-3.5 rounded-2xl bg-stone-950/90 border border-stone-800/90 flex items-start gap-3">
@@ -1225,15 +1805,10 @@ function LoginContent() {
                             'Điền họ tên, email và mật khẩu để nhận mã xác thực kích hoạt tài khoản Chủ quán.',
                             'Enter your full name, email, and password to receive a verification code and activate your owner account.'
                           )
-                        : mode === 'reset'
-                          ? tx(
-                              'Nhập email để nhận hướng dẫn đặt lại mật khẩu.',
-                              'Enter your email to receive password reset instructions.'
-                            )
-                          : tx(
-                              'Đăng nhập để quản lý cửa hàng của bạn trên Qlaok.',
-                              'Sign in to manage your store on Qlaok.'
-                            )}
+                        : tx(
+                            'Đăng nhập để quản lý cửa hàng của bạn trên Qlaok.',
+                            'Sign in to manage your store on Qlaok.'
+                          )}
                     </p>
                   </div>
                 </div>
@@ -1421,34 +1996,22 @@ function LoginContent() {
 
                 <div className="flex items-center justify-between text-xs pt-1">
                   {!authRequestId ? (
-                    mode !== 'reset' ? (
-                      <button
-                        type="button"
-                        data-testid="login-owner-reset-mode-btn"
-                        onClick={() => {
-                          setMode('reset');
-                          setRegistrationStep('form');
-                          setMessage(null);
-                        }}
-                        className="text-amber-400 hover:underline font-medium inline-flex items-center gap-1"
-                      >
-                        <KeyRound className="w-3.5 h-3.5" />
-                        {tx('Quên mật khẩu?', 'Forgot password?')}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        data-testid="login-owner-back-from-reset-btn"
-                        onClick={() => {
-                          setMode('login');
-                          setRegistrationStep('form');
-                          setMessage(null);
-                        }}
-                        className="text-amber-400 hover:underline font-medium"
-                      >
-                        {tx('← Quay lại Đăng nhập', '← Back to Sign In')}
-                      </button>
-                    )
+                    <button
+                      type="button"
+                      data-testid="login-owner-reset-mode-btn"
+                      onClick={() => {
+                        setMode('reset');
+                        setRegistrationStep('form');
+                        setMessage(null);
+                        if (resetStep === 'complete_success') {
+                          setResetStep('request_form');
+                        }
+                      }}
+                      className="text-amber-400 hover:underline font-medium inline-flex items-center gap-1"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      {tx('Quên mật khẩu?', 'Forgot password?')}
+                    </button>
                   ) : isOwnerRegistration ? (
                     <button
                       type="button"
@@ -1490,51 +2053,48 @@ function LoginContent() {
               </>
             )}
 
-            <button
-              type="submit"
-              data-testid="login-submit-btn"
-              disabled={loading || !customLoginReady}
-              className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
-            >
-              <span>
-                {loading
-                  ? isOwnerRegistration
-                    ? registrationStep === 'verify_email'
-                      ? tx('Đang xác thực...', 'Verifying...')
-                      : tx('Đang tạo tài khoản...', 'Creating account...')
-                    : authRequestId
-                      ? tx('Đang đăng nhập...', 'Signing in...')
-                      : mode === 'staff'
-                        ? tx('Đang xử lý...', 'Processing...')
-                        : tx('Đang mở trang đăng nhập...', 'Opening sign-in page...')
-                  : mode === 'staff'
-                    ? tx('Đăng nhập nhân viên', 'Staff sign-in')
-                    : isOwnerRegistration
+            {mode !== 'reset' && (
+              <button
+                type="submit"
+                data-testid="login-submit-btn"
+                disabled={loading || !customLoginReady}
+                className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+              >
+                <span>
+                  {loading
+                    ? isOwnerRegistration
                       ? registrationStep === 'verify_email'
-                        ? tx(
-                            'Xác thực & Hoàn tất đăng ký',
-                            'Verify & Complete registration'
-                          )
-                        : tx(
-                            'Tạo tài khoản Chủ quán',
-                            'Create Owner account'
-                          )
-                      : mode === 'reset'
-                        ? tx(
-                            'Đặt lại mật khẩu',
-                            'Reset password'
-                          )
-                        : tx(
-                            'Đăng nhập Chủ quán',
-                            'Sign in as Owner'
-                          )}
-              </span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
+                        ? tx('Đang xác thực...', 'Verifying...')
+                        : tx('Đang tạo tài khoản...', 'Creating account...')
+                      : authRequestId
+                        ? tx('Đang đăng nhập...', 'Signing in...')
+                        : mode === 'staff'
+                          ? tx('Đang xử lý...', 'Processing...')
+                          : tx(
+                              'Đang mở trang đăng nhập...',
+                              'Opening sign-in page...'
+                            )
+                    : mode === 'staff'
+                      ? tx('Đăng nhập nhân viên', 'Staff sign-in')
+                      : isOwnerRegistration
+                        ? registrationStep === 'verify_email'
+                          ? tx(
+                              'Xác thực & Hoàn tất đăng ký',
+                              'Verify & Complete registration'
+                            )
+                          : tx(
+                              'Tạo tài khoản Chủ quán',
+                              'Create Owner account'
+                            )
+                        : tx('Đăng nhập Chủ quán', 'Sign in as Owner')}
+                </span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            )}
           </form>
 
           {/* Divider — Quick Demo Account (only shown for shop owner modes outside email verification) */}
-          {mode !== 'staff' && (
+          {mode !== 'staff' && mode !== 'reset' && (
             !authRequestId &&
             !(isOwnerRegistration && registrationStep === 'verify_email') && (
               <>

@@ -4,8 +4,10 @@ import { setSupabaseDbClientForTests } from '../src/lib/db';
 import {
   bootstrapZitadelOidcAuthRequestId,
   buildZitadelLoginUiRateLimitBucketKey,
+  buildZitadelPasswordResetUrlTemplate,
   checkZitadelLoginUiRateLimit,
   completeZitadelLoginRequest,
+  completeZitadelPasswordReset,
   completeZitadelRegistrationVerification,
   enforceZitadelLoginUiRateLimit,
   fetchZitadelLoginRequest,
@@ -13,6 +15,9 @@ import {
   getHostedRegistrationUrl,
   isRegistrationLoginRequest,
   issueZitadelRegistrationTicket,
+  PASSWORD_RESET_REQUEST_EMAIL_MAX_ATTEMPTS,
+  PASSWORD_RESET_REQUEST_IP_MAX_ATTEMPTS,
+  requestZitadelPasswordReset,
   resendZitadelRegistrationCode,
   resetZitadelLoginUiRateLimitsForTests,
   splitOwnerFullNameForZitadel,
@@ -1276,6 +1281,812 @@ test('enforceZitadelLoginUiRateLimit and registration verification failure track
     else process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl;
     if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    resetZitadelLoginUiRateLimitsForTests();
+  }
+});
+
+test('password_reset_request performs exact-email lookup, sends Qlaok reset URL template only for eligible verified human accounts, and returns identical {ok:true} without enumeration', async () => {
+  resetZitadelLoginUiRateLimitsForTests();
+
+  const qlaokOrigin = 'https://qlaok.vunph.click';
+  const expectedTemplate =
+    'https://qlaok.vunph.click/login?mode=reset&userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}';
+  assert.equal(
+    buildZitadelPasswordResetUrlTemplate(qlaokOrigin, config),
+    expectedTemplate
+  );
+  // Never points to Zitadel issuer host even if issuerUrl is passed as origin
+  assert.equal(
+    buildZitadelPasswordResetUrlTemplate(config.issuerUrl, {
+      ...config,
+      webRedirectUri: 'https://qlaok.vunph.click/api/auth/callback',
+    }),
+    expectedTemplate
+  );
+
+  const calls: Array<{
+    url: string;
+    method: string;
+    auth: string;
+    body?: Record<string, unknown>;
+  }> = [];
+
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method || 'GET';
+    const headers = (init?.headers || {}) as Record<string, string>;
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : undefined;
+    calls.push({ url, method, auth: headers.Authorization || '', body });
+
+    if (url.endsWith('/v2/users') && method === 'POST') {
+      const queries = body?.queries as Array<{
+        emailQuery?: { emailAddress?: string; method?: string };
+      }>;
+      const emailAddress = queries?.[0]?.emailQuery?.emailAddress;
+      assert.equal(
+        queries?.[0]?.emailQuery?.method,
+        'TEXT_QUERY_METHOD_EQUALS'
+      );
+
+      if (emailAddress === 'verified.owner@example.test') {
+        return response({
+          result: [
+            {
+              userId: '289911223344556677',
+              state: 'USER_STATE_ACTIVE',
+              human: {
+                email: {
+                  email: 'Verified.Owner@Example.test',
+                  isVerified: true,
+                },
+              },
+            },
+          ],
+        });
+      }
+      if (emailAddress === 'chuquan@qlaok.vn') {
+        return response({
+          result: [
+            {
+              userId: '289911223344558899',
+              human: {
+                email: {
+                  email: 'chuquan@qlaok.vn',
+                  isVerified: true,
+                },
+              },
+            },
+          ],
+        });
+      }
+      if (emailAddress === 'unverified@example.test') {
+        return response({
+          result: [
+            {
+              userId: '289900000000000001',
+              human: {
+                email: {
+                  email: 'unverified@example.test',
+                  isVerified: false,
+                },
+              },
+            },
+          ],
+        });
+      }
+      if (emailAddress === 'machine@example.test') {
+        return response({
+          result: [
+            {
+              userId: '289900000000000002',
+              machine: { name: 'service-bot' },
+            },
+          ],
+        });
+      }
+      if (emailAddress === 'locked@example.test') {
+        return response({
+          result: [
+            {
+              userId: '289900000000000003',
+              state: 'USER_STATE_LOCKED',
+              human: {
+                email: {
+                  email: 'locked@example.test',
+                  isVerified: true,
+                },
+              },
+            },
+          ],
+        });
+      }
+      return response({ result: [] });
+    }
+
+    if (
+      (url.endsWith('/v2/users/289911223344556677/password_reset') ||
+        url.endsWith('/v2/users/289911223344558899/password_reset')) &&
+      method === 'POST'
+    ) {
+      return response({ details: {} }, 200);
+    }
+
+    throw new Error(`Unexpected ZITADEL request: ${method} ${url}`);
+  };
+
+  // 1. Eligible verified human account triggers POST /v2/users/{user_id}/password_reset
+  const okVerified = await requestZitadelPasswordReset({
+    email: '  Verified.Owner@Example.test ',
+    origin: qlaokOrigin,
+    clientIp: '198.51.100.10',
+    config,
+    fetchImpl,
+  });
+  assert.deepEqual(okVerified, { ok: true });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]?.url, 'https://auth.example.test/v2/users');
+  assert.equal(calls[0]?.auth, 'Bearer server-only-token');
+  assert.deepEqual(calls[0]?.body, {
+    query: { offset: '0', limit: 2, asc: true },
+    queries: [
+      {
+        emailQuery: {
+          emailAddress: 'verified.owner@example.test',
+          method: 'TEXT_QUERY_METHOD_EQUALS',
+        },
+      },
+    ],
+  });
+  assert.equal(
+    calls[1]?.url,
+    'https://auth.example.test/v2/users/289911223344556677/password_reset'
+  );
+  assert.equal(calls[1]?.auth, 'Bearer server-only-token');
+  assert.deepEqual(calls[1]?.body, {
+    sendLink: {
+      notificationType: 'NOTIFICATION_TYPE_Email',
+      urlTemplate: expectedTemplate,
+    },
+  });
+
+  // 2. Unknown, unverified, machine, and locked accounts return identical { ok: true } and NEVER call /password_reset
+  for (const candidate of [
+    'unknown@example.test',
+    'unverified@example.test',
+    'machine@example.test',
+    'locked@example.test',
+  ]) {
+    calls.length = 0;
+    const res = await requestZitadelPasswordReset({
+      email: candidate,
+      origin: qlaokOrigin,
+      clientIp: '198.51.100.11',
+      config,
+      fetchImpl,
+    });
+    assert.deepEqual(res, { ok: true });
+    assert.equal(calls.length, 1, `Only search called for ${candidate}`);
+    assert.equal(
+      calls.some((c) => c.url.includes('/password_reset')),
+      false,
+      `Must not request password_reset for ${candidate}`
+    );
+  }
+
+  // 3. Previously reserved emails (e.g. chuquan@qlaok.vn) are not blocked by hardcoded exemptions
+  calls.length = 0;
+  const okPreviouslyReserved = await requestZitadelPasswordReset({
+    email: 'chuquan@qlaok.vn',
+    origin: qlaokOrigin,
+    clientIp: '198.51.100.12',
+    config,
+    fetchImpl,
+  });
+  assert.deepEqual(okPreviouslyReserved, { ok: true });
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[1]?.url,
+    'https://auth.example.test/v2/users/289911223344558899/password_reset'
+  );
+});
+
+test('password_reset_request enforces IP and normalized-email rate limits with hashed keys and never stores or logs raw email/token', async () => {
+  resetZitadelLoginUiRateLimitsForTests();
+  const prevUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://qlaok.vunph.click';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key';
+
+  const recordedBucketKeys: string[] = [];
+  const counts = new Map<string, number>();
+
+  setSupabaseDbClientForTests({
+    async rpc(fn: string, args: Record<string, unknown>) {
+      const key = String(args.p_bucket_key || '');
+      recordedBucketKeys.push(key);
+      if (fn === 'check_staff_login_rate_limit_atomic') {
+        const max = Number(args.p_max_attempts || 999);
+        const current = counts.get(key) || 0;
+        return { data: { allowed: current < max, failure_count: current }, error: null };
+      }
+      if (fn === 'record_staff_login_failure_atomic') {
+        const max = Number(args.p_max_attempts || 999);
+        const next = (counts.get(key) || 0) + 1;
+        counts.set(key, next);
+        const allowed = next < max;
+        return {
+          data: {
+            allowed,
+            newly_blocked: !allowed,
+            failure_count: next,
+            retry_after_sec: allowed ? 0 : 600,
+            blocked_until: allowed ? null : new Date(Date.now() + 600_000).toISOString(),
+          },
+          error: null,
+        };
+      }
+      if (fn === 'reset_staff_login_rate_limit_atomic') {
+        counts.delete(key);
+        return { data: true, error: null };
+      }
+      throw new Error(`Unexpected RPC: ${fn}`);
+    },
+  } as never);
+
+  try {
+    const fetchNoop: typeof fetch = async () => response({ result: [] });
+    const targetEmail = 'RateLimit.Target@Example.test';
+
+    for (let i = 0; i < PASSWORD_RESET_REQUEST_EMAIL_MAX_ATTEMPTS; i += 1) {
+      const res = await requestZitadelPasswordReset({
+        email: targetEmail,
+        origin: 'https://qlaok.vunph.click',
+        clientIp: `198.51.100.${50 + i}`,
+        config,
+        fetchImpl: fetchNoop,
+      });
+      assert.deepEqual(res, { ok: true });
+    }
+
+    // 6th request for the same normalized email (even from a new IP) is rate-limited
+    await assert.rejects(
+      () =>
+        requestZitadelPasswordReset({
+          email: '  ratelimit.target@example.test  ',
+          origin: 'https://qlaok.vunph.click',
+          clientIp: '198.51.100.200',
+          config,
+          fetchImpl: fetchNoop,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'LOGIN_RATE_LIMITED' &&
+        err.status === 429
+    );
+
+    // Every bucket key stored in DB is a SHA-256 hash and never contains the raw email or IP
+    assert.ok(recordedBucketKeys.length > 0);
+    for (const key of recordedBucketKeys) {
+      assert.match(key, /^rl-staff-[0-9a-f]{64}$/);
+      assert.equal(key.toLowerCase().includes('ratelimit.target'), false);
+      assert.equal(key.includes('198.51.100'), false);
+    }
+
+    // Per-IP rate limit blocks excessive requests across different emails from the same IP
+    counts.clear();
+    for (let i = 0; i < PASSWORD_RESET_REQUEST_IP_MAX_ATTEMPTS; i += 1) {
+      await requestZitadelPasswordReset({
+        email: `user${i}@example.test`,
+        origin: 'https://qlaok.vunph.click',
+        clientIp: '198.51.100.77',
+        config,
+        fetchImpl: fetchNoop,
+      });
+    }
+    await assert.rejects(
+      () =>
+        requestZitadelPasswordReset({
+          email: 'another@example.test',
+          origin: 'https://qlaok.vunph.click',
+          clientIp: '198.51.100.77',
+          config,
+          fetchImpl: fetchNoop,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'LOGIN_RATE_LIMITED' &&
+        err.status === 429
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (prevUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl;
+    if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    resetZitadelLoginUiRateLimitsForTests();
+  }
+});
+
+test('password_reset_complete validates bounded userID, code, and strong password, posts verificationCode to Zitadel, maps errors safely, and never calls login callback', async () => {
+  resetZitadelLoginUiRateLimitsForTests();
+
+  const calls: Array<{
+    url: string;
+    method: string;
+    auth: string;
+    body?: Record<string, unknown>;
+  }> = [];
+
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method || 'GET';
+    const headers = (init?.headers || {}) as Record<string, string>;
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : undefined;
+    calls.push({ url, method, auth: headers.Authorization || '', body });
+
+    if (
+      url.endsWith('/v2/users/289911223344556677/password') &&
+      method === 'POST'
+    ) {
+      if (body?.verificationCode === 'expired99') {
+        return response({ message: 'Password reset code has expired' }, 400);
+      }
+      if (body?.verificationCode !== '849201') {
+        return response({ message: 'Password reset code is invalid' }, 400);
+      }
+      return response({ details: {} }, 200);
+    }
+    if (
+      url.endsWith('/v2/users/999999999999999999/password') &&
+      method === 'POST'
+    ) {
+      return response({ message: 'User not found' }, 404);
+    }
+    throw new Error(`Unexpected ZITADEL call: ${method} ${url}`);
+  };
+
+  // 1. Rejects malformed/unbounded/staff userID and invalid code before calling Zitadel
+  for (const badUserId of [
+    '',
+    '   ',
+    '../admin',
+    'user/123',
+    'staff-acct-123456',
+    'a'.repeat(129),
+  ]) {
+    await assert.rejects(
+      () =>
+        completeZitadelPasswordReset({
+          userID: badUserId,
+          code: '849201',
+          password: 'StrongPass1!',
+          confirmPassword: 'StrongPass1!',
+          origin: 'https://qlaok.vunph.click',
+          config,
+          fetchImpl,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'VERIFICATION_CODE_INVALID' &&
+        err.status === 400
+    );
+  }
+  for (const badCode of ['', '12', 'bad/code', 'a'.repeat(129), '123\u0000456']) {
+    await assert.rejects(
+      () =>
+        completeZitadelPasswordReset({
+          userID: '289911223344556677',
+          code: badCode,
+          password: 'StrongPass1!',
+          confirmPassword: 'StrongPass1!',
+          origin: 'https://qlaok.vunph.click',
+          config,
+          fetchImpl,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'VERIFICATION_CODE_INVALID' &&
+        err.status === 400
+    );
+  }
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289911223344556677',
+        code: '849201',
+        password: 'weakpassword',
+        confirmPassword: 'weakpassword',
+        origin: 'https://qlaok.vunph.click',
+        config,
+        fetchImpl,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'PASSWORD_WEAK' &&
+      err.status === 400
+  );
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289911223344556677',
+        code: '849201',
+        password: 'StrongPass1!',
+        confirmPassword: 'MismatchPass1!',
+        origin: 'https://qlaok.vunph.click',
+        config,
+        fetchImpl,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'PASSWORD_MISMATCH' &&
+      err.status === 400
+  );
+  assert.equal(calls.length, 0, 'Validation failures must never call Zitadel');
+
+  // 2. Non-existent user (404) maps to VERIFICATION_CODE_INVALID (400) so arbitrary userIDs cannot be enumerated
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '999999999999999999',
+        code: '849201',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        origin: 'https://qlaok.vunph.click',
+        config,
+        fetchImpl,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'VERIFICATION_CODE_INVALID' &&
+      err.status === 400
+  );
+
+  // 3. Expired code maps to VERIFICATION_CODE_EXPIRED (400) and invalid code maps to VERIFICATION_CODE_INVALID (400)
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289911223344556677',
+        code: 'expired99',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        origin: 'https://qlaok.vunph.click',
+        config,
+        fetchImpl,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'VERIFICATION_CODE_EXPIRED' &&
+      err.status === 400
+  );
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289911223344556677',
+        code: '000000',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        origin: 'https://qlaok.vunph.click',
+        config,
+        fetchImpl,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'VERIFICATION_CODE_INVALID' &&
+      err.status === 400
+  );
+
+  // 4. Valid code completes via POST /v2/users/{user_id}/password with changeRequired=false and no login UI callback
+  calls.length = 0;
+  const completed = await completeZitadelPasswordReset({
+    userID: '289911223344556677',
+    code: '849 201',
+    password: 'StrongPass1!',
+    confirmPassword: 'StrongPass1!',
+    origin: 'https://qlaok.vunph.click',
+    config,
+    fetchImpl,
+  });
+  assert.deepEqual(completed, { ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0]?.url,
+    'https://auth.example.test/v2/users/289911223344556677/password'
+  );
+  assert.equal(calls[0]?.method, 'POST');
+  assert.equal(calls[0]?.auth, 'Bearer server-only-token');
+  assert.deepEqual(calls[0]?.body, {
+    newPassword: {
+      password: 'StrongPass1!',
+      changeRequired: false,
+    },
+    verificationCode: '849201',
+  });
+  assert.equal(
+    calls.some(
+      (c) => c.url.includes('/v2/sessions') || c.url.includes('/auth_requests')
+    ),
+    false
+  );
+
+  // 5. Brute-force protection: 5 failed code attempts on a userID locks out further attempts (429) before calling Zitadel
+  let postPasswordCalls = 0;
+  const failingCodeFetch: typeof fetch = async () => {
+    postPasswordCalls += 1;
+    return response({ message: 'Invalid verification code' }, 400);
+  };
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    await assert.rejects(
+      () =>
+        completeZitadelPasswordReset({
+          userID: '289977665544332211',
+          code: '111111',
+          password: 'StrongPass1!',
+          confirmPassword: 'StrongPass1!',
+          origin: 'https://qlaok.vunph.click',
+          clientIp: `198.51.100.${100 + attempt}`,
+          config,
+          fetchImpl: failingCodeFetch,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'VERIFICATION_CODE_INVALID'
+    );
+  }
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289977665544332211',
+        code: '111111',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        origin: 'https://qlaok.vunph.click',
+        clientIp: '198.51.100.105',
+        config,
+        fetchImpl: failingCodeFetch,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'LOGIN_RATE_LIMITED' &&
+      err.status === 429
+  );
+  assert.equal(postPasswordCalls, 5);
+  // 6th attempt is blocked BEFORE calling Zitadel
+  await assert.rejects(
+    () =>
+      completeZitadelPasswordReset({
+        userID: '289977665544332211',
+        code: '849201',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        origin: 'https://qlaok.vunph.click',
+        clientIp: '198.51.100.106',
+        config,
+        fetchImpl: failingCodeFetch,
+      }),
+    (err: unknown) =>
+      err instanceof ZitadelLoginUiError &&
+      err.code === 'LOGIN_RATE_LIMITED' &&
+      err.status === 429
+  );
+  assert.equal(postPasswordCalls, 5);
+});
+
+test('/api/auth/login-ui POST contract for password_reset_request and password_reset_complete handles Zitadel failures, localization, no-store headers, and credential redaction', async () => {
+  resetZitadelLoginUiRateLimitsForTests();
+  const prevIssuer = process.env.ZITADEL_ISSUER_URL;
+  const prevPat = process.env.ZITADEL_LOGIN_CLIENT_PAT;
+  const prevWebClient = process.env.ZITADEL_CLIENT_ID;
+  const prevMobileClient = process.env.ZITADEL_MOBILE_CLIENT_ID;
+  const prevFetch = globalThis.fetch;
+
+  const sentinelSecretToken = 'pat-secret-sentinel-998877';
+  const sentinelPassword = 'ResetPass!98765';
+  const sentinelCode = '739182';
+
+  process.env.ZITADEL_ISSUER_URL = 'https://auth.example.test';
+  process.env.ZITADEL_LOGIN_CLIENT_PAT = sentinelSecretToken;
+  process.env.ZITADEL_CLIENT_ID = 'web-client-123';
+  process.env.ZITADEL_MOBILE_CLIENT_ID = 'mobile-client-123';
+
+  let zitadelMode: 'ok' | 'unconfigured_403' | 'unavailable_503' | 'expired_code' = 'ok';
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method || 'GET';
+    if (zitadelMode === 'unconfigured_403') {
+      return response({ message: `Token ${sentinelSecretToken} denied` }, 403);
+    }
+    if (zitadelMode === 'unavailable_503') {
+      return response({ message: 'upstream database down' }, 503);
+    }
+    if (url.endsWith('/v2/users') && method === 'POST') {
+      return response({
+        result: [
+          {
+            userId: '289911223344556677',
+            human: {
+              email: {
+                email: 'owner@example.test',
+                isVerified: true,
+              },
+            },
+          },
+        ],
+      });
+    }
+    if (url.endsWith('/v2/users/289911223344556677/password_reset') && method === 'POST') {
+      return response({ details: {} }, 200);
+    }
+    if (url.endsWith('/v2/users/289911223344556677/password') && method === 'POST') {
+      if (zitadelMode === 'expired_code') {
+        return response({ message: `Code ${sentinelCode} expired` }, 400);
+      }
+      return response({ details: {} }, 200);
+    }
+    throw new Error(`Unexpected fetch in route test: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    // 1. Request success returns HTTP 200 { ok: true } with Cache-Control: no-store
+    const reqSuccess = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.31',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_request',
+          email: 'owner@example.test',
+          lang: 'vi',
+        }),
+      })
+    );
+    assert.equal(reqSuccess.status, 200);
+    assert.equal(reqSuccess.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await reqSuccess.json(), { ok: true });
+
+    // 2. Invalid email returns HTTP 400 { ok: false, code: 'INVALID_EMAIL', error }
+    const badEmailRes = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.31',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_request',
+          email: 'not-an-email',
+          lang: 'en',
+        }),
+      })
+    );
+    assert.equal(badEmailRes.status, 400);
+    const badEmailBody = (await badEmailRes.json()) as Record<string, unknown>;
+    assert.equal(badEmailBody.ok, false);
+    assert.equal(badEmailBody.code, 'INVALID_EMAIL');
+    assert.equal(badEmailBody.error, 'Please enter a valid email address.');
+
+    // 3. Complete success returns HTTP 200 { ok: true }
+    const completeSuccess = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.32',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_complete',
+          userID: '289911223344556677',
+          code: sentinelCode,
+          password: sentinelPassword,
+          confirmPassword: sentinelPassword,
+          lang: 'vi',
+        }),
+      })
+    );
+    assert.equal(completeSuccess.status, 200);
+    assert.equal(completeSuccess.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await completeSuccess.json(), { ok: true });
+
+    // 4. Expired code on password_reset_complete returns localized safe error and never leaks code/password/token
+    zitadelMode = 'expired_code';
+    const expiredRes = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.33',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_complete',
+          userID: '289911223344556677',
+          code: sentinelCode,
+          password: sentinelPassword,
+          confirmPassword: sentinelPassword,
+          lang: 'en',
+        }),
+      })
+    );
+    assert.equal(expiredRes.status, 400);
+    const expiredJson = (await expiredRes.json()) as Record<string, unknown>;
+    assert.deepEqual(expiredJson, {
+      ok: false,
+      code: 'VERIFICATION_CODE_EXPIRED',
+      error:
+        'The verification code has expired. Please request a new password reset email.',
+    });
+
+    // 5. Zitadel 403/503 failures map to 503 with safe localized messages and never leak secrets
+    zitadelMode = 'unconfigured_403';
+    const unconfRes = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.34',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_request',
+          email: 'owner@example.test',
+          lang: 'vi',
+        }),
+      })
+    );
+    assert.equal(unconfRes.status, 503);
+    const unconfRaw = JSON.stringify(await unconfRes.json());
+    assert.equal(unconfRaw.includes(sentinelSecretToken), false);
+    assert.equal(unconfRaw.includes('owner@example.test'), false);
+
+    zitadelMode = 'unavailable_503';
+    const unavailRes = await loginUiPost(
+      new Request('https://qlaok.vunph.click/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.vunph.click',
+          'X-Real-IP': '198.51.100.35',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'password_reset_complete',
+          userID: '289911223344556677',
+          code: sentinelCode,
+          password: sentinelPassword,
+          confirmPassword: sentinelPassword,
+          lang: 'vi',
+        }),
+      })
+    );
+    assert.equal(unavailRes.status, 503);
+    const unavailBody = (await unavailRes.json()) as Record<string, unknown>;
+    assert.deepEqual(unavailBody, {
+      ok: false,
+      code: 'ZITADEL_UNAVAILABLE',
+      error: 'Chưa thể xử lý yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+    });
+    const serializedUnavail = JSON.stringify(unavailBody);
+    assert.equal(serializedUnavail.includes(sentinelSecretToken), false);
+    assert.equal(serializedUnavail.includes(sentinelPassword), false);
+    assert.equal(serializedUnavail.includes(sentinelCode), false);
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevIssuer === undefined) delete process.env.ZITADEL_ISSUER_URL;
+    else process.env.ZITADEL_ISSUER_URL = prevIssuer;
+    if (prevPat === undefined) delete process.env.ZITADEL_LOGIN_CLIENT_PAT;
+    else process.env.ZITADEL_LOGIN_CLIENT_PAT = prevPat;
+    if (prevWebClient === undefined) delete process.env.ZITADEL_CLIENT_ID;
+    else process.env.ZITADEL_CLIENT_ID = prevWebClient;
+    if (prevMobileClient === undefined) delete process.env.ZITADEL_MOBILE_CLIENT_ID;
+    else process.env.ZITADEL_MOBILE_CLIENT_ID = prevMobileClient;
     resetZitadelLoginUiRateLimitsForTests();
   }
 });

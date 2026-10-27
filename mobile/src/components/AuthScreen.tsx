@@ -34,7 +34,62 @@ import { styles } from '../styles/mobileStyles';
 import { MobileLanguageSwitcher, useMobileI18n } from './MobileI18nProvider';
 
 export type MobileLoginAccountMode = 'owner' | 'staff';
-export type MobileOwnerFlowStep = 'sign_in' | 'register_form' | 'verify_email';
+export type MobileOwnerFlowStep =
+  | 'sign_in'
+  | 'register_form'
+  | 'verify_email'
+  | 'forgot_password';
+
+export async function defaultOwnerResetRequest({
+  baseUrl,
+  email,
+  lang = 'vi',
+}: {
+  baseUrl: string;
+  email: string;
+  lang?: 'vi' | 'en';
+}): Promise<{ ok: boolean }> {
+  const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
+  let res: Response;
+  try {
+    res = await fetch(`${cleanBaseUrl}/api/auth/login-ui?lang=${lang}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Origin: cleanBaseUrl,
+        'x-qlaok-client': 'mobile-native',
+      },
+      body: JSON.stringify({
+        action: 'password_reset_request',
+        email,
+        lang,
+      }),
+    });
+  } catch {
+    throw new Error(
+      lang === 'en'
+        ? 'Unable to connect. Check your internet connection and try again.'
+        : 'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.'
+    );
+  }
+
+  const payload = (await res.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  if (!res.ok || !payload.ok) {
+    const errorMsg =
+      typeof payload.error === 'string' && payload.error
+        ? payload.error
+        : lang === 'en'
+          ? 'Could not process password reset request. Please try again.'
+          : 'Chưa thể gửi yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.';
+    throw new Error(errorMsg);
+  }
+
+  return { ok: true };
+}
 
 export interface AuthScreenProps {
   onStaffLoginSuccess?: (session: MobileStaffSession) => void;
@@ -53,6 +108,7 @@ export interface AuthScreenProps {
   ownerRegisterStartFn?: typeof startMobileOwnerRegistration;
   ownerRegisterVerifyFn?: typeof completeMobileOwnerRegistrationVerification;
   ownerRegisterResendFn?: typeof resendMobileOwnerRegistrationCode;
+  ownerResetRequestFn?: typeof defaultOwnerResetRequest;
   apiBaseUrl?: string;
   oidcConfigEnv?: Record<string, string | undefined>;
 }
@@ -122,6 +178,7 @@ export const AuthScreen = memo(function AuthScreen({
   ownerRegisterStartFn = startMobileOwnerRegistration,
   ownerRegisterVerifyFn = completeMobileOwnerRegistrationVerification,
   ownerRegisterResendFn = resendMobileOwnerRegistrationCode,
+  ownerResetRequestFn = defaultOwnerResetRequest,
   apiBaseUrl = PRODUCTION_API_URL,
   oidcConfigEnv,
 }: AuthScreenProps = {}) {
@@ -132,6 +189,8 @@ export const AuthScreen = memo(function AuthScreen({
   const [ownerFlowStep, setOwnerFlowStep] =
     useState<MobileOwnerFlowStep>(initialOwnerFlowStep);
   const [loginHint, setLoginHint] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSent, setResetSent] = useState(false);
   const [registerFullName, setRegisterFullName] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
@@ -467,6 +526,42 @@ export const AuthScreen = memo(function AuthScreen({
     }
   };
 
+  const handleRequestOwnerPasswordReset = async () => {
+    if (isOwnerBusy) return;
+    setAuthError('');
+    setOwnerSuccessNotice('');
+    onDismissOwnerAuthError?.();
+    onDismissSessionNotice?.();
+
+    const cleanEmail = resetEmail.trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+      setAuthError(t('auth.recoveryErrInvalidEmail'));
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      await ownerResetRequestFn({
+        baseUrl: apiBaseUrl,
+        email: cleanEmail,
+        lang: locale === 'en' ? 'en' : 'vi',
+      });
+      setResetSent(true);
+      setAuthError('');
+    } catch (err) {
+      setAuthError(
+        err instanceof Error && err.message
+          ? err.message
+          : tb(
+              'Chưa thể gửi yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.',
+              'Could not process password reset request right now. Please try again.'
+            )
+      );
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   const handleStaffLogin = async () => {
     if (
       !shopIdentifier.trim() ||
@@ -570,7 +665,9 @@ export const AuthScreen = memo(function AuthScreen({
                   })
                 : ownerFlowStep === 'register_form'
                   ? t('auth.registerSubtitle')
-                  : t('auth.oidcSubtitle')}
+                  : ownerFlowStep === 'forgot_password'
+                    ? t('auth.recoverySubtitle')
+                    : t('auth.oidcSubtitle')}
           </Text>
 
           {/* Two-mode switch: Owner vs Staff */}
@@ -814,11 +911,14 @@ export const AuthScreen = memo(function AuthScreen({
                     ? t('auth.verifyBadge')
                     : ownerFlowStep === 'register_form'
                       ? t('auth.registerBadge')
-                      : t('auth.oidcBadge')}
+                      : ownerFlowStep === 'forgot_password'
+                        ? t('auth.recoveryTitle')
+                        : t('auth.oidcBadge')}
                 </Text>
               </View>
 
-              {!oidcConfigResolution.ok ? (
+              {!oidcConfigResolution.ok &&
+              ownerFlowStep !== 'forgot_password' ? (
                 <View
                   testID="owner-oidc-config-error"
                   accessibilityRole="alert"
@@ -1245,6 +1345,181 @@ export const AuthScreen = memo(function AuthScreen({
                     </TouchableOpacity>
                   </View>
                 </>
+              ) : ownerFlowStep === 'forgot_password' ? (
+                resetSent ? (
+                  <>
+                    <View
+                      testID="owner-reset-sent-notice"
+                      accessibilityRole="alert"
+                      style={{
+                        backgroundColor: '#064e3b',
+                        borderColor: '#10b981',
+                        borderWidth: 1,
+                        borderRadius: 10,
+                        paddingHorizontal: 14,
+                        paddingVertical: 12,
+                        marginBottom: 14,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: '#a7f3d0',
+                          fontSize: 13,
+                          fontWeight: '700',
+                          marginBottom: 6,
+                        }}
+                      >
+                        {tb(
+                          'Kiểm tra hộp thư của bạn',
+                          'Check your email inbox'
+                        )}
+                      </Text>
+                      <Text
+                        style={{
+                          color: '#6ee7b7',
+                          fontSize: 12,
+                          lineHeight: 18,
+                        }}
+                      >
+                        {tb(
+                          `Nếu tài khoản với email ${resetEmail.trim().toLowerCase()} tồn tại trong hệ thống, liên kết đặt lại mật khẩu đã được gửi đến hộp thư của bạn. Vui lòng mở email trên trình duyệt web để tạo mật khẩu mới.`,
+                          `If an account exists for ${resetEmail.trim().toLowerCase()}, password reset instructions have been sent to your inbox. Please open the email in a web browser to set a new password.`
+                        )}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      testID="owner-reset-resend-btn"
+                      accessibilityRole="button"
+                      disabled={isOwnerBusy}
+                      onPress={() => {
+                        setResetSent(false);
+                        setAuthError('');
+                      }}
+                      style={{
+                        paddingVertical: 12,
+                        paddingHorizontal: 14,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#334155',
+                        backgroundColor: '#0f172a',
+                        alignItems: 'center',
+                        marginBottom: 10,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: '#e2e8f0',
+                          fontSize: 13,
+                          fontWeight: '700',
+                        }}
+                      >
+                        {tb(
+                          'Gửi lại hoặc nhập email khác',
+                          'Resend or enter another email'
+                        )}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      testID="owner-reset-back-btn"
+                      accessibilityRole="button"
+                      disabled={isOwnerBusy}
+                      onPress={() => {
+                        setOwnerFlowStep('sign_in');
+                        setAuthError('');
+                        setOwnerSuccessNotice('');
+                        setResetSent(false);
+                      }}
+                      style={{ marginTop: 6, alignItems: 'center' }}
+                    >
+                      <Text
+                        style={{
+                          color: '#34d399',
+                          fontSize: 12,
+                          fontWeight: '700',
+                        }}
+                      >
+                        {t('auth.recoveryBackToLogin')}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.label}>
+                        {t('auth.registerEmailLabel')}
+                      </Text>
+                      <TextInput
+                        testID="owner-reset-email-input"
+                        accessibilityLabel={t('auth.registerEmailLabel')}
+                        placeholder={t('auth.oidcEmailHintPlaceholder')}
+                        placeholderTextColor="#64748b"
+                        autoComplete="email"
+                        style={styles.authInput}
+                        value={resetEmail}
+                        onChangeText={(next) => {
+                          setResetEmail(next);
+                          if (authError) setAuthError('');
+                          onDismissOwnerAuthError?.();
+                        }}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="email-address"
+                      />
+                    </View>
+
+                    {combinedOwnerError ? (
+                      <Text
+                        testID="owner-auth-error"
+                        accessibilityRole="alert"
+                        style={{ color: '#fca5a5', marginBottom: 12 }}
+                      >
+                        {combinedOwnerError}
+                      </Text>
+                    ) : null}
+
+                    <TouchableOpacity
+                      testID="owner-reset-submit-btn"
+                      accessibilityRole="button"
+                      style={[
+                        styles.primaryAuthBtn,
+                        (isOwnerBusy || !resetEmail.trim()) && { opacity: 0.5 },
+                      ]}
+                      onPress={() => void handleRequestOwnerPasswordReset()}
+                      disabled={isOwnerBusy || !resetEmail.trim()}
+                    >
+                      <Text style={styles.primaryAuthBtnText}>
+                        {authLoading
+                          ? t('auth.recoverySending')
+                          : t('auth.recoverySendBtn')}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      testID="owner-reset-back-btn"
+                      accessibilityRole="button"
+                      disabled={isOwnerBusy}
+                      onPress={() => {
+                        setOwnerFlowStep('sign_in');
+                        setAuthError('');
+                        setOwnerSuccessNotice('');
+                        setResetSent(false);
+                      }}
+                      style={{ marginTop: 14, alignItems: 'center' }}
+                    >
+                      <Text
+                        style={{
+                          color: '#34d399',
+                          fontSize: 12,
+                          fontWeight: '700',
+                        }}
+                      >
+                        {t('auth.recoveryBackToLogin')}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )
               ) : (
                 <>
                   <View style={styles.inputGroup}>
@@ -1342,8 +1617,18 @@ export const AuthScreen = memo(function AuthScreen({
                     <TouchableOpacity
                       testID="owner-oidc-reset-btn"
                       accessibilityRole="button"
-                      disabled={!canStartOwnerOidc}
-                      onPress={() => void handleStartOwnerOidc('reset')}
+                      disabled={isOwnerBusy}
+                      onPress={() => {
+                        if (loginHint.trim() && !resetEmail.trim()) {
+                          setResetEmail(loginHint.trim().toLowerCase());
+                        }
+                        setOwnerFlowStep('forgot_password');
+                        setResetSent(false);
+                        setAuthError('');
+                        setOwnerSuccessNotice('');
+                        onDismissOwnerAuthError?.();
+                        onDismissSessionNotice?.();
+                      }}
                     >
                       <Text
                         style={{

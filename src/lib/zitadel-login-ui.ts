@@ -21,10 +21,15 @@ const USER_ID_REGEX = /^[A-Za-z0-9_-]{1,128}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const PKCE_CHALLENGE_REGEX = /^[A-Za-z0-9_-]{43,128}$/;
 const VERIFICATION_CODE_REGEX = /^[A-Za-z0-9]{4,16}$/;
+const PASSWORD_RESET_CODE_REGEX = /^[A-Za-z0-9_-]{4,128}$/;
 export const REGISTRATION_TICKET_TTL_SECONDS = 15 * 60;
 const LOGIN_UI_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_UI_MAX_BUCKETS = 4096;
 export const MAX_REGISTRATION_VERIFY_FAILURES = 5;
+export const PASSWORD_RESET_REQUEST_IP_MAX_ATTEMPTS = 10;
+export const PASSWORD_RESET_REQUEST_EMAIL_MAX_ATTEMPTS = 5;
+export const PASSWORD_RESET_COMPLETE_IP_MAX_ATTEMPTS = 12;
+export const MAX_PASSWORD_RESET_VERIFY_FAILURES = 5;
 const REGISTRATION_VERIFY_LOCKOUT_MS = REGISTRATION_TICKET_TTL_SECONDS * 1000;
 
 interface InMemoryFailureBucket {
@@ -1695,4 +1700,413 @@ export async function completeZitadelRegistrationVerification(params: {
     email: ticket.email,
     fullName: ticket.fullName,
   };
+}
+
+function resolvePasswordResetQlaokOrigin(
+  rawOrigin: string,
+  config?: Pick<ZitadelLoginUiConfig, 'issuerUrl' | 'webRedirectUri'>
+): string {
+  const defaultOrigin = 'https://qlaok.vunph.click';
+  let issuerOrigin = '';
+  if (config?.issuerUrl) {
+    try {
+      issuerOrigin = new URL(config.issuerUrl).origin;
+    } catch {
+      issuerOrigin = '';
+    }
+  }
+  let configuredWebOrigin = '';
+  const trustedWebRedirectUri =
+    process.env.NODE_ENV === 'production'
+      ? (process.env.ZITADEL_REDIRECT_URI || '').trim()
+      : (config?.webRedirectUri || '').trim();
+  if (trustedWebRedirectUri) {
+    try {
+      const parsedWeb = new URL(trustedWebRedirectUri);
+      if (
+        (parsedWeb.protocol === 'https:' || parsedWeb.protocol === 'http:') &&
+        !parsedWeb.username &&
+        !parsedWeb.password &&
+        parsedWeb.origin !== issuerOrigin
+      ) {
+        configuredWebOrigin = parsedWeb.origin;
+      }
+    } catch {
+      configuredWebOrigin = '';
+    }
+  }
+
+  // Production reset links must always point to Qlaok's configured public URL.
+  // The request Host can be supplied by the caller and is not a trusted link origin.
+  if (process.env.NODE_ENV === 'production') {
+    return configuredWebOrigin || defaultOrigin;
+  }
+
+  const trimmed = (rawOrigin || '').trim();
+  if (trimmed) {
+    try {
+      const parsed = new URL(trimmed);
+      if (
+        (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+        !parsed.username &&
+        !parsed.password &&
+        parsed.origin !== issuerOrigin
+      ) {
+        const isLoopback =
+          parsed.hostname === '127.0.0.1' ||
+          parsed.hostname === 'localhost' ||
+          parsed.hostname === '::1';
+        if (isLoopback && configuredWebOrigin) {
+          const webHost = new URL(configuredWebOrigin).hostname;
+          if (
+            webHost !== '127.0.0.1' &&
+            webHost !== 'localhost' &&
+            webHost !== '::1'
+          ) {
+            return configuredWebOrigin;
+          }
+        }
+        return parsed.origin;
+      }
+    } catch {
+      // Fall through to configuredWebOrigin / defaultOrigin
+    }
+  }
+
+  return configuredWebOrigin || defaultOrigin;
+}
+
+export function buildZitadelPasswordResetUrlTemplate(
+  origin = 'https://qlaok.vunph.click',
+  config?: Pick<ZitadelLoginUiConfig, 'issuerUrl' | 'webRedirectUri'>
+): string {
+  const resolvedOrigin = resolvePasswordResetQlaokOrigin(origin, config);
+  return `${resolvedOrigin}/login?mode=reset&userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}`;
+}
+
+function normalizePasswordResetEmail(rawEmail: string): string {
+  if (typeof rawEmail !== 'string') {
+    throw new ZitadelLoginUiError('INVALID_EMAIL', 400);
+  }
+  const stripped = rawEmail.replace(/[\u0000-\u001F\u007F]/g, '');
+  if (stripped !== rawEmail) {
+    throw new ZitadelLoginUiError('INVALID_EMAIL', 400);
+  }
+  const email = stripped.trim().toLowerCase();
+  if (!email || email.length > 254 || !EMAIL_REGEX.test(email)) {
+    throw new ZitadelLoginUiError('INVALID_EMAIL', 400);
+  }
+  return email;
+}
+
+function normalizePasswordResetVerificationCode(rawCode: string): string {
+  if (typeof rawCode !== 'string') {
+    throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+  }
+  const stripped = rawCode.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!stripped || stripped !== rawCode.trim()) {
+    throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+  }
+  const cleaned = /^\d+(?:[\s-]+\d+)+$/.test(stripped)
+    ? stripped.replace(/[\s-]+/g, '')
+    : stripped.replace(/\s+/g, '');
+  if (!PASSWORD_RESET_CODE_REGEX.test(cleaned)) {
+    throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+  }
+  return cleaned;
+}
+
+function extractEligiblePasswordResetHumanUserId(
+  searchResult: { result?: unknown[] } | null | undefined,
+  expectedEmail: string
+): string | null {
+  if (
+    !searchResult ||
+    !Array.isArray(searchResult.result) ||
+    searchResult.result.length !== 1
+  ) {
+    return null;
+  }
+  const rawUser = searchResult.result[0];
+  if (!rawUser || typeof rawUser !== 'object' || Array.isArray(rawUser)) {
+    return null;
+  }
+  const userRecord = rawUser as Record<string, unknown>;
+  if (userRecord.machine) {
+    return null;
+  }
+  const userId =
+    typeof userRecord.userId === 'string' && userRecord.userId.trim()
+      ? userRecord.userId.trim()
+      : typeof userRecord.id === 'string' && userRecord.id.trim()
+        ? userRecord.id.trim()
+        : '';
+  if (
+    !userId ||
+    !USER_ID_REGEX.test(userId) ||
+    userId.startsWith('staff-acct-')
+  ) {
+    return null;
+  }
+  if (typeof userRecord.state === 'string' && userRecord.state.trim()) {
+    const normalizedState = userRecord.state
+      .trim()
+      .replace(/^USER_STATE_/i, '')
+      .toLowerCase();
+    if (
+      normalizedState === 'inactive' ||
+      normalizedState === 'deleted' ||
+      normalizedState === 'locked' ||
+      normalizedState === 'suspended'
+    ) {
+      return null;
+    }
+  }
+  const humanRecord =
+    userRecord.human &&
+    typeof userRecord.human === 'object' &&
+    !Array.isArray(userRecord.human)
+      ? (userRecord.human as Record<string, unknown>)
+      : null;
+  const emailRecord =
+    humanRecord?.email &&
+    typeof humanRecord.email === 'object' &&
+    !Array.isArray(humanRecord.email)
+      ? (humanRecord.email as Record<string, unknown>)
+      : null;
+  if (!emailRecord) {
+    return null;
+  }
+  const candidateEmail =
+    typeof emailRecord.email === 'string' && emailRecord.email.trim()
+      ? emailRecord.email.trim().toLowerCase()
+      : typeof emailRecord.emailAddress === 'string' &&
+          emailRecord.emailAddress.trim()
+        ? emailRecord.emailAddress.trim().toLowerCase()
+        : '';
+  if (candidateEmail !== expectedEmail || emailRecord.isVerified !== true) {
+    return null;
+  }
+  return userId;
+}
+
+export async function requestZitadelPasswordReset(params: {
+  email: string;
+  lang?: 'vi' | 'en';
+  origin: string;
+  clientIp?: string;
+  fetchImpl?: FetchLike;
+  config?: ZitadelLoginUiConfig;
+  nowMs?: number;
+}): Promise<{ ok: true }> {
+  const email = normalizePasswordResetEmail(params.email);
+  const config = params.config ?? getConfig(params.origin);
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const nowMs = params.nowMs ?? Date.now();
+  const normalizedIp =
+    (params.clientIp || 'unknown').trim().toLowerCase() || 'unknown';
+
+  await enforceZitadelLoginUiRateLimit(
+    `password_reset_request:ip:${normalizedIp}`,
+    PASSWORD_RESET_REQUEST_IP_MAX_ATTEMPTS,
+    LOGIN_UI_RATE_LIMIT_WINDOW_MS,
+    nowMs
+  );
+  await enforceZitadelLoginUiRateLimit(
+    `password_reset_request:email:${email}`,
+    PASSWORD_RESET_REQUEST_EMAIL_MAX_ATTEMPTS,
+    LOGIN_UI_RATE_LIMIT_WINDOW_MS,
+    nowMs
+  );
+
+  const searchResult = await callZitadel<{ result?: unknown[] }>(
+    config,
+    '/v2/users',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        query: {
+          offset: '0',
+          limit: 2,
+          asc: true,
+        },
+        queries: [
+          {
+            emailQuery: {
+              emailAddress: email,
+              method: 'TEXT_QUERY_METHOD_EQUALS',
+            },
+          },
+        ],
+      }),
+    },
+    fetchImpl,
+    {
+      bearerToken: config.serviceToken,
+      mapError: (status) => {
+        if (status === 401 || status === 403) {
+          return new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
+        }
+        return new ZitadelLoginUiError('ZITADEL_UNAVAILABLE', 503);
+      },
+    }
+  );
+
+  const eligibleUserId = extractEligiblePasswordResetHumanUserId(
+    searchResult,
+    email
+  );
+  if (!eligibleUserId) {
+    return { ok: true };
+  }
+
+  const urlTemplate = buildZitadelPasswordResetUrlTemplate(
+    params.origin,
+    config
+  );
+  await callZitadel<Record<string, unknown>>(
+    config,
+    `/v2/users/${encodeURIComponent(eligibleUserId)}/password_reset`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        sendLink: {
+          notificationType: 'NOTIFICATION_TYPE_Email',
+          urlTemplate,
+        },
+      }),
+    },
+    fetchImpl,
+    {
+      bearerToken: config.serviceToken,
+      mapError: (status) => {
+        if (status === 401 || status === 403) {
+          return new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
+        }
+        return new ZitadelLoginUiError('ZITADEL_UNAVAILABLE', 503);
+      },
+    }
+  );
+
+  await resetRegistrationVerifyFailureBucket(
+    `password_reset_fail:user:${eligibleUserId}`
+  );
+
+  return { ok: true };
+}
+
+export async function completeZitadelPasswordReset(params: {
+  userID: string;
+  code: string;
+  password: string;
+  confirmPassword?: string;
+  lang?: 'vi' | 'en';
+  origin: string;
+  clientIp?: string;
+  fetchImpl?: FetchLike;
+  config?: ZitadelLoginUiConfig;
+  nowMs?: number;
+}): Promise<{ ok: true }> {
+  const rawUserId =
+    typeof params.userID === 'string' ? params.userID.trim() : '';
+  if (
+    !rawUserId ||
+    !USER_ID_REGEX.test(rawUserId) ||
+    rawUserId.startsWith('staff-acct-')
+  ) {
+    throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+  }
+  const cleanCode = normalizePasswordResetVerificationCode(params.code);
+  validateOwnerRegistrationPassword(params.password, params.confirmPassword);
+
+  const config = params.config ?? getConfig(params.origin);
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const nowMs = params.nowMs ?? Date.now();
+  const normalizedIp =
+    (params.clientIp || 'unknown').trim().toLowerCase() || 'unknown';
+  const userLockKey = `password_reset_fail:user:${rawUserId}`;
+
+  await enforceZitadelLoginUiRateLimit(
+    `password_reset_complete:ip:${normalizedIp}`,
+    PASSWORD_RESET_COMPLETE_IP_MAX_ATTEMPTS,
+    LOGIN_UI_RATE_LIMIT_WINDOW_MS,
+    nowMs
+  );
+  await checkRegistrationVerifyFailureBucket(userLockKey, nowMs);
+
+  try {
+    await callZitadel<Record<string, unknown>>(
+      config,
+      `/v2/users/${encodeURIComponent(rawUserId)}/password`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          newPassword: {
+            password: params.password,
+            changeRequired: false,
+          },
+          verificationCode: cleanCode,
+        }),
+      },
+      fetchImpl,
+      {
+        bearerToken: config.serviceToken,
+        mapError: (status, payload) => {
+          const msg = JSON.stringify(payload || {}).toLowerCase();
+          if (status === 404) {
+            return new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+          }
+          if (status === 400) {
+            if (msg.includes('expired') || msg.includes('timeout')) {
+              return new ZitadelLoginUiError('VERIFICATION_CODE_EXPIRED', 400);
+            }
+            if (
+              msg.includes('code') ||
+              msg.includes('token') ||
+              msg.includes('verify') ||
+              msg.includes('verification')
+            ) {
+              return new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+            }
+            if (
+              msg.includes('complexity') ||
+              msg.includes('policy') ||
+              msg.includes('weak') ||
+              msg.includes('symbol') ||
+              msg.includes('uppercase') ||
+              msg.includes('lowercase') ||
+              msg.includes('number') ||
+              msg.includes('length')
+            ) {
+              return new ZitadelLoginUiError('PASSWORD_WEAK', 400);
+            }
+            return new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+          }
+          if (status === 401 || status === 403) {
+            return new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
+          }
+          return new ZitadelLoginUiError('ZITADEL_UNAVAILABLE', 503);
+        },
+      }
+    );
+  } catch (err) {
+    if (
+      err instanceof ZitadelLoginUiError &&
+      (err.code === 'VERIFICATION_CODE_INVALID' ||
+        err.code === 'VERIFICATION_CODE_EXPIRED')
+    ) {
+      const userLocked = await recordRegistrationVerifyFailureBucket(
+        userLockKey,
+        nowMs
+      );
+      if (userLocked) {
+        throw new ZitadelLoginUiError('LOGIN_RATE_LIMITED', 429);
+      }
+    }
+    throw err;
+  }
+
+  await resetRegistrationVerifyFailureBucket(userLockKey);
+
+  return { ok: true };
 }

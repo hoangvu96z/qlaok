@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
 import {
   completeZitadelLoginRequest,
+  completeZitadelPasswordReset,
   completeZitadelRegistrationVerification,
   enforceZitadelLoginUiRateLimit,
   fetchZitadelLoginRequest,
   getClientIp,
   isRegistrationLoginRequest,
   type OidcAuthorizeBootstrapParams,
+  requestZitadelPasswordReset,
   resendZitadelRegistrationCode,
   startZitadelRegistration,
   ZitadelLoginUiError,
@@ -89,10 +91,12 @@ function parseMobileOidcBootstrap(
   };
 }
 
+type LoginUiFlowKind = 'login' | 'registration' | 'password_reset';
+
 function userMessage(
   error: unknown,
   locale: 'vi' | 'en',
-  isRegistrationFlow = false
+  flowKind: LoginUiFlowKind = 'login'
 ) {
   if (error instanceof ZitadelLoginUiError) {
     switch (error.code) {
@@ -133,6 +137,11 @@ function userMessage(
           ? 'The verification code is incorrect. Please check your email and try again.'
           : 'Mã xác thực chưa đúng. Vui lòng kiểm tra lại email và thử lại.';
       case 'VERIFICATION_CODE_EXPIRED':
+        if (flowKind === 'password_reset') {
+          return locale === 'en'
+            ? 'The verification code has expired. Please request a new password reset email.'
+            : 'Mã xác thực đã hết hạn. Vui lòng gửi lại yêu cầu đặt lại mật khẩu mới.';
+        }
         return locale === 'en'
           ? 'The verification code has expired. Please tap Resend code to receive a new one.'
           : 'Mã xác thực đã hết hạn. Vui lòng bấm Gửi lại mã để nhận mã mới.';
@@ -153,6 +162,13 @@ function userMessage(
         return locale === 'en'
           ? 'Account creation is temporarily unavailable. Please try again in a few minutes.'
           : 'Tính năng tạo tài khoản đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.';
+      case 'LOGIN_SERVICE_NOT_CONFIGURED':
+        if (flowKind === 'password_reset') {
+          return locale === 'en'
+            ? 'Password reset is temporarily unavailable. Please try again in a few minutes.'
+            : 'Tính năng đặt lại mật khẩu đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.';
+        }
+        break;
       case 'REGISTRATION_REJECTED':
         return locale === 'en'
           ? 'Could not create your account with the provided details. Please check your information and try again.'
@@ -161,7 +177,12 @@ function userMessage(
         break;
     }
   }
-  if (isRegistrationFlow) {
+  if (flowKind === 'password_reset') {
+    return locale === 'en'
+      ? 'We could not process your password reset right now. Please try again.'
+      : 'Chưa thể xử lý yêu cầu đặt lại mật khẩu lúc này. Vui lòng thử lại.';
+  }
+  if (flowKind === 'registration') {
     return locale === 'en'
       ? 'We could not complete account registration right now. Please try again.'
       : 'Chưa thể hoàn tất đăng ký tài khoản lúc này. Vui lòng thử lại.';
@@ -174,7 +195,7 @@ function userMessage(
 export async function GET(req: Request) {
   if (!isSameOriginRequest(req, false)) {
     return jsonNoStore(
-      { error: 'Yêu cầu không hợp lệ.', code: 'INVALID_ORIGIN' },
+      { ok: false, error: 'Yêu cầu không hợp lệ.', code: 'INVALID_ORIGIN' },
       403
     );
   }
@@ -194,6 +215,7 @@ export async function GET(req: Request) {
   } catch (error) {
     return jsonNoStore(
       {
+        ok: false,
         error: userMessage(error, locale),
         code:
           error instanceof ZitadelLoginUiError
@@ -208,7 +230,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   if (!isSameOriginRequest(req, true)) {
     return jsonNoStore(
-      { error: 'Yêu cầu không hợp lệ.', code: 'INVALID_ORIGIN' },
+      { ok: false, error: 'Yêu cầu không hợp lệ.', code: 'INVALID_ORIGIN' },
       403
     );
   }
@@ -218,13 +240,13 @@ export async function POST(req: Request) {
     parsedBody = await req.json();
   } catch {
     return jsonNoStore(
-      { error: 'Yêu cầu không hợp lệ.', code: 'INVALID_BODY' },
+      { ok: false, error: 'Yêu cầu không hợp lệ.', code: 'INVALID_BODY' },
       400
     );
   }
   if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
     return jsonNoStore(
-      { error: 'Yêu cầu không hợp lệ.', code: 'INVALID_BODY' },
+      { ok: false, error: 'Yêu cầu không hợp lệ.', code: 'INVALID_BODY' },
       400
     );
   }
@@ -236,7 +258,11 @@ export async function POST(req: Request) {
   const locale = body.lang === 'en' ? 'en' : 'vi';
   const requestOrigin = getRequestOrigin(req);
   const clientIp = getClientIp(req);
-  const isRegistrationFlow = action.startsWith('register_');
+  const flowKind: LoginUiFlowKind = action.startsWith('register_')
+    ? 'registration'
+    : action.startsWith('password_reset_')
+      ? 'password_reset'
+      : 'login';
 
   try {
     if (action === 'login') {
@@ -369,14 +395,62 @@ export async function POST(req: Request) {
       });
     }
 
+    if (action === 'password_reset_request') {
+      const email = typeof body.email === 'string' ? body.email : '';
+      await requestZitadelPasswordReset({
+        email,
+        lang: locale,
+        origin: requestOrigin,
+        clientIp,
+      });
+      return jsonNoStore({ ok: true });
+    }
+
+    if (action === 'password_reset_complete') {
+      const userID =
+        typeof body.userID === 'string'
+          ? body.userID
+          : typeof body.userId === 'string'
+            ? body.userId
+            : '';
+      const code =
+        typeof body.code === 'string'
+          ? body.code
+          : typeof body.verificationCode === 'string'
+            ? body.verificationCode
+            : '';
+      const password = typeof body.password === 'string' ? body.password : '';
+      const confirmPassword =
+        body.confirmPassword !== undefined
+          ? typeof body.confirmPassword === 'string'
+            ? body.confirmPassword
+            : ''
+          : undefined;
+      await completeZitadelPasswordReset({
+        userID,
+        code,
+        password,
+        confirmPassword,
+        lang: locale,
+        origin: requestOrigin,
+        clientIp,
+      });
+      return jsonNoStore({ ok: true });
+    }
+
     return jsonNoStore(
-      { error: 'Yêu cầu không hợp lệ.', code: 'INVALID_ACTION' },
+      {
+        ok: false,
+        error: locale === 'en' ? 'Invalid request.' : 'Yêu cầu không hợp lệ.',
+        code: 'INVALID_ACTION',
+      },
       400
     );
   } catch (error) {
     return jsonNoStore(
       {
-        error: userMessage(error, locale, isRegistrationFlow),
+        ok: false,
+        error: userMessage(error, locale, flowKind),
         code:
           error instanceof ZitadelLoginUiError
             ? error.code

@@ -243,6 +243,11 @@ interface AuthScreenModuleExports {
     locale: 'vi' | 'en',
     secretsToRedact?: ReadonlyArray<string | null | undefined>
   ) => string;
+  defaultOwnerResetRequest: (options: {
+    baseUrl: string;
+    email: string;
+    lang?: 'vi' | 'en';
+  }) => Promise<{ ok: boolean }>;
 }
 
 interface AppModuleExports {
@@ -389,6 +394,108 @@ test('AuthScreen dual-login mode: exposes owner/staff switch, isolates staff fie
   const redactedMsg = formatStaffLoginError(leakedErr, 'vi', ['secretPass#99']);
   assert.doesNotMatch(redactedMsg, /secretPass#99/);
   assert.match(redactedMsg, /liên hệ hỗ trợ Qlaok/);
+});
+
+test('AuthScreen owner in-app password reset: provides email form, sent confirmation, x-qlaok-client header, and never logs credentials', async () => {
+  const authScreenSource = fs.readFileSync(
+    path.join(MOBILE_ROOT, 'src/components/AuthScreen.tsx'),
+    'utf8'
+  );
+
+  // 1. forgot_password step and testIDs exist
+  assert.match(
+    authScreenSource,
+    /ownerFlowStep\s*===\s*['"]forgot_password['"]/
+  );
+  assert.match(authScreenSource, /testID="owner-reset-email-input"/);
+  assert.match(authScreenSource, /testID="owner-reset-submit-btn"/);
+  assert.match(authScreenSource, /testID="owner-reset-sent-notice"/);
+  assert.match(authScreenSource, /testID="owner-reset-resend-btn"/);
+  assert.match(authScreenSource, /testID="owner-reset-back-btn"/);
+
+  // 2. "Quên mật khẩu?" button switches to forgot_password instead of hosted oidc
+  const forgotBtnMatch = authScreenSource.match(
+    /<TouchableOpacity[\s\S]*?testID="owner-oidc-reset-btn"[\s\S]*?<\/TouchableOpacity>/
+  );
+  assert.ok(forgotBtnMatch, 'owner-oidc-reset-btn must exist');
+  assert.match(
+    forgotBtnMatch[0],
+    /setOwnerFlowStep\(['"]forgot_password['"]\)/
+  );
+  assert.doesNotMatch(
+    forgotBtnMatch[0],
+    /handleStartOwnerOidc\(['"]reset['"]\)/
+  );
+
+  // 3. Header contains x-qlaok-client: mobile-native
+  assert.match(
+    authScreenSource,
+    /['"]x-qlaok-client['"]:\s*['"]mobile-native['"]/
+  );
+
+  // 4. Runtime test of defaultOwnerResetRequest
+  const { defaultOwnerResetRequest } =
+    loadMobileTsxExports<AuthScreenModuleExports>(
+      'src/components/AuthScreen.tsx'
+    );
+
+  const prevFetch = globalThis.fetch;
+  try {
+    let capturedUrl = '';
+    let capturedHeaders: Record<string, string> = {};
+    let capturedBody: Record<string, unknown> = {};
+
+    globalThis.fetch = async (input, init) => {
+      capturedUrl = String(input);
+      capturedHeaders = (init?.headers as Record<string, string>) || {};
+      capturedBody = JSON.parse(String(init?.body || '{}'));
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    const res = await defaultOwnerResetRequest({
+      baseUrl: 'https://qlaok.vunph.click',
+      email: 'owner@example.test',
+      lang: 'vi',
+    });
+    assert.deepEqual(res, { ok: true });
+    assert.equal(
+      capturedUrl,
+      'https://qlaok.vunph.click/api/auth/login-ui?lang=vi'
+    );
+    assert.equal(capturedHeaders['x-qlaok-client'], 'mobile-native');
+    assert.equal(capturedBody.action, 'password_reset_request');
+    assert.equal(capturedBody.email, 'owner@example.test');
+    assert.equal(capturedBody.lang, 'vi');
+
+    // 5. Rate limit error handling
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          ok: false,
+          code: 'LOGIN_RATE_LIMITED',
+          error:
+            'Bạn thao tác quá nhiều lần. Vui lòng đợi vài phút rồi thử lại.',
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+
+    await assert.rejects(
+      () =>
+        defaultOwnerResetRequest({
+          baseUrl: 'https://qlaok.vunph.click',
+          email: 'owner@example.test',
+          lang: 'vi',
+        }),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes('Bạn thao tác quá nhiều lần')
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 });
 
 test('App session routing: waits for both owner and staff boot, separates StaffWorkspace from owner Workspace, and cleans coexisting owner on staff sign-out', async () => {
