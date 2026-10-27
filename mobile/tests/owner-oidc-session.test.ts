@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createApiClient } from '../src/lib/api-client.ts';
 import {
   clearOwnerSession,
+  completeMobileOwnerRegistrationVerification,
   completeOwnerOidcCallback,
   computeMobileS256CodeChallenge,
   createExpoSecureStoreAdapter,
@@ -19,15 +20,18 @@ import {
   loadOwnerSession,
   MobileOwnerOidcError,
   OWNER_OIDC_TX_STORAGE_KEY,
+  OWNER_OIDC_TX_TTL_MS,
   OWNER_SESSION_STORAGE_KEY,
   type OwnerSessionStorageAdapter,
   parseOwnerOidcCallbackUrl,
   prepareOwnerOidcAuthorizationRequest,
   requireOwnerPostgrestToken,
+  resendMobileOwnerRegistrationCode,
   resetOwnerSessionMemoryForTest,
   resolveMobileZitadelOidcConfig,
   revalidateOwnerSession,
   saveOwnerSession,
+  startMobileOwnerRegistration,
   startOwnerOidcLogin,
   validateOwnerSession,
   validatePostgrestTokenClaims,
@@ -914,4 +918,493 @@ test('PKCE CSPRNG fails closed with OIDC_CSPRNG_UNAVAILABLE when both WebCrypto 
   } finally {
     Math.random = originalMathRandom;
   }
+});
+
+test('mobile in-app owner registration and email verification keep PKCE codeVerifier in SecureStore and complete native callback exchange', async () => {
+  const storage = createMemoryStorage();
+  const nowMs = 1_760_000_000_000;
+  const nowSec = Math.floor(nowMs / 1000);
+  const ownerUuid = '8b55d12a-4c33-4111-9a22-112233445566';
+  const validEnv = {
+    EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+  };
+
+  const captured: {
+    registerStart?: Record<string, unknown>;
+    resend?: Record<string, unknown>;
+    verify?: Record<string, unknown>;
+    exchange?: Record<string, unknown>;
+  } = {};
+
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const headers = new Headers(init?.headers || {});
+    const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+
+    if (url.startsWith('https://qlaok.vunph.click/api/auth/login-ui')) {
+      assert.equal(headers.get('X-Qlaok-Client'), 'mobile-native');
+      assert.equal(headers.get('Origin'), 'https://qlaok.vunph.click');
+
+      if (body.action === 'register_start') {
+        captured.registerStart = body;
+        if (body.email === 'duplicate@qlaok.vn') {
+          return new Response(
+            JSON.stringify({
+              error: 'Email này đã được đăng ký tài khoản.',
+              code: 'EMAIL_ALREADY_EXISTS',
+            }),
+            { status: 409, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            step: 'verify_email',
+            registrationTicket: 'reg-ticket-abc.sig',
+            authRequestId: 'V2_888999000111222333',
+            email: body.email,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (body.action === 'register_resend') {
+        captured.resend = body;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            email: 'newmobileowner@qlaok.vn',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (body.action === 'register_verify') {
+        captured.verify = body;
+        if (body.verificationCode !== '654321') {
+          return new Response(
+            JSON.stringify({
+              error: 'Mã xác thực chưa đúng.',
+              code: 'VERIFICATION_CODE_INVALID',
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const oidcInit = captured.registerStart?.oidc as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            callbackUrl: `qlaok://auth/callback?code=mobile-reg-code-777&state=${encodeURIComponent(
+              String(oidcInit?.state || '')
+            )}`,
+            email: 'newmobileowner@qlaok.vn',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    if (url === 'https://qlaok.vunph.click/api/auth') {
+      captured.exchange = body;
+      return new Response(
+        JSON.stringify({
+          user: {
+            id: ownerUuid,
+            email: 'newmobileowner@qlaok.vn',
+            full_name: 'Chủ Quán Mới Mobile',
+            plan: 'free',
+            role: 'owner',
+            is_admin: false,
+          },
+          isAdmin: false,
+          accessToken: 'qlaok-mobile-new-owner-token.sig',
+          expiresAt: nowSec + 86400,
+          postgrestToken: null,
+          postgrestExpiresAt: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  // 1. Duplicate email surfaces EMAIL_ALREADY_EXISTS
+  await assert.rejects(
+    () =>
+      startMobileOwnerRegistration({
+        baseUrl: 'https://qlaok.vunph.click',
+        fullName: 'Chủ Quán Mới Mobile',
+        email: 'duplicate@qlaok.vn',
+        password: 'StrongPass1!',
+        confirmPassword: 'StrongPass1!',
+        lang: 'vi',
+        env: validEnv,
+        storage,
+        fetchImpl,
+        nowMs,
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'EMAIL_ALREADY_EXISTS' &&
+      err.status === 409
+  );
+
+  // 2. Start registration stores PKCE transaction locally and sends only public S256 challenge
+  const started = await startMobileOwnerRegistration({
+    baseUrl: 'https://qlaok.vunph.click',
+    fullName: 'Chủ Quán Mới Mobile',
+    email: 'NewMobileOwner@qlaok.vn',
+    password: 'StrongPass1!',
+    confirmPassword: 'StrongPass1!',
+    lang: 'vi',
+    env: validEnv,
+    storage,
+    fetchImpl,
+    nowMs,
+  });
+
+  assert.equal(started.registrationTicket, 'reg-ticket-abc.sig');
+  assert.equal(started.email, 'newmobileowner@qlaok.vn');
+  assert.ok(captured.registerStart);
+  const sentOidc = captured.registerStart.oidc as Record<string, unknown>;
+  assert.equal(sentOidc.clientId, '312345678901234567@qlaok');
+  assert.equal(sentOidc.redirectUri, 'qlaok://auth/callback');
+  assert.equal(sentOidc.codeChallengeMethod, 'S256');
+  assert.equal(sentOidc.codeVerifier, undefined);
+
+  // Pending PKCE transaction is in storage
+  const rawStoredTx = await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY);
+  assert.ok(rawStoredTx);
+
+  // 3. Resend code works
+  const resent = await resendMobileOwnerRegistrationCode({
+    baseUrl: 'https://qlaok.vunph.click',
+    registrationTicket: started.registrationTicket,
+    lang: 'vi',
+    fetchImpl,
+  });
+  assert.equal(resent.email, 'newmobileowner@qlaok.vn');
+  assert.equal(captured.resend?.registrationTicket, 'reg-ticket-abc.sig');
+
+  // 4. Invalid OTP fails without consuming the pending PKCE transaction
+  await assert.rejects(
+    () =>
+      completeMobileOwnerRegistrationVerification({
+        baseUrl: 'https://qlaok.vunph.click',
+        registrationTicket: started.registrationTicket,
+        verificationCode: '000000',
+        password: 'StrongPass1!',
+        lang: 'vi',
+        fetchImpl,
+        storage,
+        nowMs: nowMs + 2000,
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'VERIFICATION_CODE_INVALID'
+  );
+  assert.ok(
+    await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY),
+    'Pending PKCE transaction must remain intact when OTP is wrong so user can retry'
+  );
+
+  // 5. Valid OTP verifies email, receives qlaok://auth/callback, exchanges PKCE code + codeVerifier, and saves session
+  const session = await completeMobileOwnerRegistrationVerification({
+    baseUrl: 'https://qlaok.vunph.click',
+    registrationTicket: started.registrationTicket,
+    verificationCode: '654321',
+    password: 'StrongPass1!',
+    lang: 'vi',
+    fetchImpl,
+    storage,
+    nowMs: nowMs + 5000,
+  });
+
+  assert.equal(captured.verify?.verificationCode, '654321');
+  assert.ok(captured.exchange);
+  assert.equal(captured.exchange.action, 'oidc_mobile_exchange');
+  assert.equal(captured.exchange.code, 'mobile-reg-code-777');
+  assert.equal(session.user.id, ownerUuid);
+  assert.equal(session.user.email, 'newmobileowner@qlaok.vn');
+  assert.equal(session.user.plan, 'free');
+  assert.equal(session.accessToken, 'qlaok-mobile-new-owner-token.sig');
+  assert.equal(await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY), null);
+});
+
+test('Mobile registration verification preflights the 15-minute PKCE transaction before consuming the OTP code and provides localized recovery when login handoff expires', async () => {
+  assert.equal(
+    OWNER_OIDC_TX_TTL_MS,
+    15 * 60 * 1000,
+    'Mobile OIDC transaction TTL must match the 15-minute registration ticket window'
+  );
+
+  const storage = createMemoryStorage();
+  const nowMs = 1_760_005_000_000;
+  let verifyApiCalled = false;
+
+  // 1. Missing local PKCE transaction fails preflight BEFORE calling /api/auth/login-ui
+  await assert.rejects(
+    () =>
+      completeMobileOwnerRegistrationVerification({
+        baseUrl: 'https://qlaok.vunph.click',
+        registrationTicket: 'reg-ticket-1.sig',
+        verificationCode: '123456',
+        password: 'StrongPass1!',
+        lang: 'vi',
+        storage,
+        nowMs,
+        fetchImpl: async () => {
+          verifyApiCalled = true;
+          throw new Error('Must not call server when local PKCE tx is missing');
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'REGISTRATION_EXPIRED' &&
+      err.status === 410 &&
+      err.message.includes('Phiên đăng ký đã hết hạn')
+  );
+  assert.equal(
+    verifyApiCalled,
+    false,
+    'Must not consume OTP when local PKCE tx is missing'
+  );
+
+  // 2. Expired local PKCE transaction (>15m) fails preflight BEFORE calling /api/auth/login-ui
+  await prepareOwnerOidcAuthorizationRequest({
+    env: {
+      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok_mobile',
+    },
+    storage,
+    nowMs,
+  });
+
+  await assert.rejects(
+    () =>
+      completeMobileOwnerRegistrationVerification({
+        baseUrl: 'https://qlaok.vunph.click',
+        registrationTicket: 'reg-ticket-2.sig',
+        verificationCode: '123456',
+        password: 'StrongPass1!',
+        lang: 'en',
+        storage,
+        nowMs: nowMs + OWNER_OIDC_TX_TTL_MS + 1000,
+        fetchImpl: async () => {
+          verifyApiCalled = true;
+          throw new Error('Must not call server when local PKCE tx is expired');
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'REGISTRATION_EXPIRED' &&
+      err.status === 410 &&
+      err.message.includes('Your registration session has expired')
+  );
+  assert.equal(
+    verifyApiCalled,
+    false,
+    'Must not consume OTP when local PKCE tx is expired'
+  );
+
+  // 3. Within the 15-minute window (e.g. at 12 minutes), preflight succeeds; if server returns REGISTRATION_VERIFIED_LOGIN_REQUIRED (409), mobile surfaces localized recovery
+  await prepareOwnerOidcAuthorizationRequest({
+    env: {
+      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok_mobile',
+    },
+    storage,
+    nowMs,
+  });
+
+  await assert.rejects(
+    () =>
+      completeMobileOwnerRegistrationVerification({
+        baseUrl: 'https://qlaok.vunph.click',
+        registrationTicket: 'reg-ticket-3.sig',
+        verificationCode: '654321',
+        password: 'StrongPass1!',
+        lang: 'vi',
+        storage,
+        nowMs: nowMs + 12 * 60 * 1000,
+        fetchImpl: async () => {
+          verifyApiCalled = true;
+          return new Response(
+            JSON.stringify({
+              code: 'REGISTRATION_VERIFIED_LOGIN_REQUIRED',
+              error:
+                'Email đã được xác thực thành công. Vui lòng đăng nhập bằng email và mật khẩu vừa tạo.',
+            }),
+            { status: 409, headers: { 'Content-Type': 'application/json' } }
+          );
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'REGISTRATION_VERIFIED_LOGIN_REQUIRED' &&
+      err.status === 409 &&
+      err.message.includes('Email đã được xác thực')
+  );
+  assert.equal(verifyApiCalled, true);
+
+  // 4. If register_verify succeeds (200) and returns callbackUrl, but the subsequent callback exchange fails, mobile surfaces REGISTRATION_VERIFIED_LOGIN_REQUIRED instead of losing the verified user
+  const prepared4 = await prepareOwnerOidcAuthorizationRequest({
+    env: {
+      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok_mobile',
+    },
+    storage,
+    nowMs,
+  });
+
+  await assert.rejects(
+    () =>
+      completeMobileOwnerRegistrationVerification({
+        baseUrl: 'https://qlaok.vunph.click',
+        registrationTicket: 'reg-ticket-4.sig',
+        verificationCode: '654321',
+        password: 'StrongPass1!',
+        lang: 'en',
+        storage,
+        nowMs: nowMs + 5000,
+        fetchImpl: async (input) => {
+          const url = String(input);
+          if (url.includes('/api/auth/login-ui')) {
+            return new Response(
+              JSON.stringify({
+                ok: true,
+                callbackUrl: `qlaok://auth/callback?code=expired-code&state=${encodeURIComponent(
+                  prepared4.transaction.state
+                )}`,
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              code: 'OIDC_TOKEN_EXCHANGE_FAILED',
+              error: 'Code expired',
+            }),
+            { status: 502, headers: { 'Content-Type': 'application/json' } }
+          );
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'REGISTRATION_VERIFIED_LOGIN_REQUIRED' &&
+      err.status === 409 &&
+      err.message.includes('Your email has been verified')
+  );
+});
+
+test('parseOwnerOidcCallbackUrl and completeOwnerOidcCallback localize errors in Vietnamese and English without vendor or protocol jargon', async () => {
+  // 1. Implicit token rejection has zero "PKCE", "OIDC", or "Zitadel" in VI and EN
+  for (const lang of ['vi', 'en'] as const) {
+    assert.throws(
+      () =>
+        parseOwnerOidcCallbackUrl(
+          'qlaok://auth/callback?code=abc&state=xyz&access_token=secret',
+          lang
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof MobileOwnerOidcError);
+        assert.equal(err.code, 'OIDC_IMPLICIT_TOKEN_FORBIDDEN');
+        assert.equal(/zitadel|oidc|pkce|authorization code/i.test(err.message), false);
+        if (lang === 'vi') {
+          assert.ok(err.message.includes('Phản hồi đăng nhập không an toàn'));
+        } else {
+          assert.ok(err.message.includes('Unsafe sign-in response rejected'));
+        }
+        return true;
+      }
+    );
+  }
+
+  // 2. Callback provider error in completeOwnerOidcCallback strips vendor names in VI and EN
+  const storage = createMemoryStorage();
+  const nowMs = 1_760_009_000_000;
+  const preparedVi = await prepareOwnerOidcAuthorizationRequest({
+    env: { EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok_mobile' },
+    storage,
+    nowMs,
+    lang: 'vi',
+  });
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(
+        `qlaok://auth/callback?error=server_error&error_description=Zitadel+OIDC+PKCE+login+failed&state=${encodeURIComponent(
+          preparedVi.transaction.state
+        )}`,
+        {
+          baseUrl: 'https://qlaok.vunph.click',
+          storage,
+          nowMs: nowMs + 1000,
+          lang: 'vi',
+        }
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof MobileOwnerOidcError);
+      assert.equal(err.code, 'OIDC_PROVIDER_ERROR');
+      assert.equal(/zitadel|oidc|pkce/i.test(err.message), false);
+      assert.ok(err.message.includes('Đăng nhập không thành công'));
+      return true;
+    }
+  );
+
+  const preparedEn = await prepareOwnerOidcAuthorizationRequest({
+    env: { EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok_mobile' },
+    storage,
+    nowMs,
+    lang: 'en',
+  });
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(
+        `qlaok://auth/callback?error=server_error&error_description=Zitadel+OIDC+PKCE+login+failed&state=${encodeURIComponent(
+          preparedEn.transaction.state
+        )}`,
+        {
+          baseUrl: 'https://qlaok.vunph.click',
+          storage,
+          nowMs: nowMs + 1000,
+          lang: 'en',
+        }
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof MobileOwnerOidcError);
+      assert.equal(err.code, 'OIDC_PROVIDER_ERROR');
+      assert.equal(/zitadel|oidc|pkce/i.test(err.message), false);
+      assert.ok(err.message.includes('Sign-in could not be completed'));
+      return true;
+    }
+  );
+
+  // 3. completeOwnerOidcCallback localizes missing transaction in both VI and EN
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(
+        'qlaok://auth/callback?code=code-1&state=state-1',
+        {
+          baseUrl: 'https://qlaok.vunph.click',
+          storage,
+          lang: 'vi',
+        }
+      ),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'OIDC_TRANSACTION_MISSING' &&
+      err.message.includes('Không tìm thấy phiên đăng nhập đang chờ')
+  );
+
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(
+        'qlaok://auth/callback?code=code-1&state=state-1',
+        {
+          baseUrl: 'https://qlaok.vunph.click',
+          storage,
+          lang: 'en',
+        }
+      ),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'OIDC_TRANSACTION_MISSING' &&
+      err.message.includes('No pending sign-in session was found')
+  );
 });

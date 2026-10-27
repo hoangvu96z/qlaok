@@ -216,7 +216,7 @@ async function handleMobileOidcExchange(
   if (!code) {
     return NextResponse.json(
       {
-        error: 'Thiếu mã xác thực (authorization code) từ Zitadel.',
+        error: 'Thiếu mã xác thực đăng nhập.',
         code: 'OIDC_CODE_MISSING',
       },
       { status: 400 }
@@ -232,7 +232,7 @@ async function handleMobileOidcExchange(
   if (!isValidPkceCodeVerifier(codeVerifier)) {
     return NextResponse.json(
       {
-        error: 'PKCE code_verifier không hợp lệ hoặc bị thiếu.',
+        error: 'Thông tin xác minh phiên đăng nhập không hợp lệ hoặc bị thiếu.',
         code: 'OIDC_PKCE_VERIFIER_INVALID',
       },
       { status: 400 }
@@ -243,7 +243,7 @@ async function handleMobileOidcExchange(
   if (!nonce) {
     return NextResponse.json(
       {
-        error: 'Thiếu nonce xác thực OIDC.',
+        error: 'Thiếu mã xác minh phiên đăng nhập.',
         code: 'OIDC_NONCE_MISSING',
       },
       { status: 400 }
@@ -256,7 +256,7 @@ async function handleMobileOidcExchange(
   if (expectedState && (!state || !compareConstantTimeString(state, expectedState))) {
     return NextResponse.json(
       {
-        error: 'State xác thực OIDC không khớp.',
+        error: 'Trạng thái phiên đăng nhập không khớp.',
         code: 'OIDC_STATE_MISMATCH',
       },
       { status: 400 }
@@ -277,20 +277,30 @@ async function handleMobileOidcExchange(
   });
 
   let resolvedEmail = claims.email;
+  let resolvedEmailVerified = claims.emailVerified;
   let resolvedFullName = claims.fullName;
   let resolvedPhone = claims.phone;
 
-  if ((!resolvedEmail || !resolvedFullName) && tokenResponse.access_token) {
+  if (
+    (!resolvedEmail || !resolvedFullName || resolvedEmailVerified === undefined) &&
+    tokenResponse.access_token
+  ) {
     const userInfo = await fetchZitadelUserInfo(tokenResponse.access_token);
     if (userInfo) {
       if (!userInfo.sub || userInfo.sub !== claims.sub) {
         throw new ZitadelOidcError(
           'OIDC_USERINFO_SUB_MISMATCH',
-          'Subject từ UserInfo không khớp với id_token.',
+          'Định danh người dùng không khớp với phiên đăng nhập.',
           401
         );
       }
       if (!resolvedEmail && userInfo.email) resolvedEmail = userInfo.email;
+      if (
+        resolvedEmailVerified === undefined &&
+        userInfo.emailVerified !== undefined
+      ) {
+        resolvedEmailVerified = userInfo.emailVerified;
+      }
       if (!resolvedFullName && userInfo.fullName)
         resolvedFullName = userInfo.fullName;
       if (!resolvedPhone && userInfo.phone) resolvedPhone = userInfo.phone;
@@ -301,6 +311,7 @@ async function handleMobileOidcExchange(
   const { user: finalUser, isAdmin } = await resolveAndSyncZitadelOwnerProfile({
     sub: claims.sub,
     email: resolvedEmail,
+    emailVerified: resolvedEmailVerified,
     fullName: resolvedFullName,
     phone: resolvedPhone,
     allowInsert: true,

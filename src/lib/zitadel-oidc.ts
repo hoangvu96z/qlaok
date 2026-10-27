@@ -12,7 +12,7 @@ export const DEFAULT_PRODUCTION_CALLBACK_URL =
   'https://qlaok.vunph.click/api/auth/callback';
 export const DEFAULT_MOBILE_REDIRECT_URI = 'qlaok://auth/callback';
 export const OIDC_TX_COOKIE_NAME = 'qlaok_oidc_tx';
-export const OIDC_TX_TTL_SECONDS = 10 * 60; // 10 minutes
+export const OIDC_TX_TTL_SECONDS = 15 * 60; // 15 minutes
 
 const UUID_SUB_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1182,6 +1182,7 @@ function normalizeSingleRow<T>(data: unknown): T | null {
 export async function resolveAndSyncZitadelOwnerProfile(params: {
   sub: string;
   email?: string | null;
+  emailVerified?: boolean | null;
   fullName?: string | null;
   phone?: string | null;
   allowInsert?: boolean;
@@ -1245,7 +1246,7 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
       if (profileByLegacyId.zitadel_sub && profileByLegacyId.zitadel_sub !== sub) {
         throw new ZitadelOidcError(
           'OIDC_SUBJECT_ALREADY_LINKED',
-          'Hồ sơ này đã được liên kết với một tài khoản Zitadel khác.',
+          'Hồ sơ này đã được liên kết với một tài khoản đăng nhập khác.',
           409
         );
       }
@@ -1258,7 +1259,7 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
     if (existingProfile.zitadel_sub && existingProfile.zitadel_sub !== sub) {
       throw new ZitadelOidcError(
         'OIDC_SUBJECT_ALREADY_LINKED',
-        'Hồ sơ này đã được liên kết với một tài khoản Zitadel khác.',
+        'Hồ sơ này đã được liên kết với một tài khoản đăng nhập khác.',
         409
       );
     }
@@ -1273,7 +1274,28 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
 
     let resolvedEmail = existingEmail;
     const minimalPatch: Record<string, unknown> = {};
-    if (!existingEmail && inputEmail && !isSuperAdminEmail(inputEmail)) {
+    if (!existingEmail) {
+      if (!inputEmail) {
+        throw new ZitadelOidcError(
+          'OIDC_EMAIL_REQUIRED',
+          'Hồ sơ chưa có email hợp lệ. Vui lòng hoàn tất xác thực email trước khi tiếp tục.',
+          400
+        );
+      }
+      if (isSuperAdminEmail(inputEmail)) {
+        throw new ZitadelOidcError(
+          'FORBIDDEN_SUPER_ADMIN_AUTO_CREATE',
+          'Tài khoản Quản trị hệ thống không thể tự động gán email qua đăng nhập.',
+          403
+        );
+      }
+      if (params.emailVerified !== true) {
+        throw new ZitadelOidcError(
+          'OIDC_EMAIL_NOT_VERIFIED',
+          'Email tài khoản chưa được xác thực. Vui lòng hoàn tất xác thực email trước khi tiếp tục.',
+          403
+        );
+      }
       const { data: rawCollision, error: collisionErr } = await sb
         .from('profiles')
         .select('*')
@@ -1296,7 +1318,7 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
       ) {
         throw new ZitadelOidcError(
           'OIDC_PROFILE_ID_CONFLICT',
-          'Email này đã gắn với một UUID chủ cửa hàng khác trong hệ thống.',
+          'Email này đã gắn với một hồ sơ chủ cửa hàng khác trong hệ thống.',
           409
         );
       }
@@ -1370,7 +1392,7 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
   if (!inputEmail) {
     throw new ZitadelOidcError(
       'OIDC_EMAIL_REQUIRED',
-      'Không tìm thấy hồ sơ cho subject Zitadel này và token không chứa email hợp lệ.',
+      'Tài khoản chưa có địa chỉ email hợp lệ. Vui lòng thử lại.',
       400
     );
   }
@@ -1413,7 +1435,15 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
   if (isSuperAdminEmail(inputEmail)) {
     throw new ZitadelOidcError(
       'FORBIDDEN_SUPER_ADMIN_AUTO_CREATE',
-      'Tài khoản Quản trị hệ thống phải tồn tại sẵn trong cơ sở dữ liệu và không thể tự tạo mới qua OIDC.',
+      'Tài khoản Quản trị hệ thống phải tồn tại sẵn trong cơ sở dữ liệu và không thể tự tạo mới qua đăng nhập.',
+      403
+    );
+  }
+
+  if (params.emailVerified !== true) {
+    throw new ZitadelOidcError(
+      'OIDC_EMAIL_NOT_VERIFIED',
+      'Email tài khoản chưa được xác thực. Vui lòng hoàn tất xác thực email trước khi tiếp tục.',
       403
     );
   }

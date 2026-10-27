@@ -3,7 +3,7 @@ export const OWNER_OIDC_TX_STORAGE_KEY = 'qlaok_mobile_owner_oidc_tx_v1';
 
 export const DEFAULT_ZITADEL_ISSUER_URL = 'https://auth.vunph.click';
 export const DEFAULT_MOBILE_OIDC_REDIRECT_URI = 'qlaok://auth/callback';
-export const OWNER_OIDC_TX_TTL_MS = 10 * 60 * 1000; // 10 minutes
+export const OWNER_OIDC_TX_TTL_MS = 15 * 60 * 1000; // 15 minutes (aligned with registration ticket TTL)
 export const DEFAULT_OWNER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export const OWNER_TOKEN_EXPIRY_SKEW_SECONDS = 30;
 
@@ -51,6 +51,7 @@ export interface PendingOwnerOidcTransaction {
   clientId: string;
   issuerUrl: string;
   mode: MobileOidcAuthMode;
+  lang?: 'vi' | 'en';
   createdAt: number;
   expiresAt: number;
 }
@@ -734,6 +735,9 @@ export async function prepareOwnerOidcAuthorizationRequest(options?: {
     clientId: config.clientId,
     issuerUrl: config.issuerUrl,
     mode,
+    ...(options?.lang === 'en' || options?.lang === 'vi'
+      ? { lang: options.lang }
+      : {}),
     createdAt: nowMs,
     expiresAt: nowMs + OWNER_OIDC_TX_TTL_MS,
   };
@@ -823,13 +827,34 @@ export type ParsedOwnerOidcCallback =
       state?: string;
     };
 
+export function sanitizeOwnerUserFacingErrorMessage(
+  rawMessage: unknown,
+  fallbackMessage: string
+): string {
+  if (typeof rawMessage !== 'string') return fallbackMessage;
+  const trimmed = rawMessage.trim();
+  if (!trimmed) return fallbackMessage;
+  if (
+    /zitadel|oidc|pkce|authorization\s+code|id_token|code_verifier|jwks|oauth/i.test(
+      trimmed
+    )
+  ) {
+    return fallbackMessage;
+  }
+  return trimmed;
+}
+
 export function parseOwnerOidcCallbackUrl(
-  rawUrl: string
+  rawUrl: string,
+  lang: 'vi' | 'en' = 'vi'
 ): ParsedOwnerOidcCallback {
+  const isEn = lang === 'en';
   if (!isOwnerOidcCallbackUrl(rawUrl)) {
     throw new MobileOwnerOidcError(
       'OIDC_CALLBACK_URI_MISMATCH',
-      'Không thể hoàn tất đăng nhập. Vui lòng thử lại.'
+      isEn
+        ? 'Could not complete sign-in. Please try again.'
+        : 'Không thể hoàn tất đăng nhập. Vui lòng thử lại.'
     );
   }
 
@@ -850,7 +875,9 @@ export function parseOwnerOidcCallbackUrl(
     if (queryParams.has(forbidden) || fragmentParams.has(forbidden)) {
       throw new MobileOwnerOidcError(
         'OIDC_IMPLICIT_TOKEN_FORBIDDEN',
-        'Phản hồi đăng nhập không an toàn. Yêu cầu bị từ chối để bảo vệ tài khoản.'
+        isEn
+          ? 'Unsafe sign-in response rejected to protect your account.'
+          : 'Phản hồi đăng nhập không an toàn. Yêu cầu bị từ chối để bảo vệ tài khoản.'
       );
     }
   }
@@ -881,7 +908,9 @@ export function parseOwnerOidcCallbackUrl(
   if (!code || !state) {
     throw new MobileOwnerOidcError(
       'OIDC_CALLBACK_MISSING_PARAMS',
-      'Thông tin phản hồi đăng nhập không đầy đủ. Vui lòng thử đăng nhập lại.'
+      isEn
+        ? 'Sign-in response is incomplete. Please try signing in again.'
+        : 'Thông tin phản hồi đăng nhập không đầy đủ. Vui lòng thử đăng nhập lại.'
     );
   }
 
@@ -1209,6 +1238,7 @@ export async function completeOwnerOidcCallback(
     fetchImpl?: typeof fetch;
     storage?: OwnerSessionStorageAdapter;
     nowMs?: number;
+    lang?: 'vi' | 'en';
   }
 ): Promise<MobileOwnerSession> {
   const store = options.storage ?? (await resolveDefaultStorageAdapter());
@@ -1216,25 +1246,46 @@ export async function completeOwnerOidcCallback(
   // Always clear pending transaction on callback attempt (single-use)
   await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
 
-  const parsedCallback = parseOwnerOidcCallbackUrl(callbackUrl);
+  let parsedTxCandidate: Partial<PendingOwnerOidcTransaction> | null = null;
+  if (rawTx) {
+    try {
+      parsedTxCandidate = JSON.parse(
+        rawTx
+      ) as Partial<PendingOwnerOidcTransaction>;
+    } catch {
+      parsedTxCandidate = null;
+    }
+  }
+
+  const effectiveLang: 'vi' | 'en' =
+    options.lang === 'en' || options.lang === 'vi'
+      ? options.lang
+      : parsedTxCandidate?.lang === 'en'
+        ? 'en'
+        : 'vi';
+  const isEn = effectiveLang === 'en';
+
+  const parsedCallback = parseOwnerOidcCallbackUrl(callbackUrl, effectiveLang);
 
   if (!rawTx) {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_MISSING',
-      'Không tìm thấy phiên đăng nhập đang chờ. Vui lòng thử đăng nhập lại.'
+      isEn
+        ? 'No pending sign-in session was found. Please try signing in again.'
+        : 'Không tìm thấy phiên đăng nhập đang chờ. Vui lòng thử đăng nhập lại.'
     );
   }
 
-  let tx: PendingOwnerOidcTransaction;
-  try {
-    tx = JSON.parse(rawTx) as PendingOwnerOidcTransaction;
-  } catch {
+  if (!parsedTxCandidate) {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_INVALID',
-      'Dữ liệu phiên đăng nhập không hợp lệ. Vui lòng thử lại.'
+      isEn
+        ? 'Sign-in session data is invalid. Please try again.'
+        : 'Dữ liệu phiên đăng nhập không hợp lệ. Vui lòng thử lại.'
     );
   }
 
+  const tx = parsedTxCandidate as PendingOwnerOidcTransaction;
   const nowMs = options.nowMs ?? Date.now();
   if (
     !tx ||
@@ -1249,7 +1300,9 @@ export async function completeOwnerOidcCallback(
   ) {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_EXPIRED',
-      'Phiên đăng nhập đã hết hạn. Vui lòng thử đăng nhập lại.'
+      isEn
+        ? 'Your sign-in session has expired. Please try signing in again.'
+        : 'Phiên đăng nhập đã hết hạn. Vui lòng thử đăng nhập lại.'
     );
   }
 
@@ -1260,13 +1313,19 @@ export async function completeOwnerOidcCallback(
     ) {
       throw new MobileOwnerOidcError(
         'OIDC_STATE_MISMATCH',
-        'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
+        isEn
+          ? 'Invalid sign-in request. Please try again.'
+          : 'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
       );
     }
     const friendlyProviderMessage =
       parsedCallback.error === 'access_denied'
-        ? 'Yêu cầu đăng nhập đã bị hủy hoặc bị từ chối. Vui lòng thử lại.'
-        : 'Đăng nhập không thành công. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
+        ? isEn
+          ? 'Sign-in was cancelled or denied. Please try again.'
+          : 'Yêu cầu đăng nhập đã bị hủy hoặc bị từ chối. Vui lòng thử lại.'
+        : isEn
+          ? 'Sign-in could not be completed. Please try again or contact Qlaok support.'
+          : 'Đăng nhập không thành công. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
     throw new MobileOwnerOidcError(
       'OIDC_PROVIDER_ERROR',
       friendlyProviderMessage
@@ -1276,7 +1335,9 @@ export async function completeOwnerOidcCallback(
   if (!compareConstantTime(parsedCallback.state, tx.state)) {
     throw new MobileOwnerOidcError(
       'OIDC_STATE_MISMATCH',
-      'Yêu cầu đăng nhập không hợp lệ. Yêu cầu bị từ chối để bảo vệ tài khoản.'
+      isEn
+        ? 'Invalid sign-in request rejected to protect your account.'
+        : 'Yêu cầu đăng nhập không hợp lệ. Yêu cầu bị từ chối để bảo vệ tài khoản.'
     );
   }
 
@@ -1301,10 +1362,12 @@ export async function completeOwnerOidcCallback(
         clientId: tx.clientId,
       }),
     });
-  } catch (err) {
+  } catch {
     throw new MobileOwnerOidcError(
       'OIDC_EXCHANGE_NETWORK_ERROR',
-      'Không thể kết nối để hoàn tất đăng nhập. Vui lòng kiểm tra mạng rồi thử lại.'
+      isEn
+        ? 'Unable to connect to complete sign-in. Please check your internet connection and try again.'
+        : 'Không thể kết nối để hoàn tất đăng nhập. Vui lòng kiểm tra mạng rồi thử lại.'
     );
   }
 
@@ -1318,7 +1381,22 @@ export async function completeOwnerOidcCallback(
         ? payload.code
         : 'OIDC_EXCHANGE_FAILED';
     const message =
-      'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
+      code === 'OIDC_EMAIL_NOT_VERIFIED'
+        ? isEn
+          ? 'Your account email is not verified yet. Please verify your email before signing in.'
+          : 'Email tài khoản chưa được xác thực. Vui lòng hoàn tất xác thực email trước khi đăng nhập.'
+        : code === 'OIDC_PROFILE_ID_CONFLICT' ||
+            code === 'OIDC_SUBJECT_ALREADY_LINKED'
+          ? isEn
+            ? 'This email is already linked to another account. Please sign in with your existing account or contact Qlaok support.'
+            : 'Email này đã gắn với một hồ sơ tài khoản khác. Vui lòng đăng nhập bằng tài khoản hiện có hoặc liên hệ hỗ trợ Qlaok.'
+          : code === 'FORBIDDEN_SUPER_ADMIN_AUTO_CREATE'
+            ? isEn
+              ? 'System administrator accounts cannot be created automatically.'
+              : 'Tài khoản Quản trị hệ thống không thể tự động khởi tạo qua đăng nhập.'
+            : isEn
+              ? 'Could not complete sign-in. Please try again or contact Qlaok support.'
+              : 'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
     throw new MobileOwnerOidcError(code, message, res.status);
   }
 
@@ -1406,5 +1484,308 @@ export async function revalidateOwnerSession(options: {
   } catch {
     // Transient network error: preserve existing valid session
     return { status: 'transient_error', session: current };
+  }
+}
+
+export async function startMobileOwnerRegistration(options: {
+  baseUrl: string;
+  fullName: string;
+  email: string;
+  password: string;
+  confirmPassword?: string;
+  lang?: 'vi' | 'en';
+  env?: Record<string, string | undefined>;
+  storage?: OwnerSessionStorageAdapter;
+  fetchImpl?: typeof fetch;
+  nowMs?: number;
+  state?: string;
+  nonce?: string;
+  codeVerifier?: string;
+  randomSources?: RandomBytesSourceOptions;
+}): Promise<{
+  registrationTicket: string;
+  authRequestId: string;
+  email: string;
+}> {
+  const lang = options.lang === 'en' ? 'en' : 'vi';
+  const cleanFullName = (options.fullName || '').trim();
+  const cleanEmail = (options.email || '').trim().toLowerCase();
+
+  const prepared = await prepareOwnerOidcAuthorizationRequest({
+    mode: 'register',
+    loginHint: cleanEmail,
+    lang,
+    env: options.env,
+    storage: options.storage,
+    nowMs: options.nowMs,
+    state: options.state,
+    nonce: options.nonce,
+    codeVerifier: options.codeVerifier,
+    randomSources: options.randomSources,
+  });
+
+  const fetchFn = options.fetchImpl ?? fetch;
+  const cleanBaseUrl = options.baseUrl.replace(/\/+$/, '');
+  let res: Response;
+  try {
+    res = await fetchFn(`${cleanBaseUrl}/api/auth/login-ui?lang=${lang}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Origin: cleanBaseUrl,
+        'X-Qlaok-Client': 'mobile-native',
+      },
+      body: JSON.stringify({
+        action: 'register_start',
+        fullName: cleanFullName,
+        email: cleanEmail,
+        password: options.password,
+        confirmPassword: options.confirmPassword ?? options.password,
+        lang,
+        oidc: {
+          clientId: prepared.transaction.clientId,
+          redirectUri: prepared.transaction.redirectUri,
+          state: prepared.transaction.state,
+          nonce: prepared.transaction.nonce,
+          codeChallenge: prepared.codeChallenge,
+          codeChallengeMethod: prepared.codeChallengeMethod,
+        },
+      }),
+    });
+  } catch {
+    throw new MobileOwnerOidcError(
+      'REGISTRATION_NETWORK_ERROR',
+      lang === 'en'
+        ? 'Unable to connect. Please check your internet connection and try again.'
+        : 'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.'
+    );
+  }
+
+  const payload = (await res.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  const registrationTicket =
+    typeof payload.registrationTicket === 'string'
+      ? payload.registrationTicket.trim()
+      : '';
+  const authRequestId =
+    typeof payload.authRequestId === 'string'
+      ? payload.authRequestId.trim()
+      : '';
+  const resolvedEmail =
+    typeof payload.email === 'string' && payload.email.trim()
+      ? payload.email.trim().toLowerCase()
+      : cleanEmail;
+
+  if (!res.ok || !registrationTicket) {
+    const code =
+      typeof payload.code === 'string' && payload.code
+        ? payload.code
+        : 'REGISTRATION_FAILED';
+    const fallbackMessage =
+      lang === 'en'
+        ? 'Could not create your account right now. Please try again.'
+        : 'Chưa thể tạo tài khoản lúc này. Vui lòng thử lại.';
+    const message = sanitizeOwnerUserFacingErrorMessage(
+      payload.error,
+      fallbackMessage
+    );
+    throw new MobileOwnerOidcError(code, message, res.status);
+  }
+
+  return {
+    registrationTicket,
+    authRequestId,
+    email: resolvedEmail,
+  };
+}
+
+export async function resendMobileOwnerRegistrationCode(options: {
+  baseUrl: string;
+  registrationTicket: string;
+  lang?: 'vi' | 'en';
+  fetchImpl?: typeof fetch;
+}): Promise<{ email: string }> {
+  const lang = options.lang === 'en' ? 'en' : 'vi';
+  const fetchFn = options.fetchImpl ?? fetch;
+  const cleanBaseUrl = options.baseUrl.replace(/\/+$/, '');
+  let res: Response;
+  try {
+    res = await fetchFn(`${cleanBaseUrl}/api/auth/login-ui?lang=${lang}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Origin: cleanBaseUrl,
+        'X-Qlaok-Client': 'mobile-native',
+      },
+      body: JSON.stringify({
+        action: 'register_resend',
+        registrationTicket: options.registrationTicket,
+        lang,
+      }),
+    });
+  } catch {
+    throw new MobileOwnerOidcError(
+      'REGISTRATION_NETWORK_ERROR',
+      lang === 'en'
+        ? 'Unable to connect. Please check your internet connection and try again.'
+        : 'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.'
+    );
+  }
+
+  const payload = (await res.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  if (!res.ok || !payload.ok) {
+    const code =
+      typeof payload.code === 'string' && payload.code
+        ? payload.code
+        : 'REGISTRATION_RESEND_FAILED';
+    const fallbackMessage =
+      lang === 'en'
+        ? 'Could not resend the verification code right now. Please try again.'
+        : 'Chưa thể gửi lại mã xác thực lúc này. Vui lòng thử lại.';
+    const message = sanitizeOwnerUserFacingErrorMessage(
+      payload.error,
+      fallbackMessage
+    );
+    throw new MobileOwnerOidcError(code, message, res.status);
+  }
+
+  return {
+    email:
+      typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '',
+  };
+}
+
+export async function completeMobileOwnerRegistrationVerification(options: {
+  baseUrl: string;
+  registrationTicket: string;
+  verificationCode: string;
+  password: string;
+  lang?: 'vi' | 'en';
+  fetchImpl?: typeof fetch;
+  storage?: OwnerSessionStorageAdapter;
+  nowMs?: number;
+}): Promise<MobileOwnerSession> {
+  const lang = options.lang === 'en' ? 'en' : 'vi';
+  const nowMs = options.nowMs ?? Date.now();
+  const store = options.storage ?? (await resolveDefaultStorageAdapter());
+
+  // Preflight pending local PKCE transaction BEFORE consuming the email OTP code.
+  const rawTx = await store.getItem(OWNER_OIDC_TX_STORAGE_KEY);
+  let validPendingTx = false;
+  if (rawTx) {
+    try {
+      const tx = JSON.parse(rawTx) as PendingOwnerOidcTransaction;
+      if (
+        tx &&
+        typeof tx.state === 'string' &&
+        tx.state.length > 0 &&
+        typeof tx.nonce === 'string' &&
+        tx.nonce.length > 0 &&
+        typeof tx.codeVerifier === 'string' &&
+        tx.codeVerifier.length > 0 &&
+        typeof tx.expiresAt === 'number' &&
+        nowMs <= tx.expiresAt
+      ) {
+        validPendingTx = true;
+      }
+    } catch {
+      validPendingTx = false;
+    }
+  }
+  if (!validPendingTx) {
+    await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
+    throw new MobileOwnerOidcError(
+      'REGISTRATION_EXPIRED',
+      lang === 'en'
+        ? 'Your registration session has expired. Please submit the registration form again to receive a new code.'
+        : 'Phiên đăng ký đã hết hạn. Vui lòng gửi lại biểu mẫu đăng ký để nhận mã mới.',
+      410
+    );
+  }
+
+  const fetchFn = options.fetchImpl ?? fetch;
+  const cleanBaseUrl = options.baseUrl.replace(/\/+$/, '');
+  let res: Response;
+  try {
+    res = await fetchFn(`${cleanBaseUrl}/api/auth/login-ui?lang=${lang}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Origin: cleanBaseUrl,
+        'X-Qlaok-Client': 'mobile-native',
+      },
+      body: JSON.stringify({
+        action: 'register_verify',
+        registrationTicket: options.registrationTicket,
+        verificationCode: (options.verificationCode || '').trim(),
+        password: options.password,
+        lang,
+      }),
+    });
+  } catch {
+    throw new MobileOwnerOidcError(
+      'REGISTRATION_NETWORK_ERROR',
+      lang === 'en'
+        ? 'Unable to connect. Please check your internet connection and try again.'
+        : 'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.'
+    );
+  }
+
+  const payload = (await res.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  const callbackUrl =
+    typeof payload.callbackUrl === 'string' ? payload.callbackUrl.trim() : '';
+  if (!res.ok || !callbackUrl) {
+    const code =
+      typeof payload.code === 'string' && payload.code
+        ? payload.code
+        : 'VERIFICATION_FAILED';
+    if (code === 'REGISTRATION_VERIFIED_LOGIN_REQUIRED') {
+      await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
+      throw new MobileOwnerOidcError(
+        'REGISTRATION_VERIFIED_LOGIN_REQUIRED',
+        lang === 'en'
+          ? 'Your email has been verified. Please sign in to continue.'
+          : 'Email đã được xác thực thành công. Vui lòng đăng nhập để tiếp tục.',
+        res.status || 409
+      );
+    }
+    const fallbackMessage =
+      lang === 'en'
+        ? 'The verification code is incorrect or expired. Please try again.'
+        : 'Mã xác thực chưa đúng hoặc đã hết hạn. Vui lòng thử lại.';
+    const message = sanitizeOwnerUserFacingErrorMessage(
+      payload.error,
+      fallbackMessage
+    );
+    throw new MobileOwnerOidcError(code, message, res.status);
+  }
+
+  try {
+    return await completeOwnerOidcCallback(callbackUrl, {
+      baseUrl: options.baseUrl,
+      fetchImpl: options.fetchImpl,
+      storage: options.storage,
+      nowMs: options.nowMs,
+      lang,
+    });
+  } catch {
+    throw new MobileOwnerOidcError(
+      'REGISTRATION_VERIFIED_LOGIN_REQUIRED',
+      lang === 'en'
+        ? 'Your email has been verified. Please sign in to continue.'
+        : 'Email đã được xác thực thành công. Vui lòng đăng nhập để tiếp tục.',
+      409
+    );
   }
 }

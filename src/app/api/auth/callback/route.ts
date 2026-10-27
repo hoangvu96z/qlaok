@@ -60,6 +60,39 @@ async function loadMemberShopsForCallback(
   };
 }
 
+function sanitizeCallbackUserMessage(code: string, rawMessage: string): string {
+  switch (code) {
+    case 'OIDC_PROVIDER_ERROR':
+      return 'Đăng nhập đã bị hủy hoặc từ chối. Vui lòng thử lại.';
+    case 'OIDC_MISSING_PARAMS':
+      return 'Thông tin phản hồi đăng nhập không đầy đủ. Vui lòng thử lại.';
+    case 'OIDC_INVALID_TRANSACTION':
+      return 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.';
+    case 'OIDC_STATE_MISMATCH':
+      return 'Trạng thái phiên đăng nhập không khớp. Vui lòng thử lại.';
+    case 'OIDC_EMAIL_NOT_VERIFIED':
+      return 'Email tài khoản chưa được xác thực. Vui lòng hoàn tất xác thực email trước khi tiếp tục.';
+    case 'OIDC_PROFILE_ID_CONFLICT':
+    case 'OIDC_SUBJECT_ALREADY_LINKED':
+      return 'Email hoặc hồ sơ này đã được liên kết với một tài khoản khác.';
+    case 'OIDC_EMAIL_REQUIRED':
+      return 'Tài khoản chưa có địa chỉ email hợp lệ.';
+    case 'FORBIDDEN_SUPER_ADMIN_AUTO_CREATE':
+      return 'Tài khoản Quản trị hệ thống không thể tự tạo mới qua đăng nhập.';
+    default: {
+      const cleaned = rawMessage
+        .replace(/\bZitadel\b/gi, '')
+        .replace(/\bOIDC\b/gi, '')
+        .replace(/\bPKCE\b/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      return (
+        cleaned || 'Không thể hoàn tất đăng nhập lúc này. Vui lòng thử lại.'
+      );
+    }
+  }
+}
+
 function respondCallbackError(
   req: Request,
   reqUrl: URL,
@@ -68,6 +101,7 @@ function respondCallbackError(
   status: number,
   nextPath?: string
 ): NextResponse {
+  const safeMessage = sanitizeCallbackUserMessage(code, message);
   const accept = (req.headers.get('accept') || '').toLowerCase();
   const wantsHtmlRedirect =
     reqUrl.searchParams.get('format') !== 'json' &&
@@ -76,7 +110,7 @@ function respondCallbackError(
 
   if (wantsHtmlRedirect) {
     const loginUrl = new URL('/login', getRequestOrigin(req));
-    loginUrl.searchParams.set('error', message);
+    loginUrl.searchParams.set('error', safeMessage);
     loginUrl.searchParams.set('error_code', code);
     const safeNext = sanitizeNextPath(nextPath) || '/dashboard';
     if (safeNext && safeNext !== '/dashboard') {
@@ -87,7 +121,7 @@ function respondCallbackError(
     return res;
   }
 
-  const res = NextResponse.json({ error: message, code }, { status });
+  const res = NextResponse.json({ error: safeMessage, code }, { status });
   clearOidcTransactionCookie(res);
   return res;
 }
@@ -98,14 +132,11 @@ export async function GET(req: Request) {
   try {
     const providerError = (reqUrl.searchParams.get('error') || '').trim();
     if (providerError) {
-      const desc = (
-        reqUrl.searchParams.get('error_description') || providerError
-      ).trim();
       return respondCallbackError(
         req,
         reqUrl,
         'OIDC_PROVIDER_ERROR',
-        `Xác thực Zitadel không thành công (${desc}).`,
+        'Đăng nhập đã bị hủy hoặc từ chối. Vui lòng thử lại.',
         400
       );
     }
@@ -117,7 +148,7 @@ export async function GET(req: Request) {
         req,
         reqUrl,
         'OIDC_MISSING_PARAMS',
-        'Thiếu mã xác thực (code) hoặc trạng thái phiên (state) từ Zitadel.',
+        'Thông tin phản hồi đăng nhập không đầy đủ. Vui lòng thử lại.',
         400
       );
     }
@@ -128,7 +159,7 @@ export async function GET(req: Request) {
         req,
         reqUrl,
         'OIDC_INVALID_TRANSACTION',
-        'Phiên giao dịch OIDC không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.',
+        'Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.',
         400
       );
     }
@@ -138,7 +169,7 @@ export async function GET(req: Request) {
         req,
         reqUrl,
         'OIDC_STATE_MISMATCH',
-        'Trạng thái phiên OIDC (state) không khớp.',
+        'Trạng thái phiên đăng nhập không khớp. Vui lòng thử lại.',
         400,
         tx.nextPath
       );
@@ -156,20 +187,27 @@ export async function GET(req: Request) {
     });
 
     let email = claims.email;
+    let emailVerified = claims.emailVerified;
     let fullName = claims.fullName;
     let phone = claims.phone;
 
-    if ((!email || !fullName) && tokenRes.access_token) {
+    if (
+      (!email || !fullName || emailVerified === undefined) &&
+      tokenRes.access_token
+    ) {
       const userInfo = await fetchZitadelUserInfo(tokenRes.access_token);
       if (userInfo) {
         if (!userInfo.sub || userInfo.sub !== claims.sub) {
           throw new ZitadelOidcError(
             'OIDC_USERINFO_SUB_MISMATCH',
-            'Định danh người dùng từ UserInfo không khớp với id_token.',
+            'Định danh người dùng không khớp với phiên đăng nhập.',
             401
           );
         }
         email = email || userInfo.email;
+        if (emailVerified === undefined && userInfo.emailVerified !== undefined) {
+          emailVerified = userInfo.emailVerified;
+        }
         fullName = fullName || userInfo.fullName;
         phone = phone || userInfo.phone;
       }
@@ -182,6 +220,7 @@ export async function GET(req: Request) {
       {
         sub: claims.sub,
         email,
+        emailVerified,
         fullName,
         phone,
         allowInsert: true,
@@ -271,7 +310,7 @@ export async function GET(req: Request) {
       'OIDC_CALLBACK_ERROR',
       err instanceof Error
         ? err.message
-        : 'Lỗi xử lý phản hồi đăng nhập Zitadel OIDC.',
+        : 'Không thể hoàn tất đăng nhập lúc này. Vui lòng thử lại.',
       500
     );
   }

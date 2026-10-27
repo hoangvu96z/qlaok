@@ -25,8 +25,10 @@ import {
   isValidZitadelSub,
   isValidUuidSub,
   OIDC_TX_COOKIE_NAME,
+  resolveAndSyncZitadelOwnerProfile,
   setZitadelOidcTestHooks,
   verifyOidcTransactionCookieValue,
+  ZitadelOidcError,
   type ZitadelDiscoveryDocument,
   type ZitadelJwk,
 } from '@/lib/zitadel-oidc';
@@ -841,6 +843,7 @@ test('GET /api/auth/callback maps opaque Zitadel subjects to stable Qlaok UUID p
         aud: TEST_CLIENT_ID,
         sub: newOwnerSub,
         email: 'brandnew@qlaok.vn',
+        email_verified: true,
         name: 'Nguyễn Văn Mới',
         phone_number: '0988777666',
         nonce: txIssued.transaction.nonce,
@@ -1629,5 +1632,271 @@ test('POST /api/auth action=oidc_mobile_exchange enforces qlaok://auth/callback,
     clearZitadelOidcCaches();
     delete process.env.ZITADEL_MOBILE_CLIENT_ID;
     delete process.env.PGRST_JWT_SECRET;
+  }
+});
+
+test('resolveAndSyncZitadelOwnerProfile and OIDC callback/mobile exchange fail closed unless email_verified === true (including UserInfo fallback and email backfill)', async () => {
+  const existingMissingEmailUuid = '99999999-8888-4777-8666-555555555555';
+  const { client, profiles, profileWrites } = createInMemoryOidcDb(
+    [
+      {
+        id: existingMissingEmailUuid,
+        zitadel_sub: 'sub-existing-missing-email',
+        email: null,
+        full_name: 'Chủ Quán Chưa Có Email',
+        plan: 'pro',
+      },
+    ],
+    []
+  );
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    // 1a. Brand-new profile creation: emailVerified === false -> 403 OIDC_EMAIL_NOT_VERIFIED
+    await assert.rejects(
+      () =>
+        resolveAndSyncZitadelOwnerProfile({
+          sub: '299911122233344455',
+          email: 'unverified-signup@qlaok.vn',
+          emailVerified: false,
+          fullName: 'Chưa Xác Thực',
+          allowInsert: true,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelOidcError &&
+        err.code === 'OIDC_EMAIL_NOT_VERIFIED' &&
+        err.status === 403
+    );
+
+    // 1b. Brand-new profile creation: emailVerified === undefined (absent) -> 403 OIDC_EMAIL_NOT_VERIFIED
+    await assert.rejects(
+      () =>
+        resolveAndSyncZitadelOwnerProfile({
+          sub: '299911122233344455',
+          email: 'absent-verified-signup@qlaok.vn',
+          emailVerified: undefined,
+          fullName: 'Thiếu Claim',
+          allowInsert: true,
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelOidcError &&
+        err.code === 'OIDC_EMAIL_NOT_VERIFIED' &&
+        err.status === 403
+    );
+    assert.equal(profileWrites.length, 0);
+    assert.equal(profiles.length, 1);
+
+    // 2a. Email backfill on existing profile (email: null): emailVerified === false or undefined -> 403 OIDC_EMAIL_NOT_VERIFIED
+    for (const unverifiedFlag of [false, undefined] as const) {
+      await assert.rejects(
+        () =>
+          resolveAndSyncZitadelOwnerProfile({
+            sub: 'sub-existing-missing-email',
+            email: 'backfill-unverified@qlaok.vn',
+            emailVerified: unverifiedFlag,
+            allowInsert: false,
+          }),
+        (err: unknown) =>
+          err instanceof ZitadelOidcError &&
+          err.code === 'OIDC_EMAIL_NOT_VERIFIED' &&
+          err.status === 403
+      );
+    }
+    assert.equal(profileWrites.length, 0);
+    assert.equal(profiles[0].email, null);
+
+    // 2b. Email backfill on existing profile succeeds when emailVerified === true
+    const backfilled = await resolveAndSyncZitadelOwnerProfile({
+      sub: 'sub-existing-missing-email',
+      email: 'backfill-verified@qlaok.vn',
+      emailVerified: true,
+      allowInsert: false,
+    });
+    assert.equal(backfilled.createdNewProfile, false);
+    assert.equal(backfilled.user.id, existingMissingEmailUuid);
+    assert.equal(backfilled.user.email, 'backfill-verified@qlaok.vn');
+    assert.equal(backfilled.user.plan, 'pro');
+
+    // 3. Brand-new profile creation succeeds when emailVerified === true
+    const verifiedResult = await resolveAndSyncZitadelOwnerProfile({
+      sub: '299911122233344455',
+      email: 'verified-signup@qlaok.vn',
+      emailVerified: true,
+      fullName: 'Đã Xác Thực',
+      allowInsert: true,
+    });
+    assert.equal(verifiedResult.createdNewProfile, true);
+    assert.equal(verifiedResult.user.email, 'verified-signup@qlaok.vn');
+    assert.equal(verifiedResult.user.plan, 'free');
+    assert.equal(profiles.length, 2);
+
+    // 4. Web /api/auth/callback and mobile oidc_mobile_exchange fetch UserInfo when id_token omits email_verified
+    process.env.ZITADEL_ISSUER_URL = TEST_ISSUER;
+    process.env.ZITADEL_CLIENT_ID = TEST_CLIENT_ID;
+    process.env.ZITADEL_MOBILE_CLIENT_ID = '312345678901234567@qlaok_mobile';
+    process.env.ZITADEL_REDIRECT_URI = TEST_REDIRECT_URI;
+    clearZitadelOidcCaches();
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    let currentIdToken = '';
+    let currentUserInfo: Record<string, unknown> = {};
+    let userInfoFetches = 0;
+
+    setZitadelOidcTestHooks({
+      discovery: TEST_DISCOVERY,
+      jwks: { keys: [TEST_JWK] },
+      fetch: (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === TEST_DISCOVERY.token_endpoint) {
+          return new Response(
+            JSON.stringify({
+              access_token: 'mock-access-token',
+              token_type: 'Bearer',
+              expires_in: 3600,
+              id_token: currentIdToken,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url === TEST_DISCOVERY.userinfo_endpoint) {
+          userInfoFetches += 1;
+          return new Response(JSON.stringify(currentUserInfo), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+
+    // 4a. Web callback: id_token has email but omits email_verified; UserInfo omits email_verified -> 403 OIDC_EMAIL_NOT_VERIFIED
+    {
+      const txIssued = issueOidcTransactionCookieValue({
+        redirectUri: TEST_REDIRECT_URI,
+        nextPath: '/dashboard',
+        mode: 'register',
+      });
+      currentIdToken = signTestJwt({
+        iss: TEST_ISSUER,
+        aud: TEST_CLIENT_ID,
+        sub: 'sub-web-no-email-verified',
+        email: 'web-missing-verified@qlaok.vn',
+        nonce: txIssued.transaction.nonce,
+        iat: nowSec - 5,
+        exp: nowSec + 3600,
+      });
+      currentUserInfo = {
+        sub: 'sub-web-no-email-verified',
+        email: 'web-missing-verified@qlaok.vn',
+      };
+
+      const res = await authCallbackGet(
+        new Request(
+          `https://qlaok.vunph.click/api/auth/callback?code=code-1&state=${txIssued.transaction.state}`,
+          {
+            headers: {
+              Cookie: `${OIDC_TX_COOKIE_NAME}=${txIssued.cookieValue}`,
+            },
+          }
+        )
+      );
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).code, 'OIDC_EMAIL_NOT_VERIFIED');
+      assert.equal(userInfoFetches, 1);
+      assert.equal(
+        profiles.some((p) => p.zitadel_sub === 'sub-web-no-email-verified'),
+        false
+      );
+    }
+
+    // 4b. Mobile exchange: id_token has email but omits email_verified; UserInfo returns email_verified: false -> 403 OIDC_EMAIL_NOT_VERIFIED
+    {
+      const pkce = createPkcePair();
+      currentIdToken = signTestJwt({
+        iss: TEST_ISSUER,
+        aud: '312345678901234567@qlaok_mobile',
+        sub: 'sub-mobile-unverified',
+        email: 'mobile-unverified@qlaok.vn',
+        nonce: 'nonce-mobile-unv',
+        iat: nowSec - 5,
+        exp: nowSec + 3600,
+      });
+      currentUserInfo = {
+        sub: 'sub-mobile-unverified',
+        email: 'mobile-unverified@qlaok.vn',
+        email_verified: false,
+      };
+
+      const res = await authPost(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'oidc_mobile_exchange',
+            code: 'mobile-code-unv',
+            codeVerifier: pkce.codeVerifier,
+            redirectUri: DEFAULT_MOBILE_REDIRECT_URI,
+            nonce: 'nonce-mobile-unv',
+            clientId: '312345678901234567@qlaok_mobile',
+          }),
+        })
+      );
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).code, 'OIDC_EMAIL_NOT_VERIFIED');
+      assert.equal(userInfoFetches, 2);
+      assert.equal(
+        profiles.some((p) => p.zitadel_sub === 'sub-mobile-unverified'),
+        false
+      );
+    }
+
+    // 4c. Mobile exchange: id_token has email but omits email_verified; UserInfo returns email_verified: true -> 200 & profile created
+    {
+      const pkce = createPkcePair();
+      currentIdToken = signTestJwt({
+        iss: TEST_ISSUER,
+        aud: '312345678901234567@qlaok_mobile',
+        sub: 'sub-mobile-verified-via-userinfo',
+        email: 'mobile-verified-userinfo@qlaok.vn',
+        nonce: 'nonce-mobile-ver',
+        iat: nowSec - 5,
+        exp: nowSec + 3600,
+      });
+      currentUserInfo = {
+        sub: 'sub-mobile-verified-via-userinfo',
+        email: 'mobile-verified-userinfo@qlaok.vn',
+        email_verified: true,
+        name: 'Mobile Verified UserInfo',
+      };
+
+      const res = await authPost(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'oidc_mobile_exchange',
+            code: 'mobile-code-ver',
+            codeVerifier: pkce.codeVerifier,
+            redirectUri: DEFAULT_MOBILE_REDIRECT_URI,
+            nonce: 'nonce-mobile-ver',
+            clientId: '312345678901234567@qlaok_mobile',
+          }),
+        })
+      );
+      assert.equal(res.status, 200);
+      assert.equal(userInfoFetches, 3);
+      const created = profiles.find(
+        (p) => p.zitadel_sub === 'sub-mobile-verified-via-userinfo'
+      );
+      assert.ok(created);
+      assert.equal(created.email, 'mobile-verified-userinfo@qlaok.vn');
+    }
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setZitadelOidcTestHooks(null);
+    clearZitadelOidcCaches();
+    delete process.env.ZITADEL_CLIENT_ID;
+    delete process.env.ZITADEL_MOBILE_CLIENT_ID;
+    delete process.env.ZITADEL_REDIRECT_URI;
   }
 });

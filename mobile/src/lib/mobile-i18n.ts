@@ -93,6 +93,35 @@ const VI_MOBILE_DICTIONARY = {
   'auth.oidcConfigMissingTitle': 'Đăng nhập tạm thời chưa khả dụng',
   'auth.ownerSessionExpiredNotice':
     'Phiên đăng nhập Chủ quán đã hết hạn. Vui lòng đăng nhập lại.',
+  'auth.registerBadge': 'Đăng ký Chủ quán mới',
+  'auth.registerSubtitle':
+    'Điền họ tên, email và mật khẩu để tạo tài khoản Chủ quán ngay trên Qlaok.',
+  'auth.registerFullNameLabel': 'Họ và tên Chủ quán *',
+  'auth.registerFullNamePlaceholder': 'VD: Nguyễn Văn An',
+  'auth.registerEmailLabel': 'Email tài khoản *',
+  'auth.registerPasswordLabel': 'Mật khẩu *',
+  'auth.registerPasswordPlaceholder': 'Tối thiểu 8 ký tự (A-Z, a-z, 0-9, ký tự đặc biệt)',
+  'auth.registerPasswordHint':
+    'Tối thiểu 8 ký tự, gồm chữ hoa, chữ thường, chữ số và ký tự đặc biệt.',
+  'auth.registerConfirmPasswordLabel': 'Xác nhận mật khẩu *',
+  'auth.registerConfirmPasswordPlaceholder': 'Nhập lại mật khẩu',
+  'auth.registerSubmitBtn': 'Tiếp tục & Nhận mã xác thực',
+  'auth.registerSubmitting': 'Đang tạo tài khoản...',
+  'auth.registerBackToSignIn': '← Đã có tài khoản? Quay lại đăng nhập',
+  'auth.verifyBadge': 'Xác thực email tài khoản',
+  'auth.verifySubtitle':
+    'Chúng tôi đã gửi mã xác thực tới {email}. Nhập mã bên dưới để kích hoạt tài khoản.',
+  'auth.verifyCodeLabel': 'Mã xác thực email *',
+  'auth.verifyCodePlaceholder': 'Nhập mã từ email',
+  'auth.verifySubmitBtn': 'Xác thực & Hoàn tất đăng ký',
+  'auth.verifySubmitting': 'Đang xác thực & đăng nhập...',
+  'auth.verifyResendBtn': 'Gửi lại mã xác thực',
+  'auth.verifyResending': 'Đang gửi lại mã...',
+  'auth.verifyResentNotice': 'Đã gửi lại mã xác thực mới tới {email}.',
+  'auth.verifySentNotice':
+    'Mã xác thực đã được gửi tới {email}. Vui lòng kiểm tra hộp thư của bạn.',
+  'auth.verifyEditInfoBtn': '← Đổi thông tin đăng ký',
+  'auth.registerDuplicateSwitchBtn': 'Chuyển sang Đăng nhập với email này →',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Quản lý quán',
@@ -381,6 +410,35 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'auth.oidcConfigMissingTitle': 'Sign-in is temporarily unavailable',
   'auth.ownerSessionExpiredNotice':
     'Your Owner session has expired. Please sign in again.',
+  'auth.registerBadge': 'New Shop Owner Registration',
+  'auth.registerSubtitle':
+    'Enter your full name, email, and password to create your owner account directly in Qlaok.',
+  'auth.registerFullNameLabel': 'Shop Owner full name *',
+  'auth.registerFullNamePlaceholder': 'e.g. Nguyen Van An',
+  'auth.registerEmailLabel': 'Account email *',
+  'auth.registerPasswordLabel': 'Password *',
+  'auth.registerPasswordPlaceholder': 'At least 8 chars (A-Z, a-z, 0-9, symbol)',
+  'auth.registerPasswordHint':
+    'At least 8 characters, including uppercase, lowercase, number, and special character.',
+  'auth.registerConfirmPasswordLabel': 'Confirm password *',
+  'auth.registerConfirmPasswordPlaceholder': 'Re-enter your password',
+  'auth.registerSubmitBtn': 'Continue & Send verification code',
+  'auth.registerSubmitting': 'Creating account...',
+  'auth.registerBackToSignIn': '← Already have an account? Back to sign in',
+  'auth.verifyBadge': 'Verify your email address',
+  'auth.verifySubtitle':
+    'We sent a verification code to {email}. Enter the code below to activate your account.',
+  'auth.verifyCodeLabel': 'Email verification code *',
+  'auth.verifyCodePlaceholder': 'Enter code from your email',
+  'auth.verifySubmitBtn': 'Verify & Complete registration',
+  'auth.verifySubmitting': 'Verifying & signing in...',
+  'auth.verifyResendBtn': 'Resend verification code',
+  'auth.verifyResending': 'Resending code...',
+  'auth.verifyResentNotice': 'A new verification code has been sent to {email}.',
+  'auth.verifySentNotice':
+    'A verification code has been sent to {email}. Please check your inbox.',
+  'auth.verifyEditInfoBtn': '← Edit registration info',
+  'auth.registerDuplicateSwitchBtn': 'Switch to Sign In with this email →',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Store Manager',
