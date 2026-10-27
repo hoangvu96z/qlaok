@@ -23,6 +23,28 @@ function getAuthRequestId(url: URL): string {
   ).trim();
 }
 
+function getRequestOrigin(req: Request): string {
+  const requestUrl = new URL(req.url);
+  const forwardedProto = (req.headers.get('x-forwarded-proto') || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const forwardedHost = (req.headers.get('host') || '').trim();
+
+  if (
+    (forwardedProto === 'http' || forwardedProto === 'https') &&
+    forwardedHost
+  ) {
+    try {
+      return new URL(`${forwardedProto}://${forwardedHost}`).origin;
+    } catch {
+      return requestUrl.origin;
+    }
+  }
+
+  return requestUrl.origin;
+}
+
 function isSameOriginRequest(req: Request, requireOriginHeader: boolean): boolean {
   const secFetchSite = (req.headers.get('sec-fetch-site') || '')
     .trim()
@@ -35,7 +57,7 @@ function isSameOriginRequest(req: Request, requireOriginHeader: boolean): boolea
     return !requireOriginHeader;
   }
   try {
-    return new URL(origin).origin === new URL(req.url).origin;
+    return new URL(origin).origin === getRequestOrigin(req);
   } catch {
     return false;
   }
@@ -136,7 +158,7 @@ export async function POST(req: Request) {
       authRequestId,
       loginName,
       password,
-      origin: new URL(req.url).origin,
+      origin: getRequestOrigin(req),
     });
     return jsonNoStore({ callbackUrl });
   } catch (error) {

@@ -366,3 +366,36 @@ test('/api/auth/login-ui enforces same-origin protection and rejects non-object 
     assert.equal((await nonObjectRes.json()).code, 'INVALID_BODY');
   }
 });
+
+test('/api/auth/login-ui accepts same-origin POSTs through the HTTPS reverse proxy', async () => {
+  const proxiedPost = await loginUiPost(
+    new Request('http://127.0.0.1:3005/api/auth/login-ui', {
+      method: 'POST',
+      headers: {
+        Origin: 'https://qlaok.example.test',
+        Host: 'qlaok.example.test',
+        'X-Forwarded-Proto': 'https',
+        'Content-Type': 'application/json',
+      },
+      body: 'null',
+    })
+  );
+  assert.equal(proxiedPost.status, 400);
+  assert.equal((await proxiedPost.json()).code, 'INVALID_BODY');
+
+  const crossSitePost = await loginUiPost(
+    new Request('http://127.0.0.1:3005/api/auth/login-ui', {
+      method: 'POST',
+      headers: {
+        Origin: 'https://attacker.example',
+        Host: 'qlaok.example.test',
+        'X-Forwarded-Proto': 'https',
+        'Sec-Fetch-Site': 'cross-site',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ authRequestId }),
+    })
+  );
+  assert.equal(crossSitePost.status, 403);
+  assert.equal((await crossSitePost.json()).code, 'INVALID_ORIGIN');
+});
