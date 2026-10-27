@@ -152,7 +152,10 @@ describe('login page staff mode UI contract and field isolation', () => {
     assert.match(loginSource, /\{mode\s*===\s*['"]staff['"]\s*\?\s*\(/);
 
     // Demo preview and owner sign-up footer are hidden when mode === 'staff'
-    assert.match(loginSource, /\{mode\s*!==\s*['"]staff['"]\s*&&\s*\(/);
+    assert.match(
+      loginSource,
+      /\{mode\s*!==\s*['"]staff['"]\s*&&(?:\s*mode\s*!==\s*['"]reset['"]\s*&&)?\s*\(/,
+    );
     assert.match(loginSource, /onClick=\{handleDemoLogin\}/);
 
     // Staff mode provides back-to-owner link to switch back to owner login
