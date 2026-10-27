@@ -63,11 +63,8 @@ jobs:
             echo "🔨 Building Next.js production app..."
             npm run build
             echo "🔄 Restarting PM2 process (qlaok)..."
-            if pm2 describe qlaok > /dev/null 2>&1; then
-              pm2 restart qlaok --update-env
-            else
-              pm2 start npm --name "qlaok" -- run start -- --port 3005
-            fi
+            pm2 delete qlaok 2>/dev/null || true
+            env -i HOME="$HOME" PATH="$PATH" PM2_HOME="${PM2_HOME:-$HOME/.pm2}" NODE_ENV=production pm2 start npm --name "qlaok" -- run start -- --port 3005
             pm2 save
             echo "Checking orders Realtime subscription..."
             node scripts/check-order-realtime.mjs
