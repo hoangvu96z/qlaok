@@ -78,6 +78,19 @@ const VI_MOBILE_DICTIONARY = {
   'auth.recoveryErrInvalidCode':
     'Mã khôi phục không hợp lệ hoặc đã hết hạn. Vui lòng kiểm tra lại email.',
   'auth.recoveryErrWeakPassword': 'Mật khẩu mới phải có ít nhất 6 ký tự.',
+  'auth.oidcBadge': 'Zitadel OIDC • PKCE S256',
+  'auth.oidcSubtitle':
+    'Đăng nhập Chủ quán an toàn qua cổng xác thực Zitadel (auth.vunph.click). Ứng dụng không lưu hay xử lý mật khẩu trực tiếp.',
+  'auth.oidcEmailHintLabel': 'Email gợi ý đăng nhập (không bắt buộc)',
+  'auth.oidcEmailHintPlaceholder': 'chuquan@tenquan.vn',
+  'auth.oidcSignInBtn': 'Đăng nhập Chủ quán qua Zitadel SSO',
+  'auth.oidcRegisterBtn': 'Tạo tài khoản Chủ quán trên Zitadel',
+  'auth.oidcForgotPasswordBtn': 'Quên mật khẩu trên Zitadel?',
+  'auth.oidcRedirecting': 'Đang mở Zitadel SSO...',
+  'auth.oidcExchanging': 'Đang xác thực phiên Zitadel với Qlaok...',
+  'auth.oidcConfigMissingTitle': 'Chưa cấu hình Zitadel OIDC cho thiết bị di động',
+  'auth.ownerSessionExpiredNotice':
+    'Phiên đăng nhập Chủ quán đã hết hạn. Vui lòng đăng nhập lại qua Zitadel.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Quản lý quán',
@@ -351,6 +364,19 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
     'The recovery code is invalid or expired. Please check your email and try again.',
   'auth.recoveryErrWeakPassword':
     'New password must be at least 6 characters.',
+  'auth.oidcBadge': 'Zitadel OIDC • PKCE S256',
+  'auth.oidcSubtitle':
+    'Sign in securely as a Store Owner via Zitadel SSO (auth.vunph.click). Passwords are never entered or stored in the app.',
+  'auth.oidcEmailHintLabel': 'Email login hint (optional)',
+  'auth.oidcEmailHintPlaceholder': 'owner@yourstore.vn',
+  'auth.oidcSignInBtn': 'Sign in as Owner with Zitadel SSO',
+  'auth.oidcRegisterBtn': 'Create Owner account on Zitadel',
+  'auth.oidcForgotPasswordBtn': 'Forgot password on Zitadel?',
+  'auth.oidcRedirecting': 'Opening Zitadel SSO...',
+  'auth.oidcExchanging': 'Verifying Zitadel session with Qlaok...',
+  'auth.oidcConfigMissingTitle': 'Mobile Zitadel OIDC not configured',
+  'auth.ownerSessionExpiredNotice':
+    'Your Owner session has expired. Please sign in again with Zitadel.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Store Manager',

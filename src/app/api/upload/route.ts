@@ -5,20 +5,32 @@ import {
   uploadBufferToR2,
 } from '@/lib/r2';
 import {
-  MAX_SUPABASE_UPLOAD_BYTES,
-  SUPABASE_UPLOAD_ALLOWED_MIME_TYPES,
-  uploadBufferToSupabaseStorage,
-} from '@/lib/supabase-storage';
+  ALLOWED_IMAGE_MIME_TYPES,
+  MAX_UPLOAD_BYTES,
+  createGaragePresignedUploadUrl,
+  isGarageConfigured,
+  uploadBufferToGarage,
+} from '@/lib/garage-storage';
+import {
+  isStaffSessionUser,
+  requireAuthenticatedUser,
+} from '@/lib/server-auth';
 
 const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set(
-  SUPABASE_UPLOAD_ALLOWED_MIME_TYPES
+  ALLOWED_IMAGE_MIME_TYPES
 );
 
 interface UploadRouteTestHooks {
   r2Uploader?: typeof uploadBufferToR2;
-  supabaseUploader?: typeof uploadBufferToSupabaseStorage;
+  garageUploader?: (params: {
+    key: string;
+    contentType: string;
+    buffer: Buffer;
+  }) => Promise<string | null>;
   isR2Configured?: () => boolean;
+  isGarageConfigured?: () => boolean;
   r2Presigned?: typeof createR2PresignedUploadUrl;
+  garagePresigned?: typeof createGaragePresignedUploadUrl;
 }
 
 declare global {
@@ -26,6 +38,23 @@ declare global {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireAuthenticatedUser(req);
+  if (auth.errorResponse) return auth.errorResponse;
+
+  if (
+    isStaffSessionUser(auth.user) ||
+    (auth.user.role !== 'owner' && auth.user.role !== 'admin')
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          'Tài khoản nhân viên không có quyền thực hiện thao tác dành riêng cho chủ quán.',
+        code: 'FORBIDDEN_STAFF_OWNER_ACTION',
+      },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await req.json();
     const {
@@ -51,9 +80,12 @@ export async function POST(req: Request) {
     const safeName = safeFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const key = `uploads/${Date.now()}-${safeName}`;
     const hooks = globalThis.__uploadRouteTestHooks;
-    const configured = hooks?.isR2Configured
+    const r2Configured = hooks?.isR2Configured
       ? hooks.isR2Configured()
       : isR2Configured();
+    const garageConfigured = hooks?.isGarageConfigured
+      ? hooks.isGarageConfigured()
+      : isGarageConfigured();
 
     if (typeof base64Data === 'string' && base64Data.length > 0) {
       const dataUrlMatch = base64Data.startsWith('data:')
@@ -72,7 +104,7 @@ export async function POST(req: Request) {
       const rawBase64 = dataUrlMatch
         ? base64Data.slice(dataUrlMatch[0].length)
         : base64Data;
-      const maxBase64Length = Math.ceil(MAX_SUPABASE_UPLOAD_BYTES / 3) * 4;
+      const maxBase64Length = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
       if (
         rawBase64.length > maxBase64Length ||
         !/^[A-Za-z0-9+/]*={0,2}$/.test(rawBase64) ||
@@ -94,7 +126,7 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
-      if (buffer.length > MAX_SUPABASE_UPLOAD_BYTES) {
+      if (buffer.length > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
           {
             error: 'Image is too large',
@@ -104,9 +136,31 @@ export async function POST(req: Request) {
         );
       }
 
+      let garageUrl: string | null = null;
+      try {
+        if (garageConfigured) {
+          const uploader =
+            hooks?.garageUploader ?? uploadBufferToGarage;
+          garageUrl = await uploader({
+            key,
+            contentType: normalizedContentType,
+            buffer,
+          });
+        }
+      } catch {
+        // Do not log raw error, base64 payload, or secrets
+      }
+
+      if (garageUrl) {
+        return NextResponse.json({
+          mode: 'garage-storage',
+          publicUrl: garageUrl,
+        });
+      }
+
       let r2Url: string | null = null;
       try {
-        if (configured) {
+        if (r2Configured) {
           const uploader = hooks?.r2Uploader ?? uploadBufferToR2;
           r2Url = await uploader({
             key,
@@ -125,39 +179,45 @@ export async function POST(req: Request) {
         });
       }
 
-      try {
-        const uploader = hooks?.supabaseUploader ?? uploadBufferToSupabaseStorage;
-        const publicUrl = await uploader({
-          key,
-          contentType: normalizedContentType,
-          buffer,
-        });
-        if (publicUrl) {
-          return NextResponse.json({ mode: 'supabase-storage', publicUrl });
-        }
-      } catch {
-        // Do not log raw error, base64 payload, or secrets
-      }
-
+      const anyConfigured = r2Configured || garageConfigured;
       return NextResponse.json(
         {
-          error: configured
+          error: anyConfigured
             ? 'UPLOAD_STORAGE_FAILED'
             : 'UPLOAD_STORAGE_UNAVAILABLE',
-          code: configured
+          code: anyConfigured
             ? 'UPLOAD_STORAGE_FAILED'
             : 'UPLOAD_STORAGE_UNAVAILABLE',
         },
-        { status: configured ? 502 : 503 }
+        { status: anyConfigured ? 502 : 503 }
       );
     }
 
-    if (configured) {
+    if (garageConfigured) {
+      try {
+        const presignedFn =
+          hooks?.garagePresigned ?? createGaragePresignedUploadUrl;
+        const presigned = await presignedFn({
+          key,
+          contentType: normalizedContentType,
+        });
+        if (presigned) {
+          return NextResponse.json({
+            mode: 'garage-presigned',
+            ...presigned,
+          });
+        }
+      } catch {
+        // Do not log raw error or secrets; configured R2 may still serve as fallback.
+      }
+    }
+
+    if (r2Configured) {
       try {
         const presignedFn = hooks?.r2Presigned ?? createR2PresignedUploadUrl;
         const presigned = await presignedFn({
           key,
-          contentType,
+          contentType: normalizedContentType,
         });
         if (presigned) {
           return NextResponse.json({
@@ -170,9 +230,18 @@ export async function POST(req: Request) {
       }
     }
 
+    const anyConfigured = r2Configured || garageConfigured;
+
     return NextResponse.json(
-      { error: 'Missing base64Data payload' },
-      { status: 400 }
+      {
+        error: anyConfigured
+          ? 'UPLOAD_STORAGE_FAILED'
+          : 'UPLOAD_STORAGE_UNAVAILABLE',
+        code: anyConfigured
+          ? 'UPLOAD_STORAGE_FAILED'
+          : 'UPLOAD_STORAGE_UNAVAILABLE',
+      },
+      { status: anyConfigured ? 502 : 503 }
     );
   } catch {
     // Do not log raw error, base64 payload, or secrets

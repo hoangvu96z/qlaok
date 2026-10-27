@@ -33,12 +33,11 @@ import {
   setMposDbClientForTests,
 } from '../src/lib/mpos-store';
 import {
+  DEFAULT_POSTGRES_CHANNEL,
   getOrderEventsBroker,
   OrderEventsBroker,
+  type PostgresListenerClientLike,
   type OrderSseEvent,
-  type PostgresOrderChangePayload,
-  type RealtimeChannelLike,
-  type RealtimeClientLike,
   resetOrderEventsBrokerForTests,
 } from '../src/lib/order-events';
 import {
@@ -910,25 +909,23 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
 
     unsubscribe();
 
-    // 4. Verify upstream postgres_changes on table_service_requests routes only to matching shop
-    let upstreamCallback: ((payload: PostgresOrderChangePayload) => void) | null =
+    // 4. PostgreSQL NOTIFY on table_service_requests routes only to matching shop
+    let upstreamCallback: ((message: { channel: string; payload?: string }) => void) | null =
       null;
     const customBroker = new OrderEventsBroker({
       createClient: () => {
-        const channel: RealtimeChannelLike = {
-          on(_type, filter, cb) {
-            if (filter.table === 'table_service_requests') {
-              upstreamCallback = cb;
+        const client: PostgresListenerClientLike = {
+          connect: async () => undefined,
+          query: async () => undefined,
+          on(event, listener) {
+            if (event === 'notification') {
+              upstreamCallback = listener as (
+                message: { channel: string; payload?: string }
+              ) => void;
             }
-            return channel;
+            return client;
           },
-          subscribe(cb) {
-            cb?.('SUBSCRIBED');
-            return channel;
-          },
-        };
-        const client: RealtimeClientLike = {
-          channel: () => channel,
+          end: async () => undefined,
         };
         return client;
       },
@@ -946,16 +943,13 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     });
 
     assert.ok(upstreamCallback);
-    (upstreamCallback as (payload: PostgresOrderChangePayload) => void)({
-      table: 'table_service_requests',
-      eventType: 'INSERT',
-      new: {
-        id: 'srv-upstream-01',
-        shop_id: SHOP_A,
-        table_id: 'tbl-fnb-01',
-        request_type: 'call_staff',
-        status: 'pending',
-      },
+    (upstreamCallback as (message: { channel: string; payload?: string }) => void)({
+      channel: DEFAULT_POSTGRES_CHANNEL,
+      payload: JSON.stringify({
+        table: 'table_service_requests',
+        eventType: 'INSERT',
+        shopId: SHOP_A,
+      }),
     });
 
     assert.equal(

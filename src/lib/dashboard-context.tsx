@@ -16,7 +16,6 @@ import {
   isSuperAdmin,
   setStoredAuthOwner,
 } from '@/lib/auth-session';
-import { createClient } from '@/lib/supabase/client';
 import { CLIENT_ALL_SHOP_PERMISSIONS } from '@/lib/dashboard-nav';
 
 interface DashboardContextValue {
@@ -74,37 +73,35 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     try {
       let owner = getStoredAuthOwner();
 
-      // If not in localStorage yet, check if Supabase Auth has an active session (e.g. from OTP/Magic Link)
+      // If not in localStorage yet, hydrate from the server HttpOnly session cookie (e.g. after Zitadel OIDC callback)
       if (!owner) {
-        const supabase = createClient();
-        if (supabase) {
-          const { data: sessionRes } = await supabase.auth.getSession();
-          const sbUser = sessionRes?.session?.user;
-          const sbToken = sessionRes?.session?.access_token;
-          if (sbUser?.email && sbToken) {
-            const syncRes = await fetch('/api/auth', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${sbToken}`,
-              },
-              body: JSON.stringify({
-                action: 'sync_user',
-                userId: sbUser.id,
-                email: sbUser.email,
-                fullName: sbUser.user_metadata?.full_name as string,
-                phone: sbUser.user_metadata?.phone as string,
-                supabaseAccessToken: sbToken,
-              }),
-            });
-            if (syncRes.ok) {
-              const syncData = await syncRes.json();
-              if (syncData.user) {
-                owner = syncData.user as Profile;
-                setStoredAuthOwner(owner, syncData.accessToken);
+        try {
+          const syncRes = await fetch('/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ action: 'sync_user' }),
+          });
+          if (syncRes.ok) {
+            const syncData = await syncRes.json();
+            if (syncData.user) {
+              owner = syncData.user as Profile;
+              setStoredAuthOwner(owner, syncData.accessToken);
+              const firstShop =
+                (Array.isArray(syncData.shops) && syncData.shops[0]) ||
+                (Array.isArray(syncData.memberShops) &&
+                  syncData.memberShops[0]);
+              if (
+                typeof window !== 'undefined' &&
+                firstShop?.id &&
+                !localStorage.getItem('qlaok_active_shop_id')
+              ) {
+                localStorage.setItem('qlaok_active_shop_id', firstShop.id);
               }
             }
           }
+        } catch {
+          // Fall through to unauthenticated handling if session sync fails
         }
       }
 

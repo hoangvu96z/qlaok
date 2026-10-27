@@ -31,68 +31,90 @@ const { dbCreateOrder, resetMposStoreForTests } = await import(
   '@/lib/mpos-store'
 );
 const {
+  OrderEventsBroker,
   getOrderEventsBroker,
   resetOrderEventsBrokerForTests,
   setOrderEventsClientFactoryForTests,
   setOrderEventsStreamOptionsForTests,
+  DEFAULT_POSTGRES_CHANNEL,
 } = await import('@/lib/order-events');
 const { readOrderEvents } = await import('@/lib/order-live-sync');
 const { GET: orderEventsGet } = await import('@/app/api/orders/events/route');
 
 import type {
   OrderSseEvent,
-  PostgresOrderChangePayload,
-  RealtimeChannelLike,
-  RealtimeClientLike,
+  PostgresListenerClientLike,
+  PostgresOrderNotification,
 } from '@/lib/order-events';
 
 interface MockUpstreamHarness {
-  client: RealtimeClientLike;
-  getChannelCount: () => number;
+  createClient: () => PostgresListenerClientLike;
+  getConnectionCount: () => number;
   getRemovedCount: () => number;
-  emitStatus: (status: string) => void;
-  emitChange: (payload: PostgresOrderChangePayload) => void;
+  emitError: () => void;
+  emitChange: (payload: PostgresOrderNotification) => void;
 }
 
 function createMockUpstreamHarness(): MockUpstreamHarness {
-  let changeHandler: ((payload: PostgresOrderChangePayload) => void) | null =
-    null;
-  let statusHandler: ((status: string, err?: Error) => void) | null = null;
-  let channelCount = 0;
+  type Listener = (...args: any[]) => void;
+  const connections: Array<{
+    active: boolean;
+    listeners: Record<string, Listener[]>;
+  }> = [];
+  let connectionCount = 0;
   let removedCount = 0;
 
-  const client: RealtimeClientLike = {
-    channel(_name: string): RealtimeChannelLike {
-      channelCount += 1;
-      const channelObj: RealtimeChannelLike = {
-        on(_type, _filter, callback) {
-          changeHandler = callback;
-          return channelObj;
-        },
-        subscribe(callback) {
-          statusHandler = callback ?? null;
-          return channelObj;
-        },
-        unsubscribe() {
+  const createClient = (): PostgresListenerClientLike => {
+    const connection = { active: true, listeners: {} as Record<string, Listener[]> };
+    const client: PostgresListenerClientLike = {
+      connect: async () => {
+        connectionCount += 1;
+      },
+      query: async () => undefined,
+      on(event, listener) {
+        connection.listeners[event] = connection.listeners[event] || [];
+        connection.listeners[event].push(listener);
+        return client;
+      },
+      removeListener(event, listener) {
+        connection.listeners[event] = (connection.listeners[event] || []).filter(
+          (entry) => entry !== listener
+        );
+        return client;
+      },
+      end: async () => {
+        if (connection.active) {
+          connection.active = false;
           removedCount += 1;
-        },
-      };
-      return channelObj;
-    },
-    removeChannel() {
-      removedCount += 1;
-    },
+        }
+      },
+    };
+    connections.push(connection);
+    return client;
   };
 
   return {
-    client,
-    getChannelCount: () => channelCount,
+    createClient,
+    getConnectionCount: () => connectionCount,
     getRemovedCount: () => removedCount,
-    emitStatus: (status: string) => {
-      statusHandler?.(status);
+    emitError: () => {
+      for (const connection of connections) {
+        if (!connection.active) continue;
+        for (const listener of connection.listeners.error || []) {
+          listener(new Error('Connection terminated'));
+        }
+      }
     },
-    emitChange: (payload: PostgresOrderChangePayload) => {
-      changeHandler?.(payload);
+    emitChange: (payload: PostgresOrderNotification) => {
+      for (const connection of connections) {
+        if (!connection.active) continue;
+        for (const listener of connection.listeners.notification || []) {
+          listener({
+            channel: DEFAULT_POSTGRES_CHANNEL,
+            payload: JSON.stringify(payload),
+          });
+        }
+      }
     },
   };
 }
@@ -287,7 +309,7 @@ test('returns 503 when production backend key is missing or publishable key is s
 
 test('shares one upstream subscription across clients, enforces shop/order isolation, strips sensitive data, and cleans up on abort', async () => {
   const harness = createMockUpstreamHarness();
-  setOrderEventsClientFactoryForTests(() => harness.client);
+  setOrderEventsClientFactoryForTests(() => harness.createClient());
 
   const shop1Token = issueSessionToken({
     id: 'realtime-shop1-staff',
@@ -373,15 +395,18 @@ test('shares one upstream subscription across clients, enforces shop/order isola
   const broker = getOrderEventsBroker();
   assert.equal(broker.getActiveClientCount(), 3);
   assert.equal(broker.getActiveUpstreamChannelCount(), 1);
-  assert.equal(harness.getChannelCount(), 1, 'must open only one upstream channel');
+  assert.equal(
+    harness.getConnectionCount(),
+    1,
+    'must open only one upstream PostgreSQL connection'
+  );
 
   // Must NOT fake ready before upstream emits SUBSCRIBED
   assert.equal(streamShop1.events.length, 0);
   assert.equal(streamShop2.events.length, 0);
   assert.equal(streamGuest1.events.length, 0);
 
-  // Upstream becomes SUBSCRIBED -> all clients receive {type:"ready"}
-  harness.emitStatus('SUBSCRIBED');
+  // PostgreSQL LISTEN succeeds -> all clients receive {type:"ready"}
   await streamShop1.waitForCount(1);
   await streamShop2.waitForCount(1);
   await streamGuest1.waitForCount(1);
@@ -454,8 +479,10 @@ test('shares one upstream subscription across clients, enforces shop/order isola
 
 test('emits fallback on upstream channel error, resyncs on reconnect, and disconnects revoked members on revalidation', async () => {
   const harness = createMockUpstreamHarness();
-  setOrderEventsClientFactoryForTests(() => harness.client);
-  const fastBroker = getOrderEventsBroker();
+  const fastBroker = new OrderEventsBroker({
+    createClient: () => harness.createClient(),
+    reconnectDelayMs: 10,
+  });
   setOrderEventsStreamOptionsForTests({
     broker: fastBroker,
     heartbeatIntervalMs: 30,
@@ -484,17 +511,15 @@ test('emits fallback on upstream channel error, resyncs on reconnect, and discon
   );
   const collector = collectSseEvents(res);
 
-  harness.emitStatus('SUBSCRIBED');
   await collector.waitForCount(1);
   assert.deepEqual(collector.events[0], { type: 'ready' });
 
-  // Upstream channel error -> emits fallback
-  harness.emitStatus('CHANNEL_ERROR');
+  // PostgreSQL connection error -> emits fallback
+  harness.emitError();
   await collector.waitForCount(2);
   assert.deepEqual(collector.events[1], { type: 'fallback' });
 
-  // Upstream recovers to SUBSCRIBED -> emits ready + resync change event
-  harness.emitStatus('SUBSCRIBED');
+  // PostgreSQL reconnect -> emits ready + resync change event
   await collector.waitForCount(4);
   assert.deepEqual(collector.events[2], { type: 'ready' });
   assert.deepEqual(collector.events[3], {
@@ -520,7 +545,7 @@ test('emits fallback on upstream channel error, resyncs on reconnect, and discon
 
 test('enforces max stream lifetime reconnect closure and bounded broker capacity', async () => {
   const harness = createMockUpstreamHarness();
-  setOrderEventsClientFactoryForTests(() => harness.client);
+  setOrderEventsClientFactoryForTests(() => harness.createClient());
   const broker = getOrderEventsBroker();
   setOrderEventsStreamOptionsForTests({
     broker,
@@ -553,7 +578,6 @@ test('enforces max stream lifetime reconnect closure and bounded broker capacity
     )
   );
   const collector = collectSseEvents(res);
-  harness.emitStatus('SUBSCRIBED');
   await collector.waitForCount(1);
   assert.deepEqual(collector.events, [{ type: 'ready' }]);
 
@@ -563,3 +587,128 @@ test('enforces max stream lifetime reconnect closure and bounded broker capacity
   assert.equal(broker.getActiveUpstreamChannelCount(), 0);
 });
 
+test('PostgreSQL LISTEN listener lifecycle: connect, listen query, minimal payload dispatch, error fallback, resync on reconnect, and clean release', async () => {
+  let connectCount = 0;
+  let endCount = 0;
+  const queries: string[] = [];
+  const listeners: Record<string, Array<(...args: any[]) => void>> = {};
+
+  const mockPgClient = {
+    connect: async () => {
+      connectCount++;
+    },
+    query: async (sql: string) => {
+      queries.push(sql);
+    },
+    on: (event: string, listener: (...args: any[]) => void) => {
+      listeners[event] = listeners[event] || [];
+      listeners[event].push(listener);
+      return mockPgClient;
+    },
+    removeListener: (event: string, listener: (...args: any[]) => void) => {
+      if (listeners[event]) {
+        listeners[event] = listeners[event].filter((l) => l !== listener);
+      }
+      return mockPgClient;
+    },
+    end: async () => {
+      endCount++;
+    },
+  };
+
+  setOrderEventsClientFactoryForTests(() => mockPgClient as any);
+  const broker = getOrderEventsBroker();
+  setOrderEventsStreamOptionsForTests({
+    broker,
+    heartbeatIntervalMs: 50,
+    revalidateIntervalMs: 1000,
+    maxStreamLifetimeMs: 5000,
+  });
+
+  const staffToken = issueSessionToken({
+    id: 'pg-realtime-staff',
+    email: 'pg-staff@example.test',
+  });
+  await dbUpsertShopMembership({
+    shop_id: 'shop-fnb-001',
+    user_id: 'pg-realtime-staff',
+    role: 'staff',
+    permissions: ['orders.view'],
+  });
+
+  const abortController = new AbortController();
+  const res = await orderEventsGet(
+    new Request('http://localhost/api/orders/events?shopId=shop-fnb-001', {
+      headers: { Authorization: `Bearer ${staffToken}` },
+      signal: abortController.signal,
+    })
+  );
+
+  const collector = collectSseEvents(res);
+  await collector.waitForCount(1);
+
+  // Upstream established: client.connect() called and LISTEN query executed
+  assert.equal(connectCount, 1);
+  assert.ok(queries.some((q) => q.includes('LISTEN qlaok_order_events')));
+  assert.deepEqual(collector.events[0], { type: 'ready' });
+  assert.equal(broker.getStatus(), 'subscribed');
+  assert.equal(broker.getActiveClientCount(), 1);
+  assert.equal(broker.getActiveUpstreamChannelCount(), 1);
+
+  // Emit PostgreSQL notification with minimal orders payload
+  const notifCallbacks = listeners['notification'] || [];
+  for (const cb of notifCallbacks) {
+    cb({
+      channel: 'qlaok_order_events',
+      payload: JSON.stringify({
+        table: 'orders',
+        eventType: 'INSERT',
+        orderId: 'ord-pg-1',
+        shopId: 'shop-fnb-001',
+      }),
+    });
+  }
+
+  await collector.waitForCount(2);
+  assert.deepEqual(collector.events[1], {
+    type: 'change',
+    orderId: 'ord-pg-1',
+    shopId: 'shop-fnb-001',
+  });
+
+  // Emit PostgreSQL notification for table_service_requests
+  for (const cb of notifCallbacks) {
+    cb({
+      channel: 'qlaok_order_events',
+      payload: JSON.stringify({
+        table: 'table_service_requests',
+        eventType: 'INSERT',
+        shopId: 'shop-fnb-001',
+      }),
+    });
+  }
+
+  await collector.waitForCount(3);
+  assert.deepEqual(collector.events[2], {
+    type: 'change',
+    shopId: 'shop-fnb-001',
+  });
+
+  // Emit connection error -> broker enters fallback and notifies clients
+  const errorCallbacks = listeners['error'] || [];
+  for (const cb of errorCallbacks) {
+    cb(new Error('Connection terminated'));
+  }
+
+  await collector.waitForCount(4);
+  assert.deepEqual(collector.events[3], { type: 'fallback' });
+  assert.equal(broker.getStatus(), 'fallback');
+
+  // Clean disconnect: abort request closes stream and releases listener
+  abortController.abort();
+  await collector.done;
+  assert.equal(broker.getActiveClientCount(), 0);
+  assert.equal(broker.getActiveUpstreamChannelCount(), 0);
+  assert.equal(broker.getStatus(), 'idle');
+  assert.ok(endCount >= 1, 'must call client.end() to cleanly release PostgreSQL listener');
+});

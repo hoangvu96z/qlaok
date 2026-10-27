@@ -12,10 +12,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { Session } from '@supabase/supabase-js';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  API_BASE_URL,
   fetchApi,
   formatVnd,
   MobileAnalyticsEvent,
@@ -30,9 +30,19 @@ import {
   MobileShopOrder,
   MobileShopPermission,
   MobileShopThemeConfig,
+  postgrestClient,
   PRODUCTION_API_URL,
-  supabase,
 } from './src/lib/supabase';
+import {
+  clearOwnerSession,
+  completeOwnerOidcCallback,
+  getOwnerPostgrestToken,
+  isOwnerOidcCallbackUrl,
+  loadOwnerSession,
+  type MobileOwnerSession,
+  revalidateOwnerSession,
+  subscribeOwnerSessionChanges,
+} from './src/lib/owner-session';
 import {
   buildOrderStatusPatchPayload,
   MAX_ORDER_REASON_LENGTH,
@@ -71,18 +81,26 @@ type MobileSaveFeedback = {
   message: string;
 };
 
+export type MobileOwnerSessionLike =
+  | MobileOwnerSession
+  | { user: { id: string }; [key: string]: unknown };
+
 export type MobileActiveWorkspaceRoute =
   | { kind: 'loading' }
   | { kind: 'staff'; staffSession: MobileStaffSession }
-  | { kind: 'owner'; ownerSession: Session }
-  | { kind: 'auth'; staffSessionExpired: boolean };
+  | { kind: 'owner'; ownerSession: MobileOwnerSessionLike }
+  | {
+      kind: 'auth';
+      staffSessionExpired: boolean;
+      ownerSessionExpired?: boolean;
+    };
 
 /**
- * Resolves the root mobile workspace route only after BOTH the Supabase owner
+ * Resolves the root mobile workspace route only after BOTH the Zitadel/Qlaok owner
  * session and the isolated Qlaok staff session have finished booting, preventing
  * any flash of the wrong dashboard.
  *
- * - Never constructs a Supabase `Session` from a staff session.
+ * - Never constructs an owner session from a staff session.
  * - Never passes staff identity into the owner `Workspace`.
  * - Routes back to `AuthScreen` with `staffSessionExpired: true` when `staffApi`
  *   clears a staff session on 401/revocation without logging out any owner.
@@ -90,9 +108,10 @@ export type MobileActiveWorkspaceRoute =
 export function resolveMobileWorkspaceRoute(params: {
   ownerReady: boolean;
   staffReady: boolean;
-  ownerSession: Session | null;
+  ownerSession: MobileOwnerSessionLike | null;
   staffSession: MobileStaffSession | null;
   staffSessionExpired?: boolean;
+  ownerSessionExpired?: boolean;
 }): MobileActiveWorkspaceRoute {
   if (!params.ownerReady || !params.staffReady) {
     return { kind: 'loading' };
@@ -106,12 +125,16 @@ export function resolveMobileWorkspaceRoute(params: {
   if (params.ownerSession) {
     return { kind: 'owner', ownerSession: params.ownerSession };
   }
-  return { kind: 'auth', staffSessionExpired: false };
+  return {
+    kind: 'auth',
+    staffSessionExpired: false,
+    ...(params.ownerSessionExpired ? { ownerSessionExpired: true } : {}),
+  };
 }
 
 /**
- * Clears the stored mobile staff session and cleans any coexisting Supabase
- * owner session using the owner push-token-before-sign-out helper so staff
+ * Clears the stored mobile staff session and cleans any coexisting owner
+ * session using the owner push-token-before-sign-out helper so staff
  * sign-out on a shared device never reveals a stale owner account.
  * Never sends an owner token to staff endpoints.
  */
@@ -119,7 +142,7 @@ export async function executeStaffSignOutCleanup(options?: {
   clearStaff?: () => Promise<void>;
   hasOwnerSession?: boolean;
   getOwnerSession?: () => Promise<{
-    data?: { session: Session | null } | null;
+    data?: { session: MobileOwnerSessionLike | null } | null;
     error?: unknown;
   }>;
   ownerApiCall?: (path: string, init?: RequestInit) => Promise<Response>;
@@ -134,7 +157,11 @@ export async function executeStaffSignOutCleanup(options?: {
   let coexistingOwner = Boolean(options?.hasOwnerSession);
   if (!coexistingOwner) {
     const getOwnerSessionFn =
-      options?.getOwnerSession ?? (() => supabase.auth.getSession());
+      options?.getOwnerSession ??
+      (async () => ({
+        data: { session: await loadOwnerSession() },
+        error: null,
+      }));
     try {
       const res = await getOwnerSessionFn();
       if (res?.data?.session) {
@@ -151,7 +178,7 @@ export async function executeStaffSignOutCleanup(options?: {
       apiCall: options?.ownerApiCall ?? fetchApi,
       signOut:
         options?.signOutOwner ??
-        (() => supabase.auth.signOut({ scope: 'local' })),
+        (() => clearOwnerSession({ reason: 'logout' })),
     });
     ownerCleaned = true;
   }
@@ -163,40 +190,74 @@ export async function executeStaffSignOutCleanup(options?: {
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<MobileOwnerSession | null>(null);
   const [staffSession, setStaffSession] = useState<MobileStaffSession | null>(
     null
   );
   const [ownerReady, setOwnerReady] = useState(false);
   const [staffReady, setStaffReady] = useState(false);
   const [staffSessionExpired, setStaffSessionExpired] = useState(false);
+  const [ownerSessionExpired, setOwnerSessionExpired] = useState(false);
+  const [ownerAuthError, setOwnerAuthError] = useState('');
+  const [ownerOidcExchanging, setOwnerOidcExchanging] = useState(false);
   const staffManualOverrideRef = useRef(false);
+  const lastHandledCallbackUrlRef = useRef<string | null>(null);
+
+  const handleIncomingCallbackUrl = useCallback(async (url: string | null) => {
+    if (!url || !isOwnerOidcCallbackUrl(url)) return;
+    if (lastHandledCallbackUrlRef.current === url) return;
+    lastHandledCallbackUrlRef.current = url;
+
+    setOwnerOidcExchanging(true);
+    setOwnerAuthError('');
+    try {
+      const nextOwnerSession = await completeOwnerOidcCallback(url, {
+        baseUrl: API_BASE_URL,
+      });
+      setSession(nextOwnerSession);
+      setOwnerSessionExpired(false);
+      setStaffSessionExpired(false);
+    } catch (err) {
+      setOwnerAuthError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Không thể hoàn tất đăng nhập Zitadel OIDC.'
+      );
+    } finally {
+      setOwnerOidcExchanging(false);
+      setOwnerReady(true);
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
-    let authEventReceived = false;
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, next) => {
-      authEventReceived = true;
-      if (alive) {
-        setSession(next);
-        if (event === 'SIGNED_IN' && next) {
+
+    const unsubscribeOwner = subscribeOwnerSessionChanges(
+      (nextOwner, reason) => {
+        if (!alive) return;
+        setSession(nextOwner);
+        if (nextOwner && (reason === 'login' || reason === 'sync')) {
+          setOwnerSessionExpired(false);
           setStaffSessionExpired(false);
+          setOwnerAuthError('');
+        } else if (!nextOwner && reason === 'expired') {
+          setOwnerSessionExpired(true);
         }
         setOwnerReady(true);
       }
-    });
-    supabase.auth
-      .getSession()
-      .then(({ data, error }) => {
-        if (alive && !authEventReceived) {
-          setSession(error ? null : data.session);
-          setOwnerReady(true);
+    );
+
+    loadOwnerSession()
+      .then((storedOwner) => {
+        if (!alive) return;
+        setSession(storedOwner);
+        setOwnerReady(true);
+        if (storedOwner) {
+          void revalidateOwnerSession({ baseUrl: API_BASE_URL });
         }
       })
       .catch(() => {
-        if (alive && !authEventReceived) setOwnerReady(true);
+        if (alive) setOwnerReady(true);
       });
 
     loadStaffSession()
@@ -216,24 +277,40 @@ export default function App() {
         }
       });
 
-    const refresh = (state: string) => {
-      if (state === 'active') supabase.auth.startAutoRefresh();
-      else supabase.auth.stopAutoRefresh();
+    Linking.getInitialURL()
+      .then((initialUrl) => {
+        if (alive && initialUrl) {
+          void handleIncomingCallbackUrl(initialUrl);
+        }
+      })
+      .catch(() => {});
+
+    const urlSub = Linking.addEventListener('url', ({ url }) => {
+      if (alive && url) {
+        void handleIncomingCallbackUrl(url);
+      }
+    });
+
+    const handleAppStateChange = (state: string) => {
+      if (state === 'active') {
+        void revalidateOwnerSession({ baseUrl: API_BASE_URL });
+      }
     };
-    refresh(AppState.currentState);
-    const appState = AppState.addEventListener('change', refresh);
+    const appState = AppState.addEventListener('change', handleAppStateChange);
+
     return () => {
       alive = false;
-      subscription.unsubscribe();
+      unsubscribeOwner();
+      urlSub.remove();
       appState.remove();
-      supabase.auth.stopAutoRefresh();
     };
-  }, []);
+  }, [handleIncomingCallbackUrl]);
 
   const handleStaffLoginSuccess = useCallback(
     (nextStaffSession: MobileStaffSession) => {
       staffManualOverrideRef.current = true;
       setStaffSessionExpired(false);
+      setOwnerSessionExpired(false);
       setStaffSession(nextStaffSession);
     },
     []
@@ -247,6 +324,7 @@ export default function App() {
     setStaffSession(null);
     setSession(null);
     setStaffSessionExpired(false);
+    setOwnerSessionExpired(false);
   }, [session]);
 
   const handleStaffSessionExpired = useCallback(async () => {
@@ -262,6 +340,7 @@ export default function App() {
     ownerSession: session,
     staffSession,
     staffSessionExpired,
+    ownerSessionExpired,
   });
 
   if (workspaceRoute.kind === 'loading') {
@@ -290,7 +369,14 @@ export default function App() {
         <AuthScreen
           onStaffLoginSuccess={handleStaffLoginSuccess}
           staffSessionExpired={workspaceRoute.staffSessionExpired}
-          onDismissSessionNotice={() => setStaffSessionExpired(false)}
+          ownerSessionExpired={Boolean(workspaceRoute.ownerSessionExpired)}
+          ownerAuthError={ownerAuthError}
+          ownerOidcExchanging={ownerOidcExchanging}
+          onDismissOwnerAuthError={() => setOwnerAuthError('')}
+          onDismissSessionNotice={() => {
+            setStaffSessionExpired(false);
+            setOwnerSessionExpired(false);
+          }}
         />
       )}
     </MobileI18nProvider>
@@ -656,8 +742,10 @@ function Workspace({ userId }: { userId: string }) {
               MobileShopMembership
             >;
           }
-        } catch {
-          const { data: shopsData, error: shopsErr } = await supabase
+        } catch (shopsApiErr) {
+          const pgToken = await getOwnerPostgrestToken();
+          if (!pgToken) throw shopsApiErr;
+          const { data: shopsData, error: shopsErr } = await postgrestClient
             .from('shops')
             .select('*')
             .eq('owner_id', userId)
@@ -729,37 +817,83 @@ function Workspace({ userId }: { userId: string }) {
             ? shopMembership.permissions.includes('reports.view')
             : currentShop.owner_id === userId;
 
-          const [catsRes, itemsRes, eventsRes] = await Promise.all([
-            supabase
-              .from('categories')
-              .select('*')
-              .eq('shop_id', currentShop.id)
-              .order('sort_order', { ascending: true }),
-            supabase
-              .from('items')
-              .select('*')
-              .eq('shop_id', currentShop.id)
-              .order('sort_order', { ascending: true }),
-            canReadAnalytics
-              ? supabase
-                  .from('analytics_events')
-                  .select('*')
-                  .eq('shop_id', currentShop.id)
-                  .order('created_at', { ascending: false })
-              : Promise.resolve({ data: [], error: null }),
-          ]);
+          let loadedCategories: MobileCategory[] = [];
+          let loadedItems: MobileCatalogItem[] = [];
+          let loadedEvents: MobileAnalyticsEvent[] = [];
+
+          try {
+            const [catalogRes, analyticsRes] = await Promise.all([
+              fetchApi(
+                `/api/catalog?shopId=${encodeURIComponent(currentShop.id)}`
+              ),
+              canReadAnalytics
+                ? fetchApi(
+                    `/api/analytics/track?shopId=${encodeURIComponent(currentShop.id)}`
+                  )
+                : Promise.resolve(null),
+            ]);
+            const catalogPayload = await catalogRes.json();
+            loadedCategories = (
+              Array.isArray(catalogPayload.categories)
+                ? catalogPayload.categories
+                : []
+            ) as MobileCategory[];
+            loadedItems = (
+              Array.isArray(catalogPayload.items) ? catalogPayload.items : []
+            ).map((i: MobileCatalogItem) => ({
+              ...i,
+              price: Number(i.price),
+            }));
+            if (catalogPayload.membership && typeof catalogPayload.membership === 'object') {
+              handleMembershipSynced(catalogPayload.membership as MobileShopMembership);
+            }
+            if (analyticsRes) {
+              const analyticsPayload = await analyticsRes.json();
+              loadedEvents = (
+                Array.isArray(analyticsPayload.events)
+                  ? analyticsPayload.events
+                  : []
+              ) as MobileAnalyticsEvent[];
+            }
+          } catch (apiDataErr) {
+            const pgToken = await getOwnerPostgrestToken();
+            if (!pgToken) throw apiDataErr;
+            const [catsRes, itemsRes, eventsRes] = await Promise.all([
+              postgrestClient
+                .from('categories')
+                .select('*')
+                .eq('shop_id', currentShop.id)
+                .order('sort_order', { ascending: true }),
+              postgrestClient
+                .from('items')
+                .select('*')
+                .eq('shop_id', currentShop.id)
+                .order('sort_order', { ascending: true }),
+              canReadAnalytics
+                ? postgrestClient
+                    .from('analytics_events')
+                    .select('*')
+                    .eq('shop_id', currentShop.id)
+                    .order('created_at', { ascending: false })
+                : Promise.resolve({ data: [], error: null }),
+            ]);
+            for (const result of [catsRes, itemsRes, eventsRes]) {
+              if (result.error) throw result.error;
+            }
+            loadedCategories = (catsRes.data || []) as MobileCategory[];
+            loadedItems = (itemsRes.data || []).map((i) => ({
+              ...i,
+              price: Number(i.price),
+            })) as MobileCatalogItem[];
+            loadedEvents = (eventsRes.data || []) as MobileAnalyticsEvent[];
+          }
 
           if (generation !== loadGeneration.current) return;
-          for (const result of [catsRes, itemsRes, eventsRes]) if (result.error) throw result.error;
-          const normalizedItems = (itemsRes.data || []).map((i) => ({
-            ...i,
-            price: Number(i.price),
-          })) as MobileCatalogItem[];
 
-          setCategories((catsRes.data || []) as MobileCategory[]);
-          setItems(normalizedItems);
-          setEvents((eventsRes.data || []) as MobileAnalyticsEvent[]);
-          hydrateThemeAndPromoState(currentShop, normalizedItems);
+          setCategories(loadedCategories);
+          setItems(loadedItems);
+          setEvents(loadedEvents);
+          hydrateThemeAndPromoState(currentShop, loadedItems);
 
           await fetchOrdersFromApi(currentShop.id, true);
         }
@@ -783,6 +917,7 @@ function Workspace({ userId }: { userId: string }) {
       navigateTab,
       fetchOrdersFromApi,
       hydrateThemeAndPromoState,
+      handleMembershipSynced,
     ]
   );
 
@@ -811,9 +946,7 @@ function Workspace({ userId }: { userId: string }) {
 
   const handleConfirmLogout = useCallback(async () => {
     const result = await unregisterPushOnLogout(() =>
-      supabase.auth.signOut({
-        scope: 'local',
-      })
+      clearOwnerSession({ reason: 'logout' })
     );
     if (result.signOutError) {
       Alert.alert(t('shell.logoutErrorTitle'), result.signOutError);

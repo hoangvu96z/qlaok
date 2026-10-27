@@ -2,6 +2,13 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { POST } from '@/app/api/upload/route';
 import type { createR2PresignedUploadUrl, uploadBufferToR2 } from '@/lib/r2';
+import { issueSessionToken } from '@/lib/server-auth';
+
+const validOwnerToken = issueSessionToken({
+  id: 'owner-test-001',
+  email: 'owner@example.com',
+  role: 'owner',
+});
 
 type R2UploadBufferFn = typeof uploadBufferToR2;
 type R2PresignedFn = typeof createR2PresignedUploadUrl;
@@ -31,10 +38,19 @@ afterEach(() => {
   delete globalThis.__uploadRouteTestHooks;
 });
 
-function createJsonRequest(body: unknown): Request {
+function createJsonRequest(
+  body: unknown,
+  token: string | null = validOwnerToken
+): Request {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
   return new Request('http://localhost:3000/api/upload', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
@@ -186,7 +202,7 @@ test('POST /api/upload preserves presigned upload URL behavior when base64Data i
   assert.ok(data.publicUrl.startsWith('https://cdn.qlaok.vn/uploads/'));
 });
 
-test('POST /api/upload returns 400 when base64Data is missing and R2 is unconfigured', async () => {
+test('POST /api/upload returns 503 when presigned upload is requested without configured object storage', async () => {
   setIsR2ConfiguredForTests(() => false);
 
   const res = await POST(
@@ -195,9 +211,9 @@ test('POST /api/upload returns 400 when base64Data is missing and R2 is unconfig
     })
   );
 
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 503);
   const data = await res.json();
-  assert.equal(data.error, 'Missing base64Data payload');
+  assert.equal(data.error, 'UPLOAD_STORAGE_UNAVAILABLE');
   assert.equal(JSON.stringify(data).includes('data:'), false);
 });
 
@@ -241,13 +257,13 @@ test('No error response ever returns a data: URI or mode: inline-webp', async ()
   assert.doesNotMatch(text3, /inline-webp/);
   assert.equal(res3.status, 502);
 
-  // 4. Missing payload error
+  // 4. Presigned-upload request with no configured object store
   setIsR2ConfiguredForTests(() => false);
   const res4 = await POST(createJsonRequest({}));
   const text4 = await res4.text();
   assert.doesNotMatch(text4, /data:\s*image/i);
   assert.doesNotMatch(text4, /inline-webp/);
-  assert.equal(res4.status, 400);
+  assert.equal(res4.status, 503);
 
   // 5. Malformed JSON error
   const res5 = await POST(createJsonRequest('invalid-json{'));

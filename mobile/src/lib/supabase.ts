@@ -1,21 +1,25 @@
 import { createClient } from '@supabase/supabase-js';
 import { NativeModules, Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import { createApiClient } from './api-client';
+import {
+  clearOwnerSession,
+  getOwnerAccessToken,
+  getOwnerPostgrestToken,
+  MobileOwnerOidcError,
+} from './owner-session';
 import {
   getSharedMobilePushRegistrationState,
   unregisterPushOnLogout,
 } from './push-notifications';
 
-export const SUPABASE_URL =
-  process.env.EXPO_PUBLIC_SUPABASE_URL ||
-  'https://kftmrjmmympztzztunxf.supabase.co';
-
-export const SUPABASE_KEY =
-  process.env.EXPO_PUBLIC_SUPABASE_KEY ||
-  'sb_publishable_BpW2kqz1l3LfN8MFvngWLw_2YxmIgBv';
-
 export const PRODUCTION_API_URL = 'https://qlaok.vunph.click';
+const SELF_HOSTED_POSTGREST_CLIENT_PLACEHOLDER_KEY =
+  'qlaok-self-hosted-postgrest-public-client';
+
+export function isSupabaseCloudUrl(rawUrl?: string | null): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  return /\.supabase\.co(?:[/:?#]|$)/i.test(rawUrl.trim());
+}
 
 /**
  * Dynamically resolves the API Base URL so physical devices on Expo Go / LAN
@@ -84,33 +88,111 @@ export function resolveApiBaseUrl(): string {
 
 export const API_BASE_URL = resolveApiBaseUrl();
 
-// Native refresh tokens live in OS-protected storage; web uses Supabase's browser storage.
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    ...(Platform.OS !== 'web' ? { storage: {
-      getItem: (key: string) => SecureStore.getItemAsync(key),
-      setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
-      removeItem: (key: string) => SecureStore.deleteItemAsync(key),
-    } } : {}),
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-  },
-});
+export function resolveSelfHostedPostgrestBaseUrl(
+  envOverride?: Record<string, string | undefined>,
+  fallbackApiBaseUrl = API_BASE_URL
+): string {
+  const env = envOverride ?? (process.env as Record<string, string | undefined>);
+  const rawConfigured = (
+    env.EXPO_PUBLIC_POSTGREST_URL ||
+    env.EXPO_PUBLIC_SUPABASE_URL ||
+    fallbackApiBaseUrl ||
+    PRODUCTION_API_URL
+  )
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/rest\/v1$/i, '');
+
+  if (isSupabaseCloudUrl(rawConfigured)) {
+    throw new MobileOwnerOidcError(
+      'SELF_HOSTED_POSTGREST_CLOUD_FORBIDDEN',
+      'Supabase cloud URLs (*.supabase.co) are forbidden. Configure EXPO_PUBLIC_POSTGREST_URL / EXPO_PUBLIC_API_URL to point at the self-hosted Qlaok server.'
+    );
+  }
+
+  return rawConfigured || PRODUCTION_API_URL;
+}
+
+export const POSTGREST_BASE_URL = resolveSelfHostedPostgrestBaseUrl();
+export const POSTGREST_PUBLIC_KEY =
+  (
+    process.env.EXPO_PUBLIC_POSTGREST_ANON_KEY ||
+    process.env.EXPO_PUBLIC_SUPABASE_KEY ||
+    SELF_HOSTED_POSTGREST_CLIENT_PLACEHOLDER_KEY
+  ).trim() || SELF_HOSTED_POSTGREST_CLIENT_PLACEHOLDER_KEY;
+
+export function createAuthenticatedPostgrestFetch(options?: {
+  getPostgrestToken?: () => Promise<string | null>;
+  baseFetch?: typeof fetch;
+}): typeof fetch {
+  const getToken = options?.getPostgrestToken ?? (() => getOwnerPostgrestToken());
+  const baseFetch = options?.baseFetch ?? fetch;
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const targetUrl =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    if (isSupabaseCloudUrl(targetUrl)) {
+      throw new MobileOwnerOidcError(
+        'SELF_HOSTED_POSTGREST_CLOUD_FORBIDDEN',
+        'Refusing to send request to *.supabase.co.'
+      );
+    }
+
+    const token = await getToken();
+    if (!token) {
+      throw new MobileOwnerOidcError(
+        'POSTGREST_AUTH_TOKEN_UNAVAILABLE',
+        'Missing or expired server-issued authenticated PostgREST JWT. Direct PostgREST queries fail closed without anon fallback.',
+        401
+      );
+    }
+
+    const headers = new Headers(init?.headers || {});
+    headers.set('Authorization', `Bearer ${token}`);
+
+    return baseFetch(input, {
+      ...init,
+      headers,
+    });
+  };
+}
+
+/**
+ * Self-hosted PostgREST client (`https://qlaok.vunph.click/rest/v1`).
+ * Never uses Supabase Auth or `*.supabase.co`, and fails closed if no server-issued
+ * `role: authenticated` PostgREST JWT is available.
+ */
+export const postgrestClient = createClient(
+  POSTGREST_BASE_URL,
+  POSTGREST_PUBLIC_KEY,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      fetch: createAuthenticatedPostgrestFetch(),
+    },
+  }
+);
+
+export const supabase = postgrestClient;
 
 export const fetchApi = createApiClient(
   API_BASE_URL,
-  async () => {
-    const { data, error } = await supabase.auth.getSession();
-    if (error) throw error;
-    return data.session?.access_token ?? null;
-  },
+  () => getOwnerAccessToken(),
   fetch,
   async ({ requestWithoutUnauthorizedHandler }) => {
     await unregisterPushOnLogout({
       state: getSharedMobilePushRegistrationState(),
       apiCall: requestWithoutUnauthorizedHandler,
-      signOut: () => supabase.auth.signOut({ scope: 'local' }),
+      signOut: () => clearOwnerSession({ reason: 'expired' }),
     });
   }
 );

@@ -244,7 +244,7 @@ test('executePreflight: parses JSON counts and verifies all 21 public tables', (
 test('executePreflight: rejects migrations when count does not match filenames length (current bug fix)', () => {
   const payload = createSamplePayload();
   payload.migrations.filenames = ['001_init_qlaok.sql', '019_revoke_staff_trigger_execute.sql'];
-  // payload.migrations.count is 21, but filenames only has 2 entries
+  // payload.migrations.count is EXPECTED_MIGRATIONS.length, but filenames only has 2 entries
   assert.throws(
     () =>
       executePreflight(
@@ -252,7 +252,9 @@ test('executePreflight: rejects migrations when count does not match filenames l
         { QLAOK_DATABASE_URL: VALID_DIRECT_URL },
         { spawnSync: () => ({ status: 0, stdout: Buffer.from(JSON.stringify(payload)) }) }
       ),
-    /Migrations count \(21\) does not match filenames list length \(2\)/
+    new RegExp(
+      `Migrations count \\(${EXPECTED_MIGRATIONS.length}\\) does not match filenames list length \\(2\\)`
+    )
   );
 });
 
@@ -271,10 +273,12 @@ test('executePreflight: rejects migrations payload with missing expected migrati
         { QLAOK_DATABASE_URL: VALID_DIRECT_URL },
         { spawnSync: () => ({ status: 0, stdout: Buffer.from(JSON.stringify(payload)) }) }
       ),
-    /Migrations count \(20\) does not match expected local migration count \(21\)/
+    new RegExp(
+      `Migrations count \\(${EXPECTED_MIGRATIONS.length - 1}\\) does not match expected local migration count \\(${EXPECTED_MIGRATIONS.length}\\)`
+    )
   );
 
-  // Also test when count is 21 but 002z is replaced by another duplicate file
+  // Also test when count is EXPECTED_MIGRATIONS.length but 002z is replaced by another duplicate file
   const replacedPayload = createSamplePayload();
   replacedPayload.migrations.filenames = EXPECTED_MIGRATIONS.map((f) =>
     f === '002z_reconcile_legacy_bank_refs.sql' ? '001_init_qlaok.sql' : f
@@ -303,10 +307,12 @@ test('executePreflight: rejects migrations payload with extra or unknown migrati
         { QLAOK_DATABASE_URL: VALID_DIRECT_URL },
         { spawnSync: () => ({ status: 0, stdout: Buffer.from(JSON.stringify(payload)) }) }
       ),
-    /Migrations count \(22\) does not match expected local migration count \(21\)/
+    new RegExp(
+      `Migrations count \\(${EXPECTED_MIGRATIONS.length + 1}\\) does not match expected local migration count \\(${EXPECTED_MIGRATIONS.length}\\)`
+    )
   );
 
-  // Also test when count remains 21 but an entry is replaced by an unknown file
+  // Also test when count remains EXPECTED_MIGRATIONS.length but an entry is replaced by an unknown file
   const swappedPayload = createSamplePayload();
   swappedPayload.migrations.filenames = [
     ...EXPECTED_MIGRATIONS.slice(0, -1),
@@ -458,14 +464,16 @@ test('isNonNegativeSafeInteger: correctly identifies non-negative safe integers'
   assert.equal(isNonNegativeSafeInteger(Number.MAX_SAFE_INTEGER + 10), false);
 });
 
-test('getExpectedMigrationFilenames: sources exact 21 local migrations including 002z CWD-independently', () => {
+test('getExpectedMigrationFilenames: sources exact 23 local migrations including 002z CWD-independently', () => {
   assert.ok(MIGRATIONS_DIR.endsWith('supabase/migrations'));
   const filenames = getExpectedMigrationFilenames();
-  assert.equal(filenames.length, 21);
+  assert.equal(filenames.length, 23);
   assert.equal(filenames.includes('002z_reconcile_legacy_bank_refs.sql'), true);
   assert.equal(filenames.includes('001_init_qlaok.sql'), true);
   assert.equal(filenames.includes('019_revoke_staff_trigger_execute.sql'), true);
   assert.equal(filenames.includes('020_remove_legacy_base64_images.sql'), true);
+  assert.equal(filenames.includes('021_zitadel_identity_mapping.sql'), true);
+  assert.equal(filenames.includes('022_postgres_realtime_notifications.sql'), true);
   for (const fn of filenames) {
     assert.match(fn, /^[0-9]+[a-z]?_.*\.sql$/);
   }

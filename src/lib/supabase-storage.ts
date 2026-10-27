@@ -1,3 +1,9 @@
+/**
+ * @deprecated Legacy Supabase Storage helper.
+ * Replaced by Garage object storage in `src/lib/garage-storage.ts`.
+ * Preserved for legacy reference only; not invoked by /api/upload.
+ */
+
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseServiceRoleClient } from '@/lib/db';
 

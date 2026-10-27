@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { dbGetShopById, getSupabaseDbClient } from '@/lib/db';
-import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
+import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   dbGetShopMemberships,
   getMembershipDbClient,
@@ -14,10 +14,28 @@ import {
   resolveUserShopMembership,
 } from '@/lib/shop-permissions';
 import { verifyActiveShopStaffSession } from '@/lib/staff-accounts';
+import {
+  isValidUuidSub,
+  verifyZitadelJwt,
+  type ProfileDbRow,
+} from '@/lib/zitadel-oidc';
 import type { Profile, ShopMembership, ShopPermission } from '@/types/qlaok';
 
 export const SESSION_COOKIE_NAME = 'qlaok_session';
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+export const POSTGREST_JWT_DEFAULT_TTL_SECONDS = 60 * 60; // 1 hour
+export const POSTGREST_JWT_ISSUER = 'qlaok-postgrest';
+
+export interface PostgrestAuthenticatedJwtClaims {
+  sub: string;
+  role: 'authenticated';
+  aud: 'authenticated';
+  iss: typeof POSTGREST_JWT_ISSUER;
+  email?: string;
+  account_type: 'owner' | 'admin';
+  iat: number;
+  exp: number;
+}
 
 export interface VerifiedSessionUser {
   sub: string;
@@ -83,6 +101,180 @@ function signBase64Url(input: string, secret: string): string {
     .createHmac('sha256', secret)
     .update(input)
     .digest('base64url');
+}
+
+function getPostgrestJwtSigningSecret(): string | null {
+  const raw =
+    process.env.PGRST_JWT_SECRET || process.env.SUPABASE_JWT_SECRET || '';
+  const trimmed = raw.trim();
+  if (trimmed.length < 32) {
+    return null;
+  }
+  if (
+    trimmed.startsWith('sb_publishable_') ||
+    trimmed.startsWith('sb_secret_') ||
+    trimmed.split('.').length === 3
+  ) {
+    return null;
+  }
+  const forbiddenValues = [
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    process.env.EXPO_PUBLIC_SUPABASE_KEY,
+    process.env.EXPO_PUBLIC_POSTGREST_ANON_KEY,
+  ]
+    .map((v) => (v || '').trim())
+    .filter(Boolean);
+  if (forbiddenValues.includes(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+export function isPostgrestJwtSecretConfigured(): boolean {
+  return getPostgrestJwtSigningSecret() !== null;
+}
+
+/**
+ * Issues a short-lived, narrowly claimed HS256 JWT for standalone PostgREST (`role: 'authenticated'`).
+ * - Requires a canonical UUID `sub` (never issues tokens for staff accounts or non-UUIDs).
+ * - Never embeds `service_role` or privileged claims.
+ * - Fails closed (`null`) if `PGRST_JWT_SECRET` / `SUPABASE_JWT_SECRET` is not configured on the server.
+ */
+export function issuePostgrestAuthenticatedJwt(params: {
+  sub: string;
+  email?: string;
+  isAdmin?: boolean;
+  ttlSeconds?: number;
+  nowSeconds?: number;
+}): { token: string; expiresAt: number; claims: PostgrestAuthenticatedJwtClaims } | null {
+  if (!isValidUuidSub(params.sub) || isShopScopedStaffUserId(params.sub)) {
+    return null;
+  }
+  const secret = getPostgrestJwtSigningSecret();
+  if (!secret) {
+    return null;
+  }
+  const nowSec =
+    typeof params.nowSeconds === 'number' && Number.isFinite(params.nowSeconds)
+      ? Math.floor(params.nowSeconds)
+      : Math.floor(Date.now() / 1000);
+  const ttl =
+    typeof params.ttlSeconds === 'number' &&
+    Number.isFinite(params.ttlSeconds) &&
+    params.ttlSeconds > 0
+      ? Math.min(Math.floor(params.ttlSeconds), DEFAULT_TTL_SECONDS)
+      : POSTGREST_JWT_DEFAULT_TTL_SECONDS;
+  const expiresAt = nowSec + ttl;
+  const emailClean =
+    typeof params.email === 'string' && params.email.trim()
+      ? params.email.trim().toLowerCase()
+      : undefined;
+
+  const claims: PostgrestAuthenticatedJwtClaims = {
+    sub: params.sub.trim().toLowerCase(),
+    role: 'authenticated',
+    aud: 'authenticated',
+    iss: POSTGREST_JWT_ISSUER,
+    ...(emailClean ? { email: emailClean } : {}),
+    account_type: params.isAdmin ? 'admin' : 'owner',
+    iat: nowSec,
+    exp: expiresAt,
+  };
+
+  const headerB64 = Buffer.from(
+    JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
+    'utf8'
+  ).toString('base64url');
+  const payloadB64 = Buffer.from(JSON.stringify(claims), 'utf8').toString(
+    'base64url'
+  );
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const signatureB64 = signBase64Url(signingInput, secret);
+  return {
+    token: `${signingInput}.${signatureB64}`,
+    expiresAt,
+    claims,
+  };
+}
+
+export function verifyPostgrestAuthenticatedJwt(
+  token?: string | null,
+  nowSecondsOverride?: number
+): PostgrestAuthenticatedJwtClaims | null {
+  if (!token || typeof token !== 'string') return null;
+  const segments = token.trim().split('.');
+  if (segments.length !== 3 || !segments[0] || !segments[1] || !segments[2]) {
+    return null;
+  }
+  const secret = getPostgrestJwtSigningSecret();
+  if (!secret) {
+    return null;
+  }
+
+  let header: { alg?: unknown; typ?: unknown };
+  let payload: Record<string, unknown>;
+  try {
+    header = JSON.parse(
+      Buffer.from(segments[0], 'base64url').toString('utf8')
+    ) as { alg?: unknown; typ?: unknown };
+    payload = JSON.parse(
+      Buffer.from(segments[1], 'base64url').toString('utf8')
+    ) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  if (header.alg !== 'HS256') {
+    return null;
+  }
+
+  const signingInput = `${segments[0]}.${segments[1]}`;
+  const expectedSig = signBase64Url(signingInput, secret);
+  const sigBuf = Buffer.from(segments[2], 'utf8');
+  const expectedBuf = Buffer.from(expectedSig, 'utf8');
+  if (
+    sigBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(sigBuf, expectedBuf)
+  ) {
+    return null;
+  }
+
+  const nowSec =
+    typeof nowSecondsOverride === 'number' &&
+    Number.isFinite(nowSecondsOverride)
+      ? Math.floor(nowSecondsOverride)
+      : Math.floor(Date.now() / 1000);
+  const exp = typeof payload.exp === 'number' ? payload.exp : NaN;
+  const iat = typeof payload.iat === 'number' ? payload.iat : nowSec;
+  if (!Number.isFinite(exp) || exp <= nowSec) {
+    return null;
+  }
+  if (
+    payload.iss !== POSTGREST_JWT_ISSUER ||
+    payload.role !== 'authenticated' ||
+    payload.aud !== 'authenticated' ||
+    !isValidUuidSub(payload.sub) ||
+    isShopScopedStaffUserId(payload.sub)
+  ) {
+    return null;
+  }
+
+  const emailClean =
+    typeof payload.email === 'string' && payload.email.trim()
+      ? payload.email.trim().toLowerCase()
+      : undefined;
+
+  return {
+    sub: payload.sub.toLowerCase(),
+    role: 'authenticated',
+    aud: 'authenticated',
+    iss: POSTGREST_JWT_ISSUER,
+    ...(emailClean ? { email: emailClean } : {}),
+    account_type: payload.account_type === 'admin' ? 'admin' : 'owner',
+    iat,
+    exp,
+  };
 }
 
 export function issueSessionToken(
@@ -306,9 +498,11 @@ export function extractRequestToken(req: Request): string | null {
 /**
  * Verifies the caller's identity using:
  * 1) Qlaok HMAC-signed session token (from HttpOnly cookie or Authorization: Bearer header), OR
- * 2) Supabase Auth JWT verified on the server via `sb.auth.getUser(token)`.
+ * 2) Verified Zitadel JWT (JWKS signature, `iss`, `aud`, `exp`, and canonical UUID `sub`)
+ *    resolved against a synced `public.profiles` row.
  *
- * NEVER trusts unverified client headers (`x-admin-email`), query params, or request body fields.
+ * NEVER trusts unverified client headers (`x-admin-email`), query params, request body fields,
+ * or client-supplied/token-supplied admin/email claims when resolving authority.
  */
 export async function verifyRequestUser(
   req: Request
@@ -322,27 +516,99 @@ export async function verifyRequestUser(
     return verifiedHmac;
   }
 
-  // 2. Fallback: verify Supabase JWT access token directly with Supabase Auth server
-  try {
-    const sb = getSupabaseDbClient();
-    const { data, error } = await sb.auth.getUser(token);
-    if (!error && data?.user?.email) {
-      const emailLower = data.user.email.trim().toLowerCase();
-      const isAdmin = isSuperAdminEmail(emailLower);
-      const nowSec = Math.floor(Date.now() / 1000);
-      return {
-        sub: isAdmin ? SUPER_ADMIN_ID : data.user.id,
-        email: emailLower,
-        role: isAdmin ? 'admin' : 'owner',
-        iat: nowSec,
-        exp: nowSec + 3600,
-      };
-    }
-  } catch {
-    // ignore invalid JWT
+  // 2. Verify Zitadel OIDC/OAuth2 JWT via JWKS and require a synced public.profiles row
+  if (token.split('.').length !== 3) {
+    return null;
   }
 
-  return null;
+  try {
+    const postgrestClaims = verifyPostgrestAuthenticatedJwt(token);
+    const claims: { sub: string; iat?: number; exp?: number } = postgrestClaims
+      ? postgrestClaims
+      : await verifyZitadelJwt(token);
+    if (isShopScopedStaffUserId(claims.sub)) {
+      return null;
+    }
+
+    const sb = getSupabaseDbClient();
+    let profileLookup = sb
+      .from('profiles')
+      .select('*')
+      .eq(postgrestClaims ? 'id' : 'zitadel_sub', claims.sub)
+      .maybeSingle();
+    let { data, error } = await profileLookup;
+    if (
+      !postgrestClaims &&
+      !error &&
+      !data &&
+      isValidUuidSub(claims.sub)
+    ) {
+      // Legacy imports can retain the original Qlaok UUID as Zitadel's sub.
+      // Prefer the explicit Zitadel mapping above whenever one exists.
+      profileLookup = sb
+        .from('profiles')
+        .select('*')
+        .eq('id', claims.sub.toLowerCase())
+        .maybeSingle();
+      ({ data, error } = await profileLookup);
+    }
+    if (error) {
+      return null;
+    }
+
+    const profileRow = (
+      Array.isArray(data) ? data[0] : data
+    ) as ProfileDbRow | null | undefined;
+    if (!profileRow || typeof profileRow.id !== 'string') {
+      return null;
+    }
+
+    const profileId = profileRow.id.trim().toLowerCase();
+    const subjectMatchesProfile = postgrestClaims
+      ? profileId === claims.sub
+      : profileRow.zitadel_sub === claims.sub ||
+        (!profileRow.zitadel_sub &&
+          isValidUuidSub(claims.sub) &&
+          profileId === claims.sub.toLowerCase());
+    if (
+      !isValidUuidSub(profileId) ||
+      !subjectMatchesProfile ||
+      isShopScopedStaffUserId(profileId)
+    ) {
+      return null;
+    }
+
+    if (profileRow.role === 'cashier' || profileRow.role === 'staff') {
+      return null;
+    }
+
+    const emailLower =
+      typeof profileRow.email === 'string'
+        ? profileRow.email.trim().toLowerCase()
+        : '';
+    if (!emailLower) {
+      return null;
+    }
+
+    const isAdmin =
+      isSuperAdminEmail(emailLower) ||
+      profileRow.role === 'admin' ||
+      profileRow.is_admin === true;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    return {
+      // All API authorization, membership lookups, and PostgREST calls use
+      // the stable Qlaok profile UUID rather than Zitadel's opaque subject.
+      sub: profileId,
+      email: emailLower,
+      account_type: isAdmin ? 'admin' : 'owner',
+      role: isAdmin ? 'admin' : 'owner',
+      iat: claims.iat ?? nowSec,
+      exp: claims.exp ?? nowSec + 3600,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function requireAuthenticatedUser(req: Request): Promise<

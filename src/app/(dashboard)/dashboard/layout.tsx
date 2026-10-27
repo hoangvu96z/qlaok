@@ -33,11 +33,11 @@ import {
   clearStoredAuthOwner,
   getAdminBackupSession,
   getAuthHeaders,
+  getStoredAuthOwner,
   isSuperAdmin,
   stopAdminImpersonation,
 } from '@/lib/auth-session';
 import { startOrderLiveSync } from '@/lib/order-live-sync';
-import { createClient } from '@/lib/supabase/client';
 import { PwaInstallBanner } from '@/components/dashboard/PwaInstallBanner';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { BrandLogo } from '@/components/ui/BrandLogo';
@@ -317,13 +317,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       setToastPosition(loadOrderChimeSettings().newOrderToastPosition);
       window.addEventListener(CHIME_SETTINGS_EVENT, handleChimeSettingsChange);
     }
-    const supabase = createClient();
-    if (supabase) {
-      supabase.auth.getUser().then(({ data }) => {
-        if (!disposedRef.current && data.user?.email) {
-          setAuthEmail(data.user.email);
-        }
-      });
+    const storedOwner = getStoredAuthOwner();
+    if (storedOwner?.email) {
+      setAuthEmail(storedOwner.email);
     }
     return () => {
       disposedRef.current = true;
@@ -649,9 +645,15 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   const handleLogout = async () => {
     clearStoredAuthOwner();
-    const supabase = createClient();
-    if (supabase) {
-      await supabase.auth.signOut();
+    try {
+      await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ action: 'logout' }),
+      });
+    } catch {
+      // ignore network error on logout
     }
     router.replace('/login');
   };

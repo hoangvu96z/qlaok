@@ -8,9 +8,9 @@
   - Subscribing directly from the browser with the public anon/publishable key would either fail under RLS (`003_security_rls_and_atomic_mpos.sql` / `004_memberships_billing_payments_audit.sql`) or require weakening RLS on `public.orders`.
 - **Single Upstream Privileged Subscription**:
   - `src/lib/order-events.ts` maintains a bounded, reference-counted singleton `OrderEventsBroker`.
-  - When at least one authorized SSE client is connected, the broker opens a single server-side Supabase Realtime `postgres_changes` channel (`event: '*'`, `schema: 'public'`, `table: 'orders'` and `table: 'table_service_requests'`) authenticated exclusively with the backend `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SECRET_KEY`), and also broadcasts immediate `{ "type": "change", "shopId" }` invalidations via `notifyShopChange(shopId)` when table service requests (`call_staff` / `request_bill`) are created or updated.
-  - The backend key is validated (`isValidRealtimeBackendKey`) to reject empty keys, `sb_publishable_*` keys, keys equal to the public anon key, and JWTs whose `role` claim is not `service_role`.
-  - When the last SSE client disconnects, the upstream Realtime channel and any reconnect timers are immediately torn down (`getActiveUpstreamChannelCount() === 0`).
+  - When at least one authorized SSE client is connected, the broker opens a single server-side PostgreSQL `LISTEN` connection (`qlaok_order_events`) to the self-hosted PostgreSQL database (via `QLAOK_DATABASE_URL` / `DATABASE_URL` / `POSTGRES_URL`), and also broadcasts immediate `{ "type": "change", "shopId" }` invalidations via `notifyShopChange(shopId)` when table service requests (`call_staff` / `request_bill`) are created or updated.
+  - The PostgreSQL connection listens for lightweight JSON notification payloads (`{ table, eventType, action, orderId, shopId }`) emitted by trigger `public.notify_order_events()` on `public.orders` and `public.table_service_requests` (migration `022_postgres_realtime_notifications.sql`).
+  - When the last SSE client disconnects, the upstream PostgreSQL listener connection and any reconnect timers are immediately torn down (`getActiveUpstreamChannelCount() === 0`).
 
 ## 2. Endpoint Authorization & Revalidation (`GET /api/orders/events`)
 
@@ -27,12 +27,12 @@
 ## 3. Minimal Event Payload & Fallback Semantics
 
 - **Events emitted (`data: <JSON>\n\n`)**:
-  - `{ "type": "ready" }`: Emitted only when the upstream Supabase Realtime channel is genuinely `SUBSCRIBED` (never faked on initial HTTP connection).
+  - `{ "type": "ready" }`: Emitted only after the server has initialized the PostgreSQL `LISTEN` connection (never faked on initial HTTP connection).
   - `{ "type": "change", "orderId"?: string, "shopId"?: string }`: Emitted only to subscribers matching `shopId` or `orderId`, and also emitted upon upstream reconnect `SUBSCRIBED` to trigger client resync. Contains zero customer, item, or payment fields.
-  - `{ "type": "fallback" }`: Emitted on upstream channel errors/timeouts (`CHANNEL_ERROR`, `TIMED_OUT`, `CLOSED`) or in non-production local test mode when no backend Supabase Realtime key is configured, instructing clients (`src/lib/order-live-sync.ts`) to use 30-second fallback polling.
+  - `{ "type": "fallback" }`: Emitted when the PostgreSQL listener is unavailable, telling clients (`src/lib/order-live-sync.ts`) to use 30-second fallback polling.
   - `{ "type": "unauthorized" }`: Emitted when periodic revalidation detects revoked permissions or invalidated tokens.
-- **Production Missing Key Handling**:
-  - In `NODE_ENV === 'production'` (or if an invalid non-service-role key such as `sb_publishable_*` is configured), `GET /api/orders/events` returns `503 Service Unavailable`.
+- **Listener Failure Handling**:
+  - If PostgreSQL `LISTEN` cannot start or reconnect, authenticated clients receive a fallback event and use 30-second polling. The endpoint still enforces Qlaok session and shop permissions; it does not require a Supabase Realtime key.
 
 ## 4. Migration Publication Inspection (`002` vs `006`)
 
@@ -71,7 +71,9 @@
   idle counts remained bounded without 3.5-second shell polling, and browser console
   had no errors. Screenshot `/tmp/qlaok-realtime-ui/live-order.png`.
 - Deployment runs `scripts/check-order-realtime.mjs` on VPS using runtime config,
-  verifies SUBSCRIBED on real `public.orders`, and logs no keys/order payloads.
+  verifies self-hosted PostgreSQL realtime triggers (`public.orders` and `public.table_service_requests`)
+  and tests the authenticated SSE API endpoint without creating or modifying database records,
+  and logs no keys/order payloads.
   SSE response disables proxy buffering. Revalidation failures close the stream
   until authorization can be checked again; slow consumer queues are bounded.
 - Remaining scope: list/statistics still use full order history on a refresh;

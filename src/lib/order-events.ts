@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js';
+import { Client as PgClient } from 'pg';
 import { NextResponse } from 'next/server';
 import { dbGetOrderById } from '@/lib/mpos-store';
 import { requireShopPermission } from '@/lib/server-auth';
@@ -11,33 +11,36 @@ export type OrderSseEvent =
   | { type: 'unauthorized' }
   | { type: 'change'; orderId?: string; shopId?: string };
 
-export interface PostgresOrderChangePayload {
+export const DEFAULT_POSTGRES_CHANNEL = 'qlaok_order_events';
+
+export interface PostgresNotificationMessage {
+  channel: string;
+  payload?: string;
+}
+
+type PostgresClientEventName = 'notification' | 'error' | 'end';
+type PostgresClientEventListener =
+  | ((message: PostgresNotificationMessage) => void)
+  | (() => void);
+
+export interface PostgresOrderNotification {
   table?: string;
   eventType?: 'INSERT' | 'UPDATE' | 'DELETE' | string;
+  action?: string;
+  orderId?: string;
+  order_id?: string;
+  shopId?: string;
+  shop_id?: string;
   new?: Record<string, unknown> | null;
   old?: Record<string, unknown> | null;
 }
 
-export interface RealtimeChannelLike {
-  on(
-    type: 'postgres_changes',
-    filter: {
-      event: '*';
-      schema: 'public';
-      table: 'orders' | 'table_service_requests';
-    },
-    callback: (payload: PostgresOrderChangePayload) => void
-  ): this;
-  subscribe(callback?: (status: string, err?: Error) => void): this;
-  unsubscribe?: () => Promise<unknown> | unknown;
-}
-
-export interface RealtimeClientLike {
-  channel(name: string): RealtimeChannelLike;
-  removeChannel?: (channel: RealtimeChannelLike) => Promise<unknown> | unknown;
-  realtime?: {
-    setAuth?: (token: string) => void;
-  };
+export interface PostgresListenerClientLike {
+  connect?: () => Promise<unknown> | unknown;
+  query?: (sql: string, params?: unknown[]) => Promise<unknown> | unknown;
+  on?(event: PostgresClientEventName, listener: PostgresClientEventListener): unknown;
+  removeListener?(event: PostgresClientEventName, listener: PostgresClientEventListener): unknown;
+  end?: () => Promise<unknown> | unknown;
 }
 
 export interface OrderEventsSubscriptionInput {
@@ -46,10 +49,16 @@ export interface OrderEventsSubscriptionInput {
   onEvent: (event: OrderSseEvent) => void;
 }
 
+export type PostgresClientFactory = () =>
+  | PostgresListenerClientLike
+  | null
+  | Promise<PostgresListenerClientLike | null>;
+
 export interface OrderEventsBrokerOptions {
-  createClient?: () => RealtimeClientLike | null;
+  createClient?: PostgresClientFactory;
   maxClients?: number;
   reconnectDelayMs?: number;
+  channelName?: string;
 }
 
 export interface OrderEventsStreamOptions {
@@ -66,11 +75,11 @@ const DEFAULT_REVALIDATE_INTERVAL_MS = 45_000; // <= 60s requirement
 const DEFAULT_MAX_STREAM_LIFETIME_MS = 120_000; // ~2 minutes
 const MAX_ORDER_SHOP_CACHE_SIZE = 2_000;
 
-let testRealtimeClientFactory: (() => RealtimeClientLike | null) | null = null;
+let testRealtimeClientFactory: PostgresClientFactory | null = null;
 let testStreamOptionsOverride: OrderEventsStreamOptions | null = null;
 
 export function setOrderEventsClientFactoryForTests(
-  factory: (() => RealtimeClientLike | null) | null
+  factory: PostgresClientFactory | null
 ): void {
   testRealtimeClientFactory = factory;
 }
@@ -93,6 +102,25 @@ function pickNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function getPostgresConnectionString(): string {
+  return (
+    process.env.QLAOK_DATABASE_URL ||
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    ''
+  ).trim();
+}
+
+export function isValidPostgresUrl(raw?: string): boolean {
+  if (!raw) return false;
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith('postgres://') ||
+    trimmed.startsWith('postgresql://')
+  );
 }
 
 function getConfiguredBackendKey(): string {
@@ -127,13 +155,17 @@ export function isValidRealtimeBackendKey(rawKey?: string): boolean {
 
 export function hasRealtimeBackendConfig(): boolean {
   if (testRealtimeClientFactory !== null) return true;
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
-  if (!url || url.includes('your-project')) return false;
-  return isValidRealtimeBackendKey();
+  const conn = getPostgresConnectionString();
+  if (conn && isValidPostgresUrl(conn)) return true;
+  return false;
 }
 
 export function isRealtimeBackendMisconfigured(): boolean {
   if (testRealtimeClientFactory !== null) return false;
+  const rawConn = getPostgresConnectionString();
+  if (rawConn && !isValidPostgresUrl(rawConn)) {
+    return true;
+  }
   const rawKey = getConfiguredBackendKey();
   if (rawKey && !isValidRealtimeBackendKey(rawKey)) {
     return true;
@@ -144,23 +176,30 @@ export function isRealtimeBackendMisconfigured(): boolean {
   return false;
 }
 
-function createDefaultRealtimeClient(): RealtimeClientLike | null {
+function createDefaultPostgresClient(): PostgresListenerClientLike | null {
   if (testRealtimeClientFactory !== null) {
-    return testRealtimeClientFactory();
+    const res = testRealtimeClientFactory();
+    return res as PostgresListenerClientLike | null;
   }
-  if (!hasRealtimeBackendConfig()) {
+  const connectionString = getPostgresConnectionString();
+  if (!connectionString || !isValidPostgresUrl(connectionString)) {
     return null;
   }
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
-  const serviceKey = getConfiguredBackendKey();
-  const client = createSupabaseJsClient(url, serviceKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
-  return client as unknown as RealtimeClientLike;
+  try {
+    const client = new PgClient({
+      connectionString,
+      ssl:
+        connectionString.includes('sslmode=require') ||
+        connectionString.includes('supabase.co')
+          ? { rejectUnauthorized: false }
+          : undefined,
+    });
+    // The pg client's generic event overload is narrower than this small adapter
+    // interface, while the events used by the broker match its runtime contract.
+    return client as unknown as PostgresListenerClientLike;
+  } catch {
+    return null;
+  }
 }
 
 interface InternalSubscriber {
@@ -171,17 +210,17 @@ interface InternalSubscriber {
 }
 
 export class OrderEventsBroker {
-  private readonly createClientFn: () => RealtimeClientLike | null;
+  private readonly createClientFn: PostgresClientFactory;
   private readonly maxClients: number;
   private readonly reconnectDelayMs: number;
+  private readonly channelName: string;
 
   private readonly clients = new Map<string, InternalSubscriber>();
   private readonly shopSubscribers = new Map<string, Set<InternalSubscriber>>();
   private readonly orderSubscribers = new Map<string, Set<InternalSubscriber>>();
   private readonly orderShopCache = new Map<string, string>();
 
-  private upstreamClient: RealtimeClientLike | null = null;
-  private upstreamChannel: RealtimeChannelLike | null = null;
+  private upstreamClient: PostgresListenerClientLike | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private status: 'idle' | 'connecting' | 'subscribed' | 'fallback' = 'idle';
   private hasSubscribedOnce = false;
@@ -189,10 +228,11 @@ export class OrderEventsBroker {
   private totalUpstreamSubscribes = 0;
 
   constructor(options: OrderEventsBrokerOptions = {}) {
-    this.createClientFn = options.createClient ?? createDefaultRealtimeClient;
+    this.createClientFn = options.createClient ?? createDefaultPostgresClient;
     this.maxClients = options.maxClients ?? DEFAULT_MAX_BROKER_CLIENTS;
     this.reconnectDelayMs =
       options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+    this.channelName = options.channelName ?? DEFAULT_POSTGRES_CHANNEL;
   }
 
   public getActiveClientCount(): number {
@@ -269,7 +309,7 @@ export class OrderEventsBroker {
       subscriber.onEvent({ type: 'ready' });
     } else if (this.status === 'fallback') {
       subscriber.onEvent({ type: 'fallback' });
-      if (!this.upstreamChannel && !this.reconnectTimer) {
+      if (!this.upstreamClient && !this.reconnectTimer) {
         this.ensureUpstream();
       }
     }
@@ -305,13 +345,39 @@ export class OrderEventsBroker {
   }
 
   private ensureUpstream(): void {
-    if (this.upstreamChannel || this.clients.size === 0) {
+    if (this.upstreamClient || this.clients.size === 0) {
       return;
     }
 
-    let client: RealtimeClientLike | null = null;
+    let client: PostgresListenerClientLike | null = null;
     try {
-      client = this.createClientFn();
+      const produced = this.createClientFn();
+      if (produced && typeof (produced as Promise<unknown>).then === 'function') {
+        Promise.resolve(produced).then(
+          (c) => {
+            if (this.clients.size === 0) {
+              try {
+                c?.end?.();
+              } catch {}
+              return;
+            }
+            if (c) {
+              this.attachUpstream(c);
+            } else {
+              this.status = 'fallback';
+              this.broadcastControl({ type: 'fallback' });
+              this.scheduleReconnect();
+            }
+          },
+          () => {
+            this.status = 'fallback';
+            this.broadcastControl({ type: 'fallback' });
+            this.scheduleReconnect();
+          }
+        );
+        return;
+      }
+      client = produced as PostgresListenerClientLike | null;
     } catch {
       client = null;
     }
@@ -319,68 +385,91 @@ export class OrderEventsBroker {
     if (!client) {
       this.status = 'fallback';
       this.broadcastControl({ type: 'fallback' });
+      this.scheduleReconnect();
       return;
     }
 
+    this.attachUpstream(client);
+  }
+
+  private attachUpstream(client: PostgresListenerClientLike): void {
+    if (this.clients.size === 0) {
+      try {
+        client.end?.();
+      } catch {}
+      return;
+    }
+
+    // Native PostgreSQL LISTEN connection
     this.upstreamClient = client;
     this.status = 'connecting';
-    const channel = client.channel('qlaok-orders-broker');
-    this.upstreamChannel = channel;
-    this.activeUpstreamChannels += 1;
+    this.activeUpstreamChannels = 1;
     this.totalUpstreamSubscribes += 1;
 
-    const onPostgresChange = (payload: PostgresOrderChangePayload) => {
-      if (this.upstreamChannel !== channel) return;
-      this.handlePostgresChange(payload);
+    let localDisposed = false;
+
+    const onNotification = (msg: PostgresNotificationMessage) => {
+      if (this.upstreamClient !== client || localDisposed) return;
+      if (msg.channel && msg.channel !== this.channelName) return;
+      if (!msg.payload) return;
+      try {
+        const parsed = JSON.parse(msg.payload);
+        this.handlePostgresNotification(parsed);
+      } catch {
+        // ignore unparseable payloads
+      }
     };
 
-    channel
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'orders' },
-        onPostgresChange
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'table_service_requests' },
-        onPostgresChange
-      )
-      .subscribe((status) => {
-        if (this.upstreamChannel !== channel) return;
+    const onErrorOrClose = () => {
+      if (this.upstreamClient !== client || localDisposed) return;
+      localDisposed = true;
+      this.status = 'fallback';
+      this.broadcastControl({ type: 'fallback' });
+      this.scheduleReconnect();
+    };
 
-        if (status === 'SUBSCRIBED') {
-          this.clearReconnectTimer();
-          const isResync =
-            this.hasSubscribedOnce || this.status === 'fallback';
-          this.hasSubscribedOnce = true;
-          this.status = 'subscribed';
-          for (const sub of this.clients.values()) {
-            try {
-              sub.onEvent({ type: 'ready' });
-              if (isResync) {
-                sub.onEvent({
-                  type: 'change',
-                  ...(sub.orderId ? { orderId: sub.orderId } : {}),
-                  ...(sub.shopId ? { shopId: sub.shopId } : {}),
-                });
-              }
-            } catch {
-              // ignore individual listener errors
+    if (typeof client.on === 'function') {
+      client.on('notification', onNotification);
+      client.on('error', onErrorOrClose);
+      client.on('end', onErrorOrClose);
+    }
+
+    const startListening = async () => {
+      try {
+        if (typeof client.connect === 'function') {
+          await client.connect();
+        }
+        if (this.upstreamClient !== client || localDisposed) return;
+
+        if (typeof client.query === 'function') {
+          await client.query(`LISTEN ${this.channelName}`);
+        }
+        if (this.upstreamClient !== client || localDisposed) return;
+
+        this.clearReconnectTimer();
+        const isResync =
+          this.hasSubscribedOnce || this.status === 'fallback';
+        this.hasSubscribedOnce = true;
+        this.status = 'subscribed';
+
+        for (const sub of this.clients.values()) {
+          try {
+            sub.onEvent({ type: 'ready' });
+            if (isResync) {
+              sub.onEvent({
+                type: 'change',
+                ...(sub.orderId ? { orderId: sub.orderId } : {}),
+                ...(sub.shopId ? { shopId: sub.shopId } : {}),
+              });
             }
-          }
-          return;
+          } catch {}
         }
+      } catch {
+        onErrorOrClose();
+      }
+    };
 
-        if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
-          this.status = 'fallback';
-          this.broadcastControl({ type: 'fallback' });
-          this.scheduleReconnect();
-        }
-      });
+    void startListening();
   }
 
   private scheduleReconnect(): void {
@@ -390,7 +479,7 @@ export class OrderEventsBroker {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.clients.size === 0) return;
-      this.releaseUpstreamChannel();
+      this.releaseUpstreamClient();
       this.ensureUpstream();
     }, this.reconnectDelayMs);
     this.reconnectTimer.unref?.();
@@ -403,28 +492,25 @@ export class OrderEventsBroker {
     }
   }
 
-  private releaseUpstreamChannel(): void {
-    const channel = this.upstreamChannel;
+  private releaseUpstreamClient(): void {
     const client = this.upstreamClient;
-    this.upstreamChannel = null;
     this.upstreamClient = null;
-    if (channel) {
-      this.activeUpstreamChannels = Math.max(0, this.activeUpstreamChannels - 1);
+    this.activeUpstreamChannels = 0;
+
+    if (client) {
       try {
-        if (client?.removeChannel) {
-          void Promise.resolve(client.removeChannel(channel)).catch(() => {});
-        } else if (channel.unsubscribe) {
-          void Promise.resolve(channel.unsubscribe()).catch(() => {});
+        if (typeof client.end === 'function') {
+          void Promise.resolve(client.end()).catch(() => {});
         }
       } catch {
-        // ignore channel cleanup errors
+        // ignore client cleanup errors
       }
     }
   }
 
   private teardownUpstream(): void {
     this.clearReconnectTimer();
-    this.releaseUpstreamChannel();
+    this.releaseUpstreamClient();
     this.status = 'idle';
     this.hasSubscribedOnce = false;
   }
@@ -513,21 +599,28 @@ export class OrderEventsBroker {
     }
   }
 
-  private handlePostgresChange(payload: PostgresOrderChangePayload): void {
+  public handlePostgresNotification(payload: PostgresOrderNotification): void {
+    if (!payload || typeof payload !== 'object') return;
+
+    const table =
+      pickNonEmptyString(payload.table) ??
+      (pickNonEmptyString(payload.new?.request_type) !== undefined ||
+      pickNonEmptyString(payload.old?.request_type) !== undefined
+        ? 'table_service_requests'
+        : 'orders');
+
     const nextRow =
-      payload?.new && typeof payload.new === 'object' ? payload.new : null;
+      payload.new && typeof payload.new === 'object' ? payload.new : null;
     const oldRow =
-      payload?.old && typeof payload.old === 'object' ? payload.old : null;
+      payload.old && typeof payload.old === 'object' ? payload.old : null;
 
-    const isServiceRequestRow =
-      payload?.table === 'table_service_requests' ||
-      pickNonEmptyString(nextRow?.request_type) !== undefined ||
-      pickNonEmptyString(oldRow?.request_type) !== undefined;
-
-    if (isServiceRequestRow) {
+    if (table === 'table_service_requests') {
       const serviceShopId =
+        pickNonEmptyString(payload.shopId) ??
+        pickNonEmptyString(payload.shop_id) ??
         pickNonEmptyString(nextRow?.shop_id) ??
         pickNonEmptyString(oldRow?.shop_id);
+
       if (serviceShopId) {
         this.notifyShopChange(serviceShopId);
       }
@@ -535,8 +628,14 @@ export class OrderEventsBroker {
     }
 
     const orderId =
-      pickNonEmptyString(nextRow?.id) ?? pickNonEmptyString(oldRow?.id);
+      pickNonEmptyString(payload.orderId) ??
+      pickNonEmptyString(payload.order_id) ??
+      pickNonEmptyString(nextRow?.id) ??
+      pickNonEmptyString(oldRow?.id);
+
     let shopId =
+      pickNonEmptyString(payload.shopId) ??
+      pickNonEmptyString(payload.shop_id) ??
       pickNonEmptyString(nextRow?.shop_id) ??
       pickNonEmptyString(oldRow?.shop_id);
 
@@ -550,6 +649,7 @@ export class OrderEventsBroker {
       return;
     }
 
+    // Deliver ONLY the minimal IDs to authorized shop/order subscribers
     const minimalEvent: OrderSseEvent = {
       type: 'change',
       ...(orderId ? { orderId } : {}),
@@ -582,6 +682,7 @@ export class OrderEventsBroker {
       }
     }
   }
+
 }
 
 let globalOrderEventsBroker: OrderEventsBroker | null = null;
@@ -645,8 +746,8 @@ export async function handleOrderEventsRequest(
     return NextResponse.json(
       {
         error:
-          'Realtime order broker chưa được cấu hình khóa máy chủ hợp lệ (SUPABASE_SERVICE_ROLE_KEY).',
-        code: 'REALTIME_BACKEND_KEY_MISSING',
+          'Realtime order broker chưa được cấu hình cơ sở dữ liệu PostgreSQL hợp lệ (QLAOK_DATABASE_URL).',
+        code: 'REALTIME_BACKEND_CONFIG_MISSING',
       },
       { status: 503 }
     );

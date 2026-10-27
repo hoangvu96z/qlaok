@@ -36,6 +36,12 @@ import {
   createR2PresignedUploadUrl,
 } from '@/lib/r2';
 import {
+  isGarageConfigured,
+  getGarageClient,
+  createGaragePresignedUploadUrl,
+  uploadBufferToGarage,
+} from '@/lib/garage-storage';
+import {
   SEED_SHOPS,
   SEED_CATEGORIES,
   SEED_ITEMS,
@@ -743,6 +749,67 @@ describe('Suite 5: Cloudflare R2 Storage Helper (r2.ts)', () => {
     delete process.env.R2_SECRET_ACCESS_KEY;
     delete process.env.R2_BUCKET_NAME;
     delete process.env.R2_PUBLIC_URL;
+  });
+});
+
+// ============================================================================
+// SUITE 5.B: GARAGE OBJECT STORAGE HELPER (garage-storage.ts)
+// ============================================================================
+describe('Suite 5.B: Garage Object Storage Helper (garage-storage.ts)', () => {
+  test('5.B.1 isGarageConfigured returns false and getGarageClient returns null when env vars are missing', () => {
+    const savedEndpoint = process.env.S3_ENDPOINT;
+    delete process.env.S3_ENDPOINT;
+
+    assert.equal(isGarageConfigured(), false);
+    assert.equal(getGarageClient(), null);
+
+    if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+  });
+
+  test('5.B.2 createGaragePresignedUploadUrl returns null when Garage is not configured', async () => {
+    const savedEndpoint = process.env.S3_ENDPOINT;
+    delete process.env.S3_ENDPOINT;
+
+    const res = await createGaragePresignedUploadUrl({
+      key: 'items/pho-bo.webp',
+      contentType: 'image/webp',
+    });
+    assert.equal(res, null);
+
+    if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+  });
+
+  test('5.B.3 Garage storage generates valid signed URL and path-style client when credentials are set', async () => {
+    process.env.S3_ENDPOINT = 'https://s3.vunph.click';
+    process.env.S3_REGION = 'garage';
+    process.env.S3_BUCKET_NAME = 'qlaok-media';
+    process.env.S3_ACCESS_KEY_ID = 'demo-garage-key';
+    process.env.S3_SECRET_ACCESS_KEY = 'demo-garage-secret';
+    process.env.S3_PUBLIC_URL = 'https://s3.vunph.click/media';
+
+    assert.equal(isGarageConfigured(), true);
+    const client = getGarageClient();
+    assert.ok(client);
+    assert.equal(client.config.forcePathStyle, true);
+
+    const res = await createGaragePresignedUploadUrl({
+      key: 'items/pho-bo.webp',
+      contentType: 'image/webp',
+    });
+    assert.ok(res);
+    assert.ok(
+      res.uploadUrl.startsWith(
+        'https://s3.vunph.click/qlaok-media/items/pho-bo.webp'
+      )
+    );
+    assert.equal(res.publicUrl, 'https://s3.vunph.click/media/items/pho-bo.webp');
+
+    delete process.env.S3_ENDPOINT;
+    delete process.env.S3_REGION;
+    delete process.env.S3_BUCKET_NAME;
+    delete process.env.S3_ACCESS_KEY_ID;
+    delete process.env.S3_SECRET_ACCESS_KEY;
+    delete process.env.S3_PUBLIC_URL;
   });
 });
 

@@ -1505,5 +1505,81 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       authenticated_rate_limit_trigger_exec: false,
     });
 
+    // 10. Verify 022_postgres_realtime_notifications.sql:
+    // Publishes minimal notifications on INSERT/UPDATE/DELETE for orders and table_service_requests
+    await db.exec(
+      'RESET ROLE; SELECT set_config(\'request.jwt.claim.role\', \'service_role\', false), set_config(\'request.jwt.claims\', \'{"role":"service_role"}\', false); SET ROLE service_role;'
+    );
+
+    const realtimeEvents = [];
+    await db.listen('qlaok_order_events', (payload) => {
+      try {
+        realtimeEvents.push(JSON.parse(payload));
+      } catch {
+        realtimeEvents.push(payload);
+      }
+    });
+
+    // Test INSERT on orders
+    const testOrderId = '00000000-0000-0000-0000-000000000101';
+    await db.exec(`
+      INSERT INTO orders (id, shop_id, order_code, table_label, total_amount, status, payment_status, items)
+      VALUES ('${testOrderId}', 'sql-shop', 'ORD-REAL-1', 'Bàn 1', 120000, 'new', 'unpaid', '[]');
+    `);
+
+    assert.equal(realtimeEvents.length, 1);
+    assert.deepEqual(realtimeEvents[0], {
+      table: 'orders',
+      eventType: 'INSERT',
+      action: 'INSERT',
+      orderId: testOrderId,
+      shopId: 'sql-shop',
+    });
+    // Payload MUST NOT contain sensitive customer/amount/status/payment fields
+    assert.equal(realtimeEvents[0].total_amount, undefined);
+    assert.equal(realtimeEvents[0].payment_status, undefined);
+    assert.equal(realtimeEvents[0].items, undefined);
+
+    // Test UPDATE on orders with shop reassignment: must notify BOTH old and new shops
+    await db.exec(`
+      UPDATE orders SET shop_id = 'sql-pub-shop' WHERE id = '${testOrderId}';
+    `);
+
+    assert.equal(realtimeEvents.length, 3); // 1 + 2 notifications
+    const shopPubEvent = realtimeEvents.find(e => e.eventType === 'UPDATE' && e.shopId === 'sql-pub-shop');
+    const shopOldEvent = realtimeEvents.find(e => e.eventType === 'UPDATE' && e.shopId === 'sql-shop');
+    assert.ok(shopPubEvent, 'must notify new shop');
+    assert.ok(shopOldEvent, 'must notify old shop on reassignment');
+    assert.equal(shopPubEvent.orderId, testOrderId);
+    assert.equal(shopOldEvent.orderId, testOrderId);
+
+    // Test DELETE on orders: must notify with OLD shop and OLD orderId
+    await db.exec(`DELETE FROM orders WHERE id = '${testOrderId}';`);
+    assert.equal(realtimeEvents.length, 4);
+    assert.deepEqual(realtimeEvents[3], {
+      table: 'orders',
+      eventType: 'DELETE',
+      action: 'DELETE',
+      orderId: testOrderId,
+      shopId: 'sql-pub-shop',
+    });
+
+    // Test INSERT on table_service_requests
+    await db.exec(`
+      INSERT INTO shop_tables (id, shop_id, table_code, name, is_active, is_archived)
+      VALUES ('sql-real-tbl', 'sql-shop', 'R01', 'Bàn Realtime', true, false);
+
+      INSERT INTO table_service_requests (id, shop_id, table_id, table_code, table_label, request_type, status)
+      VALUES ('srv-real-1', 'sql-shop', 'sql-real-tbl', 'R01', 'Bàn Realtime', 'call_staff', 'pending');
+    `);
+    assert.equal(realtimeEvents.length, 5);
+    assert.deepEqual(realtimeEvents[4], {
+      table: 'table_service_requests',
+      eventType: 'INSERT',
+      action: 'INSERT',
+      orderId: null,
+      shopId: 'sql-shop',
+    });
+
   } finally { await db.close(); }
 });

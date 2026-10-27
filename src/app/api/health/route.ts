@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
-import { isR2Configured } from '@/lib/r2';
+import { isGarageConfigured } from '@/lib/garage-storage';
 import { getGeminiClient } from '@/lib/gemini';
 
 export async function GET() {
@@ -44,20 +44,20 @@ export async function GET() {
     {
       status: isReady ? 'ok' : 'degraded',
       service: 'qlaok-backend',
-      dataSource: 'supabase',
+      dataSource: 'self-hosted-postgres',
       timestamp: new Date().toISOString(),
       environment: {
-        supabaseConfigured: isSupabaseConfigured(),
-        supabaseTablesReady: isReady,
-        supabaseSeeded: isSeeded,
-        supabaseMessage: sbStatus.error
+        postgresConfigured: isSupabaseConfigured(),
+        postgresTablesReady: isReady,
+        postgresSeeded: isSeeded,
+        postgresMessage: sbStatus.error
           ? sbStatus.error
           : !isReady
-            ? 'Supabase not ready'
+            ? 'PostgreSQL schema/API not ready'
             : isSeeded
               ? 'Connected & seeded'
               : 'Connected (schema ready)',
-        r2Configured: isR2Configured(),
+        garageConfigured: isGarageConfigured(),
         geminiConfigured: Boolean(getGeminiClient()),
         aiProvider: `9router (${getGeminiClient()?.baseUrl || 'https://vunph.click/v1'} • text: ${getGeminiClient()?.model || 'combo1'} • vision: ${getGeminiClient()?.visionModel || 'combo2'})`,
       },

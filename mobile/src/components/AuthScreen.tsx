@@ -12,14 +12,13 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import qMenuLogo from '../../assets/q-menu.png';
-import { PRODUCTION_API_URL, supabase } from '../lib/supabase';
+import { PRODUCTION_API_URL } from '../lib/supabase';
 import {
-  buildPasswordRecoveryRedirectUrl,
-  completeMobilePasswordRecoveryWithCode,
-  type PasswordRecoveryCodeFailureReason,
-  type PasswordRecoveryFailureReason,
-  requestMobilePasswordRecovery,
-} from '../lib/auth-recovery';
+  type MobileOidcAuthMode,
+  MobileOwnerOidcError,
+  resolveMobileZitadelOidcConfig,
+  startOwnerOidcLogin,
+} from '../lib/owner-session';
 import {
   loginStaff,
   type MobileStaffSession,
@@ -38,6 +37,12 @@ export interface AuthScreenProps {
   sessionNotice?: string;
   onDismissSessionNotice?: () => void;
   staffLoginFn?: typeof loginStaff;
+  ownerSessionExpired?: boolean;
+  ownerAuthError?: string;
+  ownerOidcExchanging?: boolean;
+  onDismissOwnerAuthError?: () => void;
+  ownerOidcStartFn?: typeof startOwnerOidcLogin;
+  oidcConfigEnv?: Record<string, string | undefined>;
 }
 
 export function formatStaffLoginError(
@@ -110,22 +115,22 @@ export const AuthScreen = memo(function AuthScreen({
   sessionNotice,
   onDismissSessionNotice,
   staffLoginFn = loginStaff,
+  ownerSessionExpired = false,
+  ownerAuthError = '',
+  ownerOidcExchanging = false,
+  onDismissOwnerAuthError,
+  ownerOidcStartFn = startOwnerOidcLogin,
+  oidcConfigEnv,
 }: AuthScreenProps = {}) {
   const { locale, t, tb } = useMobileI18n();
   const [accountMode, setAccountMode] = useState<MobileLoginAccountMode>(
     initialAccountMode ?? (staffSessionExpired ? 'staff' : 'owner')
   );
-  const [mode, setMode] = useState<'login' | 'recovery'>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [recoveryCode, setRecoveryCode] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [recoverySentTo, setRecoverySentTo] = useState<string | null>(null);
-  const [authNotice, setAuthNotice] = useState('');
+  const [loginHint, setLoginHint] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  // Staff sign-in state (strictly isolated from owner credentials)
+  // Staff sign-in state (strictly isolated from owner OIDC)
   const [shopIdentifier, setShopIdentifier] = useState('');
   const [staffUsername, setStaffUsername] = useState('');
   const [staffPassword, setStaffPassword] = useState('');
@@ -134,125 +139,55 @@ export const AuthScreen = memo(function AuthScreen({
   useEffect(() => {
     if (staffSessionExpired) {
       setAccountMode('staff');
+    } else if (ownerSessionExpired) {
+      setAccountMode('owner');
     }
-  }, [staffSessionExpired]);
+  }, [staffSessionExpired, ownerSessionExpired]);
 
-  const canSubmit =
-    !authLoading && email.trim().length > 0 && password.length > 0;
+  const oidcConfigResolution = resolveMobileZitadelOidcConfig(oidcConfigEnv);
+  const isOwnerBusy = authLoading || ownerOidcExchanging;
+  const canStartOwnerOidc = !isOwnerBusy && oidcConfigResolution.ok;
+
   const canSubmitStaff =
     !authLoading &&
+    !ownerOidcExchanging &&
     shopIdentifier.trim().length > 0 &&
     staffUsername.trim().length > 0 &&
     staffPassword.length > 0;
-  const canSendRecovery = !authLoading && email.trim().length > 0;
-  const canCompleteRecovery =
-    !authLoading &&
-    email.trim().length > 0 &&
-    recoveryCode.trim().length >= 6 &&
-    newPassword.length >= 6;
 
-  const formatRecoveryFailure = (
-    reason: PasswordRecoveryFailureReason | PasswordRecoveryCodeFailureReason,
-    fallbackMessage?: string
-  ): string => {
-    switch (reason) {
-      case 'invalid_email':
-        return t('auth.recoveryErrInvalidEmail');
-      case 'unsupported_account':
-        return t('auth.recoveryErrUnsupportedAccount');
-      case 'unsupported_provider':
-        return t('auth.recoveryErrUnsupportedProvider');
-      case 'rate_limited':
-        return t('auth.recoveryErrRateLimited');
-      case 'network_error':
-        return t('auth.recoveryErrNetwork');
-      case 'invalid_code':
-        return t('auth.recoveryErrInvalidCode');
-      case 'weak_password':
-        return t('auth.recoveryErrWeakPassword');
-      case 'provider_error':
-      default:
-        return fallbackMessage?.trim() || t('auth.recoveryErrUnsupportedProvider');
-    }
-  };
-
-  const handleLogin = async () => {
-    if (!email.trim() || !password || authLoading) return;
-    setAuthLoading(true);
+  const handleStartOwnerOidc = async (mode: MobileOidcAuthMode) => {
+    if (isOwnerBusy) return;
     setAuthError('');
-    setAuthNotice('');
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
-      if (error) {
-        throw error;
-      }
-    } catch (err) {
+    onDismissOwnerAuthError?.();
+    onDismissSessionNotice?.();
+
+    if (!oidcConfigResolution.ok) {
       setAuthError(
-        err instanceof Error ? err.message : t('auth.errorFallback')
+        locale === 'en'
+          ? oidcConfigResolution.messageEn
+          : oidcConfigResolution.messageVi
       );
-    } finally {
-      setAuthLoading(false);
+      return;
     }
-  };
 
-  const recoveryRedirectUrl =
-    buildPasswordRecoveryRedirectUrl(PRODUCTION_API_URL);
-
-  const handleSendRecovery = async () => {
-    if (authLoading) return;
     setAuthLoading(true);
-    setAuthError('');
-    setAuthNotice('');
     try {
-      const result = await requestMobilePasswordRecovery({
-        email,
-        redirectTo: recoveryRedirectUrl,
-        authClient: supabase.auth,
+      await ownerOidcStartFn({
+        mode,
+        loginHint: loginHint.trim() || undefined,
+        lang: locale === 'en' ? 'en' : 'vi',
+        env: oidcConfigEnv,
       });
-      if (!result.ok) {
+    } catch (err) {
+      if (err instanceof MobileOwnerOidcError) {
+        setAuthError(err.message);
+      } else {
         setAuthError(
-          formatRecoveryFailure(result.reason, result.errorMessage)
+          err instanceof Error && err.message
+            ? err.message
+            : t('auth.recoveryErrNetwork')
         );
-        return;
       }
-      setRecoverySentTo(result.email);
-      setAuthNotice(
-        t('auth.recoverySentNotice', { email: result.email })
-      );
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleCompleteRecovery = async () => {
-    if (authLoading) return;
-    setAuthLoading(true);
-    setAuthError('');
-    setAuthNotice('');
-    try {
-      const result = await completeMobilePasswordRecoveryWithCode({
-        email,
-        code: recoveryCode,
-        newPassword,
-        authClient: supabase.auth,
-      });
-      if (!result.ok) {
-        setAuthError(
-          formatRecoveryFailure(result.reason, result.errorMessage)
-        );
-        return;
-      }
-      setPassword(newPassword);
-      setRecoveryCode('');
-      setNewPassword('');
-      setRecoverySentTo(null);
-      setMode('login');
-      setAuthNotice(
-        t('auth.recoverySuccessNotice', { email: result.email })
-      );
     } finally {
       setAuthLoading(false);
     }
@@ -296,7 +231,11 @@ export const AuthScreen = memo(function AuthScreen({
         'Phiên đăng nhập nhân viên đã hết hạn hoặc bị thu hồi. Vui lòng đăng nhập lại.',
         'Your staff session has expired or been revoked. Please sign in again.'
       )
-    : sessionNotice?.trim() || '';
+    : ownerSessionExpired
+      ? sessionNotice?.trim() || t('auth.ownerSessionExpiredNotice')
+      : sessionNotice?.trim() || '';
+
+  const combinedOwnerError = authError || ownerAuthError;
 
   return (
     <SafeAreaView style={styles.authContainer}>
@@ -327,9 +266,7 @@ export const AuthScreen = memo(function AuthScreen({
           <Text style={styles.authTitle}>
             {accountMode === 'staff'
               ? tb('Qlaok Nhân viên', 'Qlaok Staff')
-              : mode === 'recovery'
-                ? t('auth.recoveryTitle')
-                : t('auth.title')}
+              : t('auth.title')}
           </Text>
           <Text style={styles.authSubtitle}>
             {accountMode === 'staff'
@@ -337,9 +274,7 @@ export const AuthScreen = memo(function AuthScreen({
                   'Đăng nhập bằng mã quán và tài khoản nhân viên để hỗ trợ gọi món tại bàn',
                   'Sign in with shop identifier and staff username for assisted table ordering'
                 )
-              : mode === 'recovery'
-                ? t('auth.recoverySubtitle')
-                : t('auth.subtitle')}
+              : t('auth.oidcSubtitle')}
           </Text>
 
           {/* Two-mode switch: Owner vs Staff */}
@@ -365,12 +300,12 @@ export const AuthScreen = memo(function AuthScreen({
               accessibilityRole="tab"
               accessibilityState={{ selected: accountMode === 'owner' }}
               accessibilityLabel={tb('Chủ quán', 'Shop Owner')}
-              disabled={authLoading}
+              disabled={isOwnerBusy}
               onPress={() => {
                 setAccountMode('owner');
                 setAuthError('');
-                setAuthNotice('');
                 setStaffError('');
+                onDismissOwnerAuthError?.();
                 onDismissSessionNotice?.();
               }}
               style={{
@@ -399,13 +334,12 @@ export const AuthScreen = memo(function AuthScreen({
               accessibilityRole="tab"
               accessibilityState={{ selected: accountMode === 'staff' }}
               accessibilityLabel={tb('Nhân viên', 'Staff')}
-              disabled={authLoading}
+              disabled={isOwnerBusy}
               onPress={() => {
                 setAccountMode('staff');
-                setMode('login');
                 setAuthError('');
-                setAuthNotice('');
                 setStaffError('');
+                onDismissOwnerAuthError?.();
               }}
               style={{
                 flex: 1,
@@ -431,7 +365,11 @@ export const AuthScreen = memo(function AuthScreen({
 
           {expiredNoticeText ? (
             <View
-              testID="staff-session-expired-notice"
+              testID={
+                staffSessionExpired
+                  ? 'staff-session-expired-notice'
+                  : 'owner-session-expired-notice'
+              }
               accessibilityRole="alert"
               style={{
                 backgroundColor: '#451a03',
@@ -557,226 +495,188 @@ export const AuthScreen = memo(function AuthScreen({
             </>
           ) : (
             <>
+              <View
+                style={{
+                  alignSelf: 'flex-start',
+                  backgroundColor: '#064e3b',
+                  borderColor: '#10b981',
+                  borderWidth: 1,
+                  borderRadius: 999,
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  marginBottom: 14,
+                }}
+              >
+                <Text
+                  style={{
+                    color: '#6ee7b7',
+                    fontSize: 11,
+                    fontWeight: '800',
+                  }}
+                >
+                  {t('auth.oidcBadge')}
+                </Text>
+              </View>
+
+              {!oidcConfigResolution.ok ? (
+                <View
+                  testID="owner-oidc-config-error"
+                  accessibilityRole="alert"
+                  style={{
+                    backgroundColor: '#450a0a',
+                    borderColor: '#f87171',
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    marginBottom: 14,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: '#fecaca',
+                      fontSize: 12,
+                      fontWeight: '800',
+                      marginBottom: 4,
+                    }}
+                  >
+                    {t('auth.oidcConfigMissingTitle')}
+                  </Text>
+                  <Text
+                    style={{
+                      color: '#fca5a5',
+                      fontSize: 12,
+                    }}
+                  >
+                    {locale === 'en'
+                      ? oidcConfigResolution.messageEn
+                      : oidcConfigResolution.messageVi}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>{t('auth.emailLabel')}</Text>
+                <Text style={styles.label}>{t('auth.oidcEmailHintLabel')}</Text>
                 <TextInput
-                  accessibilityLabel={t('auth.emailLabel')}
+                  testID="owner-oidc-login-hint-input"
+                  accessibilityLabel={t('auth.oidcEmailHintLabel')}
+                  placeholder={t('auth.oidcEmailHintPlaceholder')}
+                  placeholderTextColor="#64748b"
                   autoComplete="email"
                   style={styles.authInput}
-                  value={email}
-                  onChangeText={setEmail}
+                  value={loginHint}
+                  onChangeText={(next) => {
+                    setLoginHint(next);
+                    if (authError) setAuthError('');
+                    onDismissOwnerAuthError?.();
+                  }}
                   autoCapitalize="none"
+                  autoCorrect={false}
                   keyboardType="email-address"
                 />
               </View>
 
-              {mode === 'login' ? (
-                <>
-                  <View style={styles.inputGroup}>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <Text style={styles.label}>{t('auth.passwordLabel')}</Text>
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        onPress={() => {
-                          setMode('recovery');
-                          setAuthError('');
-                          setAuthNotice('');
-                        }}
-                      >
-                        <Text
-                          style={{
-                            color: '#34d399',
-                            fontSize: 12,
-                            fontWeight: '700',
-                            marginBottom: 6,
-                          }}
-                        >
-                          {t('auth.forgotPasswordPrompt')}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                    <TextInput
-                      accessibilityLabel={t('auth.passwordLabel')}
-                      autoComplete="current-password"
-                      style={styles.authInput}
-                      value={password}
-                      onChangeText={setPassword}
-                      secureTextEntry
-                    />
-                  </View>
+              {combinedOwnerError ? (
+                <Text
+                  testID="owner-auth-error"
+                  accessibilityRole="alert"
+                  style={{ color: '#fca5a5', marginBottom: 12 }}
+                >
+                  {combinedOwnerError}
+                </Text>
+              ) : null}
 
-                  {authNotice ? (
-                    <Text
-                      accessibilityRole="alert"
-                      style={{ color: '#6ee7b7', marginBottom: 12, fontSize: 12 }}
-                    >
-                      {authNotice}
-                    </Text>
-                  ) : null}
+              <TouchableOpacity
+                testID="owner-oidc-login-btn"
+                accessibilityRole="button"
+                style={[
+                  styles.primaryAuthBtn,
+                  !canStartOwnerOidc && { opacity: 0.5 },
+                ]}
+                onPress={() => void handleStartOwnerOidc('login')}
+                disabled={!canStartOwnerOidc}
+              >
+                <Text style={styles.primaryAuthBtnText}>
+                  {ownerOidcExchanging
+                    ? t('auth.oidcExchanging')
+                    : authLoading
+                      ? t('auth.oidcRedirecting')
+                      : t('auth.oidcSignInBtn')}
+                </Text>
+              </TouchableOpacity>
 
-                  {authError ? (
-                    <Text
-                      accessibilityRole="alert"
-                      style={{ color: '#fca5a5', marginBottom: 12 }}
-                    >
-                      {authError}
-                    </Text>
-                  ) : null}
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    style={[styles.primaryAuthBtn, !canSubmit && { opacity: 0.5 }]}
-                    onPress={() => handleLogin()}
-                    disabled={!canSubmit}
-                  >
-                    <Text style={styles.primaryAuthBtnText}>
-                      {authLoading ? t('auth.submitting') : t('auth.submit')}
-                    </Text>
-                  </TouchableOpacity>
+              <TouchableOpacity
+                testID="owner-oidc-register-btn"
+                accessibilityRole="button"
+                style={[
+                  {
+                    marginTop: 10,
+                    paddingVertical: 12,
+                    paddingHorizontal: 14,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#334155',
+                    backgroundColor: '#0f172a',
+                    alignItems: 'center',
+                  },
+                  !canStartOwnerOidc && { opacity: 0.5 },
+                ]}
+                onPress={() => void handleStartOwnerOidc('register')}
+                disabled={!canStartOwnerOidc}
+              >
+                <Text
+                  style={{
+                    color: '#e2e8f0',
+                    fontSize: 13,
+                    fontWeight: '700',
+                  }}
+                >
+                  {t('auth.oidcRegisterBtn')}
+                </Text>
+              </TouchableOpacity>
 
-                  <TouchableOpacity
-                    accessibilityRole="link"
-                    onPress={() => void Linking.openURL(PRODUCTION_API_URL)}
-                    style={{ marginTop: 16, alignItems: 'center' }}
-                  >
-                    <Text
-                      style={{
-                        color: '#34d399',
-                        fontSize: 12,
-                        fontWeight: '700',
-                        textAlign: 'center',
-                      }}
-                    >
-                      {t('auth.createStorePrompt')}
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  {authNotice ? (
-                    <Text
-                      accessibilityRole="alert"
-                      style={{ color: '#6ee7b7', marginBottom: 12, fontSize: 12 }}
-                    >
-                      {authNotice}
-                    </Text>
-                  ) : null}
-
-                  {authError ? (
-                    <Text
-                      accessibilityRole="alert"
-                      style={{ color: '#fca5a5', marginBottom: 12 }}
-                    >
-                      {authError}
-                    </Text>
-                  ) : null}
-
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    style={[
-                      styles.primaryAuthBtn,
-                      !canSendRecovery && { opacity: 0.5 },
-                    ]}
-                    onPress={() => handleSendRecovery()}
-                    disabled={!canSendRecovery}
-                  >
-                    <Text style={styles.primaryAuthBtnText}>
-                      {authLoading
-                        ? t('auth.recoverySending')
-                        : t('auth.recoverySendBtn')}
-                    </Text>
-                  </TouchableOpacity>
-
-                  {recoverySentTo ? (
-                    <View style={{ marginTop: 14 }}>
-                      <View style={styles.inputGroup}>
-                        <Text style={styles.label}>
-                          {t('auth.recoveryCodeLabel')}
-                        </Text>
-                        <TextInput
-                          accessibilityLabel={t('auth.recoveryCodeLabel')}
-                          style={styles.authInput}
-                          value={recoveryCode}
-                          onChangeText={setRecoveryCode}
-                          autoCapitalize="none"
-                          keyboardType="number-pad"
-                        />
-                      </View>
-
-                      <View style={styles.inputGroup}>
-                        <Text style={styles.label}>
-                          {t('auth.recoveryNewPasswordLabel')}
-                        </Text>
-                        <TextInput
-                          accessibilityLabel={t('auth.recoveryNewPasswordLabel')}
-                          style={styles.authInput}
-                          value={newPassword}
-                          onChangeText={setNewPassword}
-                          secureTextEntry
-                        />
-                      </View>
-
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        style={[
-                          styles.primaryAuthBtn,
-                          !canCompleteRecovery && { opacity: 0.5 },
-                        ]}
-                        onPress={() => handleCompleteRecovery()}
-                        disabled={!canCompleteRecovery}
-                      >
-                        <Text style={styles.primaryAuthBtnText}>
-                          {authLoading
-                            ? t('auth.recoveryCompleting')
-                            : t('auth.recoveryCompleteBtn')}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : null}
-
-                  <TouchableOpacity
-                    accessibilityRole="link"
-                    onPress={() => void Linking.openURL(recoveryRedirectUrl)}
-                    style={{ marginTop: 14, alignItems: 'center' }}
-                  >
-                    <Text
-                      style={{
-                        color: '#94a3b8',
-                        fontSize: 12,
-                        fontWeight: '600',
-                        textAlign: 'center',
-                      }}
-                    >
-                      {t('auth.recoveryOpenWebFallback')}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    onPress={() => {
-                      setMode('login');
-                      setAuthError('');
+              <View
+                style={{
+                  marginTop: 14,
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                }}
+              >
+                <TouchableOpacity
+                  testID="owner-oidc-reset-btn"
+                  accessibilityRole="button"
+                  disabled={!canStartOwnerOidc}
+                  onPress={() => void handleStartOwnerOidc('reset')}
+                >
+                  <Text
+                    style={{
+                      color: '#34d399',
+                      fontSize: 12,
+                      fontWeight: '700',
                     }}
-                    style={{ marginTop: 12, alignItems: 'center' }}
                   >
-                    <Text
-                      style={{
-                        color: '#34d399',
-                        fontSize: 12,
-                        fontWeight: '700',
-                        textAlign: 'center',
-                      }}
-                    >
-                      {t('auth.recoveryBackToLogin')}
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              )}
+                    {t('auth.oidcForgotPasswordBtn')}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  accessibilityRole="link"
+                  onPress={() => void Linking.openURL(PRODUCTION_API_URL)}
+                >
+                  <Text
+                    style={{
+                      color: '#94a3b8',
+                      fontSize: 12,
+                      fontWeight: '600',
+                    }}
+                  >
+                    {t('auth.createStorePrompt')}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </>
           )}
         </View>

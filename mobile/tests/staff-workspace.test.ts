@@ -350,11 +350,13 @@ test('AuthScreen dual-login mode: exposes owner/staff switch, isolates staff fie
   assert.doesNotMatch(staffBranch, /requestMobilePasswordRecovery/);
   assert.doesNotMatch(staffBranch, /completeMobilePasswordRecoveryWithCode/);
 
-  // 5. Owner branch preserves email/password login, recovery, and createStorePrompt
-  assert.match(authScreenSource, /supabase\.auth\.signInWithPassword/);
-  assert.match(authScreenSource, /requestMobilePasswordRecovery/);
-  assert.match(authScreenSource, /completeMobilePasswordRecoveryWithCode/);
+  // 5. Owner branch uses Zitadel OIDC PKCE login, fail-closed config banner, and createStorePrompt (never Supabase password login)
+  assert.match(authScreenSource, /startOwnerOidcLogin/);
+  assert.match(authScreenSource, /resolveMobileZitadelOidcConfig/);
+  assert.match(authScreenSource, /testID="owner-oidc-login-btn"/);
+  assert.match(authScreenSource, /testID="owner-oidc-config-error"/);
   assert.match(authScreenSource, /auth\.createStorePrompt/);
+  assert.doesNotMatch(authScreenSource, /supabase\.auth\.signInWithPassword/);
 
   // 6. Never logs credentials or token
   assert.doesNotMatch(authScreenSource, /console\.(log|info|warn|error|debug)/);

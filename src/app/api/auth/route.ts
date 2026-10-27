@@ -1,24 +1,16 @@
-import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
-  createSupabasePublicAuthClient,
   dbGetShopById,
   ensureSupabaseReadyAndSeeded,
   getSupabaseDbClient,
 } from '@/lib/db';
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
-  ensureSuperAdminSeeded,
-  hashPassword,
-  readCredentials,
-  verifyPassword,
-  writeCredentials,
-} from '@/lib/auth-credentials';
-import {
   attachSessionCookie,
   clearSessionCookie,
   isShopBoundStaffSession,
   isStaffSessionUser,
+  issuePostgrestAuthenticatedJwt,
   issueSessionToken,
   verifyRequestUser,
 } from '@/lib/server-auth';
@@ -36,7 +28,31 @@ import {
   isReservedUnsupportedRecoveryEmail,
   isValidRecoveryEmail,
 } from '@/lib/auth-recovery';
+import { resolvePostLoginRoute } from '@/lib/post-login-route';
+import {
+  attachOidcTransactionCookie,
+  buildZitadelAuthorizeUrl,
+  clearOidcTransactionCookie,
+  compareConstantTimeString,
+  exchangeZitadelAuthorizationCode,
+  fetchZitadelUserInfo,
+  getZitadelClientId,
+  getZitadelMobileClientId,
+  isPlaceholderOidcClientId,
+  issueOidcTransactionCookieValue,
+  isValidMobileRedirectUri,
+  isValidPkceCodeVerifier,
+  isValidUuidSub,
+  normalizeOidcAuthMode,
+  resolveAndSyncZitadelOwnerProfile,
+  resolveMobileZitadelRedirectUri,
+  resolveZitadelRedirectUri,
+  verifyZitadelJwt,
+  ZitadelOidcError,
+} from '@/lib/zitadel-oidc';
 import type { Profile, Shop, ShopMembership } from '@/types/qlaok';
+
+const OWNER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 /**
  * Loads shops where the user is an active (non-owner) member so staff and
@@ -74,8 +90,315 @@ async function loadMemberShops(
   };
 }
 
+function handleOidcStart(
+  req: Request,
+  options: {
+    mode?: string | null;
+    nextPath?: string | null;
+    loginHint?: string | null;
+    lang?: string | null;
+    format?: string | null;
+  }
+): NextResponse {
+  const reqUrl = new URL(req.url);
+  const clientId = getZitadelClientId();
+  if (!clientId) {
+    return NextResponse.json(
+      {
+        error:
+          'Thiếu cấu hình ZITADEL_CLIENT_ID trên máy chủ cho xác thực OIDC.',
+        code: 'ZITADEL_CLIENT_ID_MISSING',
+      },
+      { status: 500 }
+    );
+  }
+
+  const redirectUri = resolveZitadelRedirectUri(reqUrl.origin);
+  const mode = normalizeOidcAuthMode(options.mode);
+  const { cookieValue, transaction, codeChallenge, codeChallengeMethod } =
+    issueOidcTransactionCookieValue({
+      redirectUri,
+      nextPath: options.nextPath,
+      mode,
+    });
+
+  const authorizeUrl = buildZitadelAuthorizeUrl({
+    clientId,
+    redirectUri,
+    state: transaction.state,
+    nonce: transaction.nonce,
+    codeChallenge,
+    mode: transaction.mode,
+    loginHint: options.loginHint || undefined,
+    lang:
+      options.lang === 'en' ? 'en' : options.lang === 'vi' ? 'vi' : undefined,
+  });
+
+  const accept = (req.headers.get('accept') || '').toLowerCase();
+  const wantsJson =
+    options.format === 'json' || accept.includes('application/json');
+
+  if (wantsJson) {
+    const res = NextResponse.json({
+      authorizeUrl,
+      state: transaction.state,
+      nonce: transaction.nonce,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri: transaction.redirectUri,
+      nextPath: transaction.nextPath,
+      mode: transaction.mode,
+    });
+    attachOidcTransactionCookie(res, cookieValue);
+    return res;
+  }
+
+  const res = NextResponse.redirect(authorizeUrl, { status: 302 });
+  attachOidcTransactionCookie(res, cookieValue);
+  return res;
+}
+
+async function handleMobileOidcExchange(
+  body: Record<string, unknown>
+): Promise<NextResponse> {
+  const configuredClientId = getZitadelMobileClientId();
+  if (!configuredClientId) {
+    return NextResponse.json(
+      {
+        error:
+          'Thiếu cấu hình ZITADEL_MOBILE_CLIENT_ID / EXPO_PUBLIC_ZITADEL_CLIENT_ID trên máy chủ.',
+        code: 'ZITADEL_CLIENT_ID_MISSING',
+      },
+      { status: 500 }
+    );
+  }
+
+  const rawClientId =
+    typeof body.clientId === 'string'
+      ? body.clientId.trim()
+      : typeof body.client_id === 'string'
+        ? body.client_id.trim()
+        : '';
+  if (rawClientId) {
+    if (
+      isPlaceholderOidcClientId(rawClientId) ||
+      rawClientId !== configuredClientId
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Zitadel client_id từ ứng dụng di động không khớp với cấu hình máy chủ.',
+          code: 'OIDC_CLIENT_ID_MISMATCH',
+        },
+        { status: 400 }
+      );
+    }
+  }
+
+  const expectedRedirectUri = resolveMobileZitadelRedirectUri();
+  const rawRedirectUri =
+    typeof body.redirectUri === 'string'
+      ? body.redirectUri.trim()
+      : typeof body.redirect_uri === 'string'
+        ? body.redirect_uri.trim()
+        : '';
+  if (!rawRedirectUri || !isValidMobileRedirectUri(rawRedirectUri)) {
+    return NextResponse.json(
+      {
+        error: `redirect_uri không hợp lệ. Phải khớp chính xác với ${expectedRedirectUri}.`,
+        code: 'OIDC_REDIRECT_URI_MISMATCH',
+      },
+      { status: 400 }
+    );
+  }
+
+  const code = typeof body.code === 'string' ? body.code.trim() : '';
+  if (!code) {
+    return NextResponse.json(
+      {
+        error: 'Thiếu mã xác thực (authorization code) từ Zitadel.',
+        code: 'OIDC_CODE_MISSING',
+      },
+      { status: 400 }
+    );
+  }
+
+  const codeVerifier =
+    typeof body.codeVerifier === 'string'
+      ? body.codeVerifier.trim()
+      : typeof body.code_verifier === 'string'
+        ? body.code_verifier.trim()
+        : '';
+  if (!isValidPkceCodeVerifier(codeVerifier)) {
+    return NextResponse.json(
+      {
+        error: 'PKCE code_verifier không hợp lệ hoặc bị thiếu.',
+        code: 'OIDC_PKCE_VERIFIER_INVALID',
+      },
+      { status: 400 }
+    );
+  }
+
+  const nonce = typeof body.nonce === 'string' ? body.nonce.trim() : '';
+  if (!nonce) {
+    return NextResponse.json(
+      {
+        error: 'Thiếu nonce xác thực OIDC.',
+        code: 'OIDC_NONCE_MISSING',
+      },
+      { status: 400 }
+    );
+  }
+
+  const state = typeof body.state === 'string' ? body.state.trim() : '';
+  const expectedState =
+    typeof body.expectedState === 'string' ? body.expectedState.trim() : '';
+  if (expectedState && (!state || !compareConstantTimeString(state, expectedState))) {
+    return NextResponse.json(
+      {
+        error: 'State xác thực OIDC không khớp.',
+        code: 'OIDC_STATE_MISMATCH',
+      },
+      { status: 400 }
+    );
+  }
+
+  const tokenResponse = await exchangeZitadelAuthorizationCode({
+    code,
+    codeVerifier,
+    redirectUri: expectedRedirectUri,
+    clientId: configuredClientId,
+  });
+
+  const claims = await verifyZitadelJwt(tokenResponse.id_token!, {
+    expectedAudience: configuredClientId,
+    expectedNonce: nonce,
+    requireNonce: true,
+  });
+
+  let resolvedEmail = claims.email;
+  let resolvedFullName = claims.fullName;
+  let resolvedPhone = claims.phone;
+
+  if ((!resolvedEmail || !resolvedFullName) && tokenResponse.access_token) {
+    const userInfo = await fetchZitadelUserInfo(tokenResponse.access_token);
+    if (userInfo) {
+      if (!userInfo.sub || userInfo.sub !== claims.sub) {
+        throw new ZitadelOidcError(
+          'OIDC_USERINFO_SUB_MISMATCH',
+          'Subject từ UserInfo không khớp với id_token.',
+          401
+        );
+      }
+      if (!resolvedEmail && userInfo.email) resolvedEmail = userInfo.email;
+      if (!resolvedFullName && userInfo.fullName)
+        resolvedFullName = userInfo.fullName;
+      if (!resolvedPhone && userInfo.phone) resolvedPhone = userInfo.phone;
+    }
+  }
+
+  await ensureSupabaseReadyAndSeeded();
+  const { user: finalUser, isAdmin } = await resolveAndSyncZitadelOwnerProfile({
+    sub: claims.sub,
+    email: resolvedEmail,
+    fullName: resolvedFullName,
+    phone: resolvedPhone,
+    allowInsert: true,
+  });
+
+  const sb = getSupabaseDbClient();
+  const { data: ownerShops, error: shopsLookupErr } = await sb
+    .from('shops')
+    .select('*')
+    .eq('owner_id', finalUser.id)
+    .order('created_at', { ascending: true });
+
+  if (shopsLookupErr) {
+    return NextResponse.json(
+      {
+        error: `Không thể tải danh sách cửa hàng (${shopsLookupErr.message}).`,
+        code: 'AUTH_SHOPS_QUERY_FAILED',
+      },
+      { status: 500 }
+    );
+  }
+
+  let memberData: { memberShops: Shop[]; memberships: ShopMembership[] } = {
+    memberShops: [],
+    memberships: [],
+  };
+  if (!isAdmin) {
+    try {
+      memberData = await loadMemberShops(
+        sb,
+        finalUser.id,
+        new Set(((ownerShops || []) as Shop[]).map((s) => s.id))
+      );
+    } catch {
+      // Non-fatal: app reloads memberships via /api/shops?member=1
+    }
+  }
+
+  const nextPath =
+    typeof body.next === 'string' ? body.next : '/dashboard';
+  const resolvedTarget = resolvePostLoginRoute(
+    {
+      isAdmin,
+      shops: (ownerShops || []) as Shop[],
+      memberShops: memberData.memberShops,
+    },
+    nextPath
+  );
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expiresAt = nowSec + OWNER_SESSION_TTL_SECONDS;
+  const accessToken = issueSessionToken(
+    {
+      id: finalUser.id,
+      email: finalUser.email,
+      role: isAdmin ? 'admin' : 'owner',
+      is_admin: isAdmin,
+    },
+    OWNER_SESSION_TTL_SECONDS
+  );
+  const postgrestIssued = issuePostgrestAuthenticatedJwt({
+    sub: finalUser.id,
+    email: finalUser.email,
+    isAdmin,
+  });
+
+  const res = NextResponse.json(
+    {
+      user: finalUser,
+      shops: (ownerShops || []) as Shop[],
+      memberShops: memberData.memberShops,
+      memberships: memberData.memberships,
+      isAdmin,
+      redirectTo: resolvedTarget.path,
+      accessToken,
+      expiresAt,
+      postgrestToken: postgrestIssued?.token ?? null,
+      postgrestExpiresAt: postgrestIssued?.expiresAt ?? null,
+    },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
+  return attachSessionCookie(res, accessToken, OWNER_SESSION_TTL_SECONDS);
+}
+
 export async function GET(req: Request) {
   try {
+    const reqUrl = new URL(req.url);
+    const action = reqUrl.searchParams.get('action');
+    if (action === 'oidc_start') {
+      return handleOidcStart(req, {
+        mode: reqUrl.searchParams.get('mode'),
+        nextPath: reqUrl.searchParams.get('next'),
+        loginHint: reqUrl.searchParams.get('login_hint'),
+        lang: reqUrl.searchParams.get('lang'),
+        format: reqUrl.searchParams.get('format'),
+      });
+    }
+
     const verified = await verifyRequestUser(req);
     if (!verified) {
       return NextResponse.json({ authenticated: false }, { status: 401 });
@@ -106,6 +429,16 @@ export async function GET(req: Request) {
       session: verified,
     });
   } catch (err) {
+    if (err instanceof ZitadelOidcError) {
+      return NextResponse.json(
+        {
+          authenticated: false,
+          error: err.message,
+          code: err.code,
+        },
+        { status: err.status }
+      );
+    }
     return NextResponse.json(
       {
         authenticated: false,
@@ -130,9 +463,11 @@ export async function POST(req: Request) {
       password = '',
       fullName = '',
       phone = '',
-      supabaseAccessToken = '',
     } = body as {
       action:
+        | 'oidc_start'
+        | 'oidc_mobile_exchange'
+        | 'oidc_exchange'
         | 'register'
         | 'login'
         | 'staff_login'
@@ -140,12 +475,18 @@ export async function POST(req: Request) {
         | 'sync_user'
         | 'logout'
         | 'check_recovery';
+      mode?: string;
+      next?: string;
+      loginHint?: string;
+      lang?: string;
       email?: string;
       username?: string;
       password?: string;
       fullName?: string;
       phone?: string;
       userId?: string;
+      role?: string;
+      account_type?: string;
       shopIdentifier?: string;
       shop_identifier?: string;
       shopSlug?: string;
@@ -155,7 +496,6 @@ export async function POST(req: Request) {
       shopCode?: string;
       shop_code?: string;
       shop?: string;
-      supabaseAccessToken?: string;
     };
 
     const rawShopIdentifier = String(
@@ -173,7 +513,22 @@ export async function POST(req: Request) {
 
     if (action === 'logout') {
       const res = NextResponse.json({ success: true });
+      clearOidcTransactionCookie(res);
       return clearSessionCookie(res);
+    }
+
+    if (action === 'oidc_start') {
+      return handleOidcStart(req, {
+        mode: body.mode,
+        nextPath: body.next,
+        loginHint: body.loginHint || email,
+        lang: body.lang,
+        format: 'json',
+      });
+    }
+
+    if (action === 'oidc_mobile_exchange' || action === 'oidc_exchange') {
+      return await handleMobileOidcExchange(body as Record<string, unknown>);
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -205,7 +560,6 @@ export async function POST(req: Request) {
           { status: 409 }
         );
       }
-      // Never inspect custom credentials or DB profiles here to prevent public account enumeration.
       return NextResponse.json({
         accepted: true,
         supported: true,
@@ -213,7 +567,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // P0 Security Fix: Reject any attempt to register or overwrite the Super Admin account BEFORE DB access
+    // Security Guard: Reject staff or Super Admin registration attempts BEFORE any OIDC/DB flow
     if (action === 'register') {
       const callerSession = await verifyRequestUser(req);
       if (
@@ -234,18 +588,6 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
-      if (!normalizedEmail || !normalizedEmail.includes('@')) {
-        return NextResponse.json(
-          { error: 'Vui lòng nhập địa chỉ email hợp lệ.' },
-          { status: 400 }
-        );
-      }
-      if (!password || password.length < 6) {
-        return NextResponse.json(
-          { error: 'Mật khẩu phải có ít nhất 6 ký tự.' },
-          { status: 400 }
-        );
-      }
       if (isAdminUser) {
         return NextResponse.json(
           {
@@ -255,6 +597,15 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+      return NextResponse.json(
+        {
+          error:
+            'Đăng ký tài khoản Chủ quán sử dụng Zitadel OIDC (Authorization Code + PKCE). Trình duyệt không gửi mật khẩu trực tiếp tới Qlaok.',
+          code: 'OIDC_REQUIRED',
+          authorizePath: '/api/auth?action=oidc_start&mode=register',
+        },
+        { status: 400 }
+      );
     }
 
     // Shop-scoped Staff Account Login (shop identifier + username + password, no email)
@@ -320,32 +671,10 @@ export async function POST(req: Request) {
       return attachSessionCookie(res, accessToken);
     }
 
-    // P0 Security Fix: Verify token on sync_user BEFORE DB access
-    let preVerifiedSyncSession = null;
+    // Verify caller session on sync_user BEFORE DB access
+    const preVerifiedSyncSession =
+      action === 'sync_user' ? await verifyRequestUser(req) : null;
     if (action === 'sync_user') {
-      preVerifiedSyncSession = await verifyRequestUser(req);
-      if (!preVerifiedSyncSession && supabaseAccessToken) {
-        try {
-          const authClient = createSupabasePublicAuthClient();
-          const { data: sbUserRes, error: sbErr } =
-            await authClient.auth.getUser(supabaseAccessToken);
-          if (!sbErr && sbUserRes?.user?.email) {
-            const sbEmail = sbUserRes.user.email.trim().toLowerCase();
-            preVerifiedSyncSession = {
-              sub: sbUserRes.user.id,
-              email: sbEmail,
-              role: (isSuperAdminEmail(sbEmail) ? 'admin' : 'owner') as
-                | 'admin'
-                | 'owner',
-              iat: Math.floor(Date.now() / 1000),
-              exp: Math.floor(Date.now() / 1000) + 3600,
-            };
-          }
-        } catch {
-          // ignore
-        }
-      }
-
       if (!preVerifiedSyncSession) {
         return NextResponse.json(
           {
@@ -422,7 +751,11 @@ export async function POST(req: Request) {
         return attachSessionCookie(res, accessToken);
       }
 
-      if (normalizedEmail && normalizedEmail !== preVerifiedSyncSession.email) {
+      if (
+        normalizedEmail &&
+        preVerifiedSyncSession.email &&
+        normalizedEmail !== preVerifiedSyncSession.email
+      ) {
         return NextResponse.json(
           {
             error:
@@ -469,425 +802,118 @@ export async function POST(req: Request) {
       return attachSessionCookie(res, accessToken);
     }
 
-    // 2. Register New Shop Owner Account
-    if (action === 'register') {
-
-      const creds = readCredentials();
-      const { data: existingProfiles } = await sb
-        .from('profiles')
-        .select('*')
-        .ilike('email', normalizedEmail)
-        .limit(1);
-
-      if (
-        (existingProfiles && existingProfiles.length > 0) ||
-        Boolean(creds[normalizedEmail])
-      ) {
-        return NextResponse.json(
-          {
-            error:
-              'Email này đã được đăng ký tài khoản Chủ quán. Vui lòng chuyển sang tab Đăng nhập.',
-          },
-          { status: 400 }
-        );
-      }
-
-      let newOwnerId = `owner-${crypto.randomUUID()}`;
-      try {
-        const authClient = createSupabasePublicAuthClient();
-        const signUpRes = await authClient.auth.signUp({
-          email: normalizedEmail,
-          password,
-          options: {
-            data: {
-              full_name: fullName.trim() || normalizedEmail.split('@')[0],
-              phone: phone.trim(),
-            },
-          },
-        });
-        if (signUpRes.data?.user?.id) {
-          newOwnerId = signUpRes.data.user.id;
-        }
-      } catch {
-        // Proceed with Supabase public.profiles registration
-      }
-
-      const newProfilePayload = {
-        id: newOwnerId,
-        email: normalizedEmail,
-        full_name: fullName.trim() || normalizedEmail.split('@')[0],
-        phone: phone.trim() || undefined,
-        plan: 'free' as const,
-        plan_expires_at: null,
-      };
-
-      const { data: createdProfile, error: insertErr } = await sb
-        .from('profiles')
-        .upsert(newProfilePayload, { onConflict: 'id' })
-        .select('*')
-        .single();
-
-      if (insertErr) {
-        return NextResponse.json({ error: insertErr.message }, { status: 400 });
-      }
-
-      creds[normalizedEmail] = {
-        passwordHash: hashPassword(password),
-        profileId: createdProfile.id,
-      };
-      writeCredentials(creds);
-
-      const finalCreated = createdProfile as Profile;
-      const accessToken = issueSessionToken({
-        id: finalCreated.id,
-        email: finalCreated.email,
-        role: 'owner',
-        is_admin: false,
-      });
-
-      const res = NextResponse.json(
+    // 2. Reject direct password login for owners/admins — require Zitadel OIDC
+    if (action === 'login') {
+      return NextResponse.json(
         {
-          user: finalCreated,
-          shops: [] as Shop[],
-          isAdmin: false,
-          accessToken,
+          error:
+            'Đăng nhập Chủ quán / Quản trị viên sử dụng Zitadel OIDC (Authorization Code + PKCE). Trình duyệt không gửi mật khẩu trực tiếp tới Qlaok.',
+          code: 'OIDC_REQUIRED',
+          authorizePath: '/api/auth?action=oidc_start&mode=login',
         },
-        { status: 201 }
+        { status: 400 }
       );
-      return attachSessionCookie(res, accessToken);
     }
 
-    // 3. Login Existing Shop Owner or Super Admin Account
-    if (action === 'login') {
-      if (!normalizedEmail || !password) {
-        return NextResponse.json(
-          { error: 'Vui lòng nhập đầy đủ Email và Mật khẩu.' },
-          { status: 400 }
-        );
-      }
+    // 3. Sync authenticated owner/admin session (from Qlaok HttpOnly cookie or Zitadel JWT)
+    if (action === 'sync_user') {
+      const verifiedSession = preVerifiedSyncSession!;
+      let finalUser: Profile;
 
-      let seededAdminProfile: Profile | null = null;
-      if (isAdminUser) {
-        seededAdminProfile = await ensureSuperAdminSeeded();
-      }
+      // verifyRequestUser has already resolved raw Zitadel subjects to the
+      // canonical Qlaok profile UUID. Re-read that profile by id here; passing
+      // the UUID back as though it were a Zitadel sub breaks opaque-sub users.
+      const verifiedEmail = (
+        verifiedSession.email ||
+        normalizedEmail ||
+        ''
+      )
+        .trim()
+        .toLowerCase();
+      let row: Profile | null = null;
 
-      const { data: matchingProfiles, error: profileLookupErr } = await sb
-        .from('profiles')
-        .select('*')
-        .ilike('email', normalizedEmail)
-        .limit(1);
+      if (isValidUuidSub(verifiedSession.sub)) {
+        const { data: existingById, error: lookupErr } = await sb
+          .from('profiles')
+          .select('*')
+          .eq('id', verifiedSession.sub.toLowerCase())
+          .maybeSingle();
 
-      if (profileLookupErr) {
-        return NextResponse.json(
-          {
-            error: `Không thể truy vấn hồ sơ người dùng từ cơ sở dữ liệu (${profileLookupErr.message}).`,
-            code: 'AUTH_PROFILE_QUERY_FAILED',
-          },
-          { status: 500 }
-        );
-      }
-
-      let profile: Profile | null =
-        (matchingProfiles?.[0] as Profile) || seededAdminProfile || null;
-
-      const creds = readCredentials();
-      const storedCred = creds[normalizedEmail];
-
-      if (storedCred) {
-        if (!verifyPassword(password, storedCred.passwordHash)) {
+        if (lookupErr && lookupErr.code !== 'PGRST116') {
           return NextResponse.json(
-            { error: 'Mật khẩu không chính xác. Vui lòng kiểm tra lại.' },
-            { status: 401 }
-          );
-        }
-        // Automatically upgrade legacy sha256 hash to salted scrypt on successful login
-        if (!storedCred.passwordHash.startsWith('scrypt$')) {
-          creds[normalizedEmail] = {
-            ...storedCred,
-            passwordHash: hashPassword(password),
-          };
-          writeCredentials(creds);
-        }
-      } else {
-        const authClient = createSupabasePublicAuthClient();
-        const { data: authData, error: authErr } =
-          await authClient.auth.signInWithPassword({
-            email: normalizedEmail,
-            password,
-          });
-
-        if (authErr || !authData?.user) {
-          return NextResponse.json(
-            { error: 'Email hoặc mật khẩu không chính xác.' },
-            { status: 401 }
+            {
+              error: `Không thể truy vấn hồ sơ người dùng (${lookupErr.message}).`,
+              code: 'AUTH_PROFILE_QUERY_FAILED',
+            },
+            { status: 500 }
           );
         }
 
-        if (authData.user && !profile) {
-          const nowIso = new Date().toISOString();
-          const { data: synced, error: syncErr } = await sb
-            .from('profiles')
-            .upsert(
-              {
-                id: authData.user.id,
-                email: normalizedEmail,
-                full_name:
-                  (authData.user.user_metadata?.full_name as string) ||
-                  normalizedEmail.split('@')[0],
-                phone:
-                  (authData.user.user_metadata?.phone as string) || null,
-                plan: isAdminUser ? 'premium' : 'free',
-                created_at: nowIso,
-                updated_at: nowIso,
-              },
-              { onConflict: 'id' }
-            )
-            .select('*')
-            .single();
+        row = Array.isArray(existingById)
+          ? ((existingById[0] as Profile | undefined) ?? null)
+          : ((existingById as Profile | null) ?? null);
 
-          if (syncErr) {
-            return NextResponse.json(
-              {
-                error: `Xác thực thành công nhưng không thể đồng bộ hồ sơ người dùng trong bảng profiles (${syncErr.message}). Kiểm tra SUPABASE_SERVICE_ROLE_KEY và RLS.`,
-                code: 'AUTH_PROFILE_SYNC_FAILED',
-              },
-              { status: 500 }
-            );
-          }
-          profile = (synced as Profile) || null;
+        if (!row) {
+          const isSuperAdmin = isSuperAdminEmail(verifiedEmail);
+          return NextResponse.json(
+            {
+              error: isSuperAdmin
+                ? 'Hồ sơ Super Admin phải được cấp sẵn trong cơ sở dữ liệu.'
+                : 'Không tìm thấy hồ sơ chủ quán đã đồng bộ.',
+              code: isSuperAdmin
+                ? 'FORBIDDEN_SUPER_ADMIN_AUTO_CREATE'
+                : 'OIDC_PROFILE_NOT_FOUND',
+            },
+            { status: isSuperAdmin ? 403 : 404 }
+          );
         }
       }
 
-      if (!profile) {
-        return NextResponse.json(
-          {
-            error:
-              'Không tìm thấy tài khoản Chủ quán. Vui lòng chọn tab "Đăng ký mới" để tạo tài khoản.',
-          },
-          { status: 404 }
-        );
-      }
+      const verifiedIsAdmin =
+        isSuperAdminEmail(verifiedEmail) ||
+        row?.role === 'admin' ||
+        row?.is_admin === true;
+      finalUser = row || {
+        // Non-UUID local session (e.g. a seeded demo owner) is not a
+        // PostgREST profile identity and remains on its existing local path.
+        id: verifiedSession.sub,
+        email: verifiedEmail,
+        full_name:
+          fullName ||
+          (verifiedIsAdmin
+            ? 'Hoàng Vũ (Super Admin)'
+            : verifiedEmail.split('@')[0] || 'Chủ cửa hàng'),
+        phone: phone || undefined,
+        plan: verifiedIsAdmin ? 'premium' : 'free',
+        is_admin: verifiedIsAdmin,
+        role: verifiedIsAdmin ? 'admin' : 'owner',
+        account_type: 'owner',
+      };
 
-      const finalUser: Profile = isAdminUser
-        ? {
-            ...profile,
-            plan: 'premium',
-            is_admin: true,
-            role: 'admin',
-          }
-        : profile;
+      if (verifiedIsAdmin) {
+        finalUser = {
+          ...finalUser,
+          plan: 'premium',
+          is_admin: true,
+          role: 'admin',
+        };
+      }
 
       const { data: ownerShops, error: shopsLookupErr } = await sb
         .from('shops')
         .select('*')
-        .eq('owner_id', profile.id)
+        .eq('owner_id', finalUser.id)
         .order('created_at', { ascending: true });
 
       if (shopsLookupErr) {
         return NextResponse.json(
           {
-            error: `Không thể tải danh sách cửa hàng của tài khoản (${shopsLookupErr.message}).`,
+            error: `Không thể tải danh sách cửa hàng (${shopsLookupErr.message}).`,
             code: 'AUTH_SHOPS_QUERY_FAILED',
           },
           { status: 500 }
         );
       }
-
-      let memberData: { memberShops: Shop[]; memberships: ShopMembership[] } = {
-        memberShops: [],
-        memberships: [],
-      };
-      if (!isAdminUser) {
-        try {
-          memberData = await loadMemberShops(
-            sb,
-            profile.id,
-            new Set(((ownerShops || []) as Shop[]).map((s) => s.id))
-          );
-        } catch (memberErr) {
-          return NextResponse.json(
-            {
-              error:
-                memberErr instanceof Error
-                  ? memberErr.message
-                  : 'Không thể tải cửa hàng được phân quyền.',
-              code: 'AUTH_MEMBER_SHOPS_QUERY_FAILED',
-            },
-            { status: 500 }
-          );
-        }
-      }
-
-      const accessToken = issueSessionToken({
-        id: finalUser.id,
-        email: finalUser.email,
-        role: isAdminUser ? 'admin' : 'owner',
-        is_admin: isAdminUser,
-      });
-
-      const res = NextResponse.json({
-        user: finalUser,
-        shops: (ownerShops || []) as Shop[],
-        memberShops: memberData.memberShops,
-        memberships: memberData.memberships,
-        isAdmin: isAdminUser,
-        accessToken,
-      });
-      return attachSessionCookie(res, accessToken);
-    }
-
-    // 4. Sync OTP / OAuth User — MUST prove identity via verified token or Supabase JWT
-    if (action === 'sync_user') {
-      let verifiedSession = preVerifiedSyncSession ?? (await verifyRequestUser(req));
-
-      if (!verifiedSession && supabaseAccessToken) {
-        try {
-          const authClient = createSupabasePublicAuthClient();
-          const { data: sbUserRes, error: sbErr } =
-            await authClient.auth.getUser(supabaseAccessToken);
-          if (!sbErr && sbUserRes?.user?.email) {
-            const sbEmail = sbUserRes.user.email.trim().toLowerCase();
-            verifiedSession = {
-              sub: sbUserRes.user.id,
-              email: sbEmail,
-              role: isSuperAdminEmail(sbEmail) ? 'admin' : 'owner',
-              iat: Math.floor(Date.now() / 1000),
-              exp: Math.floor(Date.now() / 1000) + 3600,
-            };
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      if (!verifiedSession) {
-        return NextResponse.json(
-          {
-            error:
-              'Không thể đồng bộ người dùng: Thiếu hoặc sai token xác thực phiên đăng nhập (Unauthorized).',
-          },
-          { status: 401 }
-        );
-      }
-
-      if (isShopBoundStaffSession(verifiedSession)) {
-        const boundShopId = verifiedSession.shop_id || '';
-        const staffCheck = await verifyActiveShopStaffSession({
-          userId: verifiedSession.sub,
-          shopId: boundShopId,
-          sessionVersion: verifiedSession.sv,
-        });
-        if (!staffCheck.active || !staffCheck.membership) {
-          return NextResponse.json(
-            {
-              error:
-                'Phiên đăng nhập nhân viên đã bị thu hồi hoặc ngừng kích hoạt.',
-              code: 'STAFF_SESSION_REVOKED',
-            },
-            { status: 401 }
-          );
-        }
-        const boundShop = await dbGetShopById(boundShopId);
-        if (!boundShop) {
-          return NextResponse.json(
-            { error: 'Không tìm thấy cửa hàng được phân công.' },
-            { status: 404 }
-          );
-        }
-        const staffUser: Profile = {
-          id: verifiedSession.sub,
-          email: '',
-          username:
-            staffCheck.membership.username || verifiedSession.username || '',
-          shop_id: boundShopId,
-          account_type: 'staff',
-          full_name:
-            staffCheck.membership.full_name ||
-            staffCheck.membership.username ||
-            verifiedSession.username ||
-            'Nhân viên',
-          plan: 'free',
-          role: staffCheck.membership.role,
-        };
-        const accessToken = issueSessionToken({
-          id: staffUser.id,
-          email: '',
-          username: staffUser.username,
-          shop_id: boundShopId,
-          account_type: 'staff',
-          sv: staffCheck.credential?.session_version ?? verifiedSession.sv,
-          role: staffCheck.membership.role,
-          is_admin: false,
-        });
-        const res = NextResponse.json({
-          user: staffUser,
-          shops: [] as Shop[],
-          memberShops: [boundShop],
-          memberships: [staffCheck.membership],
-          activeShopId: boundShopId,
-          redirectTo: '/dashboard/orders',
-          isAdmin: false,
-          accessToken,
-        });
-        return attachSessionCookie(res, accessToken);
-      }
-
-      // If caller passed an email in body, it must match the verified token's email
-      if (normalizedEmail && normalizedEmail !== verifiedSession.email) {
-        return NextResponse.json(
-          {
-            error:
-              'Email yêu cầu đồng bộ không khớp với phiên đăng nhập đã xác thực.',
-          },
-          { status: 403 }
-        );
-      }
-
-      const verifiedEmail = verifiedSession.email;
-      const verifiedIsAdmin = isSuperAdminEmail(verifiedEmail);
-
-      const { data: existing } = await sb
-        .from('profiles')
-        .select('*')
-        .ilike('email', verifiedEmail)
-        .maybeSingle();
-
-      let profile: Profile | null = (existing as Profile) || null;
-      if (!profile) {
-        const nowIso = new Date().toISOString();
-        const { data: created } = await sb
-          .from('profiles')
-          .upsert(
-            {
-              id: verifiedSession.sub || `owner-${crypto.randomUUID()}`,
-              email: verifiedEmail,
-              full_name: fullName || verifiedEmail.split('@')[0],
-              phone: phone || null,
-              plan: verifiedIsAdmin ? 'premium' : 'free',
-              created_at: nowIso,
-              updated_at: nowIso,
-            },
-            { onConflict: 'id' }
-          )
-          .select('*')
-          .single();
-        profile = (created as Profile) || null;
-      }
-
-      const finalUser: Profile = verifiedIsAdmin
-        ? {
-            ...profile!,
-            plan: 'premium',
-            is_admin: true,
-            role: 'admin',
-          }
-        : profile!;
-
-      const { data: ownerShops } = await sb
-        .from('shops')
-        .select('*')
-        .eq('owner_id', finalUser.id)
-        .order('created_at', { ascending: true });
 
       let syncMemberData: {
         memberShops: Shop[];
@@ -905,11 +931,31 @@ export async function POST(req: Request) {
         }
       }
 
-      const accessToken = issueSessionToken({
-        id: finalUser.id,
+      const resolvedTarget = resolvePostLoginRoute(
+        {
+          isAdmin: verifiedIsAdmin,
+          shops: (ownerShops || []) as Shop[],
+          memberShops: syncMemberData.memberShops,
+        },
+        body.next
+      );
+      const redirectTo = resolvedTarget.path;
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expiresAt = nowSec + OWNER_SESSION_TTL_SECONDS;
+      const accessToken = issueSessionToken(
+        {
+          id: finalUser.id,
+          email: finalUser.email,
+          role: verifiedIsAdmin ? 'admin' : 'owner',
+          is_admin: verifiedIsAdmin,
+        },
+        OWNER_SESSION_TTL_SECONDS
+      );
+      const postgrestIssued = issuePostgrestAuthenticatedJwt({
+        sub: finalUser.id,
         email: finalUser.email,
-        role: verifiedIsAdmin ? 'admin' : 'owner',
-        is_admin: verifiedIsAdmin,
+        isAdmin: verifiedIsAdmin,
       });
 
       const res = NextResponse.json({
@@ -918,13 +964,23 @@ export async function POST(req: Request) {
         memberShops: syncMemberData.memberShops,
         memberships: syncMemberData.memberships,
         isAdmin: verifiedIsAdmin,
+        redirectTo,
         accessToken,
+        expiresAt,
+        postgrestToken: postgrestIssued?.token ?? null,
+        postgrestExpiresAt: postgrestIssued?.expiresAt ?? null,
       });
-      return attachSessionCookie(res, accessToken);
+      return attachSessionCookie(res, accessToken, OWNER_SESSION_TTL_SECONDS);
     }
 
     return NextResponse.json({ error: 'Invalid auth action' }, { status: 400 });
   } catch (error) {
+    if (error instanceof ZitadelOidcError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
       {
         error:

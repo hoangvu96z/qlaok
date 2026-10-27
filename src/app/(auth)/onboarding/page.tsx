@@ -16,7 +16,11 @@ import {
 } from 'lucide-react';
 import { BusinessVertical, Profile } from '@/types/qlaok';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
-import { getAuthHeaders, getStoredAuthOwner } from '@/lib/auth-session';
+import {
+  getAuthHeaders,
+  getStoredAuthOwner,
+  setStoredAuthOwner,
+} from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { BrandLogo } from '@/components/ui/BrandLogo';
 import {
@@ -69,21 +73,47 @@ export default function OnboardingWizardPage() {
   } | null>(null);
 
   useEffect(() => {
-    const owner = getStoredAuthOwner();
-    if (!owner) {
-      router.replace('/login?mode=register');
-      return;
-    }
-    setOwnerProfile(owner);
-    if (owner.phone) {
-      setPhone(owner.phone);
-    }
     let cancelled = false;
     const wantsNewBranch =
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('intent') === 'new_branch';
     (async () => {
       try {
+        let owner = getStoredAuthOwner();
+        if (!owner) {
+          try {
+            const syncRes = await fetch('/api/auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ action: 'sync_user' }),
+            });
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              if (syncData.user) {
+                owner = syncData.user as Profile;
+                setStoredAuthOwner(owner, syncData.accessToken);
+              }
+            }
+          } catch {
+            // Fall through to redirect if session sync fails
+          }
+        }
+
+        if (!owner) {
+          if (!cancelled) {
+            router.replace('/login?mode=register');
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setOwnerProfile(owner);
+          if (owner.phone) {
+            setPhone(owner.phone);
+          }
+        }
+
         const res = await fetch(
           `/api/shops?ownerId=${encodeURIComponent(owner.id)}`,
           { headers: getAuthHeaders(), cache: 'no-store' }

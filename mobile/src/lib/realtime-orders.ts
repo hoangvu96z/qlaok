@@ -145,3 +145,48 @@ export function handleBrandNewOrderNotifications(
     scheduledNotification,
   };
 }
+
+export function buildOrderEventsSseUrl(apiBaseUrl: string, shopId: string): string {
+  const cleanBase = (apiBaseUrl || '').trim().replace(/\/+$/, '');
+  return `${cleanBase}/api/orders/events?shopId=${encodeURIComponent((shopId || '').trim())}`;
+}
+
+export function buildOrderEventsSseHeaders(accessToken: string): Record<string, string> {
+  const cleanToken = (accessToken || '').trim();
+  return {
+    Authorization: `Bearer ${cleanToken}`,
+    Accept: 'text/event-stream',
+  };
+}
+
+export interface ProcessOrderSseCallbacks {
+  onReady?: () => void;
+  onChange?: (shopId?: string) => void;
+  onFallback?: () => void;
+  onUnauthorized?: () => void;
+}
+
+export function processOrderSseMessage(
+  rawEventData: unknown,
+  callbacks: ProcessOrderSseCallbacks
+): void {
+  if (typeof rawEventData !== 'string') return;
+  const trimmed = rawEventData.trim();
+  if (!trimmed || trimmed.startsWith(':')) return;
+
+  try {
+    const payload = JSON.parse(trimmed);
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.type === 'ready') {
+      callbacks.onReady?.();
+    } else if (payload.type === 'change') {
+      callbacks.onChange?.(typeof payload.shopId === 'string' ? payload.shopId : undefined);
+    } else if (payload.type === 'fallback') {
+      callbacks.onFallback?.();
+    } else if (payload.type === 'unauthorized') {
+      callbacks.onUnauthorized?.();
+    }
+  } catch {
+    // ignore malformed SSE frames
+  }
+}

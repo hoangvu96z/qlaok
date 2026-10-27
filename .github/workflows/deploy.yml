@@ -28,61 +28,13 @@ jobs:
       - run: npm run test:unit && npm run test:review && npm run test:sql && npm run test:db-reset && npm test --prefix mobile
       - run: npm run build
 
-  migration-check:
-    needs: verify
-    runs-on: ubuntu-latest
-    outputs:
-      has_migrations: ${{ steps.detect.outputs.has_migrations }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Detect SQL migration changes
-        id: detect
-        env:
-          BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            echo "has_migrations=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed_migrations="$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" -- supabase/migrations/)"
-          if [[ -n "$changed_migrations" ]]; then
-            echo "has_migrations=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_migrations=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  migrate:
-    needs: [verify, migration-check]
-    if: needs.migration-check.outputs.has_migrations == 'true'
-    uses: ./.github/workflows/supabase-migrate.yml
-    secrets: inherit
-
   deploy:
-    needs: [verify, migration-check, migrate]
-    if: ${{ always() && needs.verify.result == 'success' && needs.migration-check.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
+    needs: verify
+    if: needs.verify.result == 'success'
     name: Build & Deploy → qlaok.vunph.click
     runs-on: ubuntu-latest
 
     steps:
-      - name: Prepare backend secret for SSH transfer
-        env:
-          BACKEND_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const key = (process.env.BACKEND_KEY || '').trim();
-          if (!key || /\s/.test(key) || key.startsWith('sb_publishable_')) {
-            throw new Error('Add a backend key to the SUPABASE_SERVICE_ROLE_KEY repository secret.');
-          }
-          const encoded = Buffer.from(key).toString('base64');
-          console.log('::add-mask::' + encoded);
-          fs.appendFileSync(process.env.GITHUB_ENV, 'QLAOK_SUPABASE_KEY_B64=' + encoded + '\n');
-          NODE
       - name: 📥 Pull latest code & rebuild on VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -91,9 +43,8 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          envs: QLAOK_SUPABASE_KEY_B64
           script: |
-            set -e
+            set -eu
             cd /var/www/qlaok.vunph.click
             if [ -d ".local-db" ]; then
               cp -r .local-db /tmp/qlaok_local_db_backup || true
@@ -101,12 +52,12 @@ jobs:
             echo "📥 Pulling latest changes from GitHub..."
             git fetch origin main
             git reset --hard ${{ github.sha }}
-            node scripts/configure-backend-env.mjs
-            export SUPABASE_SERVICE_ROLE_KEY="$(printf '%s' "$QLAOK_SUPABASE_KEY_B64" | base64 --decode)"
             if [ -d "/tmp/qlaok_local_db_backup" ]; then
               mkdir -p .local-db
               cp -r /tmp/qlaok_local_db_backup/* .local-db/ 2>/dev/null || true
             fi
+            echo "🗃️ Applying pending self-hosted PostgreSQL migrations..."
+            node scripts/migrate-self-hosted.mjs
             echo "📦 Installing dependencies..."
             npm ci --no-audit --no-fund
             echo "🔨 Building Next.js production app..."

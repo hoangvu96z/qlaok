@@ -27,7 +27,6 @@ import {
   Eye,
   EyeOff,
   ArrowRight,
-  Lock,
   Mail,
   Activity,
   Database,
@@ -177,7 +176,6 @@ export default function SuperAdminPortalPage() {
 
   // Admin Login Form state (when visiting /admin while not logged in as hoangvu96z@gmail.com)
   const [loginEmail, setLoginEmail] = useState(SUPER_ADMIN_EMAIL);
-  const [loginPassword, setLoginPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -264,8 +262,41 @@ export default function SuperAdminPortalPage() {
     const stored = getStoredAuthOwner();
     if (stored && isSuperAdmin(stored)) {
       setAdminUser(stored);
+      setAuthChecked(true);
+      return;
     }
-    setAuthChecked(true);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const syncRes = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ action: 'sync_user' }),
+        });
+        if (syncRes.ok) {
+          const syncData = await syncRes.json();
+          if (syncData.user && isSuperAdmin(syncData.user as Profile)) {
+            const adminProfile = syncData.user as Profile;
+            setStoredAuthOwner(adminProfile, syncData.accessToken);
+            if (!cancelled) {
+              setAdminUser(adminProfile);
+            }
+          }
+        }
+      } catch {
+        // Ignore network failure during initial session hydration
+      } finally {
+        if (!cancelled) {
+          setAuthChecked(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const fetchAdminData = useCallback(async () => {
@@ -344,54 +375,18 @@ export default function SuperAdminPortalPage() {
         );
       }
 
-      const res = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'login',
-          email: normalized,
-          password: loginPassword,
-        }),
-      });
-      const json = await parseApiJson(res);
-      const apiError =
-        typeof json.error === 'string' && json.error.trim()
-          ? json.error.trim()
-          : null;
-      if (!res.ok || !json.user) {
-        throw new Error(
-          apiError ||
-            tx(
-              'Mật khẩu Super Admin không chính xác.',
-              'Incorrect Super Admin password.'
-            )
-        );
+      const oidcUrl = `/api/auth?action=oidc_start&mode=login&next=${encodeURIComponent('/admin')}&login_hint=${encodeURIComponent(normalized)}`;
+      if (typeof window !== 'undefined') {
+        window.location.assign(oidcUrl);
+      } else {
+        router.push(oidcUrl);
       }
-
-      const profile: Profile = {
-        ...(json.user as Profile),
-        is_admin: true,
-        role: 'admin',
-        plan: 'premium',
-      };
-      setStoredAuthOwner(
-        profile,
-        typeof json.accessToken === 'string' ? json.accessToken : undefined
-      );
-      setAdminUser(profile);
-      showToastMessage(
-        'success',
-        tx('Chào mừng Super Admin {email}!', 'Welcome back, Super Admin {email}!', {
-          email: profile.email,
-        })
-      );
     } catch (err) {
       setLoginError(
         err instanceof Error
           ? err.message
           : tx('Lỗi đăng nhập Super Admin', 'Super Admin sign-in failed')
       );
-    } finally {
       setLoginLoading(false);
     }
   };
@@ -680,26 +675,6 @@ export default function SuperAdminPortalPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">
-                {tx('Mật khẩu Quản trị', 'Admin Password')}
-              </label>
-              <div className="relative">
-                <Lock className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder={tx(
-                    'Nhập mật khẩu Super Admin...',
-                    'Enter Super Admin password...'
-                  )}
-                  required
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2.5 text-xs font-semibold text-white focus:border-amber-400 focus:outline-none"
-                />
-              </div>
-            </div>
-
             <button
               type="submit"
               disabled={loginLoading}
@@ -707,8 +682,11 @@ export default function SuperAdminPortalPage() {
             >
               <span>
                 {loginLoading
-                  ? tx('Đang xác thực...', 'Verifying...')
-                  : tx('Mở Bảng Quản Trị', 'Open Admin Console')}
+                  ? tx('Đang chuyển tới Zitadel...', 'Redirecting to Zitadel...')
+                  : tx(
+                      'Đăng nhập Super Admin với Zitadel',
+                      'Sign in as Super Admin with Zitadel'
+                    )}
               </span>
               <ArrowRight className="h-4 w-4" />
             </button>

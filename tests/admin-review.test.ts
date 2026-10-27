@@ -267,7 +267,7 @@ test('/api/admin surfaces database query errors instead of returning empty fake 
   }
 });
 
-test('POST /api/auth login surfaces Super Admin profile DB errors instead of swallowing them', async () => {
+test('POST /api/auth sync_user surfaces Super Admin profile DB errors instead of swallowing them', async () => {
   const failingAuthDbClient = {
     from() {
       return {
@@ -305,16 +305,25 @@ test('POST /api/auth login surfaces Super Admin profile DB errors instead of swa
     },
   };
 
+  const adminToken = issueSessionToken({
+    id: 'a3a30894-e8ae-415d-a3dc-7947b0399dd1',
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+
   setSupabaseDbClientForTests(failingAuthDbClient as never);
   try {
     const res = await authPost(
       new Request('http://localhost/api/auth', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
         body: JSON.stringify({
-          action: 'login',
+          action: 'sync_user',
           email: SUPER_ADMIN_EMAIL,
-          password: 'any-password',
         }),
       })
     );
@@ -326,12 +335,11 @@ test('POST /api/auth login surfaces Super Admin profile DB errors instead of swa
   }
 });
 
-test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-persistent public auth clients and keep cachedAdminClient service_role Authorization untouched (mocked-fetch regression)', async () => {
+test('POST /api/auth rejects direct owner password login/register with OIDC_REQUIRED and keeps cachedAdminClient service_role Authorization untouched on sync_user and /api/admin', async () => {
   setSupabaseDbClientForTests(null);
   const originalFetch = globalThis.fetch;
   const serviceRoleKey = makeJwtWithRole('service_role');
   const publishableKey = 'sb_publishable_mock_anon_key';
-  const leakedUserJwt = makeJwtWithRole('authenticated');
 
   process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://mock-qlaok.supabase.co';
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = publishableKey;
@@ -348,14 +356,25 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
     authorization: string | null;
   }> = [];
 
+  const adminUuid = 'a3a30894-e8ae-415d-a3dc-7947b0399dd1';
+  const ownerUuid = '7d21f8ae-6b7c-414b-ba28-3f932ab062f7';
+
   const profilesStore: Array<Record<string, unknown>> = [
     {
-      id: SUPER_ADMIN_ID,
+      id: adminUuid,
       email: SUPER_ADMIN_EMAIL,
       full_name: 'Hoàng Vũ (Super Admin)',
       phone: '0905649696',
       plan: 'premium',
       plan_expires_at: '2030-12-31T23:59:59Z',
+    },
+    {
+      id: ownerUuid,
+      email: 'supabase-owner@qlaok.com',
+      full_name: 'Existing Owner',
+      phone: '0901234567',
+      plan: 'pro',
+      plan_expires_at: '2029-12-31T23:59:59Z',
     },
   ];
 
@@ -375,55 +394,14 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
 
     if (url.pathname.startsWith('/auth/v1/')) {
       authCalls.push({ url: url.pathname + url.search, apikey, authorization });
-
-      if (url.pathname === '/auth/v1/signup') {
-        return new Response(
-          JSON.stringify({
-            access_token: leakedUserJwt,
-            token_type: 'bearer',
-            expires_in: 3600,
-            refresh_token: 'mock-refresh-signup',
-            user: {
-              id: 'owner-signup-uuid-001',
-              email: 'newowner@qlaok.com',
-              user_metadata: { full_name: 'New Owner' },
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (url.pathname === '/auth/v1/token') {
-        const bodyText =
-          typeof init?.body === 'string' ? init.body : '{}';
-        const parsed = JSON.parse(bodyText) as { email?: string };
-        const email = (parsed.email || '').toLowerCase();
-        return new Response(
-          JSON.stringify({
-            access_token: leakedUserJwt,
-            token_type: 'bearer',
-            expires_in: 3600,
-            refresh_token: 'mock-refresh-login',
-            user: {
-              // Intentionally use a Supabase Auth UUID different from SUPER_ADMIN_ID ('super-admin-001')
-              id:
-                email === SUPER_ADMIN_EMAIL
-                  ? 'auth-users-uuid-admin-999'
-                  : 'owner-login-uuid-002',
-              email,
-              user_metadata: { full_name: 'Logged In User' },
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
+      return new Response(JSON.stringify({ error: 'unexpected GoTrue call' }), {
+        status: 500,
+      });
     }
 
     if (url.pathname.startsWith('/rest/v1/')) {
       restCalls.push({ url: url.pathname + url.search, apikey, authorization });
 
-      // Simulate strict RLS (migrations 003-005): if cachedAdminClient ever sends the
-      // signed-in user's JWT instead of the service_role key, reject with 42501 RLS error.
       if (
         apikey !== serviceRoleKey ||
         authorization !== `Bearer ${serviceRoleKey}`
@@ -445,25 +423,14 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
       );
 
       if (table === 'profiles') {
-        if (init?.method === 'POST' || init?.method === 'PATCH') {
-          const bodyText =
-            typeof init?.body === 'string' ? init.body : '{}';
-          const parsed = JSON.parse(bodyText);
-          const row = Array.isArray(parsed) ? parsed[0] : parsed;
-          const existingIdx = profilesStore.findIndex(
-            (p) => p.id === row.id || p.email === row.email
+        const eqId = url.searchParams.get('id');
+        if (eqId?.startsWith('eq.')) {
+          const targetId = eqId.slice('eq.'.length).toLowerCase();
+          const matches = profilesStore.filter(
+            (p) => String(p.id).toLowerCase() === targetId
           );
-          const merged =
-            existingIdx >= 0
-              ? { ...profilesStore[existingIdx], ...row }
-              : row;
-          if (existingIdx >= 0) {
-            profilesStore[existingIdx] = merged;
-          } else {
-            profilesStore.push(merged);
-          }
           return new Response(
-            JSON.stringify(isSingleObject ? merged : [merged]),
+            JSON.stringify(isSingleObject ? (matches[0] ?? null) : matches),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
@@ -492,7 +459,7 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
         const shops = [
           {
             id: 'shop-fnb-001',
-            owner_id: 'owner-fnb-001',
+            owner_id: ownerUuid,
             slug: 'pho-gia-truyen',
             name: 'Phở Gia Truyền',
             vertical: 'fnb',
@@ -515,7 +482,7 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
   }) as typeof fetch;
 
   try {
-    // 1. Public shop owner registration triggers auth.signUp (which returns a user session JWT)
+    // 1. Direct owner password registration is rejected with OIDC_REQUIRED (zero GoTrue calls)
     const regRes = await authPost(
       new Request('http://localhost/api/auth', {
         method: 'POST',
@@ -528,9 +495,10 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
         }),
       })
     );
-    assert.equal(regRes.status, 201);
+    assert.equal(regRes.status, 400);
+    assert.equal((await regRes.json()).code, 'OIDC_REQUIRED');
 
-    // 2. Public shop owner login via Supabase Auth password triggers auth.signInWithPassword
+    // 2. Direct owner password login is rejected with OIDC_REQUIRED (zero GoTrue calls)
     const ownerLoginRes = await authPost(
       new Request('http://localhost/api/auth', {
         method: 'POST',
@@ -542,25 +510,34 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
         }),
       })
     );
-    assert.equal(ownerLoginRes.status, 200);
+    assert.equal(ownerLoginRes.status, 400);
+    assert.equal((await ownerLoginRes.json()).code, 'OIDC_REQUIRED');
+    assert.equal(authCalls.length, 0, 'Must never call Supabase GoTrue /auth/v1/*');
 
-    // 3. Super Admin login via Supabase Auth password must succeed and not be blocked by RLS
-    const adminLoginRes = await authPost(
+    // 3. Super Admin sync_user resolves against UUID profile and keeps service_role Authorization
+    const adminSessionToken = issueSessionToken({
+      id: adminUuid,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const adminSyncRes = await authPost(
       new Request('http://localhost/api/auth', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminSessionToken}`,
+        },
         body: JSON.stringify({
-          action: 'login',
-          email: SUPER_ADMIN_EMAIL,
-          password: 'AdminSupabasePassword!123',
+          action: 'sync_user',
         }),
       })
     );
-    assert.equal(adminLoginRes.status, 200);
-    const adminLoginBody = await adminLoginRes.json();
+    assert.equal(adminSyncRes.status, 200);
+    const adminLoginBody = await adminSyncRes.json();
     assert.equal(adminLoginBody.isAdmin, true);
     assert.equal(adminLoginBody.user.email, SUPER_ADMIN_EMAIL);
-    assert.equal(adminLoginBody.user.id, SUPER_ADMIN_ID);
+    assert.equal(adminLoginBody.user.id, adminUuid);
     assert.ok(adminLoginBody.accessToken);
 
     // 4. Subsequent GET /api/admin using shared cachedAdminClient must still use service_role key
@@ -573,17 +550,6 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
     const adminApiBody = await adminApiRes.json();
     assert.equal(adminApiBody.systemHealth?.supabaseConnected, true);
 
-    // Verify all GoTrue /auth/v1/* calls used the publishable/anon key, never the service_role key
-    assert.ok(authCalls.length >= 3, 'Expected signup and password token calls');
-    for (const call of authCalls) {
-      assert.equal(
-        call.apikey,
-        publishableKey,
-        `Auth endpoint ${call.url} must use publishable/anon key`
-      );
-    }
-
-    // Verify every single PostgREST /rest/v1/* call kept Authorization: Bearer <serviceRoleKey>
     assert.ok(restCalls.length > 0, 'Expected PostgREST queries');
     for (const call of restCalls) {
       assert.equal(
@@ -606,7 +572,7 @@ test('POST /api/auth signUp and signInWithPassword isolate user JWTs on non-pers
   }
 });
 
-test('existing Super Admin password still authenticates against the real profile without changing credentials', async () => {
+test('existing Super Admin session syncs against the real profile without changing credentials', async () => {
   const { writeCredentials, readCredentials, hashPassword } = await import('@/lib/auth-credentials');
   const passwordHash = hashPassword('fixture-old-password');
   writeCredentials({ [SUPER_ADMIN_EMAIL]: { passwordHash, profileId: SUPER_ADMIN_ID } });
@@ -617,11 +583,21 @@ test('existing Super Admin password still authenticates against the real profile
     return value;
   }
   const db = { from: (table: string) => chain({ data: table === 'profiles' ? [profile] : [{ id: 'fixture-shop' }], error: null }) };
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
   setSupabaseDbClientForTests(db as never);
   try {
     const response = await authPost(new Request('http://localhost/api/auth', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'login', email: SUPER_ADMIN_EMAIL, password: 'fixture-old-password' }),
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ action: 'sync_user', email: SUPER_ADMIN_EMAIL }),
     }));
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
@@ -755,7 +731,10 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     assert.equal(healthRes.status, 200);
     const healthBody = await healthRes.json();
     assert.equal(healthBody.status, 'ok');
-    assert.equal(healthBody.environment.supabaseTablesReady, true);
+    assert.equal(healthBody.dataSource, 'self-hosted-postgres');
+    assert.equal(typeof healthBody.environment.postgresConfigured, 'boolean');
+    assert.equal(typeof healthBody.environment.garageConfigured, 'boolean');
+    assert.equal(healthBody.environment.postgresTablesReady, true);
     assert.equal(healthBody.counts.shops, 0);
     assert.equal(
       writeOperations.length,
@@ -840,10 +819,10 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     assert.equal(failedHealthRes.status, 503);
     const failedHealthBody = await failedHealthRes.json();
     assert.equal(failedHealthBody.status, 'degraded');
-    assert.equal(failedHealthBody.environment.supabaseTablesReady, false);
-    assert.equal(failedHealthBody.environment.supabaseSeeded, false);
+    assert.equal(failedHealthBody.environment.postgresTablesReady, false);
+    assert.equal(failedHealthBody.environment.postgresSeeded, false);
     assert.match(
-      failedHealthBody.environment.supabaseMessage,
+      failedHealthBody.environment.postgresMessage,
       /SEED_FAILED \(items\)/i
     );
 

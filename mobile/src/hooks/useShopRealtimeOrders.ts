@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Platform, Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import EventSource from 'react-native-sse';
 import {
+  API_BASE_URL,
   fetchApi,
   MobileCatalogItem,
   MobileShopMembership,
   MobileShopOrder,
   MobileShopOrderStats,
-  supabase,
 } from '../lib/supabase';
+import { getOwnerAccessToken } from '../lib/owner-session';
 import {
+  buildOrderEventsSseHeaders,
+  buildOrderEventsSseUrl,
   detectBrandNewOrder,
   handleBrandNewOrderNotifications,
+  processOrderSseMessage,
   type DetectBrandNewOrderResult,
   type HandleBrandNewOrderNotificationsResult,
 } from '../lib/realtime-orders';
@@ -25,6 +30,20 @@ export {
   type DetectBrandNewOrderResult,
   type HandleBrandNewOrderNotificationsResult,
 };
+
+export interface EventSourceLike {
+  addEventListener(type: string, listener: (...args: any[]) => void): void;
+  removeEventListener?(type: string, listener: (...args: any[]) => void): void;
+  close(): void;
+}
+
+export type EventSourceFactory = (
+  url: string,
+  options: {
+    headers: Record<string, string>;
+    method?: string;
+  }
+) => EventSourceLike;
 
 export interface LiveOrderAlert {
   orderCode: string;
@@ -80,7 +99,7 @@ export function orchestrateRealtimeOrderNotifications({
   });
 }
 
-interface UseShopRealtimeOrdersOptions {
+export interface UseShopRealtimeOrdersOptions {
   isLoggedIn: boolean;
   shopId?: string;
   onItemsSynced?: (items: MobileCatalogItem[]) => void;
@@ -88,6 +107,7 @@ interface UseShopRealtimeOrdersOptions {
   scheduleNotificationAsync?: (
     request: LocalOrderChimePayload
   ) => Promise<unknown> | unknown;
+  eventSourceFactory?: EventSourceFactory;
 }
 
 export function useShopRealtimeOrders({
@@ -96,6 +116,7 @@ export function useShopRealtimeOrders({
   onItemsSynced,
   onMembershipSynced,
   scheduleNotificationAsync,
+  eventSourceFactory,
 }: UseShopRealtimeOrdersOptions) {
   const [orders, setOrders] = useState<MobileShopOrder[]>([]);
   const [orderStats, setOrderStats] = useState<MobileShopOrderStats | null>(
@@ -202,7 +223,7 @@ export function useShopRealtimeOrders({
     if (isLoggedIn && shopId) void fetchOrdersFromApi(shopId);
   }, [isLoggedIn, shopId, fetchOrdersFromApi]);
 
-  // Subscribe to Supabase Realtime Postgres Changes via WebSocket
+  // Subscribe to authenticated SSE order events
   useEffect(() => {
     if (!isLoggedIn || !shopId || !appActive) return;
 
@@ -211,36 +232,72 @@ export function useShopRealtimeOrders({
     let disposed = false;
     let connected = false;
     let changeTimer: NodeJS.Timeout | number | undefined;
-    const channel = supabase
-      .channel(`qlaok-orders-ws-${shopId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders',
-          filter: `shop_id=eq.${shopId}`,
-        },
-        () => {
-          if (disposed || changeTimer) return;
-          changeTimer = setTimeout(() => { changeTimer = undefined; if (!disposed) void fetchOrdersFromApi(shopId, true); }, 200);
+    let es: EventSourceLike | null = null;
+
+    const startSse = async () => {
+      try {
+        const token = await getOwnerAccessToken();
+        if (!token) {
+          if (!disposed) setRealtimeStatus('fallback');
+          return;
         }
-      )
-      .subscribe((status) => {
         if (disposed) return;
-        if (status === 'SUBSCRIBED') {
-          connected = true;
-          setRealtimeStatus('connected');
-          void fetchOrdersFromApi(shopId, true);
-        } else if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
+
+        const sseUrl = buildOrderEventsSseUrl(API_BASE_URL, shopId);
+        const headers = buildOrderEventsSseHeaders(token);
+
+        const createEs: EventSourceFactory =
+          eventSourceFactory ??
+          ((url, opts) => new EventSource(url, opts) as unknown as EventSourceLike);
+
+        const instance = createEs(sseUrl, { headers });
+        es = instance;
+
+        instance.addEventListener('open', () => {
+          if (disposed) return;
+        });
+
+        instance.addEventListener('message', (event: any) => {
+          if (disposed || !event?.data) return;
+          processOrderSseMessage(event.data, {
+            onReady: () => {
+              connected = true;
+              setRealtimeStatus('connected');
+              void fetchOrdersFromApi(shopId, true);
+            },
+            onChange: () => {
+              if (disposed || changeTimer) return;
+              changeTimer = setTimeout(() => {
+                changeTimer = undefined;
+                if (!disposed) void fetchOrdersFromApi(shopId, true);
+              }, 200);
+            },
+            onFallback: () => {
+              connected = false;
+              setRealtimeStatus('fallback');
+            },
+            onUnauthorized: () => {
+              connected = false;
+              setRealtimeStatus('fallback');
+              instance.close();
+            },
+          });
+        });
+
+        instance.addEventListener('error', () => {
+          if (disposed) return;
+          connected = false;
+          setRealtimeStatus('fallback');
+        });
+      } catch {
+        if (!disposed) {
           connected = false;
           setRealtimeStatus('fallback');
         }
-      });
+      }
+    };
+
+    void startSse();
 
     // Sync immediately when app returns to foreground
     const handleAppStateChange = (nextAppState: AppStateStatus) => {
@@ -255,17 +312,26 @@ export function useShopRealtimeOrders({
 
     // Lightweight safety fallback sync only every 30s (instead of 3.5s HTTP polling)
     const safetyInterval = setInterval(() => {
-      if ((!connected || needsSyncRef.current) && !disposed) void fetchOrdersFromApi(shopId, true);
+      if ((!connected || needsSyncRef.current) && !disposed) {
+        void fetchOrdersFromApi(shopId, true);
+      }
     }, 30000);
 
     return () => {
       disposed = true;
-      supabase.removeChannel(channel);
+      if (es) {
+        try {
+          es.close();
+        } catch {
+          // ignore cleanup error
+        }
+        es = null;
+      }
       appStateSub.remove();
       clearInterval(safetyInterval);
       clearTimeout(changeTimer);
     };
-  }, [isLoggedIn, shopId, appActive, fetchOrdersFromApi, notifyIfBrandNewOrder]);
+  }, [isLoggedIn, shopId, appActive, fetchOrdersFromApi, eventSourceFactory]);
 
   return {
     orders,

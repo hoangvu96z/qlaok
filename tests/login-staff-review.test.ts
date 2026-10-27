@@ -163,22 +163,20 @@ describe('login page staff mode UI contract and field isolation', () => {
     );
   });
 
-  it('preserves owner registration, owner email login, OTP, and demo preview functionality', () => {
-    // Owner registration preserves fullName and phone inputs, action: register, and /onboarding redirect
-    assert.match(loginSource, /action:\s*['"]register['"]/);
-    assert.match(loginSource, /router\.push\(['"]\/onboarding['"]\)/);
+  it('replaces owner login/register/reset with Zitadel OIDC PKCE without collecting owner passwords and preserves demo preview', () => {
+    // Owner login/register/reset delegates to Zitadel OIDC start endpoint
+    assert.match(loginSource, /action:\s*['"]oidc_start['"]/);
+    assert.match(loginSource, /buildZitadelOidcStartHref/);
+    assert.match(loginSource, /handleOwnerOidcRedirect/);
 
-    // Owner login preserves action: login, resolvePostLoginRoute, and rememberActiveShop
-    assert.match(loginSource, /action:\s*['"]login['"]/);
-    assert.match(loginSource, /resolvePostLoginRoute\(/);
-    assert.match(loginSource, /rememberActiveShop\(target\.activeShopId,\s*data\)/);
+    // Browser never posts owner password login or register payloads to /api/auth
+    assert.doesNotMatch(loginSource, /action:\s*['"]register['"]/);
+    assert.doesNotMatch(loginSource, /signInWithOtp/);
 
-    // OTP mode preserved
-    assert.match(loginSource, /mode\s*===\s*['"]otp['"]/);
-    assert.match(loginSource, /signInWithOtp/);
-
-    // Demo login preserved
+    // Demo login and post-login routing helpers preserved
     assert.match(loginSource, /action:\s*['"]demo_login['"]/);
+    assert.match(loginSource, /resolvePostLoginRoute\(/);
+    assert.match(loginSource, /rememberActiveShop\(/);
   });
 });
 

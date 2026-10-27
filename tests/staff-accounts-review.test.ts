@@ -1102,8 +1102,15 @@ test('authoritative Supabase DB mode persists staff credentials in shop_staff_cr
     assert.equal(invitedMem.email, 'phucvu.email@qlaok.vn');
     assert.equal(invitedMem.account_type, 'email');
 
-    // Normal owner registration and login still work
+    // Owner registration requires Zitadel OIDC; its callback provisions the profile before sync_user.
     const uniqueOwnerEmail = `owner-reg-${Date.now()}@example.com`;
+    const newOwnerUuid = '7d21f8ae-6b7c-414b-ba28-3f932ab062f7';
+    profileRows.set(newOwnerUuid, {
+      id: newOwnerUuid,
+      email: uniqueOwnerEmail,
+      full_name: 'Chủ Quán Mới',
+      plan: 'free',
+    });
     const ownerRegRes = await authPost(
       jsonReq('http://localhost:3000/api/auth', 'POST', {
         action: 'register',
@@ -1112,20 +1119,30 @@ test('authoritative Supabase DB mode persists staff credentials in shop_staff_cr
         fullName: 'Chủ Quán Mới',
       })
     );
-    assert.equal(ownerRegRes.status, 201);
-    const ownerRegBody = await ownerRegRes.json();
-    assert.equal(ownerRegBody.user.email, uniqueOwnerEmail);
+    assert.equal(ownerRegRes.status, 400);
+    assert.equal((await ownerRegRes.json()).code, 'OIDC_REQUIRED');
 
-    const ownerLoginRes = await authPost(
-      jsonReq('http://localhost:3000/api/auth', 'POST', {
-        action: 'login',
-        email: uniqueOwnerEmail,
-        password: 'OwnerPass#123',
-      })
+    const newOwnerToken = issueSessionToken({
+      id: newOwnerUuid,
+      email: uniqueOwnerEmail,
+      role: 'owner',
+    });
+    const ownerSyncRes = await authPost(
+      jsonReq(
+        'http://localhost:3000/api/auth',
+        'POST',
+        {
+          action: 'sync_user',
+          email: uniqueOwnerEmail,
+          fullName: 'Chủ Quán Mới',
+        },
+        newOwnerToken
+      )
     );
-    assert.equal(ownerLoginRes.status, 200);
-    const ownerLoginBody = await ownerLoginRes.json();
-    assert.equal(ownerLoginBody.user.email, uniqueOwnerEmail);
+    assert.equal(ownerSyncRes.status, 200);
+    const ownerSyncBody = await ownerSyncRes.json();
+    assert.equal(ownerSyncBody.user.id, newOwnerUuid);
+    assert.equal(ownerSyncBody.user.email, uniqueOwnerEmail);
   } finally {
     setShopMembershipDbClientForTest(null);
     setSupabaseDbClientForTests(null);
