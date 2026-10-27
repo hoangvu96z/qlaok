@@ -24,7 +24,9 @@ import {
   normalizePlanTier,
 } from '@/lib/plan-limits';
 import {
+  call9RouterJson,
   getAiConfig,
+  getGeminiClient,
   isAiConfigured,
   smartFallbackTranslate,
   parseRawOcrTextFallback,
@@ -39,7 +41,6 @@ import {
   isGarageConfigured,
   getGarageClient,
   createGaragePresignedUploadUrl,
-  uploadBufferToGarage,
 } from '@/lib/garage-storage';
 import {
   SEED_SHOPS,
@@ -163,8 +164,6 @@ import {
   applyCatalogItemsToFlashSaleDraft,
   hydrateShopPromotionsState,
   normalizeShopFlashSaleConfig,
-  normalizeShopPromoBannerConfig,
-  normalizeShopWelcomePopupConfig,
   resolveWelcomePopupPreviewConfig,
   WELCOME_POPUP_PREVIEW_FALLBACK_TITLES,
 } from '@/lib/shop-promotions';
@@ -565,25 +564,55 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
 // SUITE 4: AI CONFIG, DICTIONARY & TESSERACT OCR PARSER
 // ============================================================================
 describe('Suite 4: AI Configuration, Dictionary & OCR Parser (gemini.ts)', () => {
-  test('4.1 getAiConfig reads AI_MODEL and AI_VISION_MODEL without hardcoding', () => {
+  test('4.1 getAiConfig reads configured AI_API_KEY, AI_MODEL and AI_VISION_MODEL and fails closed when AI_API_KEY is absent or blank', async () => {
     const prevUrl = process.env.AI_BASE_URL;
+    const prevKey = process.env.AI_API_KEY;
     const prevModel = process.env.AI_MODEL;
     const prevVision = process.env.AI_VISION_MODEL;
 
-    process.env.AI_BASE_URL = 'https://vunph.click/v1///';
-    process.env.AI_MODEL = 'combo1';
-    process.env.AI_VISION_MODEL = 'combo2';
+    try {
+      process.env.AI_BASE_URL = 'https://vunph.click/v1///';
+      process.env.AI_API_KEY = '  configured-test-ai-key  ';
+      process.env.AI_MODEL = 'combo1';
+      process.env.AI_VISION_MODEL = 'combo2';
 
-    const cfg = getAiConfig();
-    assert.ok(cfg);
-    assert.equal(cfg.baseUrl, 'https://vunph.click/v1');
-    assert.equal(cfg.model, 'combo1');
-    assert.equal(cfg.visionModel, 'combo2');
-    assert.equal(isAiConfigured(), true);
+      const cfg = getAiConfig();
+      assert.ok(cfg);
+      assert.equal(cfg.baseUrl, 'https://vunph.click/v1');
+      assert.equal(cfg.apiKey, 'configured-test-ai-key');
+      assert.equal(cfg.model, 'combo1');
+      assert.equal(cfg.visionModel, 'combo2');
+      assert.equal(isAiConfigured(), true);
+      assert.deepEqual(getGeminiClient(), cfg);
 
-    if (prevUrl !== undefined) process.env.AI_BASE_URL = prevUrl;
-    if (prevModel !== undefined) process.env.AI_MODEL = prevModel;
-    if (prevVision !== undefined) process.env.AI_VISION_MODEL = prevVision;
+      // Absent AI_API_KEY must fail closed (null / false)
+      delete process.env.AI_API_KEY;
+      assert.equal(getAiConfig(), null);
+      assert.equal(isAiConfigured(), false);
+      assert.equal(getGeminiClient(), null);
+      await assert.rejects(
+        () => call9RouterJson([{ role: 'user', content: 'ping' }]),
+        (err: unknown) =>
+          err instanceof Error && err.message === 'AI_NOT_CONFIGURED'
+      );
+
+      // Empty or whitespace-only AI_API_KEY must fail closed (null / false)
+      for (const blankKey of ['', '   ', '\t\n ']) {
+        process.env.AI_API_KEY = blankKey;
+        assert.equal(getAiConfig(), null);
+        assert.equal(isAiConfigured(), false);
+        assert.equal(getGeminiClient(), null);
+      }
+    } finally {
+      if (prevUrl === undefined) delete process.env.AI_BASE_URL;
+      else process.env.AI_BASE_URL = prevUrl;
+      if (prevKey === undefined) delete process.env.AI_API_KEY;
+      else process.env.AI_API_KEY = prevKey;
+      if (prevModel === undefined) delete process.env.AI_MODEL;
+      else process.env.AI_MODEL = prevModel;
+      if (prevVision === undefined) delete process.env.AI_VISION_MODEL;
+      else process.env.AI_VISION_MODEL = prevVision;
+    }
   });
 
   test('4.2 smartFallbackTranslate accurately translates Vietnamese signature dishes (Phở, Bạc xỉu, Bánh mì)', () => {

@@ -1900,3 +1900,153 @@ test('resolveAndSyncZitadelOwnerProfile and OIDC callback/mobile exchange fail c
     delete process.env.ZITADEL_REDIRECT_URI;
   }
 });
+
+test('POST /api/auth demo_login requires non-production AND ENABLE_DEMO_LOGIN=true, rejects with 403 before DB init when disabled, and rejects legacy seed password bypass', async () => {
+  const mutableEnv = process.env as Record<string, string | undefined>;
+  const prevNodeEnv = mutableEnv.NODE_ENV;
+  const prevEnableDemo = mutableEnv.ENABLE_DEMO_LOGIN;
+  const prevSupabaseUrl = mutableEnv.NEXT_PUBLIC_SUPABASE_URL;
+  const prevAnonKey = mutableEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const prevPubKey = mutableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const prevServiceKey = mutableEnv.SUPABASE_SERVICE_ROLE_KEY;
+
+  let dbFromCalls = 0;
+  const throwingDbClient = {
+    from() {
+      dbFromCalls += 1;
+      throw new Error('Database must not be initialized or queried when demo_login is disabled');
+    },
+  };
+
+  try {
+    // Even if DB env vars are missing and DB client throws on any query, denied demo_login must return 403 before DB initialization.
+    delete mutableEnv.NEXT_PUBLIC_SUPABASE_URL;
+    delete mutableEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    delete mutableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    delete mutableEnv.SUPABASE_SERVICE_ROLE_KEY;
+    setSupabaseDbClientForTests(throwingDbClient as never);
+
+    // 1. Non-production without ENABLE_DEMO_LOGIN === 'true' -> 403 before DB init
+    mutableEnv.NODE_ENV = 'test';
+    for (const disabledFlag of [undefined, '', 'false', '0', '1', 'TRUE']) {
+      if (disabledFlag === undefined) delete mutableEnv.ENABLE_DEMO_LOGIN;
+      else mutableEnv.ENABLE_DEMO_LOGIN = disabledFlag;
+
+      const res = await authPost(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'demo_login' }),
+        })
+      );
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.equal(body.code, 'DEMO_LOGIN_DISABLED');
+      assert.equal(extractCookieValue(res, SESSION_COOKIE_NAME), undefined);
+      assert.equal(dbFromCalls, 0);
+    }
+
+    // 2. Production runtime -> 403 before DB init even when ENABLE_DEMO_LOGIN === 'true'
+    mutableEnv.NODE_ENV = 'production';
+    for (const flagValue of [undefined, 'false', 'true']) {
+      if (flagValue === undefined) delete mutableEnv.ENABLE_DEMO_LOGIN;
+      else mutableEnv.ENABLE_DEMO_LOGIN = flagValue;
+
+      const res = await authPost(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'demo_login' }),
+        })
+      );
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.equal(body.code, 'DEMO_LOGIN_DISABLED');
+      assert.equal(extractCookieValue(res, SESSION_COOKIE_NAME), undefined);
+      assert.equal(dbFromCalls, 0);
+    }
+
+    // 3. Legacy seed-email/password login bypass is removed and rejected with 400 OIDC_REQUIRED even when demo_login is enabled
+    mutableEnv.NODE_ENV = 'test';
+    mutableEnv.ENABLE_DEMO_LOGIN = 'true';
+    const legacyBypassRes = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'login',
+          email: 'chuquan@qlaok.vn',
+          password: 'legacy-seed-password',
+        }),
+      })
+    );
+    assert.equal(legacyBypassRes.status, 400);
+    const legacyBypassBody = await legacyBypassRes.json();
+    assert.equal(legacyBypassBody.code, 'OIDC_REQUIRED');
+    assert.equal(
+      extractCookieValue(legacyBypassRes, SESSION_COOKIE_NAME),
+      undefined
+    );
+    assert.equal(dbFromCalls, 0);
+
+    // 4. Non-production + ENABLE_DEMO_LOGIN === 'true' allows explicit demo_login and issues non-admin owner session
+    const { client } = createInMemoryOidcDb(
+      [
+        {
+          id: 'owner-demo-001',
+          email: 'chuquan@qlaok.vn',
+          full_name: 'Nguyễn Văn An (Chủ quán Demo)',
+          plan: 'premium',
+          role: 'owner',
+          is_admin: false,
+        },
+      ],
+      [
+        {
+          id: 'shop-fnb-001',
+          owner_id: 'owner-demo-001',
+          slug: 'pho-hoi-an',
+          name: 'Phở & Cà Phê Phố Cổ',
+          vertical: 'fnb',
+          is_published: true,
+        },
+      ]
+    );
+    setSupabaseDbClientForTests(client as never);
+
+    const allowedDemoRes = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'demo_login' }),
+      })
+    );
+    assert.equal(allowedDemoRes.status, 200);
+    const allowedDemoBody = await allowedDemoRes.json();
+    assert.equal(allowedDemoBody.isAdmin, false);
+    assert.equal(allowedDemoBody.user.id, 'owner-demo-001');
+    assert.equal(allowedDemoBody.user.email, 'chuquan@qlaok.vn');
+    assert.equal(typeof allowedDemoBody.accessToken, 'string');
+    const demoCookie = extractCookieValue(allowedDemoRes, SESSION_COOKIE_NAME);
+    assert.ok(demoCookie);
+    const verifiedDemo = verifySessionToken(demoCookie);
+    assert.ok(verifiedDemo);
+    assert.equal(verifiedDemo.sub, 'owner-demo-001');
+    assert.equal(verifiedDemo.email, 'chuquan@qlaok.vn');
+    assert.equal(verifiedDemo.role, 'owner');
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (prevNodeEnv === undefined) delete mutableEnv.NODE_ENV;
+    else mutableEnv.NODE_ENV = prevNodeEnv;
+    if (prevEnableDemo === undefined) delete mutableEnv.ENABLE_DEMO_LOGIN;
+    else mutableEnv.ENABLE_DEMO_LOGIN = prevEnableDemo;
+    if (prevSupabaseUrl === undefined) delete mutableEnv.NEXT_PUBLIC_SUPABASE_URL;
+    else mutableEnv.NEXT_PUBLIC_SUPABASE_URL = prevSupabaseUrl;
+    if (prevAnonKey === undefined) delete mutableEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    else mutableEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY = prevAnonKey;
+    if (prevPubKey === undefined) delete mutableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    else mutableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = prevPubKey;
+    if (prevServiceKey === undefined) delete mutableEnv.SUPABASE_SERVICE_ROLE_KEY;
+    else mutableEnv.SUPABASE_SERVICE_ROLE_KEY = prevServiceKey;
+  }
+});

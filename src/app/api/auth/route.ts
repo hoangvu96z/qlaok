@@ -777,16 +777,41 @@ export async function POST(req: Request) {
       }
     }
 
+    // 1. Explicit Demo Account Login gate (non-production + ENABLE_DEMO_LOGIN === 'true' only)
+    // Reject with HTTP 403 before database initialization when disabled.
+    if (action === 'demo_login') {
+      const isDemoLoginEnabled =
+        process.env.NODE_ENV !== 'production' &&
+        process.env.ENABLE_DEMO_LOGIN === 'true';
+      if (!isDemoLoginEnabled) {
+        return NextResponse.json(
+          {
+            error:
+              'Đăng nhập tài khoản dùng thử (demo_login) đã bị vô hiệu hóa.',
+            code: 'DEMO_LOGIN_DISABLED',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // 2. Reject direct password login for owners/admins — require Zitadel OIDC
+    if (action === 'login') {
+      return NextResponse.json(
+        {
+          error:
+            'Đăng nhập Chủ quán / Quản trị viên sử dụng Zitadel OIDC (Authorization Code + PKCE). Trình duyệt không gửi mật khẩu trực tiếp tới Qlaok.',
+          code: 'OIDC_REQUIRED',
+          authorizePath: '/api/auth?action=oidc_start&mode=login',
+        },
+        { status: 400 }
+      );
+    }
+
     await ensureSupabaseReadyAndSeeded();
     const sb = getSupabaseDbClient();
 
-    // 1. Explicit Demo Account Login (non-admin demo shop owner)
-    if (
-      action === 'demo_login' ||
-      (action === 'login' &&
-        normalizedEmail === 'chuquan@qlaok.vn' &&
-        password === 'qlaok123456')
-    ) {
+    if (action === 'demo_login') {
       const [{ data: demoProfile }, { data: demoShops }] = await Promise.all([
         sb.from('profiles').select('*').eq('id', SEED_PROFILE.id).maybeSingle(),
         sb
@@ -811,19 +836,6 @@ export async function POST(req: Request) {
         accessToken,
       });
       return attachSessionCookie(res, accessToken);
-    }
-
-    // 2. Reject direct password login for owners/admins — require Zitadel OIDC
-    if (action === 'login') {
-      return NextResponse.json(
-        {
-          error:
-            'Đăng nhập Chủ quán / Quản trị viên sử dụng Zitadel OIDC (Authorization Code + PKCE). Trình duyệt không gửi mật khẩu trực tiếp tới Qlaok.',
-          code: 'OIDC_REQUIRED',
-          authorizePath: '/api/auth?action=oidc_start&mode=login',
-        },
-        { status: 400 }
-      );
     }
 
     // 3. Sync authenticated owner/admin session (from Qlaok HttpOnly cookie or Zitadel JWT)

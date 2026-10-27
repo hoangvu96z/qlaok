@@ -11,8 +11,7 @@ export function getAiConfig(): NineRouterConfig | null {
   const baseUrl = (
     process.env.AI_BASE_URL || 'https://vunph.click/v1'
   ).replace(/\/+$/, '');
-  const apiKey =
-    process.env.AI_API_KEY || 'sk-07c9f002b12e445e-luaxyd-d0592739';
+  const apiKey = (process.env.AI_API_KEY || '').trim();
   const model = process.env.AI_MODEL || 'combo1';
   const visionModel = process.env.AI_VISION_MODEL || 'combo2';
 
