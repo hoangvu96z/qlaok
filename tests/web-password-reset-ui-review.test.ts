@@ -4,6 +4,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { POST as loginUiPost } from '../src/app/api/auth/login-ui/route';
 import {
+  resetAuthEmailTestHooks,
+  setAuthEmailSenderForTests,
+  type AuthEmailSendPayload,
+} from '../src/lib/auth-email';
+import {
+  buildQlaokPasswordResetUrl,
   buildZitadelPasswordResetUrlTemplate,
   resetZitadelLoginUiRateLimitsForTests,
 } from '../src/lib/zitadel-login-ui';
@@ -21,6 +27,19 @@ test('Production password reset links ignore caller-controlled origins', () => {
         webRedirectUri: 'https://attacker.example/api/auth/callback',
       }),
       'https://qlaok.vunph.click/login?mode=reset&userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}'
+    );
+    assert.equal(
+      buildQlaokPasswordResetUrl({
+        origin: 'https://attacker.example',
+        userId: '289911223344556677',
+        code: '123456',
+        lang: 'vi',
+        config: {
+          issuerUrl: 'https://auth.vunph.click',
+          webRedirectUri: 'https://attacker.example/api/auth/callback',
+        },
+      }),
+      'https://qlaok.vunph.click/login?mode=reset&userID=289911223344556677&code=123456&lang=vi'
     );
   } finally {
     if (previousNodeEnv === undefined) delete mutableEnv.NODE_ENV;
@@ -109,6 +128,10 @@ test('Web password reset API integration: simulates client request and complete 
   resetZitadelLoginUiRateLimitsForTests();
 
   try {
+    const sentEmails: AuthEmailSendPayload[] = [];
+    setAuthEmailSenderForTests(async (payload) => {
+      sentEmails.push(payload);
+    });
     let resetRequestBody: Record<string, unknown> | null = null;
     let passwordCompletionBody: Record<string, unknown> | null = null;
     globalThis.fetch = async (input, init) => {
@@ -138,7 +161,7 @@ test('Web password reset API integration: simulates client request and complete 
         method === 'POST'
       ) {
         resetRequestBody = JSON.parse(String(init?.body || '{}'));
-        return new Response(JSON.stringify({}), {
+        return new Response(JSON.stringify({ verificationCode: '123456' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -176,12 +199,15 @@ test('Web password reset API integration: simulates client request and complete 
     const reqBody = (await reqRes.json()) as Record<string, unknown>;
     assert.deepEqual(reqBody, { ok: true });
     assert.deepEqual(resetRequestBody, {
-      sendLink: {
-        notificationType: 'NOTIFICATION_TYPE_Email',
-        urlTemplate:
-          'https://qlaok.vunph.click/login?mode=reset&userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}',
-      },
+      returnCode: {},
     });
+    assert.equal(sentEmails.length, 1);
+    assert.equal(sentEmails[0]?.kind, 'password_reset');
+    assert.equal(sentEmails[0]?.locale, 'vi');
+    assert.equal(
+      sentEmails[0]?.actionUrl,
+      'https://qlaok.vunph.click/login?mode=reset&userID=289911223344556677&code=123456&lang=vi'
+    );
 
     // 2. Password reset complete with matching valid parameters
     const compRes = await loginUiPost(
@@ -213,6 +239,7 @@ test('Web password reset API integration: simulates client request and complete 
       verificationCode: '123456',
     });
   } finally {
+    resetAuthEmailTestHooks();
     globalThis.fetch = prevFetch;
     if (prevIssuer === undefined) delete process.env.ZITADEL_ISSUER_URL;
     else process.env.ZITADEL_ISSUER_URL = prevIssuer;

@@ -162,6 +162,24 @@ function userMessage(
         return locale === 'en'
           ? 'Account creation is temporarily unavailable. Please try again in a few minutes.'
           : 'Tính năng tạo tài khoản đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.';
+      case 'EMAIL_SERVICE_NOT_CONFIGURED':
+        if (flowKind === 'password_reset') {
+          return locale === 'en'
+            ? 'Password reset email service is not configured. Please try again in a few minutes.'
+            : 'Dịch vụ gửi email đặt lại mật khẩu chưa được cấu hình. Vui lòng thử lại sau ít phút.';
+        }
+        return locale === 'en'
+          ? 'Verification email service is not configured. Please try again in a few minutes.'
+          : 'Dịch vụ gửi email xác thực chưa được cấu hình. Vui lòng thử lại sau ít phút.';
+      case 'EMAIL_DELIVERY_FAILED':
+        if (flowKind === 'password_reset') {
+          return locale === 'en'
+            ? 'We could not send the password reset email right now. Please try again in a moment.'
+            : 'Chưa thể gửi email đặt lại mật khẩu lúc này. Vui lòng thử lại sau ít phút.';
+        }
+        return locale === 'en'
+          ? 'We could not send the verification email right now. Please try again in a moment.'
+          : 'Chưa thể gửi email mã xác thực lúc này. Vui lòng thử lại sau ít phút.';
       case 'LOGIN_SERVICE_NOT_CONFIGURED':
         if (flowKind === 'password_reset') {
           return locale === 'en'
@@ -255,7 +273,12 @@ export async function POST(req: Request) {
     typeof body.action === 'string' && body.action.trim()
       ? body.action.trim()
       : 'login';
-  const locale = body.lang === 'en' ? 'en' : 'vi';
+  const url = new URL(req.url);
+  const locale: 'vi' | 'en' =
+    body.lang === 'en' ||
+    (body.lang !== 'vi' && url.searchParams.get('lang') === 'en')
+      ? 'en'
+      : 'vi';
   const requestOrigin = getRequestOrigin(req);
   const clientIp = getClientIp(req);
   const flowKind: LoginUiFlowKind = action.startsWith('register_')
@@ -387,6 +410,7 @@ export async function POST(req: Request) {
       }
       const resent = await resendZitadelRegistrationCode({
         registrationTicket,
+        lang: locale,
         origin: requestOrigin,
       });
       return jsonNoStore({

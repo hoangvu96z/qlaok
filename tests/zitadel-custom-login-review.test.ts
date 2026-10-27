@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {
+  type AuthEmailSendPayload,
+  AuthEmailError,
+  renderPasswordResetEmail,
+  renderRegistrationVerificationEmail,
+  resetAuthEmailTestHooks,
+  resolveAuthEmailSmtpConfig,
+  sendAuthEmail,
+  setAuthEmailSenderForTests,
+  setNodemailerTransportFactoryForTests,
+} from '../src/lib/auth-email';
 import { setSupabaseDbClientForTests } from '../src/lib/db';
 import {
   bootstrapZitadelOidcAuthRequestId,
+  buildQlaokPasswordResetUrl,
   buildZitadelLoginUiRateLimitBucketKey,
   buildZitadelPasswordResetUrlTemplate,
   checkZitadelLoginUiRateLimit,
@@ -37,6 +49,7 @@ const config: ZitadelLoginUiConfig = {
   mobileClientId: 'mobile-client',
   webRedirectUri: 'https://qlaok.example.test/api/auth/callback',
   mobileRedirectUri: 'qlaok://auth/callback',
+  sendEmail: async () => {},
 };
 
 function response(body: unknown, status = 200) {
@@ -492,7 +505,7 @@ test('registration tickets are HMAC-signed, expire deterministically, and reject
   );
 });
 
-test('custom registration uses POST /v2/users/new with temporary password, sets user password only after email/verify succeeds, and sends { sendCode: {} } on resend', async () => {
+test('custom registration uses POST /v2/users/new with temporary password and returnCode, delivers Qlaok verification emails via SMTP, sets user password only after email/verify succeeds, and requests returnCode on resend', async () => {
   resetZitadelLoginUiRateLimitsForTests();
   const calls: Array<{
     url: string;
@@ -500,9 +513,13 @@ test('custom registration uses POST /v2/users/new with temporary password, sets 
     auth: string;
     body?: Record<string, unknown>;
   }> = [];
+  const deliveredEmails: AuthEmailSendPayload[] = [];
   const regConfig: ZitadelLoginUiConfig = {
     ...config,
     organizationId: 'org-qlaok-123',
+    sendEmail: async (payload) => {
+      deliveredEmails.push(payload);
+    },
   };
 
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -526,13 +543,16 @@ test('custom registration uses POST /v2/users/new with temporary password, sets 
       });
     }
     if (url.endsWith('/v2/users/new') && method === 'POST') {
-      return response({ id: '289988776655443322' }, 201);
+      return response(
+        { id: '289988776655443322', emailCode: '610492' },
+        201
+      );
     }
     if (
       url.endsWith('/v2/users/289988776655443322/email/resend') &&
       method === 'POST'
     ) {
-      return response({}, 200);
+      return response({ verificationCode: '849201' }, 200);
     }
     if (
       url.endsWith('/v2/users/289988776655443322/email/verify') &&
@@ -586,6 +606,11 @@ test('custom registration uses POST /v2/users/new with temporary password, sets 
   assert.equal(started.email, 'bich.tran@example.test');
   assert.equal(started.authRequestId, authRequestId);
   assert.ok(started.registrationTicket);
+  assert.equal(
+    JSON.stringify(started).includes('610492'),
+    false,
+    'Verification code must never be returned in startZitadelRegistration response'
+  );
 
   assert.equal(
     calls.some((c) => c.url.endsWith('/v2/users/human')),
@@ -608,8 +633,12 @@ test('custom registration uses POST /v2/users/new with temporary password, sets 
   });
   assert.deepEqual(humanPayload.email, {
     email: 'bich.tran@example.test',
-    sendCode: {},
+    returnCode: {},
   });
+  assert.equal(
+    (humanPayload.email as Record<string, unknown>)?.sendCode,
+    undefined
+  );
   // Never marks email verified without proof
   assert.equal(
     (humanPayload.email as Record<string, unknown>)?.isVerified,
@@ -628,20 +657,43 @@ test('custom registration uses POST /v2/users/new with temporary password, sets 
     'User password must never be sent to CreateUser before email verification'
   );
 
-  // Step 2: Resend verification code sends { sendCode: {} }
+  assert.equal(deliveredEmails.length, 1);
+  assert.equal(deliveredEmails[0]?.kind, 'registration_verify');
+  assert.equal(deliveredEmails[0]?.locale, 'vi');
+  assert.equal(deliveredEmails[0]?.to, 'bich.tran@example.test');
+  assert.match(deliveredEmails[0]?.html || '', /610492/);
+  assert.match(deliveredEmails[0]?.text || '', /610492/);
+  assert.doesNotMatch(
+    deliveredEmails[0]?.html || '',
+    /href="[^"]*610492[^"]*"/,
+    'Registration email must never embed code in an auto-verify link'
+  );
+
+  // Step 2: Resend verification code requests { returnCode: {} } and delivers via SMTP
   const resent = await resendZitadelRegistrationCode({
     registrationTicket: started.registrationTicket,
+    lang: 'en',
     origin: 'https://qlaok.example.test',
     config: regConfig,
     fetchImpl,
   });
   assert.equal(resent.email, 'bich.tran@example.test');
+  assert.equal(
+    JSON.stringify(resent).includes('849201'),
+    false,
+    'Verification code must never be returned in resendZitadelRegistrationCode response'
+  );
   const resendCall = calls.find((c) =>
     c.url.endsWith('/v2/users/289988776655443322/email/resend')
   );
   assert.ok(resendCall);
   assert.equal(resendCall.method, 'POST');
-  assert.deepEqual(resendCall.body, { sendCode: {} });
+  assert.deepEqual(resendCall.body, { returnCode: {} });
+  assert.equal(deliveredEmails.length, 2);
+  assert.equal(deliveredEmails[1]?.kind, 'registration_resend');
+  assert.equal(deliveredEmails[1]?.locale, 'en');
+  assert.match(deliveredEmails[1]?.html || '', /849201/);
+  assert.match(deliveredEmails[1]?.text || '', /849201/);
 
   // Step 3: Wrong verification code must fail closed and NEVER set password or create a session
   await assert.rejects(
@@ -848,13 +900,13 @@ test('custom registration maps duplicate email errors, recovers unverified accou
           method === 'POST'
         ) {
           resendBodyForUnverified = JSON.parse(String(init?.body || '{}'));
-          return response({}, 200);
+          return response({ verificationCode: '314159' }, 200);
         }
         throw new Error(`Unexpected call: ${method} ${url}`);
       },
     });
     assert.equal(recovered.email, 'pending@example.test');
-    assert.deepEqual(resendBodyForUnverified, { sendCode: {} });
+    assert.deepEqual(resendBodyForUnverified, { returnCode: {} });
     const decodedTicket = verifyZitadelRegistrationTicket(
       recovered.registrationTicket
     );
@@ -1410,18 +1462,27 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
         url.endsWith('/v2/users/289911223344558899/password_reset')) &&
       method === 'POST'
     ) {
-      return response({ details: {} }, 200);
+      return response({ verificationCode: '918273' }, 200);
     }
 
     throw new Error(`Unexpected ZITADEL request: ${method} ${url}`);
   };
 
-  // 1. Eligible verified human account triggers POST /v2/users/{user_id}/password_reset
+  const sentResetEmails: AuthEmailSendPayload[] = [];
+  const resetConfig: ZitadelLoginUiConfig = {
+    ...config,
+    sendEmail: async (payload) => {
+      sentResetEmails.push(payload);
+    },
+  };
+
+  // 1. Eligible verified human account triggers POST /v2/users/{user_id}/password_reset with returnCode and sends Qlaok reset email
   const okVerified = await requestZitadelPasswordReset({
     email: '  Verified.Owner@Example.test ',
+    lang: 'vi',
     origin: qlaokOrigin,
     clientIp: '198.51.100.10',
-    config,
+    config: resetConfig,
     fetchImpl,
   });
   assert.deepEqual(okVerified, { ok: true });
@@ -1445,13 +1506,18 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
   );
   assert.equal(calls[1]?.auth, 'Bearer server-only-token');
   assert.deepEqual(calls[1]?.body, {
-    sendLink: {
-      notificationType: 'NOTIFICATION_TYPE_Email',
-      urlTemplate: expectedTemplate,
-    },
+    returnCode: {},
   });
+  assert.equal(sentResetEmails.length, 1);
+  assert.equal(sentResetEmails[0]?.kind, 'password_reset');
+  assert.equal(sentResetEmails[0]?.locale, 'vi');
+  assert.equal(sentResetEmails[0]?.to, 'verified.owner@example.test');
+  assert.equal(
+    sentResetEmails[0]?.actionUrl,
+    'https://qlaok.vunph.click/login?mode=reset&userID=289911223344556677&code=918273&lang=vi'
+  );
 
-  // 2. Unknown, unverified, machine, and locked accounts return identical { ok: true } and NEVER call /password_reset
+  // 2. Unknown, unverified, machine, and locked accounts return identical { ok: true } and NEVER call /password_reset or send email
   for (const candidate of [
     'unknown@example.test',
     'unverified@example.test',
@@ -1459,11 +1525,12 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
     'locked@example.test',
   ]) {
     calls.length = 0;
+    sentResetEmails.length = 0;
     const res = await requestZitadelPasswordReset({
       email: candidate,
       origin: qlaokOrigin,
       clientIp: '198.51.100.11',
-      config,
+      config: resetConfig,
       fetchImpl,
     });
     assert.deepEqual(res, { ok: true });
@@ -1473,15 +1540,22 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
       false,
       `Must not request password_reset for ${candidate}`
     );
+    assert.equal(
+      sentResetEmails.length,
+      0,
+      `Must not send reset email for ${candidate}`
+    );
   }
 
   // 3. Previously reserved emails (e.g. chuquan@qlaok.vn) are not blocked by hardcoded exemptions
   calls.length = 0;
+  sentResetEmails.length = 0;
   const okPreviouslyReserved = await requestZitadelPasswordReset({
     email: 'chuquan@qlaok.vn',
+    lang: 'en',
     origin: qlaokOrigin,
     clientIp: '198.51.100.12',
-    config,
+    config: resetConfig,
     fetchImpl,
   });
   assert.deepEqual(okPreviouslyReserved, { ok: true });
@@ -1489,6 +1563,12 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
   assert.equal(
     calls[1]?.url,
     'https://auth.example.test/v2/users/289911223344558899/password_reset'
+  );
+  assert.equal(sentResetEmails.length, 1);
+  assert.equal(sentResetEmails[0]?.locale, 'en');
+  assert.equal(
+    sentResetEmails[0]?.actionUrl,
+    'https://qlaok.vunph.click/login?mode=reset&userID=289911223344558899&code=918273&lang=en'
   );
 });
 
@@ -1892,6 +1972,11 @@ test('/api/auth/login-ui POST contract for password_reset_request and password_r
   process.env.ZITADEL_CLIENT_ID = 'web-client-123';
   process.env.ZITADEL_MOBILE_CLIENT_ID = 'mobile-client-123';
 
+  const routeDeliveredEmails: AuthEmailSendPayload[] = [];
+  setAuthEmailSenderForTests(async (payload) => {
+    routeDeliveredEmails.push(payload);
+  });
+
   let zitadelMode: 'ok' | 'unconfigured_403' | 'unavailable_503' | 'expired_code' = 'ok';
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1919,7 +2004,7 @@ test('/api/auth/login-ui POST contract for password_reset_request and password_r
       });
     }
     if (url.endsWith('/v2/users/289911223344556677/password_reset') && method === 'POST') {
-      return response({ details: {} }, 200);
+      return response({ verificationCode: sentinelCode }, 200);
     }
     if (url.endsWith('/v2/users/289911223344556677/password') && method === 'POST') {
       if (zitadelMode === 'expired_code') {
@@ -1931,7 +2016,7 @@ test('/api/auth/login-ui POST contract for password_reset_request and password_r
   }) as typeof fetch;
 
   try {
-    // 1. Request success returns HTTP 200 { ok: true } with Cache-Control: no-store
+    // 1. Request success returns HTTP 200 { ok: true } with Cache-Control: no-store and never leaks sentinelCode
     const reqSuccess = await loginUiPost(
       new Request('https://qlaok.vunph.click/api/auth/login-ui', {
         method: 'POST',
@@ -1949,7 +2034,12 @@ test('/api/auth/login-ui POST contract for password_reset_request and password_r
     );
     assert.equal(reqSuccess.status, 200);
     assert.equal(reqSuccess.headers.get('cache-control'), 'no-store');
-    assert.deepEqual(await reqSuccess.json(), { ok: true });
+    const reqSuccessJson = await reqSuccess.json();
+    assert.deepEqual(reqSuccessJson, { ok: true });
+    assert.equal(JSON.stringify(reqSuccessJson).includes(sentinelCode), false);
+    assert.equal(routeDeliveredEmails.length, 1);
+    assert.equal(routeDeliveredEmails[0]?.kind, 'password_reset');
+    assert.equal(routeDeliveredEmails[0]?.locale, 'vi');
 
     // 2. Invalid email returns HTTP 400 { ok: false, code: 'INVALID_EMAIL', error }
     const badEmailRes = await loginUiPost(
@@ -2087,6 +2177,113 @@ test('/api/auth/login-ui POST contract for password_reset_request and password_r
     else process.env.ZITADEL_CLIENT_ID = prevWebClient;
     if (prevMobileClient === undefined) delete process.env.ZITADEL_MOBILE_CLIENT_ID;
     else process.env.ZITADEL_MOBILE_CLIENT_ID = prevMobileClient;
+    resetAuthEmailTestHooks();
     resetZitadelLoginUiRateLimitsForTests();
   }
+});
+
+test('Auth email templates escape names and reject untrusted reset links', () => {
+  const rendered = renderRegistrationVerificationEmail({
+    email: 'owner@example.test', fullName: '<script>alert(1)</script>',
+    verificationCode: '849201', lang: 'vi', origin: 'https://qlaok.vunph.click',
+  });
+  assert.match(rendered.html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(rendered.html, /<script>/);
+  assert.doesNotMatch(rendered.html, /href="[^"]*849201/);
+  assert.match(rendered.subject, /xác thực/i);
+  assert.match(rendered.subject, /verify/i);
+  assert.throws(() => renderPasswordResetEmail({
+    email: 'owner@example.test', origin: 'https://qlaok.vunph.click',
+    resetUrl: 'https://attacker.example/login?mode=reset&userID=123&code=123456',
+  }), /UNTRUSTED_EMAIL_URL/);
+});
+
+test('SMTP configuration and transport fail closed without exposing secrets', async () => {
+  assert.throws(() => resolveAuthEmailSmtpConfig({}), AuthEmailError);
+  const env = {
+    NODE_ENV: 'production', SMTP_HOST: 'smtp.qlaok.internal', SMTP_PORT: '465',
+    SMTP_SECURE: 'true', SMTP_USER: 'mailer@qlaok.vunph.click',
+    SMTP_PASS: 'super-secret-smtp-pass-999', SMTP_FROM: 'no-reply@qlaok.vunph.click',
+    SMTP_FROM_NAME: 'Qlaok Auth', SMTP_TIMEOUT_MS: '8000',
+  };
+  assert.throws(() => resolveAuthEmailSmtpConfig({ ...env, NEXT_PUBLIC_SMTP_PASS: 'leaked' }), AuthEmailError);
+  const smtpConfig = resolveAuthEmailSmtpConfig(env);
+  assert.equal(smtpConfig.secure, true);
+  assert.equal(smtpConfig.timeoutMs, 8000);
+  assert.equal(smtpConfig.from, '"Qlaok Auth" <no-reply@qlaok.vunph.click>');
+  const rendered = renderRegistrationVerificationEmail({ email: 'owner@example.test', verificationCode: '778899' });
+  const observed: Array<{ to: string; from: string }> = [];
+  let closed = 0;
+  await sendAuthEmail({
+    to: 'owner@example.test', rendered, smtpConfig,
+    transportFactory: (cfg) => ({
+      sendMail: async (message) => {
+        assert.equal(cfg.host, env.SMTP_HOST);
+        observed.push({ to: message.to, from: message.from });
+        return { accepted: [message.to], rejected: [] };
+      },
+      close: () => { closed += 1; },
+    }),
+  });
+  assert.deepEqual(observed, [{ to: 'owner@example.test', from: smtpConfig.from }]);
+  assert.equal(closed, 1);
+  await assert.rejects(() => sendAuthEmail({
+    to: 'owner@example.test', rendered, smtpConfig,
+    transportFactory: () => ({ sendMail: async () => { throw new Error('super-secret-smtp-pass-999 code 778899'); } }),
+  }), (err: unknown) => {
+    assert.ok(err instanceof AuthEmailError);
+    assert.equal(err.code, 'EMAIL_DELIVERY_FAILED');
+    assert.doesNotMatch(err.message, /super-secret|778899/);
+    return true;
+  });
+});
+
+test('Registration can recover an unverified user after mail delivery fails', async () => {
+  resetZitadelLoginUiRateLimitsForTests();
+  const delivered: AuthEmailSendPayload[] = [];
+  let fail = true;
+  let created = false;
+  let resendBody: unknown;
+  const testConfig: ZitadelLoginUiConfig = { ...config, sendEmail: async (payload) => {
+    if (fail) throw new Error('SMTP unavailable');
+    delivered.push(payload);
+  } };
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith(`/v2/oidc/auth_requests/${authRequestId}`)) return response({ authRequest: authRequest() });
+    if (url.endsWith('/v2/users/new')) {
+      if (created) return response({ message: 'User already exists' }, 409);
+      created = true;
+      const body = JSON.parse(String(init?.body || '{}'));
+      assert.deepEqual(body.human.email.returnCode, {});
+      assert.notEqual(body.human.password.password, 'StrongPass1!');
+      return response({ userId: 'unverified-user-777', emailCode: '918273' });
+    }
+    if (url.endsWith('/v2/users')) return response({ result: [{ userId: 'unverified-user-777', human: { email: { email: 'retry-owner@example.test', isVerified: false } } }] });
+    if (url.endsWith('/v2/users/unverified-user-777/email/resend')) {
+      resendBody = JSON.parse(String(init?.body || '{}'));
+      return response({ verificationCode: '554433' });
+    }
+    throw new Error('Unexpected request');
+  };
+  const args = {
+    authRequestId, fullName: 'Lê Văn C', email: 'retry-owner@example.test',
+    password: 'StrongPass1!', confirmPassword: 'StrongPass1!',
+    origin: 'https://qlaok.example.test', config: testConfig, fetchImpl,
+  };
+  await assert.rejects(() => startZitadelRegistration(args), (err: unknown) => {
+    assert.ok(err instanceof ZitadelLoginUiError);
+    assert.equal(err.code, 'EMAIL_DELIVERY_FAILED');
+    assert.doesNotMatch(err.message, /918273/);
+    return true;
+  });
+  assert.equal(delivered.length, 0);
+  fail = false;
+  const recovered = await startZitadelRegistration(args);
+  assert.equal(verifyZitadelRegistrationTicket(recovered.registrationTicket).userId, 'unverified-user-777');
+  assert.deepEqual(resendBody, { returnCode: {} });
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].to, args.email);
+  assert.match(delivered[0].text, /554433/);
+  assert.doesNotMatch(JSON.stringify(recovered), /554433/);
 });

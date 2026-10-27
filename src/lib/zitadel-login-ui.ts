@@ -1,5 +1,15 @@
 import crypto from 'node:crypto';
 import {
+  assertAuthEmailConfigured,
+  AuthEmailError,
+  type AuthEmailLocale,
+  type AuthEmailSendHandler,
+  type AuthEmailSmtpConfig,
+  normalizeAuthEmailLocale,
+  sendQlaokPasswordResetEmail,
+  sendQlaokRegistrationVerificationEmail,
+} from '@/lib/auth-email';
+import {
   getSupabaseDbClient,
   isSupabaseDbClientOverriddenForTests,
 } from '@/lib/db';
@@ -407,6 +417,41 @@ export interface ZitadelLoginUiConfig {
   mobileClientId: string;
   webRedirectUri: string;
   mobileRedirectUri: string;
+  smtpConfig?: AuthEmailSmtpConfig;
+  sendEmail?: AuthEmailSendHandler;
+}
+
+function mapAuthEmailErrorToLoginUiError(err: unknown): ZitadelLoginUiError {
+  if (err instanceof ZitadelLoginUiError) {
+    return err;
+  }
+  if (err instanceof AuthEmailError) {
+    if (err.code === 'EMAIL_SERVICE_NOT_CONFIGURED') {
+      return new ZitadelLoginUiError('EMAIL_SERVICE_NOT_CONFIGURED', 503);
+    }
+    if (err.code === 'INVALID_EMAIL_RECIPIENT') {
+      return new ZitadelLoginUiError('INVALID_EMAIL', 400);
+    }
+    return new ZitadelLoginUiError('EMAIL_DELIVERY_FAILED', 503);
+  }
+  return new ZitadelLoginUiError('EMAIL_DELIVERY_FAILED', 503);
+}
+
+function ensureAuthEmailReady(
+  config: ZitadelLoginUiConfig,
+  overrides?: {
+    smtpConfig?: AuthEmailSmtpConfig;
+    sendEmail?: AuthEmailSendHandler;
+  }
+): void {
+  try {
+    assertAuthEmailConfigured({
+      smtpConfig: overrides?.smtpConfig ?? config.smtpConfig,
+      sendEmail: overrides?.sendEmail ?? config.sendEmail,
+    });
+  } catch (err) {
+    throw mapAuthEmailErrorToLoginUiError(err);
+  }
 }
 
 function getConfig(origin: string): ZitadelLoginUiConfig {
@@ -808,6 +853,7 @@ export interface ZitadelRegistrationTicketPayload {
   fullName: string;
   authRequestId: string;
   clientKind: 'web' | 'mobile';
+  lang?: 'vi' | 'en';
   iat: number;
   exp: number;
 }
@@ -835,6 +881,7 @@ export function issueZitadelRegistrationTicket(params: {
   fullName: string;
   authRequestId: string;
   clientKind: 'web' | 'mobile';
+  lang?: 'vi' | 'en';
   nowSeconds?: number;
   ttlSeconds?: number;
 }): string {
@@ -847,6 +894,9 @@ export function issueZitadelRegistrationTicket(params: {
     fullName: params.fullName.trim(),
     authRequestId: params.authRequestId.trim(),
     clientKind: params.clientKind,
+    ...(params.lang === 'en' || params.lang === 'vi'
+      ? { lang: params.lang }
+      : {}),
     iat: nowSec,
     exp: nowSec + ttlSec,
   };
@@ -905,6 +955,8 @@ export function verifyZitadelRegistrationTicket(
       : obj.clientKind === 'web'
         ? 'web'
         : null;
+  const lang =
+    obj.lang === 'en' ? 'en' : obj.lang === 'vi' ? 'vi' : undefined;
   const exp = typeof obj.exp === 'number' ? obj.exp : 0;
   const iat = typeof obj.iat === 'number' ? obj.iat : 0;
   if (
@@ -930,6 +982,7 @@ export function verifyZitadelRegistrationTicket(
     fullName,
     authRequestId,
     clientKind,
+    ...(lang ? { lang } : {}),
     iat,
     exp,
   };
@@ -1140,19 +1193,65 @@ function extractCreatedZitadelUserId(payload: {
   return '';
 }
 
+function extractZitadelReturnedCode(
+  payload: unknown,
+  codeRegex: RegExp = VERIFICATION_CODE_REGEX
+): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return '';
+  }
+  const record = payload as Record<string, unknown>;
+  const nestedUser =
+    record.user && typeof record.user === 'object' && !Array.isArray(record.user)
+      ? (record.user as Record<string, unknown>)
+      : null;
+  const nestedHuman =
+    record.human &&
+    typeof record.human === 'object' &&
+    !Array.isArray(record.human)
+      ? (record.human as Record<string, unknown>)
+      : null;
+
+  const candidates = [
+    record.emailCode,
+    record.verificationCode,
+    record.code,
+    nestedUser?.emailCode,
+    nestedUser?.verificationCode,
+    nestedUser?.code,
+    nestedHuman?.emailCode,
+    nestedHuman?.verificationCode,
+    nestedHuman?.code,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const stripped = raw.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+    if (!stripped || stripped !== raw.trim()) continue;
+    if (codeRegex.test(stripped)) {
+      return stripped;
+    }
+  }
+  return '';
+}
+
 async function tryRecoverUnverifiedZitadelUser(params: {
   email: string;
   fullName: string;
   authRequestId: string;
   clientKind: 'web' | 'mobile';
+  lang?: AuthEmailLocale;
+  origin: string;
   config: ZitadelLoginUiConfig;
   fetchImpl: FetchLike;
   nowSeconds?: number;
+  smtpConfig?: AuthEmailSmtpConfig;
+  sendEmail?: AuthEmailSendHandler;
 }): Promise<{
   registrationTicket: string;
   authRequestId: string;
   email: string;
 } | null> {
+  const locale = normalizeAuthEmailLocale(params.lang);
   // Never recover or issue a registration ticket if a Qlaok profile already owns this email.
   if (isOwnerLoginUiDbAuthoritative()) {
     try {
@@ -1273,13 +1372,13 @@ async function tryRecoverUnverifiedZitadelUser(params: {
     }
   }
 
-  await callZitadel<Record<string, unknown>>(
+  const resendPayload = await callZitadel<Record<string, unknown>>(
     params.config,
     `/v2/users/${encodeURIComponent(existingUserId)}/email/resend`,
     {
       method: 'POST',
       body: JSON.stringify({
-        sendCode: {},
+        returnCode: {},
       }),
     },
     params.fetchImpl,
@@ -1297,6 +1396,31 @@ async function tryRecoverUnverifiedZitadelUser(params: {
     }
   );
 
+  const verificationCode = extractZitadelReturnedCode(
+    resendPayload,
+    VERIFICATION_CODE_REGEX
+  );
+  if (!verificationCode) {
+    throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
+  }
+
+  try {
+    await sendQlaokRegistrationVerificationEmail({
+      to: params.email,
+      fullName: params.fullName,
+      verificationCode,
+      lang: locale,
+      origin: params.origin,
+      isResend: false,
+      issuerUrl: params.config.issuerUrl,
+      webRedirectUri: params.config.webRedirectUri,
+      smtpConfig: params.smtpConfig ?? params.config.smtpConfig,
+      sendEmail: params.sendEmail ?? params.config.sendEmail,
+    });
+  } catch (err) {
+    throw mapAuthEmailErrorToLoginUiError(err);
+  }
+
   await resetRegistrationVerifyFailureBucket(
     `reg_verify_fail:user:${existingUserId}`
   );
@@ -1307,6 +1431,7 @@ async function tryRecoverUnverifiedZitadelUser(params: {
     fullName: params.fullName,
     authRequestId: params.authRequestId,
     clientKind: params.clientKind,
+    lang: locale,
     nowSeconds: params.nowSeconds,
   });
 
@@ -1329,6 +1454,8 @@ export async function startZitadelRegistration(params: {
   fetchImpl?: FetchLike;
   config?: ZitadelLoginUiConfig;
   nowSeconds?: number;
+  smtpConfig?: AuthEmailSmtpConfig;
+  sendEmail?: AuthEmailSendHandler;
 }): Promise<{
   registrationTicket: string;
   authRequestId: string;
@@ -1341,7 +1468,12 @@ export async function startZitadelRegistration(params: {
   }
   validateOwnerRegistrationPassword(params.password, params.confirmPassword);
 
+  const locale = normalizeAuthEmailLocale(params.lang);
   const config = params.config ?? getConfig(params.origin);
+  ensureAuthEmailReady(config, {
+    smtpConfig: params.smtpConfig,
+    sendEmail: params.sendEmail,
+  });
   const fetchImpl = params.fetchImpl ?? fetch;
 
   let resolvedAuthRequestId = (params.authRequestId || '').trim();
@@ -1350,7 +1482,7 @@ export async function startZitadelRegistration(params: {
       oidc: {
         ...params.oidc,
         loginHint: email,
-        lang: params.lang,
+        lang: locale,
       },
       origin: params.origin,
       config,
@@ -1376,14 +1508,19 @@ export async function startZitadelRegistration(params: {
   let createdUser: {
     id?: unknown;
     userId?: unknown;
-    user?: { id?: unknown; userId?: unknown };
-  };
-  try {
-    createdUser = await callZitadel<{
+    emailCode?: unknown;
+    verificationCode?: unknown;
+    code?: unknown;
+    user?: {
       id?: unknown;
       userId?: unknown;
-      user?: { id?: unknown; userId?: unknown };
-    }>(
+      emailCode?: unknown;
+      verificationCode?: unknown;
+      code?: unknown;
+    };
+  };
+  try {
+    createdUser = await callZitadel<typeof createdUser>(
       config,
       '/v2/users/new',
       {
@@ -1398,11 +1535,11 @@ export async function startZitadelRegistration(params: {
               givenName: nameParts.givenName,
               familyName: nameParts.familyName,
               displayName: nameParts.displayName,
-              preferredLanguage: params.lang === 'en' ? 'en' : 'vi',
+              preferredLanguage: locale,
             },
             email: {
               email,
-              sendCode: {},
+              returnCode: {},
             },
             password: {
               password: temporaryPassword,
@@ -1448,9 +1585,13 @@ export async function startZitadelRegistration(params: {
         fullName: nameParts.displayName,
         authRequestId: authRequest.id,
         clientKind,
+        lang: locale,
+        origin: params.origin,
         config,
         fetchImpl,
         nowSeconds: params.nowSeconds,
+        smtpConfig: params.smtpConfig,
+        sendEmail: params.sendEmail,
       });
       if (recovered) {
         return recovered;
@@ -1464,12 +1605,38 @@ export async function startZitadelRegistration(params: {
     throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
   }
 
+  const verificationCode = extractZitadelReturnedCode(
+    createdUser,
+    VERIFICATION_CODE_REGEX
+  );
+  if (!verificationCode) {
+    throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
+  }
+
+  try {
+    await sendQlaokRegistrationVerificationEmail({
+      to: email,
+      fullName: nameParts.displayName,
+      verificationCode,
+      lang: locale,
+      origin: params.origin,
+      isResend: false,
+      issuerUrl: config.issuerUrl,
+      webRedirectUri: config.webRedirectUri,
+      smtpConfig: params.smtpConfig ?? config.smtpConfig,
+      sendEmail: params.sendEmail ?? config.sendEmail,
+    });
+  } catch (err) {
+    throw mapAuthEmailErrorToLoginUiError(err);
+  }
+
   const registrationTicket = issueZitadelRegistrationTicket({
     userId,
     email,
     fullName: nameParts.displayName,
     authRequestId: authRequest.id,
     clientKind,
+    lang: locale,
     nowSeconds: params.nowSeconds,
   });
 
@@ -1482,16 +1649,24 @@ export async function startZitadelRegistration(params: {
 
 export async function resendZitadelRegistrationCode(params: {
   registrationTicket: string;
+  lang?: 'vi' | 'en';
   origin: string;
   fetchImpl?: FetchLike;
   config?: ZitadelLoginUiConfig;
   nowSeconds?: number;
+  smtpConfig?: AuthEmailSmtpConfig;
+  sendEmail?: AuthEmailSendHandler;
 }): Promise<{ email: string }> {
   const ticket = verifyZitadelRegistrationTicket(
     params.registrationTicket,
     params.nowSeconds
   );
+  const locale = normalizeAuthEmailLocale(params.lang ?? ticket.lang);
   const config = params.config ?? getConfig(params.origin);
+  ensureAuthEmailReady(config, {
+    smtpConfig: params.smtpConfig,
+    sendEmail: params.sendEmail,
+  });
   const fetchImpl = params.fetchImpl ?? fetch;
 
   await fetchZitadelLoginRequest(ticket.authRequestId, params.origin, {
@@ -1499,13 +1674,13 @@ export async function resendZitadelRegistrationCode(params: {
     fetchImpl,
   });
 
-  await callZitadel<Record<string, unknown>>(
+  const resendPayload = await callZitadel<Record<string, unknown>>(
     config,
     `/v2/users/${encodeURIComponent(ticket.userId)}/email/resend`,
     {
       method: 'POST',
       body: JSON.stringify({
-        sendCode: {},
+        returnCode: {},
       }),
     },
     fetchImpl,
@@ -1535,6 +1710,31 @@ export async function resendZitadelRegistrationCode(params: {
       },
     }
   );
+
+  const verificationCode = extractZitadelReturnedCode(
+    resendPayload,
+    VERIFICATION_CODE_REGEX
+  );
+  if (!verificationCode) {
+    throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
+  }
+
+  try {
+    await sendQlaokRegistrationVerificationEmail({
+      to: ticket.email,
+      fullName: ticket.fullName,
+      verificationCode,
+      lang: locale,
+      origin: params.origin,
+      isResend: true,
+      issuerUrl: config.issuerUrl,
+      webRedirectUri: config.webRedirectUri,
+      smtpConfig: params.smtpConfig ?? config.smtpConfig,
+      sendEmail: params.sendEmail ?? config.sendEmail,
+    });
+  } catch (err) {
+    throw mapAuthEmailErrorToLoginUiError(err);
+  }
 
   await resetRegistrationVerifyFailureBucket(
     `reg_verify_fail:ticket:${ticket.userId}:${ticket.iat}`
@@ -1784,6 +1984,49 @@ export function buildZitadelPasswordResetUrlTemplate(
   return `${resolvedOrigin}/login?mode=reset&userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}`;
 }
 
+export function buildQlaokPasswordResetUrl(params: {
+  origin?: string;
+  userId: string;
+  code: string;
+  orgId?: string;
+  lang?: 'vi' | 'en';
+  config?: Pick<
+    ZitadelLoginUiConfig,
+    'issuerUrl' | 'webRedirectUri' | 'organizationId'
+  >;
+}): string {
+  const userId = (params.userId || '').trim();
+  const code = normalizePasswordResetVerificationCode(params.code);
+  if (
+    !userId ||
+    !USER_ID_REGEX.test(userId) ||
+    userId.startsWith('staff-acct-')
+  ) {
+    throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
+  }
+  const resolvedOrigin = resolvePasswordResetQlaokOrigin(
+    params.origin || 'https://qlaok.vunph.click',
+    params.config
+  );
+  const query = new URLSearchParams({
+    mode: 'reset',
+    userID: userId,
+    code,
+  });
+  const orgId = (
+    params.orgId ??
+    params.config?.organizationId ??
+    ''
+  ).trim();
+  if (orgId && USER_ID_REGEX.test(orgId)) {
+    query.set('orgID', orgId);
+  }
+  if (params.lang === 'en' || params.lang === 'vi') {
+    query.set('lang', params.lang);
+  }
+  return `${resolvedOrigin}/login?${query.toString()}`;
+}
+
 function normalizePasswordResetEmail(rawEmail: string): string {
   if (typeof rawEmail !== 'string') {
     throw new ZitadelLoginUiError('INVALID_EMAIL', 400);
@@ -1816,10 +2059,10 @@ function normalizePasswordResetVerificationCode(rawCode: string): string {
   return cleaned;
 }
 
-function extractEligiblePasswordResetHumanUserId(
+function extractEligiblePasswordResetHumanUser(
   searchResult: { result?: unknown[] } | null | undefined,
   expectedEmail: string
-): string | null {
+): { userId: string; displayName?: string } | null {
   if (
     !searchResult ||
     !Array.isArray(searchResult.result) ||
@@ -1887,7 +2130,21 @@ function extractEligiblePasswordResetHumanUserId(
   if (candidateEmail !== expectedEmail || emailRecord.isVerified !== true) {
     return null;
   }
-  return userId;
+  const profileRecord =
+    humanRecord?.profile &&
+    typeof humanRecord.profile === 'object' &&
+    !Array.isArray(humanRecord.profile)
+      ? (humanRecord.profile as Record<string, unknown>)
+      : null;
+  const displayName =
+    typeof profileRecord?.displayName === 'string' &&
+    profileRecord.displayName.trim()
+      ? profileRecord.displayName.trim()
+      : typeof profileRecord?.givenName === 'string' &&
+          profileRecord.givenName.trim()
+        ? profileRecord.givenName.trim()
+        : undefined;
+  return { userId, ...(displayName ? { displayName } : {}) };
 }
 
 export async function requestZitadelPasswordReset(params: {
@@ -1898,9 +2155,16 @@ export async function requestZitadelPasswordReset(params: {
   fetchImpl?: FetchLike;
   config?: ZitadelLoginUiConfig;
   nowMs?: number;
+  smtpConfig?: AuthEmailSmtpConfig;
+  sendEmail?: AuthEmailSendHandler;
 }): Promise<{ ok: true }> {
   const email = normalizePasswordResetEmail(params.email);
+  const locale = normalizeAuthEmailLocale(params.lang);
   const config = params.config ?? getConfig(params.origin);
+  ensureAuthEmailReady(config, {
+    smtpConfig: params.smtpConfig,
+    sendEmail: params.sendEmail,
+  });
   const fetchImpl = params.fetchImpl ?? fetch;
   const nowMs = params.nowMs ?? Date.now();
   const normalizedIp =
@@ -1952,45 +2216,73 @@ export async function requestZitadelPasswordReset(params: {
     }
   );
 
-  const eligibleUserId = extractEligiblePasswordResetHumanUserId(
+  const eligibleUser = extractEligiblePasswordResetHumanUser(
     searchResult,
     email
   );
-  if (!eligibleUserId) {
+  if (!eligibleUser) {
     return { ok: true };
   }
 
-  const urlTemplate = buildZitadelPasswordResetUrlTemplate(
-    params.origin,
-    config
-  );
-  await callZitadel<Record<string, unknown>>(
-    config,
-    `/v2/users/${encodeURIComponent(eligibleUserId)}/password_reset`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        sendLink: {
-          notificationType: 'NOTIFICATION_TYPE_Email',
-          urlTemplate,
-        },
-      }),
-    },
-    fetchImpl,
-    {
-      bearerToken: config.serviceToken,
-      mapError: (status) => {
-        if (status === 401 || status === 403) {
-          return new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
-        }
-        return new ZitadelLoginUiError('ZITADEL_UNAVAILABLE', 503);
+  try {
+    const resetPayload = await callZitadel<Record<string, unknown>>(
+      config,
+      `/v2/users/${encodeURIComponent(eligibleUser.userId)}/password_reset`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          returnCode: {},
+        }),
       },
-    }
-  );
+      fetchImpl,
+      {
+        bearerToken: config.serviceToken,
+        mapError: (status) => {
+          if (status === 401 || status === 403) {
+            return new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
+          }
+          return new ZitadelLoginUiError('ZITADEL_UNAVAILABLE', 503);
+        },
+      }
+    );
 
-  await resetRegistrationVerifyFailureBucket(
-    `password_reset_fail:user:${eligibleUserId}`
-  );
+    const verificationCode = extractZitadelReturnedCode(
+      resetPayload,
+      PASSWORD_RESET_CODE_REGEX
+    );
+    if (!verificationCode) {
+      throw new ZitadelLoginUiError('ZITADEL_BAD_RESPONSE', 503);
+    }
+
+    const resetUrl = buildQlaokPasswordResetUrl({
+      origin: params.origin,
+      userId: eligibleUser.userId,
+      code: verificationCode,
+      orgId: config.organizationId,
+      lang: locale,
+      config,
+    });
+
+    await sendQlaokPasswordResetEmail({
+      to: email,
+      displayName: eligibleUser.displayName,
+      resetUrl,
+      lang: locale,
+      origin: params.origin,
+      issuerUrl: config.issuerUrl,
+      webRedirectUri: config.webRedirectUri,
+      smtpConfig: params.smtpConfig ?? config.smtpConfig,
+      sendEmail: params.sendEmail ?? config.sendEmail,
+    });
+
+    await resetRegistrationVerifyFailureBucket(
+      `password_reset_fail:user:${eligibleUser.userId}`
+    );
+  } catch {
+    // Keep the public response identical to an unknown account. Operational
+    // logs must not contain the recipient, reset code, URL, or provider error.
+    console.error('Password reset email processing failed');
+  }
 
   return { ok: true };
 }
