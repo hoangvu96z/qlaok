@@ -8,3 +8,4 @@ mobile/.env
 mobile/.env.local
 .local-db
 .agy-runs/
+.playwright-cli/
