@@ -25,6 +25,12 @@ function tryResolveTsFile(basePath) {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    // Next.js treats this marker as a build-time boundary; keep it inert in
+    // Node-only review tests that exercise server modules directly.
+    if (specifier === 'server-only') {
+      return { url: 'data:text/javascript,', shortCircuit: true };
+    }
+
     if (specifier === 'next/server') {
       return nextResolve('next/server.js', context);
     }

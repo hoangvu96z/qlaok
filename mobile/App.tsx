@@ -221,7 +221,7 @@ export default function App() {
       setOwnerAuthError(
         err instanceof Error && err.message
           ? err.message
-          : 'Không thể hoàn tất đăng nhập Zitadel OIDC.'
+          : 'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.'
       );
     } finally {
       setOwnerOidcExchanging(false);

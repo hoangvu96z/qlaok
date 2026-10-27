@@ -56,7 +56,7 @@ const VI_MOBILE_DICTIONARY = {
   'auth.recoverySendBtn': 'Gửi yêu cầu khôi phục',
   'auth.recoverySending': 'Đang gửi yêu cầu...',
   'auth.recoverySentNotice':
-    'Nếu {email} là tài khoản được hỗ trợ khôi phục qua email, hướng dẫn đặt lại mật khẩu sẽ được gửi tới hộp thư. Tài khoản mật khẩu nội bộ, dùng thử hoặc quản trị cần liên hệ quản trị viên.',
+    'Nếu {email} là tài khoản được hỗ trợ khôi phục qua email, hướng dẫn đặt lại mật khẩu sẽ được gửi tới hộp thư. Tài khoản dùng thử hoặc quản trị viên vui lòng liên hệ hỗ trợ Qlaok.',
   'auth.recoveryCodeLabel': 'Mã khôi phục trong email',
   'auth.recoveryNewPasswordLabel': 'Mật khẩu mới (tối thiểu 6 ký tự)',
   'auth.recoveryCompleteBtn': 'Cập nhật mật khẩu mới',
@@ -68,29 +68,31 @@ const VI_MOBILE_DICTIONARY = {
   'auth.recoveryErrInvalidEmail':
     'Vui lòng nhập địa chỉ email hợp lệ để khôi phục mật khẩu.',
   'auth.recoveryErrUnsupportedAccount':
-    'Tài khoản dùng thử, quản trị hệ thống hoặc tài khoản mật khẩu cục bộ không hỗ trợ tự đặt lại mật khẩu trên ứng dụng.',
+    'Tài khoản dùng thử, quản trị viên hoặc tài khoản đăng nhập riêng không thể tự đặt lại mật khẩu trong ứng dụng.',
   'auth.recoveryErrUnsupportedProvider':
-    'Tính năng đặt lại mật khẩu qua email hiện không khả dụng trên máy chủ này. Vui lòng mở trang Web hoặc liên hệ quản trị viên.',
+    'Đặt lại mật khẩu qua email hiện chưa khả dụng. Vui lòng dùng trang web hoặc liên hệ hỗ trợ Qlaok.',
   'auth.recoveryErrRateLimited':
     'Bạn đã gửi quá nhiều yêu cầu khôi phục. Vui lòng đợi vài phút rồi thử lại.',
   'auth.recoveryErrNetwork':
-    'Không thể kết nối máy chủ xác thực. Vui lòng kiểm tra mạng và thử lại.',
+    'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.',
   'auth.recoveryErrInvalidCode':
     'Mã khôi phục không hợp lệ hoặc đã hết hạn. Vui lòng kiểm tra lại email.',
   'auth.recoveryErrWeakPassword': 'Mật khẩu mới phải có ít nhất 6 ký tự.',
-  'auth.oidcBadge': 'Zitadel OIDC • PKCE S256',
+  'auth.oidcBadge': 'Tài khoản cửa hàng',
   'auth.oidcSubtitle':
-    'Đăng nhập Chủ quán an toàn qua cổng xác thực Zitadel (auth.vunph.click). Ứng dụng không lưu hay xử lý mật khẩu trực tiếp.',
-  'auth.oidcEmailHintLabel': 'Email gợi ý đăng nhập (không bắt buộc)',
+    'Đăng nhập để quản lý cửa hàng của bạn trên Qlaok.',
+  'auth.ownerSignInError':
+    'Chưa đăng nhập được. Vui lòng thử lại; nếu vẫn gặp lỗi, hãy liên hệ hỗ trợ Qlaok.',
+  'auth.oidcEmailHintLabel': 'Email tài khoản (không bắt buộc)',
   'auth.oidcEmailHintPlaceholder': 'chuquan@tenquan.vn',
-  'auth.oidcSignInBtn': 'Đăng nhập Chủ quán qua Zitadel SSO',
-  'auth.oidcRegisterBtn': 'Tạo tài khoản Chủ quán trên Zitadel',
-  'auth.oidcForgotPasswordBtn': 'Quên mật khẩu trên Zitadel?',
-  'auth.oidcRedirecting': 'Đang mở Zitadel SSO...',
-  'auth.oidcExchanging': 'Đang xác thực phiên Zitadel với Qlaok...',
-  'auth.oidcConfigMissingTitle': 'Chưa cấu hình Zitadel OIDC cho thiết bị di động',
+  'auth.oidcSignInBtn': 'Đăng nhập',
+  'auth.oidcRegisterBtn': 'Tạo tài khoản Chủ quán',
+  'auth.oidcForgotPasswordBtn': 'Quên mật khẩu?',
+  'auth.oidcRedirecting': 'Đang mở màn hình đăng nhập...',
+  'auth.oidcExchanging': 'Đang hoàn tất đăng nhập...',
+  'auth.oidcConfigMissingTitle': 'Đăng nhập tạm thời chưa khả dụng',
   'auth.ownerSessionExpiredNotice':
-    'Phiên đăng nhập Chủ quán đã hết hạn. Vui lòng đăng nhập lại qua Zitadel.',
+    'Phiên đăng nhập Chủ quán đã hết hạn. Vui lòng đăng nhập lại.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Quản lý quán',
@@ -341,7 +343,7 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'auth.recoverySendBtn': 'Send reset instructions',
   'auth.recoverySending': 'Sending request...',
   'auth.recoverySentNotice':
-    'If {email} belongs to an account that supports email recovery, reset instructions will be sent to your inbox. Local-password, demo, or admin accounts require administrator support.',
+    'If {email} supports email recovery, instructions will be sent to your inbox. Demo or administrator accounts should contact Qlaok support.',
   'auth.recoveryCodeLabel': 'Recovery code from email',
   'auth.recoveryNewPasswordLabel': 'New password (at least 6 characters)',
   'auth.recoveryCompleteBtn': 'Save new password',
@@ -353,30 +355,32 @@ const EN_MOBILE_DICTIONARY: Record<MobileTranslationKey, string> = {
   'auth.recoveryErrInvalidEmail':
     'Please enter a valid email address to reset your password.',
   'auth.recoveryErrUnsupportedAccount':
-    'Demo, system, or custom-credential accounts do not support self-service password reset in the app.',
+    'Demo, admin, and manually created accounts cannot reset their password in the app.',
   'auth.recoveryErrUnsupportedProvider':
-    'Email password reset is currently unavailable on this server. Please use the web recovery page or contact your administrator.',
+    'Password reset by email is not available yet. Please use the web page or contact Qlaok support.',
   'auth.recoveryErrRateLimited':
     'Too many reset requests. Please wait a few minutes and try again.',
   'auth.recoveryErrNetwork':
-    'Unable to reach the authentication server. Please check your connection and try again.',
+    'Unable to connect. Check your internet connection and try again.',
   'auth.recoveryErrInvalidCode':
     'The recovery code is invalid or expired. Please check your email and try again.',
   'auth.recoveryErrWeakPassword':
     'New password must be at least 6 characters.',
-  'auth.oidcBadge': 'Zitadel OIDC • PKCE S256',
+  'auth.oidcBadge': 'Store account',
   'auth.oidcSubtitle':
-    'Sign in securely as a Store Owner via Zitadel SSO (auth.vunph.click). Passwords are never entered or stored in the app.',
-  'auth.oidcEmailHintLabel': 'Email login hint (optional)',
+    'Sign in to manage your store on Qlaok.',
+  'auth.ownerSignInError':
+    'We couldn’t sign you in. Please try again; if it keeps happening, contact Qlaok support.',
+  'auth.oidcEmailHintLabel': 'Account email (optional)',
   'auth.oidcEmailHintPlaceholder': 'owner@yourstore.vn',
-  'auth.oidcSignInBtn': 'Sign in as Owner with Zitadel SSO',
-  'auth.oidcRegisterBtn': 'Create Owner account on Zitadel',
-  'auth.oidcForgotPasswordBtn': 'Forgot password on Zitadel?',
-  'auth.oidcRedirecting': 'Opening Zitadel SSO...',
-  'auth.oidcExchanging': 'Verifying Zitadel session with Qlaok...',
-  'auth.oidcConfigMissingTitle': 'Mobile Zitadel OIDC not configured',
+  'auth.oidcSignInBtn': 'Sign in',
+  'auth.oidcRegisterBtn': 'Create Owner account',
+  'auth.oidcForgotPasswordBtn': 'Forgot password?',
+  'auth.oidcRedirecting': 'Opening sign-in...',
+  'auth.oidcExchanging': 'Completing sign-in...',
+  'auth.oidcConfigMissingTitle': 'Sign-in is temporarily unavailable',
   'auth.ownerSessionExpiredNotice':
-    'Your Owner session has expired. Please sign in again with Zitadel.',
+    'Your Owner session has expired. Please sign in again.',
 
   // App Shell & Navigation
   'shell.defaultShopName': 'Store Manager',

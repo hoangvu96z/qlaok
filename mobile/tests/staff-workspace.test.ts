@@ -381,14 +381,14 @@ test('AuthScreen dual-login mode: exposes owner/staff switch, isolates staff fie
   assert.match(formatStaffLoginError(generic401Err, 'vi'), /không đúng/);
   assert.equal(
     formatStaffLoginError(generic401Err, 'en'),
-    'Invalid shop identifier, username, or password.'
+    'The store name, username, or password is incorrect.'
   );
 
-  // Secret redaction check
+  // Unknown errors use safe, user-facing copy instead of exposing details
   const leakedErr = new Error('Failed login for secretPass#99');
   const redactedMsg = formatStaffLoginError(leakedErr, 'vi', ['secretPass#99']);
   assert.doesNotMatch(redactedMsg, /secretPass#99/);
-  assert.match(redactedMsg, /\[REDACTED\]/);
+  assert.match(redactedMsg, /liên hệ hỗ trợ Qlaok/);
 });
 
 test('App session routing: waits for both owner and staff boot, separates StaffWorkspace from owner Workspace, and cleans coexisting owner on staff sign-out', async () => {

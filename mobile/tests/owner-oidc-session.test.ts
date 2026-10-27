@@ -6,9 +6,13 @@ import {
   clearOwnerSession,
   completeOwnerOidcCallback,
   computeMobileS256CodeChallenge,
+  createExpoSecureStoreAdapter,
   createMobilePkcePair,
   DEFAULT_MOBILE_OIDC_REDIRECT_URI,
   DEFAULT_ZITADEL_ISSUER_URL,
+  type ExpoCryptoLike,
+  generateMobileRandomUrlSafe,
+  generateRandomBytes,
   getOwnerAccessToken,
   getOwnerPostgrestToken,
   isOwnerOidcCallbackUrl,
@@ -20,6 +24,7 @@ import {
   parseOwnerOidcCallbackUrl,
   prepareOwnerOidcAuthorizationRequest,
   requireOwnerPostgrestToken,
+  resetOwnerSessionMemoryForTest,
   resolveMobileZitadelOidcConfig,
   revalidateOwnerSession,
   saveOwnerSession,
@@ -583,4 +588,330 @@ test('Owner session and Staff session remain strictly isolated in storage, valid
   assert.equal(staffStillPresent.accessToken, 'staff-bearer-token.sig');
 
   await clearStaffSession(storage);
+});
+
+test('owner createExpoSecureStoreAdapter persists, loads, and clears native owner session with SecureStore and rejects web platform', async () => {
+  const rawStore = new Map<string, string>();
+  const calls: string[] = [];
+
+  const mockExpoSecureStore = {
+    getItemAsync: async (key: string) => {
+      calls.push(`get:${key}`);
+      return rawStore.get(key) ?? null;
+    },
+    setItemAsync: async (key: string, value: string) => {
+      calls.push(`set:${key}`);
+      rawStore.set(key, value);
+    },
+    deleteItemAsync: async (key: string) => {
+      calls.push(`delete:${key}`);
+      rawStore.delete(key);
+    },
+  };
+
+  // Web platform does not use native SecureStore
+  assert.equal(createExpoSecureStoreAdapter(mockExpoSecureStore, 'web'), null);
+  assert.equal(createExpoSecureStoreAdapter(null, 'ios'), null);
+  assert.equal(
+    createExpoSecureStoreAdapter(
+      { getItemAsync: mockExpoSecureStore.getItemAsync },
+      'ios'
+    ),
+    null
+  );
+
+  // Native iOS uses SecureStore
+  const nativeAdapter = createExpoSecureStoreAdapter(
+    mockExpoSecureStore,
+    'ios'
+  );
+  assert.ok(nativeAdapter);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const validOwnerSession = {
+    accessToken: 'owner-native-token.sig',
+    expiresAt: nowSec + 3600,
+    postgrestToken: null,
+    postgrestExpiresAt: null,
+    user: {
+      id: '11111111-2222-4333-8444-555555555555',
+      email: 'owner-native@qlaok.vn',
+      full_name: 'Native Owner',
+      plan: 'pro' as const,
+      role: 'owner' as const,
+    },
+    isAdmin: false,
+  };
+
+  await saveOwnerSession(validOwnerSession, { storage: nativeAdapter, nowSec });
+  assert.equal(rawStore.has(OWNER_SESSION_STORAGE_KEY), true);
+
+  const loaded = await loadOwnerSession(nativeAdapter, nowSec);
+  assert.ok(loaded);
+  assert.equal(loaded.accessToken, 'owner-native-token.sig');
+  assert.equal(loaded.user.id, '11111111-2222-4333-8444-555555555555');
+
+  await clearOwnerSession({ storage: nativeAdapter });
+  assert.equal(rawStore.has(OWNER_SESSION_STORAGE_KEY), false);
+  assert.equal(await loadOwnerSession(nativeAdapter, nowSec), null);
+
+  assert.deepEqual(calls, [
+    `set:${OWNER_SESSION_STORAGE_KEY}`,
+    `get:${OWNER_SESSION_STORAGE_KEY}`,
+    `delete:${OWNER_SESSION_STORAGE_KEY}`,
+    `delete:${OWNER_OIDC_TX_STORAGE_KEY}`,
+    `get:${OWNER_SESSION_STORAGE_KEY}`,
+  ]);
+});
+
+test('loadOwnerSession and saveOwnerSession without explicit storage resolve default memory fallback without native module crashes', async () => {
+  resetOwnerSessionMemoryForTest();
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // Initial load returns null from memory fallback without throwing native module invariants
+  assert.equal(await loadOwnerSession(undefined, nowSec), null);
+
+  const testSession = {
+    accessToken: 'owner-default-token.sig',
+    expiresAt: nowSec + 1800,
+    postgrestToken: null,
+    postgrestExpiresAt: null,
+    user: {
+      id: '22222222-3333-4444-8555-666666666666',
+      email: 'owner-default@qlaok.vn',
+      full_name: 'Default Storage Owner',
+      plan: 'free' as const,
+      role: 'owner' as const,
+    },
+    isAdmin: false,
+  };
+
+  await saveOwnerSession(testSession, { nowSec });
+  const loaded = await loadOwnerSession(undefined, nowSec);
+  assert.ok(loaded);
+  assert.equal(loaded.accessToken, 'owner-default-token.sig');
+
+  await clearOwnerSession();
+  assert.equal(await loadOwnerSession(undefined, nowSec), null);
+
+  resetOwnerSessionMemoryForTest();
+});
+
+test('PKCE CSPRNG provider selection prefers WebCrypto, falls back to Expo Crypto getRandomValues on native, and never uses Math.random', async () => {
+  const storage = createMemoryStorage();
+  const validEnv = {
+    EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+  };
+
+  let mathRandomCalled = false;
+  const originalMathRandom = Math.random;
+  Math.random = () => {
+    mathRandomCalled = true;
+    return originalMathRandom();
+  };
+
+  try {
+    // 1. When both WebCrypto and Expo Crypto are available, WebCrypto is preferred
+    let webCryptoCalls = 0;
+    let expoCryptoCalls = 0;
+    const mockWebCrypto = {
+      getRandomValues<T extends Uint8Array>(arr: T): T {
+        webCryptoCalls += 1;
+        for (let i = 0; i < arr.length; i += 1) {
+          arr[i] = (i + 17) & 0xff;
+        }
+        return arr;
+      },
+    };
+    const mockExpoCrypto = {
+      getRandomValues<T extends Uint8Array>(arr: T): T {
+        expoCryptoCalls += 1;
+        crypto.randomFillSync(arr);
+        return arr;
+      },
+      getRandomBytes(_count: number): Uint8Array {
+        throw new Error('getRandomBytes should not be called when getRandomValues exists');
+      },
+    };
+
+    const webBytes = generateRandomBytes(32, {
+      webCrypto: mockWebCrypto,
+      expoCrypto: mockExpoCrypto,
+    });
+    assert.equal(webBytes.byteLength, 32);
+    assert.equal(webBytes[0], 17);
+    assert.equal(webCryptoCalls, 1);
+    assert.equal(expoCryptoCalls, 0);
+
+    // 2. When WebCrypto is unavailable (e.g. Hermes in Expo Go), Expo Crypto getRandomValues is used
+    const nativeBytes = generateRandomBytes(32, {
+      webCrypto: null,
+      expoCrypto: mockExpoCrypto,
+    });
+    assert.equal(nativeBytes.byteLength, 32);
+    assert.equal(expoCryptoCalls, 1);
+
+    // 3. When WebCrypto stub throws, it falls through to Expo Crypto getRandomValues
+    const throwingWebCrypto = {
+      getRandomValues<T extends Uint8Array>(_arr: T): T {
+        throw new Error('crypto.getRandomValues is not implemented');
+      },
+    };
+    const fallbackBytes = generateRandomBytes(24, {
+      webCrypto: throwingWebCrypto,
+      expoCrypto: mockExpoCrypto,
+    });
+    assert.equal(fallbackBytes.byteLength, 24);
+    assert.equal(expoCryptoCalls, 2);
+
+    // 4. Full PKCE & OIDC authorization preparation works using Expo Crypto without WebCrypto
+    const pkce = createMobilePkcePair(undefined, {
+      webCrypto: null,
+      expoCrypto: mockExpoCrypto,
+    });
+    assert.equal(pkce.codeChallengeMethod, 'S256');
+    assert.match(pkce.codeVerifier, /^[A-Za-z0-9\-._~]{43,128}$/);
+    const expectedChallenge = crypto
+      .createHash('sha256')
+      .update(pkce.codeVerifier, 'ascii')
+      .digest('base64url');
+    assert.equal(pkce.codeChallenge, expectedChallenge);
+
+    const openedUrls: string[] = [];
+    const started = await startOwnerOidcLogin({
+      mode: 'login',
+      loginHint: 'owner@qlaok.vn',
+      lang: 'vi',
+      env: validEnv,
+      storage,
+      randomSources: {
+        webCrypto: null,
+        expoCrypto: mockExpoCrypto,
+      },
+      openUrl: async (url) => {
+        openedUrls.push(url);
+      },
+    });
+    assert.equal(openedUrls.length, 1);
+    const parsedUrl = new URL(started.authorizeUrl);
+    assert.equal(parsedUrl.origin, DEFAULT_ZITADEL_ISSUER_URL);
+    assert.equal(parsedUrl.pathname, '/oauth/v2/authorize');
+    assert.equal(parsedUrl.searchParams.get('client_id'), '312345678901234567@qlaok');
+    assert.equal(
+      parsedUrl.searchParams.get('redirect_uri'),
+      DEFAULT_MOBILE_OIDC_REDIRECT_URI
+    );
+    assert.equal(parsedUrl.searchParams.get('code_challenge_method'), 'S256');
+    assert.equal(parsedUrl.searchParams.get('state'), started.transaction.state);
+    assert.equal(parsedUrl.searchParams.get('nonce'), started.transaction.nonce);
+
+    assert.equal(mathRandomCalled, false);
+  } finally {
+    Math.random = originalMathRandom;
+  }
+});
+
+test('PKCE CSPRNG fails closed with OIDC_CSPRNG_UNAVAILABLE when both WebCrypto and Expo Crypto are unavailable or fail', async () => {
+  const storage = createMemoryStorage();
+  const validEnv = {
+    EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+  };
+
+  let mathRandomCalled = false;
+  const originalMathRandom = Math.random;
+  Math.random = () => {
+    mathRandomCalled = true;
+    return originalMathRandom();
+  };
+
+  try {
+    // 1. Both WebCrypto and Expo Crypto absent
+    assert.throws(
+      () => generateRandomBytes(32, { webCrypto: null, expoCrypto: null }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+    assert.throws(
+      () =>
+        generateMobileRandomUrlSafe(24, { webCrypto: null, expoCrypto: null }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+    assert.throws(
+      () =>
+        createMobilePkcePair(undefined, { webCrypto: null, expoCrypto: null }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+    await assert.rejects(
+      () =>
+        prepareOwnerOidcAuthorizationRequest({
+          env: validEnv,
+          storage,
+          randomSources: { webCrypto: null, expoCrypto: null },
+        }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+
+    // 2. If Expo Crypto getRandomValues throws, fail closed and do NOT fall back to getRandomBytes
+    let getRandomBytesFallbackCalled = false;
+    assert.throws(
+      () =>
+        generateRandomBytes(32, {
+          webCrypto: null,
+          expoCrypto: {
+            getRandomValues() {
+              throw new Error('SecRandomCopyBytes failed');
+            },
+            getRandomBytes(len: number) {
+              getRandomBytesFallbackCalled = true;
+              return new Uint8Array(len);
+            },
+          } as unknown as Partial<ExpoCryptoLike>,
+        }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+    assert.equal(getRandomBytesFallbackCalled, false);
+
+    // 3. A module exposing only getRandomBytes fails closed and that function is never invoked
+    let legacyOnlyGetRandomBytesCalled = false;
+    const legacyOnlyExpoCrypto = {
+      getRandomBytes(len: number) {
+        legacyOnlyGetRandomBytesCalled = true;
+        return new Uint8Array(len);
+      },
+    };
+    assert.throws(
+      () =>
+        generateRandomBytes(32, {
+          webCrypto: null,
+          expoCrypto: legacyOnlyExpoCrypto as unknown as Partial<ExpoCryptoLike>,
+        }),
+      (err: unknown) =>
+        err instanceof MobileOwnerOidcError &&
+        err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+    );
+    assert.equal(legacyOnlyGetRandomBytesCalled, false);
+
+    // 4. Invalid byteLength fails closed
+    for (const invalidLen of [0, -16, 1025, Number.NaN, 12.5]) {
+      assert.throws(
+        () => generateRandomBytes(invalidLen),
+        (err: unknown) =>
+          err instanceof MobileOwnerOidcError &&
+          err.code === 'OIDC_CSPRNG_UNAVAILABLE'
+      );
+    }
+
+    assert.equal(mathRandomCalled, false);
+  } finally {
+    Math.random = originalMathRandom;
+  }
 });

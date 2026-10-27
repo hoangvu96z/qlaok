@@ -15,14 +15,12 @@ import qMenuLogo from '../../assets/q-menu.png';
 import { PRODUCTION_API_URL } from '../lib/supabase';
 import {
   type MobileOidcAuthMode,
-  MobileOwnerOidcError,
   resolveMobileZitadelOidcConfig,
   startOwnerOidcLogin,
 } from '../lib/owner-session';
 import {
   loginStaff,
   type MobileStaffSession,
-  redactSensitiveText,
   StaffAuthError,
 } from '../lib/staff-session';
 import { styles } from '../styles/mobileStyles';
@@ -48,7 +46,7 @@ export interface AuthScreenProps {
 export function formatStaffLoginError(
   err: unknown,
   locale: 'vi' | 'en',
-  secretsToRedact: ReadonlyArray<string | null | undefined> = []
+  _secretsToRedact: ReadonlyArray<string | null | undefined> = []
 ): string {
   const isEn = locale === 'en';
   if (err instanceof StaffAuthError) {
@@ -64,21 +62,14 @@ export function formatStaffLoginError(
     }
     if (err.status === 401 || err.code === 'INVALID_STAFF_CREDENTIALS') {
       if (isEn) {
-        return 'Invalid shop identifier, username, or password.';
+        return 'The store name, username, or password is incorrect.';
       }
-      const cleanServerMsg = redactSensitiveText(
-        err.message || '',
-        secretsToRedact
-      ).trim();
-      return (
-        cleanServerMsg ||
-        'Thông tin cửa hàng, tên đăng nhập hoặc mật khẩu không đúng.'
-      );
+      return 'Tên cửa hàng, tên đăng nhập hoặc mật khẩu không đúng.';
     }
     if (err.code === 'NETWORK_ERROR') {
       return isEn
-        ? 'Unable to connect to the authentication server. Please check your network and try again.'
-        : 'Không thể kết nối máy chủ xác thực. Vui lòng kiểm tra mạng và thử lại.';
+        ? 'Unable to connect. Check your internet connection and try again.'
+        : 'Không thể kết nối. Vui lòng kiểm tra mạng rồi thử lại.';
     }
     if (
       err.status === 503 ||
@@ -90,22 +81,14 @@ export function formatStaffLoginError(
     }
     if (err.code === 'INVALID_STAFF_SESSION_RESPONSE') {
       return isEn
-        ? 'Received an invalid staff session response from the server.'
-        : 'Phản hồi phiên đăng nhập nhân viên từ máy chủ không hợp lệ.';
+        ? 'We could not complete staff sign-in. Please try again or contact Qlaok support.'
+        : 'Không thể hoàn tất đăng nhập nhân viên. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
     }
   }
 
-  const rawMsg = err instanceof Error && err.message ? err.message : '';
-  const safeMsg = redactSensitiveText(rawMsg, secretsToRedact).trim();
-  if (safeMsg && !isEn) {
-    return safeMsg;
-  }
-  if (safeMsg && isEn && !/[^\x00-\x7F]/.test(safeMsg)) {
-    return safeMsg;
-  }
   return isEn
-    ? 'Unable to sign in with staff credentials. Please check your details and try again.'
-    : safeMsg || 'Đăng nhập nhân viên thất bại. Vui lòng kiểm tra lại thông tin.';
+    ? 'Unable to sign in. Check your details and try again, or contact Qlaok support.'
+    : 'Không thể đăng nhập. Vui lòng kiểm tra lại thông tin hoặc liên hệ hỗ trợ Qlaok.';
 }
 
 export const AuthScreen = memo(function AuthScreen({
@@ -178,16 +161,8 @@ export const AuthScreen = memo(function AuthScreen({
         lang: locale === 'en' ? 'en' : 'vi',
         env: oidcConfigEnv,
       });
-    } catch (err) {
-      if (err instanceof MobileOwnerOidcError) {
-        setAuthError(err.message);
-      } else {
-        setAuthError(
-          err instanceof Error && err.message
-            ? err.message
-            : t('auth.recoveryErrNetwork')
-        );
-      }
+    } catch {
+      setAuthError(t('auth.ownerSignInError'));
     } finally {
       setAuthLoading(false);
     }
@@ -235,7 +210,8 @@ export const AuthScreen = memo(function AuthScreen({
       ? sessionNotice?.trim() || t('auth.ownerSessionExpiredNotice')
       : sessionNotice?.trim() || '';
 
-  const combinedOwnerError = authError || ownerAuthError;
+  const combinedOwnerError =
+    authError || (ownerAuthError ? t('auth.ownerSignInError') : '');
 
   return (
     <SafeAreaView style={styles.authContainer}>
@@ -271,8 +247,8 @@ export const AuthScreen = memo(function AuthScreen({
           <Text style={styles.authSubtitle}>
             {accountMode === 'staff'
               ? tb(
-                  'Đăng nhập bằng mã quán và tài khoản nhân viên để hỗ trợ gọi món tại bàn',
-                  'Sign in with shop identifier and staff username for assisted table ordering'
+                  'Đăng nhập bằng tên cửa hàng và tài khoản nhân viên để hỗ trợ gọi món tại bàn',
+                  'Sign in with your store name and staff account to help with table orders'
                 )
               : t('auth.oidcSubtitle')}
           </Text>
@@ -397,17 +373,17 @@ export const AuthScreen = memo(function AuthScreen({
             <>
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>
-                  {tb('Mã quán / Đường dẫn quán', 'Shop Identifier / Slug')}
+                  {tb('Tên cửa hàng hoặc liên kết', 'Store name or link')}
                 </Text>
                 <TextInput
                   testID="staff-shop-identifier-input"
                   accessibilityLabel={tb(
-                    'Mã quán / Đường dẫn quán',
-                    'Shop Identifier / Slug'
+                    'Tên cửa hàng hoặc liên kết',
+                    'Store name or link'
                   )}
                   placeholder={tb(
-                    'VD: pho-hoi-an hoặc /s/pho-hoi-an',
-                    'e.g. pho-hoi-an or /s/pho-hoi-an'
+                    'VD: Phở Hội An',
+                    'e.g. Pho Hoi An'
                   )}
                   placeholderTextColor="#64748b"
                   style={styles.authInput}

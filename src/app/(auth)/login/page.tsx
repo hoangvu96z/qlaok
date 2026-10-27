@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Eye,
+  EyeOff,
   KeyRound,
   Lock,
   Mail,
@@ -78,7 +80,11 @@ function rememberActiveShop(
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { locale, tx } = useAppI18n();
+  const { locale, setLocale, tx } = useAppI18n();
+  const authRequestId =
+    searchParams.get('authRequest') ||
+    searchParams.get('authRequestID') ||
+    '';
 
   const initialMode = (): AuthMode => {
     const modeParam = searchParams.get('mode');
@@ -90,6 +96,11 @@ function LoginContent() {
 
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState('');
+  const [ownerPassword, setOwnerPassword] = useState('');
+  const [showOwnerPassword, setShowOwnerPassword] = useState(false);
+  const [customLoginReady, setCustomLoginReady] = useState(!authRequestId);
+  const [customLoginFlow, setCustomLoginFlow] = useState<'login' | 'registration'>('login');
+  const [customLoginContinueUrl, setCustomLoginContinueUrl] = useState('');
   const [shopIdentifier, setShopIdentifier] = useState(
     () => searchParams.get('shop') || ''
   );
@@ -131,6 +142,15 @@ function LoginContent() {
   }, [router, searchParams, mode, tx]);
 
   useEffect(() => {
+    const langParam = searchParams.get('lang') || searchParams.get('locale');
+    if (langParam === 'en' || langParam === 'vi') {
+      if (langParam !== locale) {
+        setLocale(langParam);
+      }
+    }
+  }, [searchParams, locale, setLocale]);
+
+  useEffect(() => {
     const modeParam = searchParams.get('mode');
     const shopParam = searchParams.get('shop');
     if (shopParam && !shopIdentifier) {
@@ -151,6 +171,62 @@ function LoginContent() {
       setMode('register');
     }
   }, [searchParams, shopIdentifier]);
+
+  useEffect(() => {
+    if (!authRequestId) {
+      setCustomLoginReady(true);
+      setCustomLoginFlow('login');
+      setCustomLoginContinueUrl('');
+      return;
+    }
+
+    let active = true;
+    setCustomLoginReady(false);
+    fetch(
+      `/api/auth/login-ui?authRequest=${encodeURIComponent(authRequestId)}&lang=${locale === 'en' ? 'en' : 'vi'}`,
+      { cache: 'no-store' }
+    )
+      .then(async (response) => {
+        const data = (await response.json()) as {
+          loginHint?: string;
+          flow?: 'login' | 'registration';
+          continueUrl?: string;
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(
+            data.error ||
+              tx(
+                'Liên kết đăng nhập đã hết hạn. Vui lòng quay lại Qlaok và thử lại.',
+                'This sign-in link has expired. Return to Qlaok and try again.'
+              )
+          );
+        }
+        if (!active) return;
+        if (data.loginHint) setEmail(data.loginHint);
+        setCustomLoginFlow(data.flow === 'registration' ? 'registration' : 'login');
+        setCustomLoginContinueUrl(data.continueUrl || '');
+        setCustomLoginReady(true);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setCustomLoginReady(false);
+        setMessage({
+          type: 'error',
+          text:
+            error instanceof Error && error.message
+              ? error.message
+              : tx(
+                  'Chưa thể đăng nhập lúc này. Vui lòng thử lại.',
+                  'We could not sign you in right now. Please try again.'
+                ),
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [authRequestId, locale, tx]);
 
   const handleOwnerOidcRedirect = (targetMode: AuthMode = mode) => {
     setMessage(null);
@@ -242,6 +318,71 @@ function LoginContent() {
       return;
     }
 
+    if (authRequestId) {
+      if (customLoginFlow === 'registration') {
+        if (customLoginContinueUrl) {
+          window.location.assign(customLoginContinueUrl);
+        }
+        return;
+      }
+      if (!customLoginReady || !email.trim() || !ownerPassword) {
+        setMessage({
+          type: 'error',
+          text: tx(
+            'Vui lòng nhập email và mật khẩu.',
+            'Please enter your email and password.'
+          ),
+        });
+        return;
+      }
+      setLoading(true);
+      try {
+        const response = await fetch(
+          `/api/auth/login-ui?lang=${locale === 'en' ? 'en' : 'vi'}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+              authRequestId,
+              loginName: email.trim(),
+              password: ownerPassword,
+              lang: locale === 'en' ? 'en' : 'vi',
+            }),
+          }
+        );
+        const data = (await response.json()) as {
+          callbackUrl?: string;
+          error?: string;
+        };
+        if (!response.ok || !data.callbackUrl) {
+          throw new Error(
+            data.error ||
+              tx(
+                'Email hoặc mật khẩu chưa đúng.',
+                'The email or password is incorrect.'
+              )
+          );
+        }
+        setOwnerPassword('');
+        window.location.assign(data.callbackUrl);
+      } catch (error) {
+        setMessage({
+          type: 'error',
+          text:
+            error instanceof Error && error.message
+              ? error.message
+              : tx(
+                  'Chưa thể đăng nhập lúc này. Vui lòng thử lại.',
+                  'We could not sign you in right now. Please try again.'
+                ),
+        });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     handleOwnerOidcRedirect(mode);
   };
 
@@ -324,7 +465,9 @@ function LoginContent() {
           <div className="mb-6">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-semibold mb-3">
               <Sparkles className="w-3.5 h-3.5" />
-              {mode === 'register'
+              {authRequestId
+                ? tx('Qlaok', 'Qlaok')
+                : mode === 'register'
                 ? tx(
                     'Khởi tạo cửa hàng miễn phí',
                     'Create your free shop'
@@ -339,13 +482,14 @@ function LoginContent() {
                         'Đăng nhập Nhân viên / Thu ngân tại quán',
                         'Shop Staff & Cashier Sign-in'
                       )
-                    : tx(
-                        'Đăng nhập bảo mật',
-                        'Secure sign-in'
-                      )}
+                      : tx('Chào mừng bạn trở lại', 'Welcome back')}
             </div>
             <h1 className="text-2xl font-black text-white">
-              {mode === 'register'
+              {authRequestId
+                ? customLoginFlow === 'registration'
+                  ? tx('Tạo tài khoản Qlaok', 'Create your Qlaok account')
+                  : tx('Đăng nhập để tiếp tục', 'Sign in to continue')
+                : mode === 'register'
                 ? tx('Tạo tài khoản Chủ quán', 'Create Shop Owner Account')
                 : mode === 'reset'
                   ? tx(
@@ -357,7 +501,17 @@ function LoginContent() {
                     : tx('Đăng nhập Chủ quán', 'Sign in as Owner')}
             </h1>
             <p className="text-xs text-stone-400 mt-1">
-              {mode === 'register'
+              {authRequestId
+                ? customLoginFlow === 'registration'
+                  ? tx(
+                      'Hoàn tất đăng ký để bắt đầu sử dụng Qlaok.',
+                      'Finish creating your account to start using Qlaok.'
+                    )
+                  : tx(
+                      'Nhập email và mật khẩu để tiếp tục quản lý cửa hàng.',
+                      'Enter your email and password to manage your store.'
+                    )
+                : mode === 'register'
                 ? tx(
                     'Tạo tài khoản Chủ quán trên trang đăng ký an toàn và tự động quay lại Qlaok để bắt đầu bán hàng.',
                     'Create your owner account on the secure registration page and return to Qlaok automatically.'
@@ -373,12 +527,14 @@ function LoginContent() {
                         'Enter the store name or link, username, and password issued by your shop owner.'
                       )
                     : tx(
-                        'Đăng nhập tài khoản Chủ quán trên trang đăng nhập bảo mật rồi quay lại Qlaok để quản lý quán.',
-                        'Sign in to your owner account on a secure sign-in page and return to Qlaok.'
+                        'Đăng nhập để quản lý cửa hàng của bạn trên Qlaok.',
+                        'Sign in to manage your store on Qlaok.'
                       )}
             </p>
           </div>
 
+          {!authRequestId && (
+          <>
           {/* Mode Tabs */}
           <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-stone-950 border border-stone-800 mb-6">
             <button
@@ -443,6 +599,8 @@ function LoginContent() {
               {tx('Nhân viên', 'Staff')}
             </button>
           </div>
+          </>
+          )}
 
           {/* Error / Success Messages */}
           {message && (
@@ -467,6 +625,19 @@ function LoginContent() {
           )}
 
           {/* Form */}
+          {authRequestId && customLoginFlow === 'registration' ? (
+            <a
+              href={customLoginContinueUrl || undefined}
+              onClick={(event) => {
+                if (!customLoginContinueUrl) event.preventDefault();
+              }}
+              aria-disabled={!customLoginContinueUrl || !customLoginReady}
+              className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 aria-disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+            >
+              {tx('Tiếp tục tạo tài khoản', 'Continue creating account')}
+              <ArrowRight className="w-4 h-4" />
+            </a>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === 'staff' ? (
               <>
@@ -567,24 +738,24 @@ function LoginContent() {
                   <div className="text-xs text-stone-300 leading-relaxed">
                     <p className="font-semibold text-white mb-0.5">
                       {tx(
-                        'Đăng nhập bảo mật',
-                        'Secure sign-in'
+                        'Chào mừng bạn',
+                        'Welcome back'
                       )}
                     </p>
                     <p className="text-stone-400">
                       {mode === 'register'
                         ? tx(
-                            'Bạn sẽ tiếp tục trên trang đăng ký an toàn để tạo tài khoản Chủ quán rồi tự động quay lại Qlaok.',
-                            'You will continue on a secure page to create your owner account and return to Qlaok automatically.'
+                            'Nhập email để bắt đầu tạo tài khoản Chủ quán.',
+                            'Enter your email to start creating an owner account.'
                           )
                         : mode === 'reset'
                           ? tx(
-                              'Bạn sẽ tiếp tục trên trang bảo mật để xác nhận email và đặt lại mật khẩu tài khoản Chủ quán.',
-                              'You will continue on a secure page to verify your email and reset your password.'
+                              'Nhập email để nhận hướng dẫn đặt lại mật khẩu.',
+                              'Enter your email to receive password reset instructions.'
                             )
                           : tx(
-                              'Bạn sẽ tiếp tục trên trang đăng nhập an toàn rồi tự động quay lại Qlaok để quản lý quán.',
-                              'You will continue on a secure sign-in page and return to Qlaok automatically.'
+                              'Đăng nhập để quản lý cửa hàng của bạn trên Qlaok.',
+                              'Sign in to manage your store on Qlaok.'
                             )}
                     </p>
                   </div>
@@ -595,17 +766,17 @@ function LoginContent() {
                     htmlFor="owner-email-hint"
                     className="block text-xs font-medium text-stone-300 mb-1.5"
                   >
-                    {tx(
-                      'Email tài khoản (không bắt buộc)',
-                      'Account email (optional)'
-                    )}
+                    {authRequestId
+                      ? tx('Email hoặc tên đăng nhập', 'Email or username')
+                      : tx('Email tài khoản', 'Account email')}
                   </label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
                       id="owner-email-hint"
                       data-testid="login-owner-email-hint"
-                      type="email"
+                      type="text"
+                      required={Boolean(authRequestId)}
                       autoComplete="username"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
@@ -615,6 +786,48 @@ function LoginContent() {
                   </div>
                 </div>
 
+                {authRequestId && (
+                  <div>
+                    <label
+                      htmlFor="owner-password"
+                      className="block text-xs font-medium text-stone-300 mb-1.5"
+                    >
+                      {tx('Mật khẩu', 'Password')}
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-stone-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        id="owner-password"
+                        data-testid="login-owner-password"
+                        type={showOwnerPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="current-password"
+                        value={ownerPassword}
+                        onChange={(e) => setOwnerPassword(e.target.value)}
+                        className="w-full pl-10 pr-12 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        type="button"
+                        aria-label={
+                          showOwnerPassword
+                            ? tx('Ẩn mật khẩu', 'Hide password')
+                            : tx('Hiện mật khẩu', 'Show password')
+                        }
+                        aria-pressed={showOwnerPassword}
+                        onClick={() => setShowOwnerPassword((visible) => !visible)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-stone-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        {showOwnerPassword ? (
+                          <EyeOff className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!authRequestId && (
                 <div className="flex items-center justify-between text-xs pt-1">
                   {mode !== 'reset' ? (
                     <button
@@ -643,18 +856,21 @@ function LoginContent() {
                     </button>
                   )}
                 </div>
+                )}
               </>
             )}
 
             <button
               type="submit"
               data-testid="login-submit-btn"
-              disabled={loading}
+              disabled={loading || !customLoginReady}
               className="w-full py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
             >
               <span>
                 {loading
-                  ? mode === 'staff'
+                  ? authRequestId
+                    ? tx('Đang đăng nhập...', 'Signing in...')
+                    : mode === 'staff'
                     ? tx('Đang xử lý...', 'Processing...')
                     : tx('Đang mở trang đăng nhập...', 'Opening sign-in page...')
                   : mode === 'staff'
@@ -677,9 +893,10 @@ function LoginContent() {
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+          )}
 
           {/* Divider — Quick Demo Account (only shown for shop owner modes) */}
-          {mode !== 'staff' && (
+          {mode !== 'staff' && (!authRequestId && (
             <>
               <div className="relative my-6">
                 <div className="absolute inset-0 flex items-center">
@@ -709,7 +926,7 @@ function LoginContent() {
                 )}
               </button>
             </>
-          )}
+          ))}
 
           {mode === 'staff' && (
             <div className="mt-5 pt-4 border-t border-stone-800/80 text-center">

@@ -97,11 +97,135 @@ export class MobileOwnerOidcError extends Error {
   }
 }
 
+export interface ExpoSecureStoreLike {
+  getItemAsync: (key: string) => Promise<string | null>;
+  setItemAsync: (key: string, value: string) => Promise<void>;
+  deleteItemAsync: (key: string) => Promise<void>;
+}
+
+export interface WebCryptoRandomLike {
+  getRandomValues: <T extends Uint8Array>(array: T) => T;
+}
+
+export interface ExpoCryptoLike {
+  getRandomValues?: <T extends Uint8Array>(array: T) => T;
+}
+
+export interface RandomBytesSourceOptions {
+  webCrypto?: Partial<WebCryptoRandomLike> | null;
+  expoCrypto?: Partial<ExpoCryptoLike> | null;
+}
+
+/**
+ * Wraps Expo SecureStore into an `OwnerSessionStorageAdapter` for native iOS/Android.
+ * Returns `null` on web or when SecureStore methods are unavailable.
+ */
+export function createExpoSecureStoreAdapter(
+  secureStore: Partial<ExpoSecureStoreLike> | null | undefined,
+  platformOs?: string | null
+): OwnerSessionStorageAdapter | null {
+  if (platformOs === 'web') {
+    return null;
+  }
+  if (
+    !secureStore ||
+    typeof secureStore.getItemAsync !== 'function' ||
+    typeof secureStore.setItemAsync !== 'function' ||
+    typeof secureStore.deleteItemAsync !== 'function'
+  ) {
+    return null;
+  }
+  const getItemAsync = secureStore.getItemAsync.bind(secureStore);
+  const setItemAsync = secureStore.setItemAsync.bind(secureStore);
+  const deleteItemAsync = secureStore.deleteItemAsync.bind(secureStore);
+  return {
+    getItem: (key: string) => getItemAsync(key),
+    setItem: (key: string, value: string) => setItemAsync(key, value),
+    removeItem: (key: string) => deleteItemAsync(key),
+  };
+}
+
 const memoryFallbackStore = new Map<string, string>();
-let defaultStorageAdapterPromise: Promise<OwnerSessionStorageAdapter> | null =
-  null;
+let resolvedNativeStorageCache: OwnerSessionStorageAdapter | null | undefined;
+let resolvedNativeExpoCryptoCache: Partial<ExpoCryptoLike> | null | undefined;
+let defaultStorageAdapter: OwnerSessionStorageAdapter | null = null;
 let cachedOwnerSession: MobileOwnerSession | null = null;
 let cachedOwnerSessionLoaded = false;
+
+function normalizeExpoCryptoModule(
+  mod: unknown
+): Partial<ExpoCryptoLike> | null {
+  if (!mod || typeof mod !== 'object') {
+    return null;
+  }
+  const record = mod as Record<string, unknown>;
+  if (typeof record.getRandomValues === 'function') {
+    return record as Partial<ExpoCryptoLike>;
+  }
+  if (record.default && typeof record.default === 'object') {
+    const def = record.default as Record<string, unknown>;
+    if (typeof def.getRandomValues === 'function') {
+      return def as Partial<ExpoCryptoLike>;
+    }
+  }
+  return null;
+}
+
+function resolveNativeExpoCrypto(): Partial<ExpoCryptoLike> | null {
+  if (resolvedNativeExpoCryptoCache !== undefined) {
+    return resolvedNativeExpoCryptoCache;
+  }
+  try {
+    if (typeof require === 'function') {
+      const rawModule = require('expo-crypto') as unknown;
+      resolvedNativeExpoCryptoCache = normalizeExpoCryptoModule(rawModule);
+      return resolvedNativeExpoCryptoCache;
+    }
+  } catch {
+    // Outside Expo / React Native runtime (e.g. Node test environment)
+  }
+  resolvedNativeExpoCryptoCache = null;
+  return null;
+}
+
+function resolveNativeSecureStoreAdapter(): OwnerSessionStorageAdapter | null {
+  if (resolvedNativeStorageCache !== undefined) {
+    return resolvedNativeStorageCache;
+  }
+  try {
+    if (typeof require === 'function') {
+      const rn = require('react-native') as
+        | { Platform?: { OS?: string } }
+        | null
+        | undefined;
+      const platformOs = rn?.Platform?.OS;
+      if (platformOs && platformOs !== 'web') {
+        const secureStore = require('expo-secure-store') as
+          | Partial<ExpoSecureStoreLike>
+          | null
+          | undefined;
+        resolvedNativeStorageCache = createExpoSecureStoreAdapter(
+          secureStore,
+          platformOs
+        );
+        return resolvedNativeStorageCache;
+      }
+    }
+  } catch {
+    // Falls back to browser/Node storage below
+  }
+  resolvedNativeStorageCache = null;
+  return null;
+}
+
+export function resetOwnerSessionMemoryForTest(): void {
+  defaultStorageAdapter = null;
+  resolvedNativeStorageCache = undefined;
+  resolvedNativeExpoCryptoCache = undefined;
+  cachedOwnerSession = null;
+  cachedOwnerSessionLoaded = false;
+  memoryFallbackStore.clear();
+}
 
 type OwnerSessionListener = (
   session: MobileOwnerSession | null,
@@ -132,61 +256,63 @@ function notifyOwnerSessionListeners(
 }
 
 async function resolveDefaultStorageAdapter(): Promise<OwnerSessionStorageAdapter> {
-  if (defaultStorageAdapterPromise) {
-    return defaultStorageAdapterPromise;
+  if (defaultStorageAdapter) {
+    return defaultStorageAdapter;
   }
 
-  defaultStorageAdapterPromise = (async () => {
-    try {
-      const rn = await import('react-native');
-      if (rn?.Platform?.OS && rn.Platform.OS !== 'web') {
-        const SecureStore = await import('expo-secure-store');
-        if (
-          typeof SecureStore.getItemAsync === 'function' &&
-          typeof SecureStore.setItemAsync === 'function' &&
-          typeof SecureStore.deleteItemAsync === 'function'
-        ) {
-          return {
-            getItem: (key: string) => SecureStore.getItemAsync(key),
-            setItem: (key: string, value: string) =>
-              SecureStore.setItemAsync(key, value),
-            removeItem: (key: string) => SecureStore.deleteItemAsync(key),
-          };
-        }
+  const nativeAdapter = resolveNativeSecureStoreAdapter();
+  if (nativeAdapter) {
+    defaultStorageAdapter = nativeAdapter;
+    return defaultStorageAdapter;
+  }
+
+  let isNativePlatform = false;
+  try {
+    if (typeof require === 'function') {
+      const rn = require('react-native') as
+        | { Platform?: { OS?: string } }
+        | null
+        | undefined;
+      const os = rn?.Platform?.OS;
+      if (os && os !== 'web') {
+        isNativePlatform = true;
       }
-    } catch {
-      // Running in Node test runner or web environment without native modules
     }
+  } catch {
+    // Not running in React Native
+  }
 
-    if (
-      typeof globalThis !== 'undefined' &&
-      'localStorage' in globalThis &&
-      globalThis.localStorage &&
-      typeof globalThis.localStorage.getItem === 'function'
-    ) {
-      return {
-        getItem: async (key: string) => globalThis.localStorage.getItem(key),
-        setItem: async (key: string, value: string) => {
-          globalThis.localStorage.setItem(key, value);
-        },
-        removeItem: async (key: string) => {
-          globalThis.localStorage.removeItem(key);
-        },
-      };
-    }
-
-    return {
-      getItem: async (key: string) => memoryFallbackStore.get(key) ?? null,
+  // Native owner tokens must only be persisted in SecureStore.
+  // When running on native without SecureStore, do not fall back to persistent localStorage.
+  if (
+    !isNativePlatform &&
+    typeof globalThis !== 'undefined' &&
+    'localStorage' in globalThis &&
+    globalThis.localStorage &&
+    typeof globalThis.localStorage.getItem === 'function'
+  ) {
+    defaultStorageAdapter = {
+      getItem: async (key: string) => globalThis.localStorage.getItem(key),
       setItem: async (key: string, value: string) => {
-        memoryFallbackStore.set(key, value);
+        globalThis.localStorage.setItem(key, value);
       },
       removeItem: async (key: string) => {
-        memoryFallbackStore.delete(key);
+        globalThis.localStorage.removeItem(key);
       },
     };
-  })();
+    return defaultStorageAdapter;
+  }
 
-  return defaultStorageAdapterPromise;
+  defaultStorageAdapter = {
+    getItem: async (key: string) => memoryFallbackStore.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      memoryFallbackStore.set(key, value);
+    },
+    removeItem: async (key: string) => {
+      memoryFallbackStore.delete(key);
+    },
+  };
+  return defaultStorageAdapter;
 }
 
 export function isPlaceholderOidcClientId(raw?: string | null): boolean {
@@ -222,9 +348,9 @@ export function resolveMobileZitadelOidcConfig(
       ok: false,
       code: 'OIDC_ISSUER_INVALID',
       messageVi:
-        'Cấu hình EXPO_PUBLIC_ZITADEL_ISSUER_URL không hợp lệ (bắt buộc sử dụng HTTPS).',
+        'Đăng nhập tạm thời chưa khả dụng. Vui lòng liên hệ hỗ trợ Qlaok.',
       messageEn:
-        'Invalid EXPO_PUBLIC_ZITADEL_ISSUER_URL configuration (HTTPS is required).',
+        'Sign-in is temporarily unavailable. Please contact Qlaok support.',
     };
   }
 
@@ -232,8 +358,10 @@ export function resolveMobileZitadelOidcConfig(
     return {
       ok: false,
       code: 'OIDC_REDIRECT_URI_INVALID',
-      messageVi: `Cấu hình redirect URI không hợp lệ. Bắt buộc phải là ${DEFAULT_MOBILE_OIDC_REDIRECT_URI}.`,
-      messageEn: `Invalid OIDC redirect URI configuration. Must be ${DEFAULT_MOBILE_OIDC_REDIRECT_URI}.`,
+      messageVi:
+        'Đăng nhập tạm thời chưa khả dụng. Vui lòng liên hệ hỗ trợ Qlaok.',
+      messageEn:
+        'Sign-in is temporarily unavailable. Please contact Qlaok support.',
     };
   }
 
@@ -242,9 +370,9 @@ export function resolveMobileZitadelOidcConfig(
       ok: false,
       code: 'OIDC_CLIENT_ID_MISSING',
       messageVi:
-        'Chưa cấu hình EXPO_PUBLIC_ZITADEL_CLIENT_ID cho đăng nhập Chủ quán qua Zitadel OIDC. Vui lòng cấu hình Client ID của ứng dụng Native PKCE trên Zitadel.',
+        'Đăng nhập Chủ quán tạm thời chưa khả dụng. Vui lòng liên hệ hỗ trợ Qlaok.',
       messageEn:
-        'Missing EXPO_PUBLIC_ZITADEL_CLIENT_ID for Owner Zitadel OIDC sign-in. Please configure the Zitadel Native PKCE Client ID.',
+        'Owner sign-in is temporarily unavailable. Please contact Qlaok support.',
     };
   }
 
@@ -406,24 +534,81 @@ export function sha256Bytes(message: Uint8Array): Uint8Array {
   return digest;
 }
 
-export function generateRandomBytes(byteLength = 32): Uint8Array {
-  const bytes = new Uint8Array(byteLength);
+export function generateRandomBytes(
+  byteLength = 32,
+  sources?: RandomBytesSourceOptions
+): Uint8Array {
   if (
-    typeof globalThis !== 'undefined' &&
-    globalThis.crypto &&
-    typeof globalThis.crypto.getRandomValues === 'function'
+    typeof byteLength !== 'number' ||
+    !Number.isInteger(byteLength) ||
+    byteLength <= 0 ||
+    byteLength > 1024
   ) {
-    globalThis.crypto.getRandomValues(bytes);
-    return bytes;
+    throw new MobileOwnerOidcError(
+      'OIDC_CSPRNG_UNAVAILABLE',
+      'Không thể bắt đầu đăng nhập an toàn. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.'
+    );
   }
+
+  const hasExplicitWebCrypto =
+    sources !== undefined &&
+    Object.prototype.hasOwnProperty.call(sources, 'webCrypto');
+  const hasExplicitExpoCrypto =
+    sources !== undefined &&
+    Object.prototype.hasOwnProperty.call(sources, 'expoCrypto');
+
+  const webCryptoCandidate = hasExplicitWebCrypto
+    ? sources?.webCrypto
+    : typeof globalThis !== 'undefined'
+      ? (globalThis.crypto as Partial<WebCryptoRandomLike> | undefined)
+      : undefined;
+
+  if (
+    webCryptoCandidate &&
+    typeof webCryptoCandidate.getRandomValues === 'function'
+  ) {
+    try {
+      const bytes = new Uint8Array(byteLength);
+      const returned = webCryptoCandidate.getRandomValues(bytes);
+      const output = returned instanceof Uint8Array ? returned : bytes;
+      if (output.byteLength === byteLength) {
+        return output;
+      }
+    } catch {
+      // Fall through to native Expo Crypto CSPRNG when WebCrypto stub fails
+    }
+  }
+
+  const expoCryptoCandidate = hasExplicitExpoCrypto
+    ? normalizeExpoCryptoModule(sources?.expoCrypto)
+    : resolveNativeExpoCrypto();
+
+  if (expoCryptoCandidate) {
+    if (typeof expoCryptoCandidate.getRandomValues === 'function') {
+      try {
+        const bytes = new Uint8Array(byteLength);
+        const returned = expoCryptoCandidate.getRandomValues(bytes);
+        const output = returned instanceof Uint8Array ? returned : bytes;
+        if (output.byteLength === byteLength) {
+          return output;
+        }
+      } catch {
+        // Fail closed below; never fall back when getRandomValues throws
+      }
+    }
+  }
+
   throw new MobileOwnerOidcError(
     'OIDC_CSPRNG_UNAVAILABLE',
-    'Cryptographically secure random number generator (crypto.getRandomValues) is unavailable.'
+    'Không thể khởi tạo phiên đăng nhập an toàn trên thiết bị này. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.'
   );
 }
 
-export function generateMobileRandomUrlSafe(byteLength = 32): string {
-  return bytesToBase64Url(generateRandomBytes(byteLength));
+export function generateMobileRandomUrlSafe(
+  byteLength = 32,
+  sources?: RandomBytesSourceOptions
+): string {
+  return bytesToBase64Url(generateRandomBytes(byteLength, sources));
 }
 
 export function computeMobileS256CodeChallenge(codeVerifier: string): string {
@@ -431,18 +616,22 @@ export function computeMobileS256CodeChallenge(codeVerifier: string): string {
   if (!PKCE_VERIFIER_REGEX.test(trimmed)) {
     throw new MobileOwnerOidcError(
       'OIDC_PKCE_VERIFIER_INVALID',
-      'PKCE code_verifier must be 43-128 RFC 7636 unreserved characters.'
+      'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
     );
   }
   return bytesToBase64Url(sha256Bytes(asciiToBytes(trimmed)));
 }
 
-export function createMobilePkcePair(customVerifier?: string): {
+export function createMobilePkcePair(
+  customVerifier?: string,
+  sources?: RandomBytesSourceOptions
+): {
   codeVerifier: string;
   codeChallenge: string;
   codeChallengeMethod: 'S256';
 } {
-  const codeVerifier = customVerifier || generateMobileRandomUrlSafe(32);
+  const codeVerifier =
+    customVerifier || generateMobileRandomUrlSafe(32, sources);
   const codeChallenge = computeMobileS256CodeChallenge(codeVerifier);
   return {
     codeVerifier,
@@ -509,6 +698,7 @@ export async function prepareOwnerOidcAuthorizationRequest(options?: {
   state?: string;
   nonce?: string;
   codeVerifier?: string;
+  randomSources?: RandomBytesSourceOptions;
 }): Promise<{
   authorizeUrl: string;
   transaction: PendingOwnerOidcTransaction;
@@ -525,9 +715,14 @@ export async function prepareOwnerOidcAuthorizationRequest(options?: {
 
   const { config } = resolution;
   const nowMs = options?.nowMs ?? Date.now();
-  const state = options?.state || generateMobileRandomUrlSafe(24);
-  const nonce = options?.nonce || generateMobileRandomUrlSafe(24);
-  const pkce = createMobilePkcePair(options?.codeVerifier);
+  const state =
+    options?.state || generateMobileRandomUrlSafe(24, options?.randomSources);
+  const nonce =
+    options?.nonce || generateMobileRandomUrlSafe(24, options?.randomSources);
+  const pkce = createMobilePkcePair(
+    options?.codeVerifier,
+    options?.randomSources
+  );
   const mode: MobileOidcAuthMode = options?.mode ?? 'login';
 
   const transaction: PendingOwnerOidcTransaction = {
@@ -573,6 +768,7 @@ export async function startOwnerOidcLogin(options?: {
   env?: Record<string, string | undefined>;
   storage?: OwnerSessionStorageAdapter;
   openUrl?: (url: string) => Promise<unknown>;
+  randomSources?: RandomBytesSourceOptions;
 }): Promise<{
   authorizeUrl: string;
   transaction: PendingOwnerOidcTransaction;
@@ -581,8 +777,26 @@ export async function startOwnerOidcLogin(options?: {
   if (options?.openUrl) {
     await options.openUrl(prepared.authorizeUrl);
   } else {
-    const rn = await import('react-native');
-    await rn.Linking.openURL(prepared.authorizeUrl);
+    let openUrlFn: ((url: string) => Promise<unknown>) | undefined;
+    try {
+      if (typeof require === 'function') {
+        const rn = require('react-native') as
+          | { Linking?: { openURL?: (url: string) => Promise<unknown> } }
+          | null
+          | undefined;
+        if (typeof rn?.Linking?.openURL === 'function') {
+          openUrlFn = rn.Linking.openURL.bind(rn.Linking);
+        }
+      }
+    } catch {
+      // Fallback to dynamic import below
+    }
+    if (openUrlFn) {
+      await openUrlFn(prepared.authorizeUrl);
+    } else {
+      const rn = await import('react-native');
+      await rn.Linking.openURL(prepared.authorizeUrl);
+    }
   }
   return {
     authorizeUrl: prepared.authorizeUrl,
@@ -615,7 +829,7 @@ export function parseOwnerOidcCallbackUrl(
   if (!isOwnerOidcCallbackUrl(rawUrl)) {
     throw new MobileOwnerOidcError(
       'OIDC_CALLBACK_URI_MISMATCH',
-      `Callback URL must match ${DEFAULT_MOBILE_OIDC_REDIRECT_URI}.`
+      'Không thể hoàn tất đăng nhập. Vui lòng thử lại.'
     );
   }
 
@@ -636,7 +850,7 @@ export function parseOwnerOidcCallbackUrl(
     if (queryParams.has(forbidden) || fragmentParams.has(forbidden)) {
       throw new MobileOwnerOidcError(
         'OIDC_IMPLICIT_TOKEN_FORBIDDEN',
-        'Tokens are not allowed in redirect URLs. Authorization Code + PKCE is required.'
+        'Phản hồi đăng nhập không an toàn. Yêu cầu bị từ chối để bảo vệ tài khoản.'
       );
     }
   }
@@ -667,7 +881,7 @@ export function parseOwnerOidcCallbackUrl(
   if (!code || !state) {
     throw new MobileOwnerOidcError(
       'OIDC_CALLBACK_MISSING_PARAMS',
-      'Thiếu mã xác thực (code) hoặc state từ Zitadel callback.'
+      'Thông tin phản hồi đăng nhập không đầy đủ. Vui lòng thử đăng nhập lại.'
     );
   }
 
@@ -981,7 +1195,7 @@ export async function requireOwnerPostgrestToken(
   if (!token) {
     throw new MobileOwnerOidcError(
       'POSTGREST_AUTH_TOKEN_UNAVAILABLE',
-      'Missing or expired server-issued authenticated PostgREST JWT. Direct PostgREST queries fail closed without falling back to anon access.',
+      'Phiên đăng nhập đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.',
       401
     );
   }
@@ -1007,7 +1221,7 @@ export async function completeOwnerOidcCallback(
   if (!rawTx) {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_MISSING',
-      'Không tìm thấy phiên giao dịch đăng nhập OIDC đang chờ. Vui lòng thử đăng nhập lại.'
+      'Không tìm thấy phiên đăng nhập đang chờ. Vui lòng thử đăng nhập lại.'
     );
   }
 
@@ -1017,7 +1231,7 @@ export async function completeOwnerOidcCallback(
   } catch {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_INVALID',
-      'Dữ liệu giao dịch OIDC không hợp lệ.'
+      'Dữ liệu phiên đăng nhập không hợp lệ. Vui lòng thử lại.'
     );
   }
 
@@ -1035,7 +1249,7 @@ export async function completeOwnerOidcCallback(
   ) {
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_EXPIRED',
-      'Phiên xác thực Zitadel đã hết hạn. Vui lòng thử đăng nhập lại.'
+      'Phiên đăng nhập đã hết hạn. Vui lòng thử đăng nhập lại.'
     );
   }
 
@@ -1046,20 +1260,23 @@ export async function completeOwnerOidcCallback(
     ) {
       throw new MobileOwnerOidcError(
         'OIDC_STATE_MISMATCH',
-        'State phản hồi từ Zitadel không khớp với phiên đăng nhập.'
+        'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
       );
     }
+    const friendlyProviderMessage =
+      parsedCallback.error === 'access_denied'
+        ? 'Yêu cầu đăng nhập đã bị hủy hoặc bị từ chối. Vui lòng thử lại.'
+        : 'Đăng nhập không thành công. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
     throw new MobileOwnerOidcError(
       'OIDC_PROVIDER_ERROR',
-      parsedCallback.errorDescription ||
-        `Đăng nhập Zitadel không thành công (${parsedCallback.error}).`
+      friendlyProviderMessage
     );
   }
 
   if (!compareConstantTime(parsedCallback.state, tx.state)) {
     throw new MobileOwnerOidcError(
       'OIDC_STATE_MISMATCH',
-      'State xác thực OIDC không khớp. Yêu cầu bị từ chối để bảo vệ an toàn.'
+      'Yêu cầu đăng nhập không hợp lệ. Yêu cầu bị từ chối để bảo vệ tài khoản.'
     );
   }
 
@@ -1087,9 +1304,7 @@ export async function completeOwnerOidcCallback(
   } catch (err) {
     throw new MobileOwnerOidcError(
       'OIDC_EXCHANGE_NETWORK_ERROR',
-      `Không thể kết nối máy chủ Qlaok để hoàn tất đăng nhập (${
-        err instanceof Error ? err.message : 'network error'
-      }).`
+      'Không thể kết nối để hoàn tất đăng nhập. Vui lòng kiểm tra mạng rồi thử lại.'
     );
   }
 
@@ -1103,9 +1318,7 @@ export async function completeOwnerOidcCallback(
         ? payload.code
         : 'OIDC_EXCHANGE_FAILED';
     const message =
-      typeof payload.error === 'string' && payload.error
-        ? payload.error
-        : `Đổi mã đăng nhập thất bại (HTTP ${res.status}).`;
+      'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.';
     throw new MobileOwnerOidcError(code, message, res.status);
   }
 
