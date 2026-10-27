@@ -116,7 +116,7 @@ describe('login page staff mode UI contract and field isolation', () => {
     assert.match(loginSource, /data-testid="login-staff-shop-identifier"/);
     assert.match(
       loginSource,
-      /tx\(\s*['"]Cửa hàng \(slug, ID hoặc liên kết\) \*['"]\s*,\s*['"]Store \(slug, ID, or storefront URL\) \*['"]\s*\)/
+      /tx\(\s*['"]Tên cửa hàng hoặc liên kết \*['"]\s*,\s*['"]Store name or link \*['"]\s*\)/
     );
     assert.match(loginSource, /autoComplete="organization"/);
     assert.match(loginSource, /spellCheck=\{false\}/);
