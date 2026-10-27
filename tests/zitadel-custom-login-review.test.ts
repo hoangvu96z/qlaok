@@ -1135,3 +1135,147 @@ test('getClientIp trusts only X-Real-IP, ignores spoofed X-Forwarded-For, and pe
     resetZitadelLoginUiRateLimitsForTests();
   }
 });
+
+test('enforceZitadelLoginUiRateLimit and registration verification failure tracking use exact RPC contract and convert ms to integer seconds', async () => {
+  const prevUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://qlaok.vunph.click';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key';
+
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+
+  const mockDbClient = {
+    async rpc(fn: string, args: Record<string, unknown>) {
+      rpcCalls.push({ fn, args });
+      if (fn === 'check_staff_login_rate_limit_atomic') {
+        return { data: { allowed: true, failure_count: 0 }, error: null };
+      }
+      if (fn === 'record_staff_login_failure_atomic') {
+        return {
+          data: {
+            allowed: true,
+            newly_blocked: false,
+            failure_count: 1,
+            retry_after_sec: 0,
+            blocked_until: null,
+          },
+          error: null,
+        };
+      }
+      if (fn === 'reset_staff_login_rate_limit_atomic') {
+        return { data: true, error: null };
+      }
+      throw new Error(`Unexpected RPC call: ${fn}`);
+    },
+  };
+
+  setSupabaseDbClientForTests(mockDbClient as never);
+
+  try {
+    // 1. Test enforceZitadelLoginUiRateLimit default window (600,000 ms -> 600 s)
+    const fixedNowMs = 1_760_000_000_000;
+    await enforceZitadelLoginUiRateLimit('test-login-user@example.test', 12, 600_000, fixedNowMs);
+
+    assert.equal(rpcCalls.length, 2);
+    const [checkCall, recordCall] = rpcCalls;
+
+    assert.equal(checkCall.fn, 'check_staff_login_rate_limit_atomic');
+    assert.deepEqual(Object.keys(checkCall.args).sort(), ['p_bucket_key', 'p_now', 'p_window_seconds'].sort());
+    assert.match(String(checkCall.args.p_bucket_key), /^rl-staff-[0-9a-f]{64}$/);
+    assert.equal(checkCall.args.p_now, new Date(fixedNowMs).toISOString());
+    assert.equal(checkCall.args.p_window_seconds, 600);
+
+    assert.equal(recordCall.fn, 'record_staff_login_failure_atomic');
+    assert.deepEqual(
+      Object.keys(recordCall.args).sort(),
+      ['p_block_seconds', 'p_bucket_key', 'p_max_attempts', 'p_now', 'p_window_seconds'].sort()
+    );
+    assert.equal(recordCall.args.p_block_seconds, 600);
+    assert.equal(recordCall.args.p_window_seconds, 600);
+    assert.equal(recordCall.args.p_max_attempts, 13); // maxAttempts + 1
+    assert.equal(recordCall.args.p_now, new Date(fixedNowMs).toISOString());
+    assert.match(String(recordCall.args.p_bucket_key), /^rl-staff-[0-9a-f]{64}$/);
+
+    // Assert absence of outdated / unsupported argument names
+    assert.equal('p_window_ms' in recordCall.args, false, 'must not pass p_window_ms');
+    assert.equal('p_lockout_ms' in recordCall.args, false, 'must not pass p_lockout_ms');
+
+    // 2. Test custom and sub-second millisecond-to-second conversion in enforceZitadelLoginUiRateLimit
+    rpcCalls.length = 0;
+    await enforceZitadelLoginUiRateLimit('custom-window@example.test', 5, 45_000, fixedNowMs);
+    const customRecordCall = rpcCalls.find((c) => c.fn === 'record_staff_login_failure_atomic');
+    assert.ok(customRecordCall);
+    assert.equal(customRecordCall.args.p_window_seconds, 45);
+    assert.equal(customRecordCall.args.p_block_seconds, 45);
+
+    rpcCalls.length = 0;
+    await enforceZitadelLoginUiRateLimit('fractional-window@example.test', 5, 1_500, fixedNowMs);
+    const fractionalRecordCall = rpcCalls.find((c) => c.fn === 'record_staff_login_failure_atomic');
+    assert.ok(fractionalRecordCall);
+    assert.equal(fractionalRecordCall.args.p_window_seconds, 2);
+    assert.equal(fractionalRecordCall.args.p_block_seconds, 2);
+
+    // 3. Test registration verification failure tracking in completeZitadelRegistrationVerification
+    rpcCalls.length = 0;
+    const regTicket = issueZitadelRegistrationTicket({
+      userId: '289900001111222233',
+      email: 'rpc-contract-test@example.test',
+      fullName: 'Test RPC User',
+      authRequestId,
+      clientKind: 'web',
+      nowSeconds: Math.floor(fixedNowMs / 1000),
+    });
+
+    const failingVerifyFetch: typeof fetch = async () => {
+      return response({ message: 'Invalid verification code' }, 400);
+    };
+
+    await assert.rejects(
+      () =>
+        completeZitadelRegistrationVerification({
+          registrationTicket: regTicket,
+          verificationCode: '123456',
+          password: 'StrongPass1!',
+          origin: 'https://qlaok.example.test',
+          config,
+          fetchImpl: failingVerifyFetch,
+          nowSeconds: Math.floor(fixedNowMs / 1000),
+        }),
+      (err: unknown) =>
+        err instanceof ZitadelLoginUiError &&
+        err.code === 'VERIFICATION_CODE_INVALID'
+    );
+
+    // Must have recorded failure in both ticket bucket and user bucket
+    const regRecordCalls = rpcCalls.filter((c) => c.fn === 'record_staff_login_failure_atomic');
+    assert.equal(regRecordCalls.length, 2, 'records failure for ticket and user buckets');
+
+    for (const call of regRecordCalls) {
+      assert.deepEqual(
+        Object.keys(call.args).sort(),
+        ['p_block_seconds', 'p_bucket_key', 'p_max_attempts', 'p_now', 'p_window_seconds'].sort()
+      );
+      assert.equal(
+        call.args.p_window_seconds,
+        900,
+        'REGISTRATION_VERIFY_LOCKOUT_MS (900_000 ms) converted to 900 seconds'
+      );
+      assert.equal(
+        call.args.p_block_seconds,
+        900,
+        'REGISTRATION_VERIFY_LOCKOUT_MS (900_000 ms) converted to 900 seconds'
+      );
+      assert.equal(call.args.p_max_attempts, 5); // MAX_REGISTRATION_VERIFY_FAILURES
+      assert.match(String(call.args.p_bucket_key), /^rl-staff-[0-9a-f]{64}$/);
+      assert.equal('p_window_ms' in call.args, false, 'must not pass p_window_ms');
+      assert.equal('p_lockout_ms' in call.args, false, 'must not pass p_lockout_ms');
+    }
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (prevUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl;
+    if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    resetZitadelLoginUiRateLimitsForTests();
+  }
+});

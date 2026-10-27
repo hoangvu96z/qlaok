@@ -135,12 +135,14 @@ export async function enforceZitadelLoginUiRateLimit(
     };
     if (typeof sb?.rpc === 'function') {
       const nowIso = new Date(nowMs).toISOString();
+      const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
       let checkData: unknown;
       let checkErr: { message?: string } | null = null;
       try {
         const checkRes = await sb.rpc('check_staff_login_rate_limit_atomic', {
           p_bucket_key: bucketKey,
           p_now: nowIso,
+          p_window_seconds: windowSeconds,
         });
         checkData = checkRes.data;
         checkErr = checkRes.error;
@@ -165,9 +167,9 @@ export async function enforceZitadelLoginUiRateLimit(
         const recordRes = await sb.rpc('record_staff_login_failure_atomic', {
           p_bucket_key: bucketKey,
           p_now: nowIso,
-          p_window_ms: windowMs,
           p_max_attempts: maxAttempts + 1,
-          p_lockout_ms: windowMs,
+          p_window_seconds: windowSeconds,
+          p_block_seconds: windowSeconds,
         });
         recordData = recordRes.data;
         recordErr = recordRes.error;
@@ -213,11 +215,16 @@ async function checkRegistrationVerifyFailureBucket(
     };
     if (typeof sb?.rpc === 'function') {
       try {
+        const lockoutSeconds = Math.max(
+          1,
+          Math.ceil(REGISTRATION_VERIFY_LOCKOUT_MS / 1000)
+        );
         const { data, error } = await sb.rpc(
           'check_staff_login_rate_limit_atomic',
           {
             p_bucket_key: bucketKey,
             p_now: new Date(nowMs).toISOString(),
+            p_window_seconds: lockoutSeconds,
           }
         );
         if (error || !data || typeof data !== 'object' || Array.isArray(data)) {
@@ -265,14 +272,18 @@ async function recordRegistrationVerifyFailureBucket(
     };
     if (typeof sb?.rpc === 'function') {
       try {
+        const lockoutSeconds = Math.max(
+          1,
+          Math.ceil(REGISTRATION_VERIFY_LOCKOUT_MS / 1000)
+        );
         const { data, error } = await sb.rpc(
           'record_staff_login_failure_atomic',
           {
             p_bucket_key: bucketKey,
             p_now: new Date(nowMs).toISOString(),
-            p_window_ms: REGISTRATION_VERIFY_LOCKOUT_MS,
             p_max_attempts: MAX_REGISTRATION_VERIFY_FAILURES,
-            p_lockout_ms: REGISTRATION_VERIFY_LOCKOUT_MS,
+            p_window_seconds: lockoutSeconds,
+            p_block_seconds: lockoutSeconds,
           }
         );
         if (error || !data || typeof data !== 'object' || Array.isArray(data)) {
