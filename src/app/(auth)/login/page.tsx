@@ -105,7 +105,17 @@ function LoginContent() {
   useEffect(() => {
     const callbackError = searchParams.get('error');
     if (callbackError) {
-      setMessage({ type: 'error', text: callbackError });
+      const friendlyText =
+        callbackError === 'access_denied'
+          ? tx(
+              'Yêu cầu đăng nhập đã bị hủy hoặc từ chối. Vui lòng thử lại.',
+              'Sign-in was cancelled or denied. Please try again.'
+            )
+          : tx(
+              'Đăng nhập không thành công. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.',
+              'Sign-in was unsuccessful. Please try again or contact Qlaok support.'
+            );
+      setMessage({ type: 'error', text: friendlyText });
     }
 
     const stored = getStoredAuthOwner();
@@ -118,7 +128,7 @@ function LoginContent() {
         router.replace('/dashboard');
       }
     }
-  }, [router, searchParams, mode]);
+  }, [router, searchParams, mode, tx]);
 
   useEffect(() => {
     const modeParam = searchParams.get('mode');
@@ -200,11 +210,10 @@ function LoginContent() {
         const data = await res.json();
         if (!res.ok || !data.user) {
           throw new Error(
-            data.error ||
-              tx(
-                'Không thể đăng nhập nhân viên. Vui lòng kiểm tra mã quán, tài khoản và mật khẩu.',
-                'Staff sign-in failed. Please verify store slug, username, and password.'
-              )
+            tx(
+              'Không thể đăng nhập nhân viên. Vui lòng kiểm tra thông tin rồi thử lại.',
+              'Unable to sign in. Check your details and try again.'
+            )
           );
         }
 
@@ -219,16 +228,13 @@ function LoginContent() {
         }
         router.push('/dashboard/orders');
         return;
-      } catch (err) {
+      } catch {
         setMessage({
           type: 'error',
-          text:
-            err instanceof Error
-              ? err.message
-              : tx(
-                  'Lỗi kết nối máy chủ. Vui lòng thử lại.',
-                  'Server connection failed. Please try again.'
-                ),
+          text: tx(
+            'Không thể đăng nhập nhân viên. Vui lòng kiểm tra thông tin rồi thử lại.',
+            'Unable to sign in. Check your details and try again.'
+          ),
         });
       } finally {
         setLoading(false);
@@ -320,13 +326,13 @@ function LoginContent() {
               <Sparkles className="w-3.5 h-3.5" />
               {mode === 'register'
                 ? tx(
-                    'Khởi tạo cửa hàng miễn phí (Zitadel OIDC)',
-                    'Create your free shop (Zitadel OIDC)'
+                    'Khởi tạo cửa hàng miễn phí',
+                    'Create your free shop'
                   )
                 : mode === 'reset'
                   ? tx(
-                      'Khôi phục mật khẩu qua Zitadel',
-                      'Password recovery via Zitadel'
+                      'Khôi phục mật khẩu Chủ quán',
+                      'Reset Shop Owner Password'
                     )
                   : mode === 'staff'
                     ? tx(
@@ -334,8 +340,8 @@ function LoginContent() {
                         'Shop Staff & Cashier Sign-in'
                       )
                     : tx(
-                        'Quản lý Cửa hàng — Zitadel SSO',
-                        'Shop Portal — Zitadel SSO'
+                        'Đăng nhập bảo mật',
+                        'Secure sign-in'
                       )}
             </div>
             <h1 className="text-2xl font-black text-white">
@@ -348,27 +354,27 @@ function LoginContent() {
                     )
                   : mode === 'staff'
                     ? tx('Đăng nhập Nhân viên', 'Staff Sign In')
-                    : tx('Đăng nhập Cửa hàng', 'Sign in to Your Shop')}
+                    : tx('Đăng nhập Chủ quán', 'Sign in as Owner')}
             </h1>
             <p className="text-xs text-stone-400 mt-1">
               {mode === 'register'
                 ? tx(
-                    'Đăng ký an toàn trên cổng xác thực Zitadel (Authorization Code + PKCE) và tạo gian hàng QR ngay.',
-                    'Register securely via Zitadel OIDC (Authorization Code + PKCE) and launch your QR storefront.'
+                    'Tạo tài khoản Chủ quán trên trang đăng ký an toàn và tự động quay lại Qlaok để bắt đầu bán hàng.',
+                    'Create your owner account on the secure registration page and return to Qlaok automatically.'
                   )
                 : mode === 'reset'
                   ? tx(
-                      'Chuyển tới trang xác thực Zitadel để khôi phục và đặt lại mật khẩu tài khoản Chủ quán.',
-                      'Continue to Zitadel hosted authentication to recover and reset your owner password.'
+                      'Tiếp tục trên trang đăng nhập bảo mật để đặt lại mật khẩu cho tài khoản Chủ quán của bạn.',
+                      'Continue on the secure sign-in page to reset your owner account password.'
                     )
                   : mode === 'staff'
                     ? tx(
-                        'Sử dụng Mã định danh quán, Tài khoản và Mật khẩu do chủ quán cấp để vào quầy đơn hàng.',
-                        'Use the Shop Slug/Link, Username, and Password issued by your shop owner.'
+                        'Nhập tên cửa hàng hoặc liên kết, tài khoản và mật khẩu do chủ quán cấp để vào quầy đơn hàng.',
+                        'Enter the store name or link, username, and password issued by your shop owner.'
                       )
                     : tx(
-                        'Chủ quán đăng nhập an toàn qua Zitadel OIDC (PKCE). Mật khẩu không bao giờ đi qua trình duyệt Qlaok.',
-                        'Shop owners sign in via Zitadel OIDC (PKCE). Your password is never collected by Qlaok.'
+                        'Đăng nhập tài khoản Chủ quán trên trang đăng nhập bảo mật rồi quay lại Qlaok để quản lý quán.',
+                        'Sign in to your owner account on a secure sign-in page and return to Qlaok.'
                       )}
             </p>
           </div>
@@ -470,8 +476,8 @@ function LoginContent() {
                     className="block text-xs font-medium text-stone-300 mb-1.5"
                   >
                     {tx(
-                      'Cửa hàng (slug, ID hoặc liên kết) *',
-                      'Store (slug, ID, or storefront URL) *'
+                      'Tên cửa hàng hoặc liên kết *',
+                      'Store name or link *'
                     )}
                   </label>
                   <div className="relative">
@@ -488,8 +494,8 @@ function LoginContent() {
                       value={shopIdentifier}
                       onChange={(e) => setShopIdentifier(e.target.value)}
                       placeholder={tx(
-                        'VD: pho-hoi-an hoặc qlaok.vunph.click/s/pho-hoi-an',
-                        'e.g. pho-hoi-an or qlaok.vunph.click/s/pho-hoi-an'
+                        'VD: Phở Hội An',
+                        'e.g. Pho Hoi An'
                       )}
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
                     />
@@ -561,24 +567,24 @@ function LoginContent() {
                   <div className="text-xs text-stone-300 leading-relaxed">
                     <p className="font-semibold text-white mb-0.5">
                       {tx(
-                        'Xác thực tập trung Zitadel OIDC (Authorization Code + PKCE)',
-                        'Zitadel Hosted OIDC (Authorization Code + PKCE)'
+                        'Đăng nhập bảo mật',
+                        'Secure sign-in'
                       )}
                     </p>
                     <p className="text-stone-400">
                       {mode === 'register'
                         ? tx(
-                            'Bạn sẽ được chuyển tới cổng Zitadel (auth.vunph.click) để tạo tài khoản Chủ quán và tự động quay lại Qlaok.',
-                            'You will be redirected to Zitadel (auth.vunph.click) to register your owner account and return to Qlaok automatically.'
+                            'Bạn sẽ tiếp tục trên trang đăng ký an toàn để tạo tài khoản Chủ quán rồi tự động quay lại Qlaok.',
+                            'You will continue on a secure page to create your owner account and return to Qlaok automatically.'
                           )
                         : mode === 'reset'
                           ? tx(
-                              'Bạn sẽ được chuyển tới cổng Zitadel (auth.vunph.click) để xác nhận email và đặt lại mật khẩu.',
-                              'You will be redirected to Zitadel (auth.vunph.click) to verify your email and reset your password.'
+                              'Bạn sẽ tiếp tục trên trang bảo mật để xác nhận email và đặt lại mật khẩu tài khoản Chủ quán.',
+                              'You will continue on a secure page to verify your email and reset your password.'
                             )
                           : tx(
-                              'Bạn sẽ được chuyển tới cổng Zitadel (auth.vunph.click) để đăng nhập an toàn mà không cần nhập mật khẩu trên Qlaok.',
-                              'You will be redirected to Zitadel (auth.vunph.click) to sign in securely without entering your password on Qlaok.'
+                              'Bạn sẽ tiếp tục trên trang đăng nhập an toàn rồi tự động quay lại Qlaok để quản lý quán.',
+                              'You will continue on a secure sign-in page and return to Qlaok automatically.'
                             )}
                     </p>
                   </div>
@@ -590,8 +596,8 @@ function LoginContent() {
                     className="block text-xs font-medium text-stone-300 mb-1.5"
                   >
                     {tx(
-                      'Email tài khoản (Tùy chọn — điền sẵn trên Zitadel)',
-                      'Account Email (Optional — pre-fills Zitadel login)'
+                      'Email tài khoản (không bắt buộc)',
+                      'Account email (optional)'
                     )}
                   </label>
                   <div className="relative">
@@ -603,7 +609,7 @@ function LoginContent() {
                       autoComplete="username"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="tenban@congty.com"
+                      placeholder="chuquan@tenquan.vn"
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-stone-950 border border-stone-800 text-sm text-white placeholder:text-stone-600 focus:outline-none focus:border-amber-500"
                     />
                   </div>
@@ -621,7 +627,7 @@ function LoginContent() {
                       className="text-amber-400 hover:underline font-medium inline-flex items-center gap-1"
                     >
                       <KeyRound className="w-3.5 h-3.5" />
-                      {tx('Quên mật khẩu Chủ quán?', 'Forgot owner password?')}
+                      {tx('Quên mật khẩu?', 'Forgot password?')}
                     </button>
                   ) : (
                     <button
@@ -648,22 +654,24 @@ function LoginContent() {
             >
               <span>
                 {loading
-                  ? tx('Đang xử lý...', 'Processing...')
+                  ? mode === 'staff'
+                    ? tx('Đang xử lý...', 'Processing...')
+                    : tx('Đang mở trang đăng nhập...', 'Opening sign-in page...')
                   : mode === 'staff'
                     ? tx('Đăng nhập nhân viên', 'Staff sign-in')
                     : mode === 'register'
                       ? tx(
-                          'Tiếp tục đăng ký trên Zitadel',
-                          'Continue Registration on Zitadel'
+                          'Tạo tài khoản Chủ quán',
+                          'Create Owner account'
                         )
                       : mode === 'reset'
                         ? tx(
-                            'Tiếp tục đặt lại mật khẩu trên Zitadel',
-                            'Continue Password Reset on Zitadel'
+                            'Đặt lại mật khẩu',
+                            'Reset password'
                           )
                         : tx(
-                            'Tiếp tục đăng nhập với Zitadel',
-                            'Continue with Zitadel SSO'
+                            'Đăng nhập Chủ quán',
+                            'Sign in as Owner'
                           )}
               </span>
               <ArrowRight className="w-4 h-4" />
