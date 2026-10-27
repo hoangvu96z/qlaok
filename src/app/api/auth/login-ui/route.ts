@@ -7,6 +7,7 @@ import {
   ZitadelLoginUiError,
 } from '@/lib/zitadel-login-ui';
 import { getZitadelIssuerUrl } from '@/lib/zitadel-oidc';
+import { getRequestOrigin } from '@/lib/request-origin';
 
 function jsonNoStore(body: unknown, status = 200) {
   return NextResponse.json(body, {
@@ -21,28 +22,6 @@ function getAuthRequestId(url: URL): string {
     url.searchParams.get('authRequestID') ||
     ''
   ).trim();
-}
-
-function getRequestOrigin(req: Request): string {
-  const requestUrl = new URL(req.url);
-  const forwardedProto = (req.headers.get('x-forwarded-proto') || '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase();
-  const forwardedHost = (req.headers.get('host') || '').trim();
-
-  if (
-    (forwardedProto === 'http' || forwardedProto === 'https') &&
-    forwardedHost
-  ) {
-    try {
-      return new URL(`${forwardedProto}://${forwardedHost}`).origin;
-    } catch {
-      return requestUrl.origin;
-    }
-  }
-
-  return requestUrl.origin;
 }
 
 function isSameOriginRequest(req: Request, requireOriginHeader: boolean): boolean {

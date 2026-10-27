@@ -776,10 +776,12 @@ test('GET /api/auth/callback maps opaque Zitadel subjects to stable Qlaok UUID p
 
       const res = await authCallbackGet(
         new Request(
-          `https://qlaok.vunph.click/api/auth/callback?code=code-pro&state=${txIssued.transaction.state}`,
+          `http://localhost:3005/api/auth/callback?code=code-pro&state=${txIssued.transaction.state}`,
           {
             headers: {
               Cookie: `${OIDC_TX_COOKIE_NAME}=${txIssued.cookieValue}`,
+              Host: 'qlaok.vunph.click',
+              'X-Forwarded-Proto': 'https',
             },
           }
         )

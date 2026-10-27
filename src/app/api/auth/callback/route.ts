@@ -13,6 +13,7 @@ import {
   resolvePostLoginRoute,
   sanitizeNextPath,
 } from '@/lib/post-login-route';
+import { getRequestOrigin } from '@/lib/request-origin';
 import {
   clearOidcTransactionCookie,
   compareConstantTimeString,
@@ -74,7 +75,7 @@ function respondCallbackError(
     !accept.includes('application/json');
 
   if (wantsHtmlRedirect) {
-    const loginUrl = new URL('/login', reqUrl.origin);
+    const loginUrl = new URL('/login', getRequestOrigin(req));
     loginUrl.searchParams.set('error', message);
     loginUrl.searchParams.set('error_code', code);
     const safeNext = sanitizeNextPath(nextPath) || '/dashboard';
@@ -249,7 +250,7 @@ export async function GET(req: Request) {
       return jsonRes;
     }
 
-    const redirectUrl = new URL(redirectTo, reqUrl.origin);
+    const redirectUrl = new URL(redirectTo, getRequestOrigin(req));
     const res = NextResponse.redirect(redirectUrl, { status: 302 });
     attachSessionCookie(res, accessToken);
     clearOidcTransactionCookie(res);
