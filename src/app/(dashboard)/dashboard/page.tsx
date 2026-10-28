@@ -973,7 +973,7 @@ export default function DashboardOverviewPage() {
               : formatCurrency(summary?.totalRevenue ?? 0, activeShop.currency)}
           </p>
           <p className="mt-0.5 text-[11px] text-slate-500">
-            {tx('Tổng {count} đơn hoàn tất', '{count} total orders', {
+            {tx('Tổng {count} đơn không hủy', '{count} total non-cancelled orders', {
               count: summary?.totalOrdersCount ?? 0,
             })}
           </p>
