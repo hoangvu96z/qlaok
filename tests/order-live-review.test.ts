@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  computeCounterTodayTabState,
   createInitialCounterOrdersState,
   deriveCounterOrdersViewState,
+  filterCounterTodayTabOrders,
+  getVnDateKey,
   readOrderEvents,
   reconcileCounterOrdersFetch,
+  resolveCounterTodayTabLabel,
   startOrderLiveSync,
 } from '@/lib/order-live-sync';
+import { APP_DICTIONARY } from '@/lib/app-i18n';
 
 test('SSE parser handles split CRLF frames and ignores heartbeats/malformed JSON', async () => {
   const chunks = ['data: {"type":"rea', 'dy"}\r', '\n\r\n: heartbeat\n\ndata: invalid\n\ndata: {"type":"change"}\n\n'];
@@ -652,4 +657,227 @@ test('orders snapshot state ignores stale shop responses and never carries a sna
   });
   assert.equal(switchedView.hasAuthoritativeSnapshot, false);
   assert.equal(switchedView.showConfirmedEmptyQueue, false);
+});
+
+test('counter orders tab: 0 orders today but older orders exist (QA production fallback scenario)', () => {
+  const todayVnKey = '2026-10-28';
+  const olderOrders = [
+    {
+      id: 'old-order-1',
+      order_code: 'OLD-001',
+      created_at: '2026-10-26T10:00:00.000Z', // 2 days ago
+      status: 'completed',
+      payment_status: 'paid',
+      total_amount: 85000,
+    },
+    {
+      id: 'old-order-2',
+      order_code: 'OLD-002',
+      created_at: '2026-10-27T15:30:00.000Z', // yesterday
+      status: 'completed',
+      payment_status: 'paid',
+      total_amount: 120000,
+    },
+    {
+      id: 'old-cancelled',
+      order_code: 'OLD-003',
+      created_at: '2026-10-27T16:00:00.000Z',
+      status: 'cancelled',
+      payment_status: 'unpaid',
+      total_amount: 50000,
+    },
+  ];
+
+  const state = computeCounterTodayTabState({
+    orders: olderOrders,
+    todayVnKey,
+  });
+
+  // 1. Independent today statistics: must be strictly 0 today
+  assert.equal(state.todayValidCount, 0, 'Today valid orders count must be 0');
+  assert.equal(state.todayPaidCount, 0, 'Today paid orders count must be 0');
+  assert.equal(state.todayRevenue, 0, 'Today revenue must be 0đ');
+
+  // 2. Fallback history detection: fallback is active
+  assert.equal(state.isHistoryFallback, true, 'isHistoryFallback must be true when 0 today but older uncancelled orders exist');
+
+  // 3. Tab orders count: reflects actual non-cancelled historical cards (2 cards, not 0)
+  assert.equal(state.tabOrdersCount, 2, 'Tab orders badge count must match the 2 visible cards, fixing badge 0 defect');
+
+  const filtered = filterCounterTodayTabOrders(olderOrders, todayVnKey);
+  assert.equal(filtered.length, 2);
+  assert.deepEqual(filtered.map((o) => o.id), ['old-order-1', 'old-order-2']);
+
+  // 4. Tab label: VI & EN reflect fallback history without misleading user about today or unpaid
+  const labelVi = resolveCounterTodayTabLabel({
+    tabOrdersCount: state.tabOrdersCount,
+    isHistoryFallback: state.isHistoryFallback,
+    locale: 'vi',
+  });
+  const labelEn = resolveCounterTodayTabLabel({
+    tabOrdersCount: state.tabOrdersCount,
+    isHistoryFallback: state.isHistoryFallback,
+    locale: 'en',
+  });
+  assert.equal(labelVi, 'Đơn gần đây (2)');
+  assert.equal(labelEn, 'Recent orders (2)');
+
+  // 5. When snapshot is not yet authoritative, count renders '—'
+  const labelLoadingVi = resolveCounterTodayTabLabel({
+    tabOrdersCount: '—',
+    isHistoryFallback: state.isHistoryFallback,
+    locale: 'vi',
+  });
+  assert.equal(labelLoadingVi, 'Đơn gần đây (—)');
+});
+
+test('counter orders tab: orders today mixed with older orders (in-flight & completed)', () => {
+  const todayVnKey = '2026-10-28';
+  const mixedOrders = [
+    {
+      id: 'today-order-1',
+      order_code: 'TODAY-001',
+      created_at: '2026-10-28T02:15:00.000Z', // today in VN (+7)
+      status: 'completed',
+      payment_status: 'paid',
+      total_amount: 55000,
+    },
+    {
+      id: 'today-order-2',
+      order_code: 'TODAY-002',
+      created_at: '2026-10-28T03:00:00.000Z',
+      status: 'preparing',
+      payment_status: 'unpaid',
+      total_amount: 60000,
+    },
+    {
+      id: 'old-unpaid',
+      order_code: 'OLD-UNPAID',
+      created_at: '2026-10-27T08:00:00.000Z', // yesterday in VN time (+7 -> 15:00 on Oct 27), still unpaid needing attention
+      status: 'completed',
+      payment_status: 'unpaid',
+      total_amount: 75000,
+    },
+    {
+      id: 'old-paid',
+      order_code: 'OLD-PAID',
+      created_at: '2026-10-27T10:00:00.000Z', // yesterday, settled
+      status: 'completed',
+      payment_status: 'paid',
+      total_amount: 90000,
+    },
+    {
+      id: 'today-cancelled',
+      order_code: 'TODAY-CAN',
+      created_at: '2026-10-28T04:00:00.000Z',
+      status: 'cancelled',
+      payment_status: 'unpaid',
+      total_amount: 40000,
+    },
+  ];
+
+  const state = computeCounterTodayTabState({
+    orders: mixedOrders,
+    todayVnKey,
+  });
+
+  // 1. Independent today statistics: only today's valid orders (cancelled excluded)
+  // today-order-1 and today-order-2
+  assert.equal(state.todayValidCount, 2, 'Today valid orders count must only count today non-cancelled orders');
+  assert.equal(state.todayPaidCount, 1, 'Today paid orders count must only count today paid orders');
+  assert.equal(state.todayRevenue, 55000, 'Today revenue must strictly include today paid orders (55,000đ)');
+
+  // 2. Fallback history detection: false because today has valid orders
+  assert.equal(state.isHistoryFallback, false);
+
+  // 3. Tab orders count: includes today orders (today-1, today-2) + older unpaid/in-progress order (old-unpaid)
+  // old-paid is excluded from this tab because today has orders and old-paid is completed & paid!
+  assert.equal(state.tabOrdersCount, 3, 'Tab badge must show 3 (2 today + 1 old unpaid needing collection)');
+
+  const filtered = filterCounterTodayTabOrders(mixedOrders, todayVnKey);
+  assert.equal(filtered.length, 3);
+  assert.deepEqual(filtered.map((o) => o.id), ['today-order-1', 'today-order-2', 'old-unpaid']);
+
+  // 4. Tab label: VI & EN reflect "Hôm nay & cần xử lý"
+  const labelVi = resolveCounterTodayTabLabel({
+    tabOrdersCount: state.tabOrdersCount,
+    isHistoryFallback: state.isHistoryFallback,
+    locale: 'vi',
+  });
+  const labelEn = resolveCounterTodayTabLabel({
+    tabOrdersCount: state.tabOrdersCount,
+    isHistoryFallback: state.isHistoryFallback,
+    locale: 'en',
+  });
+  assert.equal(labelVi, 'Hôm nay & cần xử lý (3)');
+  assert.equal(labelEn, 'Today & pending (3)');
+
+  // 5. Verify custom tx translator works identically
+  const customTx = (vi: string, en?: string | null, params?: Record<string, string | number | null | undefined>) => {
+    let text = vi;
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v ?? ''));
+      }
+    }
+    return text;
+  };
+  const labelTx = resolveCounterTodayTabLabel({
+    tabOrdersCount: state.tabOrdersCount,
+    isHistoryFallback: state.isHistoryFallback,
+    tx: customTx,
+  });
+  assert.equal(labelTx, 'Hôm nay & cần xử lý (3)');
+});
+
+test('counter orders tab: completely empty queue (0 today and 0 history)', () => {
+  const state = computeCounterTodayTabState({
+    orders: [],
+    todayVnKey: '2026-10-28',
+  });
+
+  assert.equal(state.todayValidCount, 0);
+  assert.equal(state.todayPaidCount, 0);
+  assert.equal(state.todayRevenue, 0);
+  assert.equal(state.tabOrdersCount, 0);
+  assert.equal(state.isHistoryFallback, false);
+
+  const labelVi = resolveCounterTodayTabLabel({
+    tabOrdersCount: 0,
+    isHistoryFallback: false,
+    locale: 'vi',
+  });
+  const labelEn = resolveCounterTodayTabLabel({
+    tabOrdersCount: 0,
+    isHistoryFallback: false,
+    locale: 'en',
+  });
+  assert.equal(labelVi, 'Hôm nay & cần xử lý (0)');
+  assert.equal(labelEn, 'Today & pending (0)');
+});
+
+test('counter orders tab: translation dictionary keys and fallback notice parity', () => {
+  assert.ok(APP_DICTIONARY.vi['orders.filterTodayPending']);
+  assert.ok(APP_DICTIONARY.en['orders.filterTodayPending']);
+  assert.ok(APP_DICTIONARY.vi['orders.filterRecentFallback']);
+  assert.ok(APP_DICTIONARY.en['orders.filterRecentFallback']);
+  assert.ok(APP_DICTIONARY.vi['orders.todayHistoryFallbackNotice']);
+  assert.ok(APP_DICTIONARY.en['orders.todayHistoryFallbackNotice']);
+
+  assert.equal(APP_DICTIONARY.vi['orders.filterTodayPending'], 'Hôm nay & cần xử lý ({count})');
+  assert.equal(APP_DICTIONARY.en['orders.filterTodayPending'], 'Today & pending ({count})');
+  assert.equal(APP_DICTIONARY.vi['orders.filterRecentFallback'], 'Đơn gần đây ({count})');
+  assert.equal(APP_DICTIONARY.en['orders.filterRecentFallback'], 'Recent orders ({count})');
+
+  // Verify fallback notice explains historical paid orders clearly
+  assert.match(
+    APP_DICTIONARY.vi['orders.todayHistoryFallbackNotice'],
+    /đã thanh toán trước đó/i,
+    'VI notice must explain that recent history may include settled orders'
+  );
+  assert.match(
+    APP_DICTIONARY.en['orders.todayHistoryFallbackNotice'],
+    /previously settled orders/i,
+    'EN notice must explain that recent history may include settled orders'
+  );
 });

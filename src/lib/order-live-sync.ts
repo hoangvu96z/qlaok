@@ -5,6 +5,122 @@ export interface OrderLiveSyncHandle {
   reconnect: () => void;
 }
 
+export interface CounterTodayTabState {
+  todayValidCount: number;
+  todayPaidCount: number;
+  todayRevenue: number;
+  tabOrdersCount: number;
+  isHistoryFallback: boolean;
+}
+
+export function getVnDateKey(dateInput: Date | string | number = new Date()): string {
+  const ts = new Date(dateInput).getTime();
+  if (Number.isNaN(ts)) {
+    return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+  return new Date(ts + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+export function filterCounterTodayTabOrders<T extends {
+  created_at?: string;
+  status: string;
+  payment_status?: string;
+}>(orders: T[], todayVnKey: string = getVnDateKey()): T[] {
+  const hasTodayValidOrders = orders.some(
+    (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
+  );
+  return orders.filter((o) => {
+    if (hasTodayValidOrders) {
+      return (
+        o.status === 'new' ||
+        o.status === 'preparing' ||
+        (o.status !== 'cancelled' && o.payment_status === 'unpaid') ||
+        (o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey)
+      );
+    }
+    return o.status !== 'cancelled';
+  });
+}
+
+export function computeCounterTodayTabState<T extends {
+  created_at?: string;
+  status: string;
+  payment_status?: string;
+  total_amount?: number | string | null;
+}>(params: {
+  orders: T[];
+  todayVnKey?: string;
+}): CounterTodayTabState {
+  const todayVnKey = params.todayVnKey ?? getVnDateKey();
+  const orders = params.orders;
+
+  const todayValidOrders = orders.filter(
+    (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
+  );
+  const todayPaidOrders = todayValidOrders.filter(
+    (o) => o.payment_status === 'paid'
+  );
+  const todayRevenue = todayPaidOrders.reduce(
+    (sum, o) => sum + Number(o.total_amount || 0),
+    0
+  );
+
+  const hasTodayValidOrders = todayValidOrders.length > 0;
+  const tabOrders = orders.filter((o) => {
+    if (hasTodayValidOrders) {
+      return (
+        o.status === 'new' ||
+        o.status === 'preparing' ||
+        (o.status !== 'cancelled' && o.payment_status === 'unpaid') ||
+        (o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey)
+      );
+    }
+    return o.status !== 'cancelled';
+  });
+
+  const isHistoryFallback = !hasTodayValidOrders && tabOrders.length > 0;
+
+  return {
+    todayValidCount: todayValidOrders.length,
+    todayPaidCount: todayPaidOrders.length,
+    todayRevenue,
+    tabOrdersCount: tabOrders.length,
+    isHistoryFallback,
+  };
+}
+
+export function resolveCounterTodayTabLabel(params: {
+  tabOrdersCount: number | string;
+  isHistoryFallback: boolean;
+  locale?: string;
+  tx?: (
+    viText: string,
+    enText?: string | null,
+    params?: Record<string, string | number | null | undefined>
+  ) => string;
+}): string {
+  const { tabOrdersCount, isHistoryFallback, tx } = params;
+  if (tx) {
+    if (isHistoryFallback) {
+      return tx('Đơn gần đây ({count})', 'Recent orders ({count})', {
+        count: tabOrdersCount,
+      });
+    }
+    return tx('Hôm nay & cần xử lý ({count})', 'Today & pending ({count})', {
+      count: tabOrdersCount,
+    });
+  }
+  const isEn = params.locale === 'en';
+  if (isHistoryFallback) {
+    return isEn
+      ? `Recent orders (${tabOrdersCount})`
+      : `Đơn gần đây (${tabOrdersCount})`;
+  }
+  return isEn
+    ? `Today & pending (${tabOrdersCount})`
+    : `Hôm nay & cần xử lý (${tabOrdersCount})`;
+}
+
 export interface CounterOrdersSnapshotState {
   shopId: string | null;
   hasLoaded: boolean;

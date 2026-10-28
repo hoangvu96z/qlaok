@@ -138,6 +138,10 @@ const VI_APP_DICTIONARY = {
   'orders.chimeOff': 'Chuông: Tắt',
   'orders.chimeSettings': 'Cài chuông',
   'orders.chimeSettingsTooltip': 'Chọn kiểu chuông, âm lượng và thử chuông báo đơn mới',
+  'orders.filterTodayPending': 'Hôm nay & cần xử lý ({count})',
+  'orders.filterRecentFallback': 'Đơn gần đây ({count})',
+  'orders.todayHistoryFallbackNotice':
+    'Hôm nay chưa có đơn mới. Đang hiển thị danh sách đơn gần đây để đối soát và xử lý (có thể bao gồm đơn đã thanh toán trước đó).',
   'orders.filterActive': 'Đang phục vụ ({count})',
   'orders.filterNew': 'Chờ nhận ({count})',
   'orders.filterPreparing': 'Đang làm ({count})',
@@ -340,6 +344,10 @@ const EN_APP_DICTIONARY: Record<AppTranslationKey, string> = {
   'orders.chimeOff': 'Chime: Off',
   'orders.chimeSettings': 'Chime',
   'orders.chimeSettingsTooltip': 'Configure order alert chime sound and volume',
+  'orders.filterTodayPending': 'Today & pending ({count})',
+  'orders.filterRecentFallback': 'Recent orders ({count})',
+  'orders.todayHistoryFallbackNotice':
+    'No new orders today. Showing recent orders for review and fulfillment (may include previously settled orders).',
   'orders.filterActive': 'Active ({count})',
   'orders.filterNew': 'New ({count})',
   'orders.filterPreparing': 'Preparing ({count})',

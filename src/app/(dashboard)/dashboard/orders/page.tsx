@@ -28,11 +28,14 @@ import {
   LogIn,
 } from 'lucide-react';
 import {
+  computeCounterTodayTabState,
   createInitialCounterOrdersState,
   deriveCounterOrdersViewState,
   reconcileCounterOrdersFetch,
+  resolveCounterTodayTabLabel,
   startOrderLiveSync,
   type CounterOrdersSnapshotState,
+  type CounterTodayTabState,
   type OrderLiveStatus,
   type OrderLiveSyncHandle,
 } from '@/lib/order-live-sync';
@@ -905,16 +908,12 @@ export default function CounterOrdersPage() {
   const cancelledOrders = currentOrders.filter((o) => o.status === 'cancelled');
 
   const todayVnKey = getVnDateKey();
-  const todayValidOrders = currentOrders.filter(
-    (o) => o.status !== 'cancelled' && getVnDateKey(o.created_at) === todayVnKey
-  );
-  const todayPaidOrders = todayValidOrders.filter(
-    (o) => o.payment_status === 'paid'
-  );
-  const todayRevenue = todayPaidOrders.reduce(
-    (sum, o) => sum + Number(o.total_amount || 0),
-    0
-  );
+  const todayTabState = computeCounterTodayTabState({
+    orders: currentOrders,
+    todayVnKey,
+  });
+  const todayRevenue = todayTabState.todayRevenue;
+  const isHistoryFallback = todayTabState.isHistoryFallback;
 
   const statusPriority: Record<OrderStatus, number> = {
     new: 0,
@@ -926,7 +925,7 @@ export default function CounterOrdersPage() {
   const filteredOrders = currentOrders
     .filter((o) => {
       if (filterTab === 'today') {
-        if (todayValidOrders.length > 0) {
+        if (todayTabState.todayValidCount > 0) {
           return (
             o.status === 'new' ||
             o.status === 'preparing' ||
@@ -1269,7 +1268,7 @@ export default function CounterOrdersPage() {
               />
               <span>
                 {t('orders.tabQueue', {
-                  count: displayOrdersCount(todayValidOrders.length),
+                  count: displayOrdersCount(todayTabState.tabOrdersCount),
                 })}
               </span>
               {newOrders.length > 0 && (
@@ -1517,7 +1516,7 @@ export default function CounterOrdersPage() {
                 </span>
               </div>
               <p className="mt-2 text-2xl font-black text-slate-900">
-                {displayOrdersCount(todayValidOrders.length)}
+                {displayOrdersCount(todayTabState.todayValidCount)}
               </p>
               <p className="text-[11px] font-medium text-slate-500">
                 {t('orders.filterCompleted', {
@@ -1530,7 +1529,7 @@ export default function CounterOrdersPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-600">
                   {t('orders.kpiPaidToday', {
-                    count: displayOrdersCount(todayPaidOrders.length),
+                    count: displayOrdersCount(todayTabState.todayPaidCount),
                   })}
                 </span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
@@ -1558,8 +1557,10 @@ export default function CounterOrdersPage() {
             {[
               {
                 id: 'today',
-                label: tx('Hôm nay ({count})', 'Today ({count})', {
-                  count: displayOrdersCount(todayValidOrders.length),
+                label: resolveCounterTodayTabLabel({
+                  tabOrdersCount: displayOrdersCount(todayTabState.tabOrdersCount),
+                  isHistoryFallback,
+                  tx,
                 }),
               },
               {
@@ -1626,6 +1627,19 @@ export default function CounterOrdersPage() {
               </button>
             ))}
           </div>
+
+          {filterTab === 'today' && isHistoryFallback && (
+            <div
+              role="status"
+              data-testid="orders-today-history-fallback-banner"
+              className="flex items-center gap-2.5 rounded-2xl border border-amber-300 bg-amber-50/90 px-4 py-2.5 text-xs text-amber-900 shadow-2xs dark:border-amber-500/50 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <Clock className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="font-semibold">
+                {t('orders.todayHistoryFallbackNotice')}
+              </p>
+            </div>
+          )}
 
           {/* Orders Grid */}
           {loading ? (
