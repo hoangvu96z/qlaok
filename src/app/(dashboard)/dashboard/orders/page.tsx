@@ -1435,6 +1435,7 @@ export default function CounterOrdersPage() {
         ) : (
           <PosCounterWorkspace
             shop={activeShop}
+            accountId={profile?.id}
             categories={catalogCategories}
             items={catalogItems}
             orders={currentOrders}

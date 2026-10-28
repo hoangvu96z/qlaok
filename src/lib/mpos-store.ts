@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -868,6 +868,14 @@ function isOrderCodeUniqueViolation(error: unknown): boolean {
   );
 }
 
+function isPosIdempotencyPrefixUniqueViolation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return (
+    /idx_orders_shop_posv1_idempotency_prefix/i.test(message) &&
+    /(23505|duplicate key|unique constraint)/i.test(message)
+  );
+}
+
 function orderStockDemand(order: ShopOrder): Map<string, number> {
   const demand = new Map<string, number>();
   if (order.status === 'cancelled' && !order.waste_recorded) return demand;
@@ -1628,6 +1636,302 @@ export async function dbGetOrderById(
 }
 
 /**
+ * Counter POS Web Reserved Idempotency Key Protocol (`pos-web:` prefix):
+ * - Reserved client key prefix: `pos-web:` (case-insensitive check via `isReservedPosWebIdempotencyKey`).
+ * - Reserved server stored key prefix: `posv1:`.
+ * - Generic legacy `pos:` keys are NOT reserved and follow existing legacy idempotency rules.
+ * - Client format: `pos-web:<token>` (<= 120 chars).
+ *   Anonymous or QR (`source !== 'counter_pos'`) requests must NEVER use `pos-web:` or `posv1:`.
+ * - Server stored key format (`<= 120` chars for `orders.idempotency_key VARCHAR(120)`):
+ *   `posv1:<actor_scope_hash16>:<raw_key_hash24>:<intent_fingerprint_hash24>`
+ *   where:
+ *   - `actor_scope_hash16 = sha256("${shop_id}|${actor_user_id}").slice(0, 16)`
+ *   - `raw_key_hash24 = sha256("${shop_id}|${actor_user_id}|${trimmed_raw_key}").slice(0, 24)`
+ *   - `intent_fingerprint_hash24 = sha256(canonical_request_intent_json).slice(0, 24)`
+ *     computed over the exact JSON request intent with recursive lexicographical object-key
+ *     ordering after excluding only `idempotency_key`.
+ * - Because `raw_key_hash24` is bound to `(shop_id, actor_user_id, raw_key)`, another user or shop
+ *   supplying the same raw key derives a disjoint prefix and cannot read or collide with the order.
+ * - Database index `idx_orders_shop_posv1_idempotency_prefix` enforces uniqueness on
+ *   `(shop_id, left(idempotency_key, 48))` where `idempotency_key LIKE 'posv1:%'`, preventing
+ *   concurrent requests with the same `(shop_id, actor_user_id, raw_key)` and different payloads
+ *   from both committing.
+ */
+export const RESERVED_POS_WEB_IDEMPOTENCY_PREFIX = 'pos-web:';
+const STORED_POS_WEB_IDEMPOTENCY_PREFIX = 'posv1:';
+const POS_WEB_STORED_PREFIX_LEN = 48;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 120;
+
+export function isReservedPosWebIdempotencyKey(
+  rawKey: string | null | undefined
+): boolean {
+  if (typeof rawKey !== 'string') return false;
+  const trimmed = rawKey.trim().toLowerCase();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith(RESERVED_POS_WEB_IDEMPOTENCY_PREFIX) ||
+    trimmed.startsWith(STORED_POS_WEB_IDEMPOTENCY_PREFIX)
+  );
+}
+
+function canonicalizeJsonIntentValue(
+  value: unknown,
+  isTopLevel = false
+): unknown {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeJsonIntentValue(item, false));
+  }
+  const record = value as Record<string, unknown>;
+  const sortedKeys = Object.keys(record)
+    .filter((key) => !(isTopLevel && key === 'idempotency_key') && record[key] !== undefined)
+    .sort();
+  const canonicalObj: Record<string, unknown> = {};
+  for (const key of sortedKeys) {
+    canonicalObj[key] = canonicalizeJsonIntentValue(record[key], false);
+  }
+  return canonicalObj;
+}
+
+export function computePosOrderIntentFingerprint(
+  requestBody: unknown
+): string {
+  const canonicalPayload = canonicalizeJsonIntentValue(requestBody, true);
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex')
+    .slice(0, 24);
+}
+
+export function buildScopedPosWebIdempotencyKey(params: {
+  shopId: string;
+  actorUserId: string;
+  rawIdempotencyKey: string;
+  intentFingerprint: string;
+}): {
+  scopedKey: string;
+  keyLookupPrefix: string;
+} {
+  const cleanShopId = String(params.shopId || '').trim();
+  const cleanUserId = String(params.actorUserId || '').trim();
+  const cleanRawKey = String(params.rawIdempotencyKey || '').trim();
+  const cleanFingerprint = String(params.intentFingerprint || '').trim();
+
+  if (!cleanShopId || !cleanUserId || !cleanRawKey) {
+    throw new Error(
+      'INVALID_POS_IDEMPOTENCY_KEY: Thiếu thông tin định danh khóa chống trùng tại quầy.'
+    );
+  }
+  const lowerRawKey = cleanRawKey.toLowerCase();
+  if (
+    cleanRawKey.length > MAX_IDEMPOTENCY_KEY_LENGTH ||
+    lowerRawKey.startsWith(STORED_POS_WEB_IDEMPOTENCY_PREFIX) ||
+    !lowerRawKey.startsWith(RESERVED_POS_WEB_IDEMPOTENCY_PREFIX)
+  ) {
+    throw new Error(
+      'INVALID_POS_IDEMPOTENCY_KEY: Định dạng khóa idempotency_key tại quầy không hợp lệ.'
+    );
+  }
+  const restAfterPrefix = cleanRawKey
+    .slice(RESERVED_POS_WEB_IDEMPOTENCY_PREFIX.length)
+    .trim();
+  if (!restAfterPrefix) {
+    throw new Error(
+      'INVALID_POS_IDEMPOTENCY_KEY: Khóa idempotency_key tại quầy không được để trống.'
+    );
+  }
+
+  const actorScopeHash = createHash('sha256')
+    .update(`${cleanShopId}|${cleanUserId}`)
+    .digest('hex')
+    .slice(0, 16);
+  const rawKeyHash = createHash('sha256')
+    .update(`${cleanShopId}|${cleanUserId}|${cleanRawKey}`)
+    .digest('hex')
+    .slice(0, 24);
+  const keyLookupPrefix = `${STORED_POS_WEB_IDEMPOTENCY_PREFIX}${actorScopeHash}:${rawKeyHash}:`;
+  const scopedKey = `${keyLookupPrefix}${cleanFingerprint}`;
+  return { scopedKey, keyLookupPrefix };
+}
+
+/**
+ * Looks up an already-committed order by `(shop_id, idempotency_key)` directly
+ * against PostgreSQL (using `idx_orders_shop_idempotency`) or the local store,
+ * without relying on the 1000-row order list window.
+ * Fails closed by throwing when the database is configured and returns an error.
+ */
+export async function dbGetOrderByShopIdempotencyKey(
+  shopId: string,
+  idempotencyKey: string,
+  options?: {
+    keyLookupPrefix?: string;
+  }
+): Promise<{
+  order: ShopOrder | null;
+  payloadMismatch: boolean;
+}> {
+  const cleanShopId = typeof shopId === 'string' ? shopId.trim() : '';
+  const cleanKey =
+    typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
+  const cleanPrefix =
+    typeof options?.keyLookupPrefix === 'string'
+      ? options.keyLookupPrefix.trim()
+      : '';
+
+  if (!cleanShopId || !cleanKey) {
+    return { order: null, payloadMismatch: false };
+  }
+
+  if (isOrderDbConfigured()) {
+    const sb = getActiveDbClient();
+    const exactQuery = sb
+      .from('orders')
+      .select('*')
+      .eq('shop_id', cleanShopId)
+      .eq('idempotency_key', cleanKey);
+    const maybeSingleFn = (
+      exactQuery as unknown as {
+        maybeSingle?: () => Promise<{
+          data: unknown;
+          error: { message: string } | null;
+        }>;
+      }
+    ).maybeSingle;
+    const { data, error } =
+      typeof maybeSingleFn === 'function'
+        ? await maybeSingleFn.call(exactQuery)
+        : await exactQuery;
+    if (error) {
+      throw new Error(
+        `ORDER_IDEMPOTENCY_LOOKUP_FAILED: ${error.message || 'Không thể kiểm tra khóa chống trùng đơn hàng.'}`
+      );
+    }
+    const rawRow = Array.isArray(data) ? (data[0] ?? null) : data;
+    if (rawRow) {
+      const normalized = normalizeOrderRecord(rawRow as Partial<ShopOrder>);
+      if (
+        normalized.shop_id === cleanShopId &&
+        normalized.idempotency_key === cleanKey
+      ) {
+        return { order: normalized, payloadMismatch: false };
+      }
+    }
+
+    if (cleanPrefix) {
+      const prefixQuery = sb
+        .from('orders')
+        .select('*')
+        .eq('shop_id', cleanShopId);
+      const likeFn = (
+        prefixQuery as unknown as {
+          like?: (col: string, pattern: string) => typeof prefixQuery;
+        }
+      ).like;
+      if (typeof likeFn === 'function') {
+        const filteredQuery = likeFn.call(
+          prefixQuery,
+          'idempotency_key',
+          `${cleanPrefix}%`
+        );
+        const prefixMaybeSingle = (
+          filteredQuery as unknown as {
+            maybeSingle?: () => Promise<{
+              data: unknown;
+              error: { message: string } | null;
+            }>;
+          }
+        ).maybeSingle;
+        const { data: prefixData, error: prefixError } =
+          typeof prefixMaybeSingle === 'function'
+            ? await prefixMaybeSingle.call(filteredQuery)
+            : await filteredQuery;
+        if (prefixError) {
+          throw new Error(
+            `ORDER_IDEMPOTENCY_LOOKUP_FAILED: ${prefixError.message || 'Không thể kiểm tra khóa chống trùng đơn hàng.'}`
+          );
+        }
+        const prefixRow = Array.isArray(prefixData)
+          ? (prefixData[0] ?? null)
+          : prefixData;
+        if (prefixRow) {
+          const normalized = normalizeOrderRecord(
+            prefixRow as Partial<ShopOrder>
+          );
+          if (
+            normalized.shop_id === cleanShopId &&
+            typeof normalized.idempotency_key === 'string' &&
+            normalized.idempotency_key.startsWith(cleanPrefix)
+          ) {
+            return {
+              order: normalized,
+              payloadMismatch: normalized.idempotency_key !== cleanKey,
+            };
+          }
+        }
+      } else {
+        const { data: shopRows, error: shopError } = await prefixQuery;
+        if (shopError) {
+          throw new Error(
+            `ORDER_IDEMPOTENCY_LOOKUP_FAILED: ${shopError.message || 'Không thể kiểm tra khóa chống trùng đơn hàng.'}`
+          );
+        }
+        if (Array.isArray(shopRows)) {
+          const matchedRow = shopRows.find((r) => {
+            const k = (r as Partial<ShopOrder>)?.idempotency_key;
+            return (
+              (r as Partial<ShopOrder>)?.shop_id === cleanShopId &&
+              typeof k === 'string' &&
+              k.startsWith(cleanPrefix)
+            );
+          });
+          if (matchedRow) {
+            const normalized = normalizeOrderRecord(
+              matchedRow as Partial<ShopOrder>
+            );
+            return {
+              order: normalized,
+              payloadMismatch: normalized.idempotency_key !== cleanKey,
+            };
+          }
+        }
+      }
+    }
+
+    return { order: null, payloadMismatch: false };
+  }
+
+  const store = readStore();
+  const localExact = store.orders.find(
+    (o) => o.shop_id === cleanShopId && o.idempotency_key === cleanKey
+  );
+  if (localExact) {
+    return {
+      order: normalizeOrderRecord(localExact),
+      payloadMismatch: false,
+    };
+  }
+  if (cleanPrefix) {
+    const localPrefixMatch = store.orders.find(
+      (o) =>
+        o.shop_id === cleanShopId &&
+        typeof o.idempotency_key === 'string' &&
+        o.idempotency_key.startsWith(cleanPrefix)
+    );
+    if (localPrefixMatch) {
+      const normalized = normalizeOrderRecord(localPrefixMatch);
+      return {
+        order: normalized,
+        payloadMismatch: normalized.idempotency_key !== cleanKey,
+      };
+    }
+  }
+
+  return { order: null, payloadMismatch: false };
+}
+
+/**
  * Loads all orders for a shop for SePay payment reconciliation.
  * In DB mode, paginates with `.range()` so orders beyond 1000 rows are never missed.
  */
@@ -1831,16 +2135,57 @@ export async function dbCreateOrder(params: {
       throw new Error('MISSING_SHOP_ID: Thiếu mã cửa hàng (shop_id).');
     }
 
+    const cleanIdempKey =
+      typeof params.idempotency_key === 'string' &&
+      params.idempotency_key.trim()
+        ? params.idempotency_key.trim()
+        : '';
+    const posKeyPrefix =
+      cleanIdempKey.startsWith(STORED_POS_WEB_IDEMPOTENCY_PREFIX) &&
+      cleanIdempKey.length >= POS_WEB_STORED_PREFIX_LEN
+        ? cleanIdempKey.slice(0, POS_WEB_STORED_PREFIX_LEN)
+        : undefined;
+    if (cleanIdempKey) {
+      const directLookup = await dbGetOrderByShopIdempotencyKey(
+        params.shop_id,
+        cleanIdempKey,
+        posKeyPrefix ? { keyLookupPrefix: posKeyPrefix } : undefined
+      );
+      if (directLookup.payloadMismatch) {
+        throw new Error(
+          'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH: Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.'
+        );
+      }
+      if (directLookup.order) {
+        return directLookup.order;
+      }
+    }
+
     const loadedOrders = await loadMergedOrders(params.shop_id);
     const store = readStore();
     if (isOrderDbConfigured()) store.orders = loadedOrders;
 
     // Idempotency key deduplication: return existing order if already processed
-    if (params.idempotency_key && params.idempotency_key.trim()) {
-      const idempKey = params.idempotency_key.trim();
+    if (cleanIdempKey) {
+      if (posKeyPrefix) {
+        const existingPrefixMatch = store.orders.find(
+          (o) =>
+            o.shop_id === params.shop_id &&
+            typeof o.idempotency_key === 'string' &&
+            o.idempotency_key.startsWith(posKeyPrefix)
+        );
+        if (existingPrefixMatch) {
+          if (existingPrefixMatch.idempotency_key !== cleanIdempKey) {
+            throw new Error(
+              'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH: Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.'
+            );
+          }
+          return normalizeOrderRecord(existingPrefixMatch);
+        }
+      }
       const existingIdemp = store.orders.find(
         (o) =>
-          o.shop_id === params.shop_id && o.idempotency_key === idempKey
+          o.shop_id === params.shop_id && o.idempotency_key === cleanIdempKey
       );
       if (existingIdemp) {
         return normalizeOrderRecord(existingIdemp);
@@ -2072,6 +2417,24 @@ export async function dbCreateOrder(params: {
           });
           break;
         } catch (error) {
+          if (isPosIdempotencyPrefixUniqueViolation(error)) {
+            if (posKeyPrefix) {
+              const concurrentLookup = await dbGetOrderByShopIdempotencyKey(
+                params.shop_id,
+                cleanIdempKey,
+                { keyLookupPrefix: posKeyPrefix }
+              );
+              if (
+                concurrentLookup.order &&
+                !concurrentLookup.payloadMismatch
+              ) {
+                return concurrentLookup.order;
+              }
+            }
+            throw new Error(
+              'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH: Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.'
+            );
+          }
           if (!isOrderCodeUniqueViolation(error) || attempt === 4) throw error;
           // The transaction rolls inventory back with the failed insert. Pick a
           // wider candidate and retry the complete atomic RPC.

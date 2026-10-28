@@ -1,14 +1,18 @@
 import { NextResponse } from 'next/server';
 import {
+  buildScopedPosWebIdempotencyKey,
+  computePosOrderIntentFingerprint,
   dbComputeShopRevenueAndInventoryStats,
   dbCreateOrder,
   dbGetOrderById,
+  dbGetOrderByShopIdempotencyKey,
   dbGetShopActiveKitchenOrders,
   dbGetShopOrders,
   dbGetTableBill,
   dbRecordOrderPrint,
   dbSettleTableBill,
   dbUpdateOrderStatus,
+  isReservedPosWebIdempotencyKey,
   quoteOrderPricing,
   wasOrderNewlyCreated,
 } from '@/lib/mpos-store';
@@ -556,16 +560,12 @@ export async function POST(req: Request) {
       );
     }
 
-    if (body.expected_total !== undefined) {
-      const expectedQuote = await quoteOrderPricing({
-        shop_id, items, discount_amount, discount_code,
-        apply_shop_promotions: Boolean(apply_shop_promotions) || Boolean(discount_code),
-        canApplyManualDiscount: canApplyDiscount,
-      });
-      if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== expectedQuote.total_amount) {
-        return NextResponse.json({ error: 'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.', code: 'PRICE_CHANGED', quote: expectedQuote }, { status: 409 });
-      }
-    }
+    const rawIdempotencyKey =
+      (
+        (typeof idempotency_key === 'string' ? idempotency_key : '') ||
+        req.headers.get('x-idempotency-key') ||
+        ''
+      ).trim() || undefined;
 
     const rawTableId = table_id !== undefined ? table_id : tableId;
     const rawTableCode = table_code !== undefined ? table_code : tableCode;
@@ -595,6 +595,67 @@ export async function POST(req: Request) {
       Boolean(qr_table_mode || qrTableMode) ||
       (!hasCreatePerm && !isAnonymousTakeaway);
 
+    let resolvedIdempotencyKey = rawIdempotencyKey;
+
+    if (rawIdempotencyKey && isReservedPosWebIdempotencyKey(rawIdempotencyKey)) {
+      if (source !== 'counter_pos' || !sessionUser || !hasCreatePerm) {
+        return NextResponse.json(
+          {
+            error:
+              'Khóa chống trùng tiền tố pos-web: chỉ dành cho đơn hàng tại quầy POS đã xác thực.',
+            code: 'RESERVED_POS_IDEMPOTENCY_KEY_FORBIDDEN',
+          },
+          { status: 403 }
+        );
+      }
+
+      const intentFingerprint = computePosOrderIntentFingerprint(body);
+
+      const scopedPosKey = buildScopedPosWebIdempotencyKey({
+        shopId: shop_id,
+        actorUserId: sessionUser.sub,
+        rawIdempotencyKey,
+        intentFingerprint,
+      });
+
+      const replayLookup = await dbGetOrderByShopIdempotencyKey(
+        shop_id,
+        scopedPosKey.scopedKey,
+        { keyLookupPrefix: scopedPosKey.keyLookupPrefix }
+      );
+
+      if (replayLookup.payloadMismatch) {
+        return NextResponse.json(
+          {
+            error:
+              'Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.',
+            code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+          },
+          { status: 409 }
+        );
+      }
+
+      if (replayLookup.order && replayLookup.order.shop_id === shop_id) {
+        return NextResponse.json(
+          { order: replayLookup.order },
+          { status: 201 }
+        );
+      }
+
+      resolvedIdempotencyKey = scopedPosKey.scopedKey;
+    }
+
+    if (body.expected_total !== undefined) {
+      const expectedQuote = await quoteOrderPricing({
+        shop_id, items, discount_amount, discount_code,
+        apply_shop_promotions: Boolean(apply_shop_promotions) || Boolean(discount_code),
+        canApplyManualDiscount: canApplyDiscount,
+      });
+      if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== expectedQuote.total_amount) {
+        return NextResponse.json({ error: 'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.', code: 'PRICE_CHANGED', quote: expectedQuote }, { status: 409 });
+      }
+    }
+
     const order = await dbCreateOrder({
       shop_id,
       table_id: rawTableId,
@@ -615,8 +676,7 @@ export async function POST(req: Request) {
       canApplyDiscount,
       canCollectPayment,
       paid_by: canCollectPayment ? sessionUser?.sub : undefined,
-      idempotency_key:
-        idempotency_key || req.headers.get('x-idempotency-key') || undefined,
+      idempotency_key: resolvedIdempotencyKey,
       payment_idempotency_key,
       isStaffAuthorized: hasCreatePerm,
       items,
@@ -666,9 +726,15 @@ export async function POST(req: Request) {
     const message =
       error instanceof Error ? error.message : 'Không thể tạo đơn hàng';
     const code = extractOrderErrorCode(message);
+    const status =
+      code === 'SHOP_CLOSED' || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+        ? 409
+        : code === 'ORDER_IDEMPOTENCY_LOOKUP_FAILED'
+          ? 503
+          : 400;
     return NextResponse.json(
       { error: message, ...(code ? { code } : {}) },
-      { status: code === 'SHOP_CLOSED' ? 409 : 400 }
+      { status }
     );
   }
 }

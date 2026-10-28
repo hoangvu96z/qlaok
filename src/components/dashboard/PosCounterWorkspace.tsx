@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
   Home,
@@ -43,6 +43,19 @@ import {
   getStoredManualDiscountAmount,
   getStoredPromoDiscountAmount,
 } from '@/lib/order-discounts';
+import {
+  clearPendingPosOrder,
+  clearConfirmedPosOrder,
+  posRecoveryStorageKey,
+  readPendingPosOrder,
+  savePendingPosOrder,
+  sendPendingPosOrder,
+  subscribePosRecoveryChanges,
+  withPosRecoveryLock,
+  type PendingPosOrder,
+  type PendingRead,
+  type PosRecoveryChannelMessage,
+} from '@/lib/pos-order-recovery';
 
 export interface PosOrderLine {
   lineId: string;
@@ -57,6 +70,7 @@ export interface PosOrderLine {
 
 interface PosCounterWorkspaceProps {
   shop: Shop;
+  accountId?: string | null;
   categories: Category[];
   items: CatalogItem[];
   tables?: ShopTable[];
@@ -184,6 +198,7 @@ function hydratePosLinesFromOrder(
 
 export function PosCounterWorkspace({
   shop,
+  accountId,
   categories,
   items,
   tables: initialTables,
@@ -338,6 +353,107 @@ export function PosCounterWorkspace({
   const [showTodayOrdersModal, setShowTodayOrdersModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const submissionLock = useRef(false);
+  const recoveryContext = `${accountId || ''}\u0000${shop.id}`;
+  const currentRecoveryContext = useRef(recoveryContext);
+  currentRecoveryContext.current = recoveryContext;
+  const [loadedRecoveryContext, setLoadedRecoveryContext] = useState('');
+  const [recovery, setRecovery] = useState<PendingRead>({ kind: 'unavailable' });
+  const recoveryReadSeq = useRef(0);
+  const originatedPendingKeyRef = useRef<string | null>(null);
+
+  const getSafeLocalStorage = (): Storage | null => {
+    try {
+      return typeof window !== 'undefined' ? window.localStorage : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getSafeIndexedDb = (): IDBFactory | undefined => {
+    try {
+      return typeof window !== 'undefined' ? window.indexedDB : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  useEffect(() => {
+    originatedPendingKeyRef.current = null;
+    setSubmitError(null);
+    const targetContext = recoveryContext;
+    if (!accountId || !shop.id) {
+      recoveryReadSeq.current += 1;
+      setRecovery({ kind: 'unavailable' });
+      setLoadedRecoveryContext(targetContext);
+      return;
+    }
+    let cancelled = false;
+    const key = posRecoveryStorageKey(accountId, shop.id);
+
+    const refreshFromStore = (message?: PosRecoveryChannelMessage) => {
+      const seq = ++recoveryReadSeq.current;
+      void readPendingPosOrder(
+        getSafeIndexedDb(),
+        accountId,
+        shop.id,
+        getSafeLocalStorage(),
+      ).then((next) => {
+        if (cancelled || currentRecoveryContext.current !== targetContext || recoveryReadSeq.current !== seq) return;
+        if (
+          next.kind === 'empty' &&
+          message?.reason === 'confirmed' &&
+          message.requestKey &&
+          originatedPendingKeyRef.current === message.requestKey
+        ) {
+          originatedPendingKeyRef.current = null;
+          setLines([]);
+          setInheritedDiscounts({ manual: 0, promo: 0 });
+          setSelectedLineId(null);
+          setShowQrConfirmModal(false);
+          setActiveEditingOrder(null);
+          onCancelEditOrder?.();
+        }
+        if (next.kind === 'empty') {
+          setSubmitError(null);
+        }
+        setRecovery(next);
+        setLoadedRecoveryContext(targetContext);
+      });
+    };
+
+    refreshFromStore();
+
+    const unsubscribeChannel = subscribePosRecoveryChanges(accountId, shop.id, (message) => {
+      refreshFromStore(message);
+    });
+
+    const onStorage = (event: StorageEvent) => {
+      try {
+        if (event.key !== key && event.key !== null) return;
+        refreshFromStore();
+      } catch {
+        setRecovery({ kind: 'unavailable' });
+      }
+    };
+
+    const onFocusOrVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      refreshFromStore();
+    };
+
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    return () => {
+      cancelled = true;
+      unsubscribeChannel();
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, shop.id, recoveryContext]);
 
   const todayStats = useMemo(() => {
     const todayKey = getVnDateKey();
@@ -741,12 +857,83 @@ export function PosCounterWorkspace({
     });
   };
 
+  const resetPosTicketDraft = () => {
+    setLines([]);
+    setInheritedDiscounts({ manual: 0, promo: 0 });
+    setSelectedLineId(null);
+    setShowQrConfirmModal(false);
+    setActiveEditingOrder(null);
+    onCancelEditOrder?.();
+  };
+
+  const finishSavedOrder = (order: ShopOrder, shouldPrint: boolean, clearTicket = true) => {
+    if (clearTicket) {
+      resetPosTicketDraft();
+    }
+    onOrderCreated(order, shouldPrint);
+  };
+
+  const resolvePendingOrder = async (pending: PendingPosOrder) => {
+    const result = await sendPendingPosOrder(pending, (body) => fetch('/api/orders', {
+      method: 'POST',
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+      body,
+    }));
+    if (currentRecoveryContext.current !== `${pending.accountId}\u0000${pending.shopId}`) return;
+    if (result.kind === 'confirmed') {
+      try {
+        const cleared = await withPosRecoveryLock(navigator.locks, pending.accountId, pending.shopId,
+          () => clearConfirmedPosOrder(getSafeIndexedDb(), pending, getSafeLocalStorage()));
+        if (currentRecoveryContext.current !== `${pending.accountId}\u0000${pending.shopId}`) return;
+        const originatedHere = originatedPendingKeyRef.current === pending.key;
+        if (cleared === 'cleared') {
+          if (originatedHere) originatedPendingKeyRef.current = null;
+          recoveryReadSeq.current += 1;
+          setRecovery({ kind: 'empty' });
+          setSubmitError(null);
+          finishSavedOrder(result.order, pending.openReceipt, originatedHere || lines.length === 0);
+          return;
+        }
+        if (cleared === 'already-cleared') {
+          // Another tab completed this same request; clear draft if originated here, otherwise preserve this tab's separate draft.
+          if (originatedHere) {
+            originatedPendingKeyRef.current = null;
+            resetPosTicketDraft();
+          }
+          recoveryReadSeq.current += 1;
+          setRecovery({ kind: 'empty' });
+          setSubmitError(null);
+          return;
+        }
+      } catch {
+        // Keep the pending request if browser storage cannot be cleared.
+      }
+      setSubmitError(tx('Đã nhận kết quả đơn nhưng không thể xóa yêu cầu chờ. Vui lòng thử lại.', 'The order was received but the pending request could not be cleared. Please retry.'));
+      return;
+    }
+    setSubmitError(tx('Chưa xác nhận được kết quả. Đơn có thể đã được tạo; hãy kiểm tra hoặc thử lại yêu cầu này.', 'The result is not confirmed. The order may already exist; check it or retry this request.'));
+  };
+
+  const retryPendingOrder = async () => {
+    if (recovery.kind !== 'pending' || submissionLock.current || loadedRecoveryContext !== recoveryContext) return;
+    submissionLock.current = true;
+    setSubmitting(true);
+    try {
+      await resolvePendingOrder(recovery.request);
+    } finally {
+      submissionLock.current = false;
+      setSubmitting(false);
+    }
+  };
+
   // Submit Counter POS Order (Creates new order OR updates existing unpaid order)
   const submitPosOrder = async (
     markPaidImmediately = true,
     shouldOpenReceipt?: boolean
   ) => {
-    if (lines.length === 0 || submitting) return;
+    if (lines.length === 0 || submitting || submissionLock.current ||
+        loadedRecoveryContext !== recoveryContext || recovery.kind !== 'empty') return;
+    submissionLock.current = true;
     setSubmitting(true);
     try {
       const payloadItems = lines.map((line) => {
@@ -798,11 +985,69 @@ export function PosCounterWorkspace({
         manualDiscountAmount: totals.manualDiscountAmount,
         totalAmount: totals.grandTotal,
       });
+      if (!isEditing) {
+        if (!accountId || typeof window.crypto?.randomUUID !== 'function') {
+          setSubmitError(tx('Không thể chuẩn bị đơn an toàn. Vui lòng tải lại trang.', 'Could not prepare the order safely. Please reload the page.'));
+          return;
+        }
+        const key = `pos-web:${window.crypto.randomUUID()}`;
+        const body = JSON.stringify({
+          shop_id: shop.id,
+          table_id: selectedTableId,
+          table_label: tableLabel.trim() || 'Tại quầy',
+          visitor_lang: 'vi',
+          payment_method: paymentMethod,
+          payment_status: markPaidImmediately ? 'paid' : 'unpaid',
+          source: 'counter_pos',
+          items: payloadItems,
+          ...discountPayload,
+          idempotency_key: key,
+        });
+        const pending: PendingPosOrder = {
+          version: 1, accountId, shopId: shop.id, key, body,
+          openReceipt: typeof shouldOpenReceipt === 'boolean'
+            ? shouldOpenReceipt : paymentMethod === 'vietqr' ? true : autoPrintOnPay,
+        };
+        try {
+          const outcome = await withPosRecoveryLock(navigator.locks, accountId, shop.id, async () => {
+            if (currentRecoveryContext.current !== `${accountId}\u0000${shop.id}`) {
+              return { saved: false, state: { kind: 'unavailable' as const } };
+            }
+            const saved = await savePendingPosOrder(getSafeIndexedDb(), pending, getSafeLocalStorage());
+            if (saved) {
+              return { saved: true, state: { kind: 'pending' as const, request: pending } };
+            }
+            const existing = await readPendingPosOrder(getSafeIndexedDb(), accountId, shop.id, getSafeLocalStorage());
+            return {
+              saved: false,
+              state: existing.kind === 'empty' ? { kind: 'unavailable' as const } : existing,
+            };
+          });
+          if (currentRecoveryContext.current !== `${accountId}\u0000${shop.id}`) return;
+          if (!outcome.saved) {
+            recoveryReadSeq.current += 1;
+            setRecovery(outcome.state);
+            setSubmitError(tx('Không thể lưu yêu cầu chờ an toàn. Vui lòng kiểm tra bộ nhớ trình duyệt.', 'Could not safely save the pending request. Please check browser storage.'));
+            return;
+          }
+        } catch {
+          recoveryReadSeq.current += 1;
+          setRecovery({ kind: 'unavailable' });
+          setSubmitError(tx('Không thể truy cập bộ nhớ trình duyệt.', 'Browser storage is unavailable.'));
+          return;
+        }
+        originatedPendingKeyRef.current = pending.key;
+        recoveryReadSeq.current += 1;
+        setRecovery({ kind: 'pending', request: pending });
+        await resolvePendingOrder(pending);
+        return;
+      }
+
       const res = await fetch('/api/orders', {
-        method: isEditing ? 'PATCH' : 'POST',
+        method: 'PATCH',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(
-          isEditing && activeEditingOrder
+          activeEditingOrder
             ? {
                 order_id: activeEditingOrder.id,
                 table_id: selectedTableId,
@@ -817,17 +1062,7 @@ export function PosCounterWorkspace({
                 ...discountPayload,
                 items: payloadItems,
               }
-            : {
-                shop_id: shop.id,
-                table_id: selectedTableId,
-                table_label: tableLabel.trim() || 'Tại quầy',
-                visitor_lang: 'vi',
-                payment_method: paymentMethod,
-                payment_status: markPaidImmediately ? 'paid' : 'unpaid',
-                source: 'counter_pos',
-                items: payloadItems,
-                ...discountPayload,
-              }
+            : {}
         ),
       });
 
@@ -844,23 +1079,13 @@ export function PosCounterWorkspace({
       }
 
       const savedOrder: ShopOrder | null = resData?.order || null;
-
-      setLines([]);
-      setInheritedDiscounts({ manual: 0, promo: 0 });
-      setSelectedLineId(null);
-      setShowQrConfirmModal(false);
-      setActiveEditingOrder(null);
-      if (onCancelEditOrder) onCancelEditOrder();
-
-      if (savedOrder) {
-        const shouldPrint =
-          typeof shouldOpenReceipt === 'boolean'
-            ? shouldOpenReceipt
-            : paymentMethod === 'vietqr'
-              ? true
-              : autoPrintOnPay;
-        onOrderCreated(savedOrder, shouldPrint);
+      if (!savedOrder?.id || savedOrder.id !== activeEditingOrder?.id || savedOrder.shop_id !== shop.id) {
+        setSubmitError(tx('Không xác nhận được đơn đã lưu.', 'Could not confirm the saved order.'));
+        return;
       }
+      const shouldPrint = typeof shouldOpenReceipt === 'boolean'
+        ? shouldOpenReceipt : paymentMethod === 'vietqr' ? true : autoPrintOnPay;
+      finishSavedOrder(savedOrder, shouldPrint);
     } catch {
       setSubmitError(
         tx(
@@ -869,6 +1094,7 @@ export function PosCounterWorkspace({
         )
       );
     } finally {
+      submissionLock.current = false;
       setSubmitting(false);
     }
   };
@@ -882,6 +1108,64 @@ export function PosCounterWorkspace({
     }
     submitPosOrder(true);
   };
+
+  if (loadedRecoveryContext !== recoveryContext) {
+    return <div role="status" className="rounded-2xl bg-white p-6 text-sm">{tx('Đang kiểm tra đơn chờ...', 'Checking pending orders...')}</div>;
+  }
+
+  if (recovery.kind === 'unavailable') {
+    return (
+      <div role="alert" className="rounded-2xl border border-amber-300 bg-amber-50 p-6 text-sm text-amber-950">
+        {tx('Không thể kiểm tra đơn chờ an toàn. Hãy kiểm tra đăng nhập và bộ nhớ trình duyệt, dùng trình duyệt được cập nhật qua HTTPS rồi tải lại trang.', 'Cannot safely check pending orders. Check your sign-in and browser storage, use an up-to-date browser over HTTPS, then reload.')}
+      </div>
+    );
+  }
+
+  if (recovery.kind === 'pending') {
+    const pending = recovery.request;
+    return (
+      <div role="alert" data-testid="pos-pending-order" className="space-y-4 rounded-2xl border border-amber-300 bg-amber-50 p-6 text-sm text-amber-950">
+        <p className="font-bold">{tx('Đơn trước chưa được xác nhận', 'Previous order not confirmed')}</p>
+        <p>{tx('Đơn có thể đã được tạo. Thử lại sẽ gửi đúng yêu cầu trước đó, không tự động tạo yêu cầu mới.', 'The order may already exist. Retry sends the same request and does not automatically create a new one.')}</p>
+        {submitError && <p>{submitError}</p>}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={submitting} onClick={retryPendingOrder} className="rounded-xl bg-emerald-700 px-4 py-2 font-bold text-white disabled:opacity-50">
+            {submitting ? tx('Đang kiểm tra...', 'Checking...') : tx('Thử lại đơn chờ', 'Retry pending order')}
+          </button>
+          <button type="button" disabled={submitting} onClick={async () => {
+            if (!window.confirm(tx('Hãy kiểm tra danh sách đơn trước. Chỉ bỏ yêu cầu chờ sau khi bạn đã xác nhận và xử lý đơn đó. Tiếp tục?', 'Check the order list first. Only discard this pending request after confirming and handling that order. Continue?'))) return;
+            try {
+              const cleared = await withPosRecoveryLock(navigator.locks, pending.accountId, pending.shopId,
+                () => clearPendingPosOrder(getSafeIndexedDb(), pending, getSafeLocalStorage()));
+              if (currentRecoveryContext.current !== `${pending.accountId}\u0000${pending.shopId}`) return;
+              if (cleared) {
+                if (originatedPendingKeyRef.current === pending.key) {
+                  originatedPendingKeyRef.current = null;
+                }
+                recoveryReadSeq.current += 1;
+                setRecovery({ kind: 'empty' });
+                setSubmitError(null);
+              } else {
+                const current = await readPendingPosOrder(getSafeIndexedDb(), pending.accountId, pending.shopId, getSafeLocalStorage());
+                if (currentRecoveryContext.current !== `${pending.accountId}\u0000${pending.shopId}`) return;
+                recoveryReadSeq.current += 1;
+                setRecovery(current);
+                if (current.kind === 'empty') {
+                  setSubmitError(null);
+                } else {
+                  setSubmitError(tx('Không thể xóa yêu cầu chờ.', 'Could not clear the pending request.'));
+                }
+              }
+            } catch {
+              setSubmitError(tx('Không thể truy cập bộ nhớ trình duyệt.', 'Browser storage is unavailable.'));
+            }
+          }} className="rounded-xl border border-amber-700 px-4 py-2 font-bold disabled:opacity-50">
+            {tx('Tôi đã kiểm tra, bỏ yêu cầu chờ', 'I checked, discard pending request')}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
