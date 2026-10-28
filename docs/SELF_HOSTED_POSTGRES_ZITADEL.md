@@ -20,6 +20,13 @@ Tài liệu này mô tả cấu hình Qlaok đang chạy trên PostgreSQL 14 t�
 - **Ánh xạ subject OIDC**: `sub` của Zitadel là định danh opaque, không đảm bảo bằng UUID hồ sơ Qlaok. Backend tra `profiles.zitadel_sub` rồi tiếp tục dùng `profiles.id` UUID cho session và JWT PostgREST. Không đổi khóa hồ sơ/khóa ngoại và không tự liên kết hồ sơ cũ chỉ dựa vào email.
 - **Migration 022**: [`022_postgres_realtime_notifications.sql`](../supabase/migrations/022_postgres_realtime_notifications.sql)
   - Thêm trigger PostgreSQL `LISTEN/NOTIFY` cho đơn hàng và yêu cầu phục vụ; web/mobile nhận sự kiện qua SSE của Qlaok.
+- **Migration 023**: [`023_restore_record_staff_login_failure_atomic.sql`](../supabase/migrations/023_restore_record_staff_login_failure_atomic.sql)
+  - Khôi phục RPC ghi nhận thất bại đăng nhập nhân viên theo cách nguyên tử.
+- **Migrations 20261028000100 và 20261028000200**:
+  [`20261028000100_analytics_atomic_view_count.sql`](../supabase/migrations/20261028000100_analytics_atomic_view_count.sql) và [`20261028000200_floor_plan_active_orders_index.sql`](../supabase/migrations/20261028000200_floor_plan_active_orders_index.sql)
+  - Tăng lượt xem món nguyên tử và giới hạn index sơ đồ bàn cho đơn còn hiệu lực/chưa thanh toán.
+- **Migration 20261028000300**: [`20261028000300_orders_order_code_unique.sql`](../supabase/migrations/20261028000300_orders_order_code_unique.sql)
+  - Thêm unique index cho mã đơn; nếu dữ liệu lịch sử đã trùng, migration dừng và yêu cầu đối soát trước khi áp dụng, không tự đổi mã đơn.
 
 ## 2. Trình tự áp dụng trên PostgreSQL 14 tự vận hành
 
@@ -33,7 +40,7 @@ Thực thi [`supabase/self-hosted/000_bootstrap.sql`](../supabase/self-hosted/00
 psql -X -v ON_ERROR_STOP=1 -f supabase/self-hosted/000_bootstrap.sql
 ```
 
-### Bước 2 — Áp dụng các migration theo đúng thứ tự tên file (001 → 022)
+### Bước 2 — Áp dụng các migration còn thiếu theo thứ tự tên file
 
 Trên VPS, dùng runner tự host. Runner áp dụng migration còn thiếu, từ chối checksum đã đổi và chỉ ghi nhận migration sau khi SQL chạy thành công:
 
@@ -69,17 +76,45 @@ WHERE id = '<existing_qlaok_user_uuid>';
 
 ## 4. Trạng thái cắt chuyển và vận hành
 
-1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `022_postgres_realtime_notifications.sql` được chạy bằng `scripts/migrate-self-hosted.mjs`, đối chiếu checksum trong `public.schema_migrations`; migration này không gọi Supabase Management API.
+1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261028000300_orders_order_code_unique.sql` được chạy bằng `scripts/migrate-self-hosted.mjs`, đối chiếu checksum trong `public.schema_migrations`; migration runner không gọi Supabase Management API.
 2. **JWT/RLS**: backend xác minh phiên Qlaok hoặc Zitadel rồi chỉ cấp PostgREST JWT ngắn hạn `role: 'authenticated'` với UUID `public.profiles.id` đã xác thực. `service_role` chỉ tồn tại trong server config; client không nhận khóa bypass RLS.
 3. **Realtime**: PostgreSQL triggers phát `LISTEN/NOTIFY`; broker web và ứng dụng mobile dùng SSE có xác thực qua API Qlaok. Mobile giữ polling 30 giây làm phương án phục hồi khi SSE gián đoạn.
 4. **Object storage**: upload ứng dụng dùng Garage S3 trên `https://s3.vunph.click`, bucket `qlaok-media`, public media dưới `/media/`. Cloudflare R2 chỉ còn là đường dự phòng nếu được cấu hình; production hiện không cấu hình R2.
 5. **Đăng nhập Zitadel**: project `Qlaok` đang hoạt động với hai client Authorization Code + PKCE: `Qlaok Web` (User Agent, callback `https://qlaok.vunph.click/api/auth/callback`) và `Qlaok Mobile` (Native, callback `qlaok://auth/callback`). Web Client ID đã cấu hình trong env VPS; Native Client ID nằm trong `mobile/.env.example` và env local bị ignore. Client IDs cũng được lưu trong file backup secrets có quyền hạn chế. Subject OIDC được đối chiếu qua `profiles.zitadel_sub`; session Qlaok và JWT PostgREST vẫn dùng UUID hồ sơ gốc. Luồng đăng nhập web cần được kiểm tra sau deploy; luồng deep link mobile cần kiểm tra trên thiết bị.
-6. **Sao lưu/reset dữ liệu**: `scripts/backup-qlaok-db.mjs`, `scripts/preflight-demo-reset.mjs` và demo reset hiện vẫn có ràng buộc an toàn theo project Supabase cũ; không dùng các script reset này với database tự host. Các bản backup trước cutover được giữ trong thư mục backup hạn chế quyền trên VPS; backup PostgreSQL tự host cần chạy bằng `pg_dump` trên VPS với quyền PostgreSQL quản trị và lưu vào thư mục backup hạn chế quyền.
-6. **Giao diện đăng nhập, tự đăng ký & đặt lại mật khẩu Qlaok (Web + Native Mobile)**: Với từng client Qlaok Web và Qlaok Mobile, đặt Custom base URL của màn hình đăng nhập mới thành `https://qlaok.vunph.click` (không thêm `/login`; máy chủ đăng nhập sẽ tự mở đường dẫn `/login?authRequest=...`). Màn hình Qlaok xử lý trọn vẹn cả đăng nhập lẫn tự đăng ký tài khoản Chủ quán (họ tên, email, mật khẩu, xác nhận mật khẩu và xác thực mã OTP email) ngay trong giao diện VI/EN của Qlaok trên cả Web (`/login`) và ứng dụng di động (`AuthScreen`), không chuyển hướng người dùng sang biểu mẫu mặc định của Zitadel (`auth.vunph.click/ui/v2/login/...`). API route `/api/auth/login-ui` phía máy chủ gọi User API v2 hiện hành (`POST /v2/users/new` với wrapper `human`, `returnCode: {}`, tùy chọn `organizationId` và mật khẩu tạm CSPRNG không hoàn trả; `POST /v2/users/{id}/email/verify`; `PATCH /v2/users/{id}` với `human.password` chỉ đặt mật khẩu người dùng sau khi xác thực OTP email thành công; `POST /v2/users/{id}/email/resend` với `{ "returnCode": {} }`; đặt lại mật khẩu qua `action=password_reset_request` tra cứu chính xác email tài khoản người dùng đã xác thực bằng `POST /v2/users` rồi gọi `POST /v2/users/{id}/password_reset` với `returnCode: {}`; máy chủ Qlaok gửi email chứa URL đặt lại mật khẩu trên domain Qlaok trả về phản hồi đồng nhất `{ ok: true }`, và hoàn tất qua `action=password_reset_complete` gọi `POST /v2/users/{id}/password` với `verificationCode` cùng `newPassword.changeRequired = false`) và Session/OIDC API v2 (`POST /v2/sessions`, `PATCH /v2/sessions/{id}`, `POST /v2/oidc/auth_requests/{id}`) rồi hoàn tất yêu cầu để giữ nguyên callback OIDC + PKCE hiện có (`/api/auth/callback` trên Web và `qlaok://auth/callback` → `/api/auth` `oidc_mobile_exchange` trên Mobile). Để chức năng đăng nhập, tự đăng ký, đặt lại mật khẩu và xác thực email hoạt động an toàn trên Zitadel:
+7. **Sao lưu/reset dữ liệu**: `scripts/backup-qlaok-db.mjs`, `scripts/preflight-demo-reset.mjs` và demo reset hiện vẫn có ràng buộc an toàn theo project Supabase cũ; không dùng các script reset này với database tự host. PostgreSQL tự host dùng `scripts/backup-self-hosted-postgres.mjs` cùng systemd service/timer hằng ngày trong `ops/systemd/`; xem hướng dẫn cài đặt và diễn tập khôi phục ở cuối tài liệu.
+8. **Giao diện đăng nhập, tự đăng ký & đặt lại mật khẩu Qlaok (Web + Native Mobile)**: Với từng client Qlaok Web và Qlaok Mobile, đặt Custom base URL của màn hình đăng nhập mới thành `https://qlaok.vunph.click` (không thêm `/login`; máy chủ đăng nhập sẽ tự mở đường dẫn `/login?authRequest=...`). Màn hình Qlaok xử lý trọn vẹn cả đăng nhập lẫn tự đăng ký tài khoản Chủ quán (họ tên, email, mật khẩu, xác nhận mật khẩu và xác thực mã OTP email) ngay trong giao diện VI/EN của Qlaok trên cả Web (`/login`) và ứng dụng di động (`AuthScreen`), không chuyển hướng người dùng sang biểu mẫu mặc định của Zitadel (`auth.vunph.click/ui/v2/login/...`). API route `/api/auth/login-ui` phía máy chủ gọi User API v2 hiện hành (`POST /v2/users/new` với wrapper `human`, `returnCode: {}`, tùy chọn `organizationId` và mật khẩu tạm CSPRNG không hoàn trả; `POST /v2/users/{id}/email/verify`; `PATCH /v2/users/{id}` với `human.password` chỉ đặt mật khẩu người dùng sau khi xác thực OTP email thành công; `POST /v2/users/{id}/email/resend` với `{ "returnCode": {} }`; đặt lại mật khẩu qua `action=password_reset_request` tra cứu chính xác email tài khoản người dùng đã xác thực bằng `POST /v2/users` rồi gọi `POST /v2/users/{id}/password_reset` với `returnCode: {}`; máy chủ Qlaok gửi email chứa URL đặt lại mật khẩu trên domain Qlaok trả về phản hồi đồng nhất `{ ok: true }`, và hoàn tất qua `action=password_reset_complete` gọi `POST /v2/users/{id}/password` với `verificationCode` cùng `newPassword.changeRequired = false`) và Session/OIDC API v2 (`POST /v2/sessions`, `PATCH /v2/sessions/{id}`, `POST /v2/oidc/auth_requests/{id}`) rồi hoàn tất yêu cầu để giữ nguyên callback OIDC + PKCE hiện có (`/api/auth/callback` trên Web và `qlaok://auth/callback` → `/api/auth` `oidc_mobile_exchange` trên Mobile). Để chức năng đăng nhập, tự đăng ký, đặt lại mật khẩu và xác thực email hoạt động an toàn trên Zitadel:
    - Email xác thực đăng ký, gửi lại mã và đặt lại mật khẩu được dựng từ `src/lib/auth-email-templates.ts` và gửi bởi máy chủ Qlaok qua SMTP; mỗi thư gồm tiếng Việt và tiếng Anh, có logo Qlaok. Mã xác thực không xuất hiện trên URL đăng ký; người dùng nhập mã tại màn hình đăng ký đang mở. Thông báo bảo mật phát sinh trực tiếp trong Zitadel vẫn do Zitadel gửi và được cấu hình riêng.
    - Cấu hình server-only: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, tùy chọn `SMTP_FROM_NAME` và `SMTP_SECURE`. Không đưa các biến này vào `NEXT_PUBLIC_*`, `EXPO_PUBLIC_*`, Git hoặc log. Cấu hình SMTP phải tồn tại trên server trước khi triển khai; khi thiếu cấu hình, chức năng gửi email trả lỗi thay vì báo thành công.
    - Theo hướng dẫn [ZITADEL Administrator Hardening](https://zitadel.com/docs/guides/manage/console/administrator-hardening), sử dụng một tài khoản dịch vụ (machine user) chuyên biệt đặt trong organization hệ thống/quản trị riêng và **chỉ cấp duy nhất role `IAM_LOGIN_CLIENT`** (tập quyền mặc định của `IAM_LOGIN_CLIENT` đã bao gồm các quyền quản lý người dùng cần thiết cho luồng đăng ký của Custom Login UI). **Không** gán thêm `ORG_USER_MANAGER` hoặc kết hợp các role quản trị khác vào tài khoản dịch vụ đăng nhập này; cấu hình PAT của tài khoản này vào biến server-only `ZITADEL_LOGIN_CLIENT_PAT` (kèm tùy chọn `ZITADEL_ORGANIZATION_ID` cho organization đích của người dùng mới).
    - Không bao giờ gửi mật khẩu của người dùng vào `POST /v2/users/new` trước khi hộp thư được xác thực, không bao giờ đánh dấu `isVerified: true` khi chưa xác thực mã OTP email, và bắt buộc `email_verified === true` (fail-closed; nếu `id_token` thiếu claim này thì kiểm tra thêm UserInfo trước khi quyết định) mới cho phép tạo hồ sơ chủ quán mới hoặc bổ sung email vào `public.profiles`.
    - Không đưa PAT vào GitHub Actions, `NEXT_PUBLIC_*`, `EXPO_PUBLIC_*`, nhật ký hay tệp trong repository.
 
-7. **Nạp biến môi trường khi deploy PM2**: Trong `.github/workflows/deploy.yml`, trước khi khởi chạy ứng dụng trên cổng `3005`, workflow chỉ xóa tiến trình PM2 `qlaok` cũ (`pm2 delete qlaok` — giữ nguyên mọi ứng dụng PM2 khác) rồi khởi chạy với `env -i` và chỉ giữ `HOME`, `PATH`, `PM2_HOME`, `NODE_ENV`. Môi trường sạch ngăn cấu hình cũ từ tiến trình/SSH ghi đè `.env.local`; Next.js sẽ nạp cấu hình runtime hiện hành từ file đó. Workflow sau đó `pm2 save` và kiểm tra realtime/health.
+9. **Nạp biến môi trường khi deploy PM2**: Trong `.github/workflows/deploy.yml`, trước khi khởi chạy ứng dụng trên cổng `3005`, workflow chỉ xóa tiến trình PM2 `qlaok` cũ (`pm2 delete qlaok` — giữ nguyên mọi ứng dụng PM2 khác) rồi khởi chạy với `env -i` và chỉ giữ `HOME`, `PATH`, `PM2_HOME`, `NODE_ENV`. Môi trường sạch ngăn cấu hình cũ từ tiến trình/SSH ghi đè `.env.local`; Next.js sẽ nạp cấu hình runtime hiện hành từ file đó. Workflow sau đó `pm2 save` và kiểm tra realtime/health.
+
+## Sao lưu PostgreSQL tự host hằng ngày
+
+[`scripts/backup-self-hosted-postgres.mjs`](../scripts/backup-self-hosted-postgres.mjs) chạy `pg_dump --format=custom` qua Unix socket dưới tài khoản hệ điều hành `postgres`, kiểm tra bảng mục lục bằng `pg_restore --list`, đặt quyền file `0600`, và dọn bản cũ theo thời hạn lưu giữ. Script không nhận database URL hay mật khẩu; PostgreSQL peer authentication phải cho phép user `postgres` đọc database.
+
+Trên VPS, sau khi cập nhật checkout tại `/var/www/qlaok.vunph.click`:
+
+```sh
+sudo install -d -o postgres -g postgres -m 0700 /var/backups/qlaok/postgres
+sudo install -d -o root -g postgres -m 0750 /etc/qlaok
+sudo sh -c 'printf "%s\n" "QLAOK_DB_NAME=<database-name>" "QLAOK_DB_BACKUP_DIR=/var/backups/qlaok/postgres" "QLAOK_DB_BACKUP_RETENTION_DAYS=14" > /etc/qlaok/postgres-backup.env'
+sudo chown root:postgres /etc/qlaok/postgres-backup.env
+sudo chmod 0640 /etc/qlaok/postgres-backup.env
+sudo install -m 0644 ops/systemd/qlaok-postgres-backup.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/qlaok-postgres-backup.timer /etc/systemd/system/
+```
+
+Thay `<database-name>` bằng đúng giá trị `QLAOK_DB_NAME` của máy chủ. Nếu Node.js không nằm ở `/usr/bin/node`, sửa `ExecStart` trong service thành đường dẫn tuyệt đối lấy từ `command -v node`. Sau đó cài timer và chạy một backup thử:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now qlaok-postgres-backup.timer
+sudo systemctl start qlaok-postgres-backup.service
+sudo systemctl status qlaok-postgres-backup.service
+sudo ls -l /var/backups/qlaok/postgres
+```
+
+`pg_restore --list` chỉ xác nhận archive đọc được. Diễn tập khôi phục định kỳ trên database tạm/staging riêng: tạo database đích, chạy `pg_restore --exit-on-error --no-owner --no-acl --dbname=<temporary-db> <backup.dump>`, kiểm tra các bảng nghiệp vụ cần thiết rồi xóa database kiểm thử. Thay đổi này chưa thực hiện khôi phục trên production. Backup database không bao gồm `.local-db`, file cấu hình hay object storage Garage; cần có chính sách sao lưu riêng cho các tài sản đó.

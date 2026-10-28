@@ -18,10 +18,6 @@ const accessHelperSource = fs.readFileSync(
   path.resolve('src/lib/ai-scanner-access.ts'),
   'utf8'
 );
-const paywallComponentSource = fs.readFileSync(
-  path.resolve('src/components/dashboard/AiScannerPaywall.tsx'),
-  'utf8'
-);
 const guardSource = fs.readFileSync(
   path.resolve('src/app/api/ai/_lib/guard.ts'),
   'utf8'
@@ -128,7 +124,7 @@ test('2. canUseAiOcr plan rules strictly restrict AI OCR to Premium only', () =>
   assert.equal(canUseAiOcr('free'), false, 'Free tier must be locked');
   assert.equal(canUseAiOcr(null), false, 'Null plan must fail closed');
   assert.equal(canUseAiOcr(undefined), false, 'Undefined plan must fail closed');
-  assert.equal(canUseAiOcr('pro' as any), false, 'Unknown plan must fail closed');
+  assert.equal(canUseAiOcr('pro' as never), false, 'Unknown plan must fail closed');
 });
 
 test('3. Super Admin bypass preserves server guard parity', () => {

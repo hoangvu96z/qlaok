@@ -142,7 +142,7 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const response = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,6 +153,21 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+      const payload = (await response.json().catch(() => null)) as
+        | { item?: MobileCatalogItem }
+        | null;
+      if (
+        !payload?.item ||
+        payload.item.id !== item.id ||
+        !Number.isFinite(Number(payload.item.price))
+      ) {
+        throw new Error(t('common.tryAgain'));
+      }
+      setItems((prev) =>
+        prev.map((current) =>
+          current.id === item.id ? payload.item! : current
+        )
+      );
     } catch (error) {
       Alert.alert(
         t('catalog.errPriceTitle'),
@@ -259,9 +274,10 @@ export const CatalogTab = memo(function CatalogTab({
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.item) {
-          setItems((prev) => [...prev, data.item]);
+        if (!data.item || typeof data.item.id !== 'string') {
+          throw new Error(t('common.tryAgain'));
         }
+        setItems((prev) => [...prev, data.item]);
         setNewItemName('');
         setNewItemPrice('');
         setNewItemStock('');

@@ -11,6 +11,7 @@ import {
   requestZitadelPasswordReset,
   resendZitadelRegistrationCode,
   startZitadelRegistration,
+  verifyZitadelRegistrationTicket,
   ZitadelLoginUiError,
 } from '@/lib/zitadel-login-ui';
 import {
@@ -360,6 +361,7 @@ export async function POST(req: Request) {
         confirmPassword,
         lang: locale,
         origin: requestOrigin,
+        clientIp,
       });
 
       const res = jsonNoStore({
@@ -383,12 +385,27 @@ export async function POST(req: Request) {
       const verificationCode =
         typeof body.verificationCode === 'string' ? body.verificationCode : '';
       const password = typeof body.password === 'string' ? body.password : '';
-      const verified = await completeZitadelRegistrationVerification({
-        registrationTicket,
-        verificationCode,
-        password,
-        origin: requestOrigin,
-      });
+      let verified: Awaited<
+        ReturnType<typeof completeZitadelRegistrationVerification>
+      >;
+      try {
+        verified = await completeZitadelRegistrationVerification({
+          registrationTicket,
+          verificationCode,
+          password,
+          origin: requestOrigin,
+        });
+      } catch (error) {
+        // A random decoy ticket for an existing account must look exactly like
+        // an incorrect code on a real registration ticket.
+        if (
+          error instanceof ZitadelLoginUiError &&
+          error.code === 'REGISTRATION_EXPIRED'
+        ) {
+          throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
+        }
+        throw error;
+      }
       return jsonNoStore({
         callbackUrl: verified.callbackUrl,
         email: verified.email,
@@ -408,15 +425,40 @@ export async function POST(req: Request) {
           5 * 60 * 1000
         );
       }
-      const resent = await resendZitadelRegistrationCode({
-        registrationTicket,
-        lang: locale,
-        origin: requestOrigin,
-      });
-      return jsonNoStore({
-        ok: true,
-        email: resent.email,
-      });
+      try {
+        await resendZitadelRegistrationCode({
+          registrationTicket,
+          lang: locale,
+          origin: requestOrigin,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof ZitadelLoginUiError) ||
+          ![
+            'REGISTRATION_EXPIRED',
+            'REGISTRATION_TICKET_INVALID',
+            'AUTH_REQUEST_INVALID',
+            'REGISTRATION_VERIFIED_LOGIN_REQUIRED',
+          ].includes(error.code)
+        ) {
+          throw error;
+        }
+
+        // Expired/decoy/verified tickets all receive the same acknowledgement.
+        // If the signed ticket is still valid, send reset instructions too.
+        try {
+          const ticket = verifyZitadelRegistrationTicket(registrationTicket);
+          await requestZitadelPasswordReset({
+            email: ticket.email,
+            lang: locale,
+            origin: requestOrigin,
+            clientIp,
+          });
+        } catch {
+          // Keep this public response independent of account and delivery state.
+        }
+      }
+      return jsonNoStore({ ok: true });
     }
 
     if (action === 'password_reset_request') {

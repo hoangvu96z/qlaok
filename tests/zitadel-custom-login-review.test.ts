@@ -9,12 +9,10 @@ import {
   resolveAuthEmailSmtpConfig,
   sendAuthEmail,
   setAuthEmailSenderForTests,
-  setNodemailerTransportFactoryForTests,
 } from '../src/lib/auth-email';
 import { setSupabaseDbClientForTests } from '../src/lib/db';
 import {
   bootstrapZitadelOidcAuthRequestId,
-  buildQlaokPasswordResetUrl,
   buildZitadelLoginUiRateLimitBucketKey,
   buildZitadelPasswordResetUrlTemplate,
   checkZitadelLoginUiRateLimit,
@@ -808,58 +806,94 @@ test('custom registration maps duplicate email errors, recovers unverified accou
   setSupabaseDbClientForTests(client as never);
 
   try {
-    // 1. Duplicate email with existing VERIFIED ZITADEL user -> EMAIL_ALREADY_EXISTS (409), never resends or overwrites password
+    // 1. Duplicate email with existing VERIFIED ZITADEL user -> same public response as a
+    // new registration (no enumeration), never resends verification or overwrites the password
     let resendCalledForVerified = false;
-    await assert.rejects(
-      () =>
-        startZitadelRegistration({
-          authRequestId,
-          fullName: 'Nguyễn Văn An',
-          email: 'existing@example.test',
-          password: 'StrongPass1!',
-          confirmPassword: 'StrongPass1!',
-          origin: 'https://qlaok.example.test',
-          config,
-          fetchImpl: async (input, init) => {
-            const url = String(input);
-            const method = init?.method || 'GET';
-            if (url.endsWith(`/v2/oidc/auth_requests/${authRequestId}`)) {
-              return response({ authRequest: authRequest() });
-            }
-            if (url.endsWith('/v2/users/new') && method === 'POST') {
-              return response(
-                { code: 6, message: 'User already exists (ALREADY_EXISTS)' },
-                400
-              );
-            }
-            if (url.endsWith('/v2/users') && method === 'POST') {
-              return response({
-                result: [
-                  {
-                    userId: 'verified-user-111',
-                    human: {
-                      email: {
-                        email: 'existing@example.test',
-                        isVerified: true,
-                      },
-                    },
+    let passwordOverwriteCalled = false;
+    let passwordResetMailSentForVerified = false;
+    const verifiedDuplicate = await startZitadelRegistration({
+      authRequestId,
+      fullName: 'Nguyễn Văn An',
+      email: 'existing@example.test',
+      password: 'StrongPass1!',
+      confirmPassword: 'StrongPass1!',
+      origin: 'https://qlaok.example.test',
+      config,
+      sendEmail: async (payload: {
+        to: string;
+        subject: string;
+        text: string;
+        html: string;
+      }) => {
+        assert.equal(payload.to, 'existing@example.test');
+        passwordResetMailSentForVerified = true;
+      },
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        const method = init?.method || 'GET';
+        if (url.endsWith(`/v2/oidc/auth_requests/${authRequestId}`)) {
+          return response({ authRequest: authRequest() });
+        }
+        if (url.endsWith('/v2/users/new') && method === 'POST') {
+          return response(
+            { code: 6, message: 'User already exists (ALREADY_EXISTS)' },
+            400
+          );
+        }
+        if (url.endsWith('/v2/users') && method === 'POST') {
+          return response({
+            result: [
+              {
+                userId: 'verified-user-111',
+                human: {
+                  email: {
+                    email: 'existing@example.test',
+                    isVerified: true,
                   },
-                ],
-              });
-            }
-            if (url.includes('/email/resend')) {
-              resendCalledForVerified = true;
-              return response({}, 200);
-            }
-            throw new Error(`Unexpected call: ${method} ${url}`);
-          },
-        }),
-      (err: unknown) =>
-        err instanceof ZitadelLoginUiError &&
-        err.code === 'EMAIL_ALREADY_EXISTS' &&
-        err.status === 409
-    );
+                },
+              },
+            ],
+          });
+        }
+        if (url.endsWith('/v2/users/verified-user-111/password_reset')) {
+          return response({ verificationCode: '975310' }, 200);
+        }
+        if (url.includes('/email/resend')) {
+          resendCalledForVerified = true;
+          return response({}, 200);
+        }
+        if (url.endsWith('/v2/users/verified-user-111') && method === 'PATCH') {
+          passwordOverwriteCalled = true;
+          return response({}, 200);
+        }
+        if (url.endsWith('/v2/users/verified-user-111/password')) {
+          passwordOverwriteCalled = true;
+          return response({}, 200);
+        }
+        throw new Error(`Unexpected call: ${method} ${url}`);
+      },
+    });
     assert.equal(resendCalledForVerified, false);
+    assert.equal(passwordOverwriteCalled, false);
+    assert.equal(
+      passwordResetMailSentForVerified,
+      true,
+      'An existing verified account must receive reset instructions instead'
+    );
+    assert.equal(verifiedDuplicate.email, 'existing@example.test');
+    assert.equal(
+      Object.keys(verifiedDuplicate).sort().join(','),
+      'authRequestId,email,registrationTicket',
+      'register_start must return the same response shape for existing and new emails'
+    );
+    const duplicateTicket = verifyZitadelRegistrationTicket(
+      verifiedDuplicate.registrationTicket
+    );
+    assert.notEqual(
+      duplicateTicket.userId,
+      'verified-user-111',
+      'The decoy ticket must not hand out the existing account id'
+    );
 
     // 2. Duplicate email with existing UNVERIFIED ZITADEL user -> resends verification code and issues a fresh ticket for that userId
     let resendBodyForUnverified: Record<string, unknown> | undefined;

@@ -53,8 +53,6 @@ import {
   resolveWelcomePopupPreviewConfig,
 } from '@/lib/shop-promotions';
 
-const formatVnd = (amount: number) => formatCurrency(amount, 'VND');
-
 type StudioTab = 'discount_banner' | 'flash_sale' | 'posts';
 
 const BANNER_GRADIENT_SWATCHES: Array<{
@@ -82,6 +80,7 @@ const BANNER_GRADIENT_SWATCHES: Array<{
 export default function DashboardPostsPage() {
   const { activeShop, refreshDashboard } = useDashboard();
   const { locale, t, tx } = useAppI18n();
+  const formatVnd = (amount: number) => formatCurrency(amount, 'VND', locale);
 
   const [studioTab, setStudioTab] = useState<StudioTab>('discount_banner');
   const [shopItems, setShopItems] = useState<CatalogItem[]>([]);
@@ -394,7 +393,7 @@ export default function DashboardPostsPage() {
     try {
       const res = await fetch('/api/ai/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           vertical: activeShop.vertical,
           categoryNameVi: 'Khuyến mãi',

@@ -13,6 +13,10 @@ import {
   wasOrderNewlyCreated,
 } from '@/lib/mpos-store';
 import {
+  getStoredManualDiscountAmount,
+  getStoredPromoDiscountAmount,
+} from '@/lib/order-discounts';
+import {
   dbGetShopCatalog,
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
@@ -68,7 +72,7 @@ export async function GET(req: Request) {
       searchParams.get('trackingToken') ||
       req.headers.get('x-tracking-token');
     const rawShopId = (searchParams.get('shopId') || '').trim();
-    const shopId = rawShopId || 'shop-fnb-001';
+    const shopId = rawShopId;
     const action = searchParams.get('action');
     const view = searchParams.get('view');
 
@@ -103,6 +107,13 @@ export async function GET(req: Request) {
       }
 
       return NextResponse.json({ order: sanitizeCustomerOrderView(order) });
+    }
+
+    if (!shopId) {
+      return NextResponse.json(
+        { error: 'Thiếu mã cửa hàng (shopId).', code: 'SHOP_ID_REQUIRED' },
+        { status: 400 }
+      );
     }
 
     if (action === 'table_bill' || searchParams.get('tableBill') === '1') {
@@ -690,6 +701,7 @@ export async function PATCH(req: Request) {
       customer_note,
       items,
       discount_amount,
+      apply_shop_promotions,
     } = body as {
       orderId?: string;
       order_id?: string;
@@ -715,6 +727,7 @@ export async function PATCH(req: Request) {
       customer_note?: string;
       items?: OrderLineItem[];
       discount_amount?: number;
+      apply_shop_promotions?: boolean;
     };
 
     const resolvedWorkflowStepId =
@@ -744,6 +757,19 @@ export async function PATCH(req: Request) {
       return NextResponse.json(
         { error: 'Không tìm thấy đơn hàng' },
         { status: 404 }
+      );
+    }
+
+    if (
+      apply_shop_promotions !== undefined &&
+      typeof apply_shop_promotions !== 'boolean'
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Cờ áp dụng khuyến mãi không hợp lệ.',
+          code: 'INVALID_PROMOTION_OPTION',
+        },
+        { status: 400 }
       );
     }
 
@@ -852,7 +878,9 @@ export async function PATCH(req: Request) {
       (existingOrder.payment_status === 'paid' && status === 'cancelled');
     const isChangingDiscount =
       discount_amount !== undefined &&
-      Number(discount_amount) !== Number(existingOrder.discount_amount || 0);
+      Number(discount_amount) !== getStoredManualDiscountAmount(existingOrder);
+    const canApplyManualDiscount =
+      hasShopPermission(membership, 'discount.apply') || !isChangingDiscount;
     const isEditingItems = Array.isArray(items);
     const isCancellingUnpaid =
       status === 'cancelled' && existingOrder.payment_status !== 'paid';
@@ -895,9 +923,15 @@ export async function PATCH(req: Request) {
       const quote = Array.isArray(items) || discount_amount !== undefined
         ? await quoteOrderPricing({
             shop_id: existingOrder.shop_id, items: items || existingOrder.items,
-            discount_amount: discount_amount ?? existingOrder.discount_amount,
-            apply_shop_promotions: false,
-            canApplyManualDiscount: hasShopPermission(auth.membership, 'discount.apply'),
+            discount_amount: discount_amount ?? getStoredManualDiscountAmount(existingOrder),
+            apply_shop_promotions:
+              apply_shop_promotions ??
+              Boolean(existingOrder.discount_code || existingOrder.promo_discount_amount),
+            preservedPromoDiscountAmount:
+              apply_shop_promotions === false
+                ? getStoredPromoDiscountAmount(existingOrder)
+                : undefined,
+            canApplyManualDiscount,
           })
         : { total_amount: existingOrder.total_amount };
       if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== Number(quote.total_amount)) {
@@ -974,6 +1008,17 @@ export async function PATCH(req: Request) {
       }
     }
 
+    if (status === 'completed' && payment_status === 'paid') {
+      return NextResponse.json(
+        {
+          error:
+            'Hoàn tất phục vụ không được tự xác nhận đã thanh toán. Hãy xử lý thanh toán riêng.',
+          code: 'FULFILLMENT_CANNOT_COLLECT_PAYMENT',
+        },
+        { status: 400 }
+      );
+    }
+
     const updated = await dbUpdateOrderStatus(resolvedOrderId, {
       status,
       workflow_step_id: resolvedWorkflowStepId,
@@ -994,7 +1039,8 @@ export async function PATCH(req: Request) {
       customer_note,
       items,
       discount_amount,
-      canApplyDiscount: hasShopPermission(auth.membership, 'discount.apply'),
+      apply_shop_promotions,
+      canApplyDiscount: canApplyManualDiscount,
       expected_total: body.expected_total,
     });
 

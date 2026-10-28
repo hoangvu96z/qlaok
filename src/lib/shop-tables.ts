@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,21 +11,24 @@ import { isSupabaseConfigured } from '@/lib/supabase/client';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import type { PublicShopTable, ShopTable } from '@/types/qlaok';
 
+let developmentTableQrSecret: string | null = null;
+
 function getTableQrSigningSecret(): string {
-  const configured = process.env.SESSION_SECRET;
-  if (configured && configured.trim().length >= 16) {
-    return configured.trim();
-  }
-  const fallbackEnv =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.PAYMENT_WEBHOOK_SECRET;
-  if (fallbackEnv && fallbackEnv.trim().length >= 16) {
-    return fallbackEnv.trim();
+  const configured = process.env.SESSION_SECRET?.trim();
+  if (configured && configured.length >= 16) {
+    return createHmac('sha256', configured)
+      .update('qlaok-shop-table-qr-signing-v1')
+      .digest('hex');
   }
   if (process.env.NODE_ENV === 'production') {
     throw new Error('SESSION_SECRET (at least 16 characters) is required in production.');
   }
-  return 'qlaok-server-hmac-secret-key-v2-do-not-share-in-client';
+  if (!developmentTableQrSecret) {
+    developmentTableQrSecret = createHash('sha256')
+      .update(randomBytes(32))
+      .digest('hex');
+  }
+  return developmentTableQrSecret;
 }
 
 export function buildCanonicalTableQrPayload(shopId: string, tableId: string): string {
@@ -488,9 +491,11 @@ function readLocalTablesStore(): ShopTable[] {
         memoryTablesFallback = loaded;
         return loaded;
       }
+      throw new Error('LOCAL_TABLES_STORE_INVALID');
     }
-  } catch {
+  } catch (error) {
     if (memoryTablesFallback) return memoryTablesFallback;
+    throw new Error('LOCAL_TABLES_STORE_READ_FAILED', { cause: error });
   }
 
   const seeded = SEED_SHOP_TABLES.map((t) => ({ ...t }));
@@ -500,21 +505,18 @@ function readLocalTablesStore(): ShopTable[] {
 
 function writeLocalTablesStore(tables: ShopTable[]): void {
   const normalized = tables.map(normalizeShopTableRecord);
-  memoryTablesFallback = normalized;
   const filePath = getLocalTablesFilePath();
-  try {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(
-      filePath,
-      JSON.stringify({ tables: normalized }, null, 2),
-      'utf8'
-    );
-  } catch {
-    // read-only environment fallback uses memoryTablesFallback
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify({ tables: normalized }, null, 2),
+    { encoding: 'utf8', mode: 0o600 }
+  );
+  fs.chmodSync(filePath, 0o600);
+  memoryTablesFallback = normalized;
 }
 
 export async function dbGetShopTables(

@@ -162,10 +162,58 @@ async function fetchAndVerifyShopItems(
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const shopId = searchParams.get('shopId') || undefined;
+  const shopId = (searchParams.get('shopId') || '').trim();
+  if (!shopId) {
+    return NextResponse.json(
+      { error: 'Thiếu mã cửa hàng (shopId).', code: 'SHOP_ID_REQUIRED' },
+      { status: 400 }
+    );
+  }
+
   const { shop, categories, items, ownerPlan } = await dbGetShopCatalog(shopId);
+  if (!shop || shop.id !== shopId) {
+    return NextResponse.json(
+      { error: 'Không tìm thấy cửa hàng.', code: 'SHOP_NOT_FOUND' },
+      { status: 404 }
+    );
+  }
+
+  if (shop.is_published === false) {
+    const auth = await requireShopPermission(req, shopId, []);
+    if (auth.errorResponse) {
+      return NextResponse.json(
+        { error: 'Không tìm thấy cửa hàng.', code: 'SHOP_NOT_FOUND' },
+        { status: 404 }
+      );
+    }
+  }
+
+  const publicShop = {
+    id: shop.id,
+    slug: shop.slug,
+    name: shop.name,
+    vertical: shop.vertical,
+    tagline_i18n: shop.tagline_i18n,
+    description_i18n: shop.description_i18n,
+    logo_url: shop.logo_url,
+    cover_urls: shop.cover_urls,
+    address: shop.address,
+    city: shop.city,
+    google_maps_url: shop.google_maps_url,
+    google_review_url: shop.google_review_url,
+    phone_contact: shop.phone_contact,
+    zalo_phone: shop.zalo_phone,
+    wifi_info: shop.wifi_info,
+    opening_hours: shop.opening_hours,
+    opening_hours_confirmed: shop.opening_hours_confirmed,
+    supported_langs: shop.supported_langs,
+    currency: shop.currency,
+    theme_config: shop.theme_config,
+    is_published: shop.is_published ?? true,
+  };
+
   return NextResponse.json({
-    shop,
+    shop: publicShop,
     categories,
     items,
     ownerPlan,

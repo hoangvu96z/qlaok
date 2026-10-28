@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import qMenuLogo from '../../assets/q-menu.png';
-import { PRODUCTION_API_URL } from '../lib/supabase';
+import { API_BASE_URL } from '../lib/supabase';
 import {
   completeMobileOwnerRegistrationVerification,
   MobileOwnerOidcError,
@@ -115,8 +115,7 @@ export interface AuthScreenProps {
 
 export function formatStaffLoginError(
   err: unknown,
-  locale: 'vi' | 'en',
-  _secretsToRedact: ReadonlyArray<string | null | undefined> = []
+  locale: 'vi' | 'en'
 ): string {
   const isEn = locale === 'en';
   if (err instanceof StaffAuthError) {
@@ -179,7 +178,7 @@ export const AuthScreen = memo(function AuthScreen({
   ownerRegisterVerifyFn = completeMobileOwnerRegistrationVerification,
   ownerRegisterResendFn = resendMobileOwnerRegistrationCode,
   ownerResetRequestFn = defaultOwnerResetRequest,
-  apiBaseUrl = PRODUCTION_API_URL,
+  apiBaseUrl = API_BASE_URL,
   oidcConfigEnv,
 }: AuthScreenProps = {}) {
   const { locale, t, tb } = useMobileI18n();
@@ -584,11 +583,7 @@ export const AuthScreen = memo(function AuthScreen({
       setStaffError('');
       onStaffLoginSuccess?.(session);
     } catch (err) {
-      setStaffError(
-        formatStaffLoginError(err, locale === 'en' ? 'en' : 'vi', [
-          staffPassword,
-        ])
-      );
+      setStaffError(formatStaffLoginError(err, locale === 'en' ? 'en' : 'vi'));
     } finally {
       setAuthLoading(false);
     }
@@ -1643,7 +1638,7 @@ export const AuthScreen = memo(function AuthScreen({
 
                     <TouchableOpacity
                       accessibilityRole="link"
-                      onPress={() => void Linking.openURL(PRODUCTION_API_URL)}
+                      onPress={() => void Linking.openURL(apiBaseUrl)}
                     >
                       <Text
                         style={{

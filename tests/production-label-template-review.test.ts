@@ -17,7 +17,6 @@ import {
   renderProductionLabelHtml,
   renderProductionLabelTemplate,
   type ProductionLabelQrPayload,
-  type RenderProductionLabelOptions,
 } from '@/lib/production-label-template';
 import type {
   OrderLineItem,
@@ -221,7 +220,6 @@ test('1. renders all four paper presets from LABEL_PAPER_PRESET_SPECS with trust
 // 2. DISPLAY TOGGLES TESTS
 // ---------------------------------------------------------------------------
 test('2. honors every display toggle on stored label configuration', () => {
-  const baseOrder = createMockOrder();
   const shopName = 'Quán Cà Phê Trúc';
 
   // --- shop name toggle ---
@@ -692,7 +690,7 @@ test('8. handles edge cases, empty batches, invalid presets, and dual function s
   // Invalid paper preset returns typed failure
   const labels = getBatchLabels();
   const invalidPresetRes = renderProductionLabelDocument(labels, {
-    paperPreset: 'giant_poster_a0' as any,
+    paperPreset: 'giant_poster_a0' as never,
   });
   assert.equal(invalidPresetRes.ok, false);
   assert.equal(invalidPresetRes.code, 'INVALID_PRESET');

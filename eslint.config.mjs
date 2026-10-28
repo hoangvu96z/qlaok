@@ -18,6 +18,7 @@ const eslintConfig = [
       "next-env.d.ts",
       ".local-db/**",
       ".codegraph/**",
+      ".agy-runs/**",
       "mobile/**",
       "public/**",
     ],

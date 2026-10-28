@@ -459,12 +459,12 @@ export function getLocalizedPromoBannerStrings(
   const valStr = hasDiscountRule
     ? banner.discountType === 'percent'
       ? `${banner.discountValue}%`
-      : formatCurrency(banner.discountValue || 0, currency)
+      : formatCurrency(banner.discountValue || 0, currency, locale)
     : '';
 
   const minAmtStr =
     banner.minOrderAmount && banner.minOrderAmount > 0
-      ? formatCurrency(banner.minOrderAmount, currency)
+      ? formatCurrency(banner.minOrderAmount, currency, locale)
       : null;
 
   const selectedCount =

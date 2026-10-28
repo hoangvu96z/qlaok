@@ -171,9 +171,14 @@ export function assertTrustedQlaokEmailUrl(
   return parsed.toString();
 }
 
-function renderEmailFrame(subject: string, preheader: string, body: string): string {
+function renderEmailFrame(
+  subject: string,
+  preheader: string,
+  body: string,
+  locale: AuthEmailLocale
+): string {
   return `<!DOCTYPE html>
-<html lang="vi">
+<html lang="${locale}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -250,7 +255,7 @@ export function renderRegistrationVerificationEmail(params: {
       <div style="font-family:monospace;font-size:32px;font-weight:800;letter-spacing:0.2em;color:#0f172a;">${escapedCode}</div>
     </div>
     <p lang="vi" style="font-size:13px;color:#64748b;">Không chia sẻ mã này với bất kỳ ai. Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua email.</p>
-    <p lang="en" style="font-size:13px;color:#64748b;">Do not share this code with anyone. If you did not make this request, please ignore this email.</p>`);
+    <p lang="en" style="font-size:13px;color:#64748b;">Do not share this code with anyone. If you did not make this request, please ignore this email.</p>`, locale);
   const text = [
     'Qlaok — Quét Là OK', heading, '',
     `Xin chào ${displayName},`, introVi,
@@ -310,7 +315,7 @@ export function renderPasswordResetEmail(params: {
       <a href="${escapedResetUrl}" style="color:#059669;text-decoration:underline;word-break:break-all;">${escapedResetUrl}</a>
     </div>
     <p lang="vi" style="font-size:13px;color:#64748b;">Nếu bạn không yêu cầu đặt lại mật khẩu, hãy bỏ qua email này. Đừng chia sẻ liên kết với bất kỳ ai.</p>
-    <p lang="en" style="font-size:13px;color:#64748b;">If you did not request a password reset, please ignore this email. Do not share this link with anyone.</p>`);
+    <p lang="en" style="font-size:13px;color:#64748b;">If you did not request a password reset, please ignore this email. Do not share this link with anyone.</p>`, locale);
   const text = [
     'Qlaok — Quét Là OK', 'Đặt lại mật khẩu / Reset your password', '',
     `Xin chào ${displayName},`,

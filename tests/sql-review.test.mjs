@@ -387,26 +387,20 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal(postRecoverDupRes.duplicate, true);
     assert.equal(postRecoverDupRes.delivery_count, 3);
 
-    // Cross-shop duplicate order_code on same receiving account and prefix fails closed (AMBIGUOUS_ORDER_CODE)
-    await db.query(`UPDATE shops SET theme_config = '{"paymentConfig":{"mode":"vietqr_auto","bankId":"MB","accountNumber":"0905123456","transferPrefix":"QLAOK"}}'::jsonb WHERE id IN ('sql-shop', 'sql-pub-shop')`);
+    // The global order_code index blocks the cross-shop collision that previously
+    // made SePay reconciliation ambiguous.
     await db.query(`INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items)
-      VALUES ('ord-collide-a', 'ORD-COLLIDE-1', 'sql-shop', 'Bàn A', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb),
-             ('ord-collide-b', 'ORD-COLLIDE-1', 'sql-pub-shop', 'Bàn B', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb)`);
-
-    const collideResA = (await db.query(
-      `SELECT public.reconcile_sepay_order_payment_atomic('sql-shop', '9004', 'hash-9004-a', 'in', 60000, '0905123456', 'FT-9004', 'ORD-COLLIDE-1', 'ord-collide-a', NULL, '{"id":9004}'::jsonb) AS res`
-    )).rows[0].res;
-    assert.equal(collideResA.reconciled, false);
-    assert.equal(collideResA.reason_code, 'AMBIGUOUS_ORDER_CODE');
-
-    const collideResB = (await db.query(
-      `SELECT public.reconcile_sepay_order_payment_atomic('sql-pub-shop', '9004', 'hash-9004-b', 'in', 60000, '0905123456', 'FT-9004', 'ORD-COLLIDE-1', 'ord-collide-b', NULL, '{"id":9004}'::jsonb) AS res`
-    )).rows[0].res;
-    assert.equal(collideResB.reconciled, false);
-    assert.equal(collideResB.reason_code, 'AMBIGUOUS_ORDER_CODE');
+      VALUES ('ord-collide-a', 'ORD-COLLIDE-1', 'sql-shop', 'Bàn A', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb)`);
+    await assert.rejects(
+      db.query(`INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items)
+        VALUES ('ord-collide-b', 'ORD-COLLIDE-1', 'sql-pub-shop', 'Bàn B', 'new', 'vietqr', 'unpaid', 60000, 60000, '[]'::jsonb)`),
+      /idx_orders_order_code_unique/
+    );
 
     const collideOrders = (await db.query("SELECT id, payment_status FROM orders WHERE id IN ('ord-collide-a', 'ord-collide-b')")).rows;
-    assert.equal(collideOrders.every((r) => r.payment_status === 'unpaid'), true);
+    assert.deepEqual(collideOrders, [
+      { id: 'ord-collide-a', payment_status: 'unpaid' },
+    ]);
 
     // Verify 013_opening_hours_confirmed.sql: NOT NULL DEFAULT FALSE, existing shops default to false, idempotent re-run
     await db.exec('RESET ROLE');

@@ -214,10 +214,14 @@ export default function App() {
       const nextOwnerSession = await completeOwnerOidcCallback(url, {
         baseUrl: API_BASE_URL,
       });
+      lastHandledCallbackUrlRef.current = url;
       setSession(nextOwnerSession);
       setOwnerSessionExpired(false);
       setStaffSessionExpired(false);
     } catch (err) {
+      if (lastHandledCallbackUrlRef.current === url) {
+        lastHandledCallbackUrlRef.current = null;
+      }
       setOwnerAuthError(
         err instanceof Error && err.message
           ? err.message
@@ -756,13 +760,14 @@ function Workspace({ userId }: { userId: string }) {
 
         if (generation !== loadGeneration.current) return;
         setShops(loadedShops);
-        const mergedMemberships: Record<string, MobileShopMembership> = {
-          ...membershipsRef.current,
-          ...loadedMemberships,
-        };
-        if (Object.keys(loadedMemberships).length > 0) {
-          setMemberships(mergedMemberships);
-        }
+        const allowedShopIds = new Set(loadedShops.map((shop) => shop.id));
+        const refreshedMemberships = Object.fromEntries(
+          Object.entries(loadedMemberships).filter(([shopId]) =>
+            allowedShopIds.has(shopId)
+          )
+        );
+        setMemberships(refreshedMemberships);
+        const mergedMemberships = refreshedMemberships;
 
         let currentShop: MobileShop | null = null;
         if (isNotificationTap) {

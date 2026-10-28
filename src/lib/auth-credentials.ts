@@ -1,22 +1,10 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { requireSupabaseServiceRoleClient } from '@/lib/db';
 import {
   SUPER_ADMIN_EMAIL,
   SUPER_ADMIN_ID,
 } from '@/lib/auth-session';
 import type { Profile } from '@/types/qlaok';
-
-const STORE_DIR = path.join(process.cwd(), '.local-db');
-const CREDENTIALS_FILE = path.join(STORE_DIR, 'auth-credentials.json');
-
-export interface CredentialMap {
-  [emailLower: string]: {
-    passwordHash: string;
-    profileId: string;
-  };
-}
 
 /**
  * Hashes password using scrypt with a unique random 16-byte salt per password.
@@ -59,30 +47,6 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   const b = Buffer.from(storedHash, 'utf8');
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
-}
-
-export function readCredentials(): CredentialMap {
-  try {
-    if (!fs.existsSync(CREDENTIALS_FILE)) {
-      return {};
-    }
-    return JSON.parse(
-      fs.readFileSync(CREDENTIALS_FILE, 'utf8')
-    ) as CredentialMap;
-  } catch {
-    return {};
-  }
-}
-
-export function writeCredentials(creds: CredentialMap): void {
-  try {
-    if (!fs.existsSync(STORE_DIR)) {
-      fs.mkdirSync(STORE_DIR, { recursive: true });
-    }
-    fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), 'utf8');
-  } catch {
-    // ignore fs write error
-  }
 }
 
 export async function ensureSuperAdminSeeded(): Promise<Profile> {
@@ -142,19 +106,6 @@ export async function ensureSuperAdminSeeded(): Promise<Profile> {
       );
     }
     adminProfile = upgraded as Profile;
-  }
-
-  // Only seed initial super admin credential if INITIAL_SUPER_ADMIN_PASSWORD is explicitly provided in env
-  const envInitialAdminPassword = process.env.INITIAL_SUPER_ADMIN_PASSWORD?.trim();
-  if (envInitialAdminPassword) {
-    const creds = readCredentials();
-    if (!creds[SUPER_ADMIN_EMAIL]) {
-      creds[SUPER_ADMIN_EMAIL] = {
-        passwordHash: hashPassword(envInitialAdminPassword),
-        profileId: adminProfile.id,
-      };
-      writeCredentials(creds);
-    }
   }
 
   return {

@@ -20,6 +20,23 @@ const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set(
   ALLOWED_IMAGE_MIME_TYPES
 );
 
+function getSafeUploadErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return 'STORAGE_PROVIDER_ERROR';
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(code)
+    ? code
+    : 'STORAGE_PROVIDER_ERROR';
+}
+
+function logStorageProviderFailure(provider: 'garage' | 'r2', error: unknown) {
+  console.warn('upload.storage_provider_failed', {
+    provider,
+    code: getSafeUploadErrorCode(error),
+  });
+}
+
 interface UploadRouteTestHooks {
   r2Uploader?: typeof uploadBufferToR2;
   garageUploader?: (params: {
@@ -147,8 +164,9 @@ export async function POST(req: Request) {
             buffer,
           });
         }
-      } catch {
+      } catch (error) {
         // Do not log raw error, base64 payload, or secrets
+        logStorageProviderFailure('garage', error);
       }
 
       if (garageUrl) {
@@ -168,8 +186,9 @@ export async function POST(req: Request) {
             buffer,
           });
         }
-      } catch {
+      } catch (error) {
         // Do not log raw error, base64 payload, or secrets
+        logStorageProviderFailure('r2', error);
       }
 
       if (r2Url) {
@@ -207,8 +226,9 @@ export async function POST(req: Request) {
             ...presigned,
           });
         }
-      } catch {
+      } catch (error) {
         // Do not log raw error or secrets; configured R2 may still serve as fallback.
+        logStorageProviderFailure('garage', error);
       }
     }
 
@@ -225,8 +245,9 @@ export async function POST(req: Request) {
             ...presigned,
           });
         }
-      } catch {
+      } catch (error) {
         // Do not log raw error or secrets
+        logStorageProviderFailure('r2', error);
       }
     }
 

@@ -37,6 +37,24 @@ function mapTableErrorStatus(message: string): number {
   return 500;
 }
 
+function getTableErrorCode(message: string): string {
+  const knownCode = /^([A-Z][A-Z0-9_]{2,})\s*:/.exec(message.trim())?.[1];
+  if (knownCode) return knownCode;
+  if (message.includes('FORBIDDEN_CROSS_SHOP_TABLE')) return 'FORBIDDEN_CROSS_SHOP_TABLE';
+  if (message.includes('TABLE_NOT_FOUND')) return 'TABLE_NOT_FOUND';
+  return 'TABLE_OPERATION_FAILED';
+}
+
+function tableErrorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : '';
+  const code = getTableErrorCode(message);
+  console.error('[tables] API operation failed', { code, error });
+  return NextResponse.json(
+    { error: 'Không thể xử lý bàn ăn lúc này. Vui lòng thử lại.', code },
+    { status: mapTableErrorStatus(message) }
+  );
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -124,14 +142,7 @@ export async function GET(req: Request) {
     const tables = await dbGetPublicShopTables(shopId);
     return NextResponse.json({ tables });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'Không thể tải danh sách bàn của cửa hàng.';
-    return NextResponse.json(
-      { error: message },
-      { status: mapTableErrorStatus(message) }
-    );
+    return tableErrorResponse(error);
   }
 }
 
@@ -163,12 +174,7 @@ export async function POST(req: Request) {
       { status: 201 }
     );
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Không thể tạo bàn mới.';
-    return NextResponse.json(
-      { error: message },
-      { status: mapTableErrorStatus(message) }
-    );
+    return tableErrorResponse(error);
   }
 }
 
@@ -251,12 +257,7 @@ export async function PATCH(req: Request) {
 
     return NextResponse.json({ table: withTableQrSignature(table) });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Không thể cập nhật bàn.';
-    return NextResponse.json(
-      { error: message },
-      { status: mapTableErrorStatus(message) }
-    );
+    return tableErrorResponse(error);
   }
 }
 

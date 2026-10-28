@@ -46,16 +46,9 @@ jobs:
           script: |
             set -eu
             cd /var/www/qlaok.vunph.click
-            if [ -d ".local-db" ]; then
-              cp -r .local-db /tmp/qlaok_local_db_backup || true
-            fi
             echo "📥 Pulling latest changes from GitHub..."
             git fetch origin main
             git reset --hard ${{ github.sha }}
-            if [ -d "/tmp/qlaok_local_db_backup" ]; then
-              mkdir -p .local-db
-              cp -r /tmp/qlaok_local_db_backup/* .local-db/ 2>/dev/null || true
-            fi
             echo "🗃️ Applying pending self-hosted PostgreSQL migrations..."
             node scripts/migrate-self-hosted.mjs
             echo "📦 Installing dependencies..."

@@ -315,19 +315,24 @@ export async function unregisterPushOnLogout(params: {
 }> {
   const targetState = params.state ?? sharedMobilePushRegistrationState;
   const token = targetState.expoPushToken;
-  targetState.lastRegisteredScope = '';
-  targetState.expoPushToken = null;
-  targetState.registeredShopIds.clear();
 
-  let unregistered = false;
+  let unregistered = !token;
   try {
-    await unregisterPushTokenWithApi(params.apiCall, {
-      expoPushToken: token,
-    });
-    unregistered = true;
+    if (token) {
+      await unregisterPushTokenWithApi(params.apiCall, {
+        expoPushToken: token,
+      });
+      unregistered = true;
+    }
   } catch {
     // Do not block local logout if network/server unregister fails or token is already invalid (401)
     unregistered = false;
+  }
+
+  if (unregistered) {
+    targetState.lastRegisteredScope = '';
+    targetState.expoPushToken = null;
+    targetState.registeredShopIds.clear();
   }
 
   let signOutError: string | null = null;

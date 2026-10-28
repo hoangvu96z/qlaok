@@ -68,10 +68,11 @@ Sao chép mẫu, không commit giá trị thật.
 | Nhóm | Biến | Vai trò |
 | --- | --- | --- |
 | Zitadel OIDC (web/mobile/server) | `ZITADEL_ISSUER_URL`, `ZITADEL_CLIENT_ID`, `ZITADEL_REDIRECT_URI`, `ZITADEL_MOBILE_CLIENT_ID`, `ZITADEL_MOBILE_REDIRECT_URI` | Cấu hình OIDC public PKCE client (`https://auth.vunph.click`, không dùng client secret). Web redirect URI: `https://qlaok.vunph.click/api/auth/callback`; Mobile native redirect URI: `qlaok://auth/callback` |
+| Email đăng nhập/xác thực | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, tùy chọn `SMTP_FROM_NAME`, `SMTP_SECURE` | Gửi mã xác thực đăng ký và email đặt lại mật khẩu từ server; nếu thiếu cấu hình, các thao tác gửi email báo lỗi thay vì báo thành công. Chỉ lưu server-side, không đưa vào `NEXT_PUBLIC_*` / `EXPO_PUBLIC_*` |
 | PostgREST tự host (tương thích Supabase SDK) | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `PGRST_JWT_SECRET` | Trỏ tới Qlaok trên VPS, không phải Supabase Cloud. Khóa public có role `anon`; `PGRST_JWT_SECRET` (chỉ server, ≥ 32 ký tự) ký JWT ngắn hạn `role: 'authenticated'` (`sub = <owner_uuid>`) |
 | PostgreSQL LISTEN/NOTIFY | `QLAOK_DATABASE_URL`, `QLAOK_DB_NAME` | Kết nối database trực tiếp chỉ từ server để nhận trigger notifications và kiểm tra realtime; không expose cho browser/mobile |
 | Backend PostgREST | `SUPABASE_SERVICE_ROLE_KEY` | JWT `service_role` của PostgreSQL tự host cho tác vụ server/RPC; chỉ server, không dùng khóa Supabase Cloud |
-| Phiên/khởi tạo | `SESSION_SECRET`, `INITIAL_SUPER_ADMIN_PASSWORD` | Secret ký phiên; mật khẩu khởi tạo admin chỉ khi cấu hình rõ |
+| Phiên | `SESSION_SECRET` | Secret ký phiên máy chủ; đăng nhập và khôi phục mật khẩu Chủ quán/Super Admin dùng Zitadel OIDC |
 | Billing webhook | `PAYMENT_WEBHOOK_SECRET` | Xác thực callback thanh toán gói SaaS (`/api/webhooks/payment`, header `x-webhook-secret`/`Authorization: Apikey …` hoặc HMAC `x-webhook-signature`). **Bắt buộc**: không có giá trị mặc định; nếu thiếu, mọi webhook bị từ chối (503). Callback thanh toán thật bắt buộc `accountNumber` không rỗng và khớp một trong các số tài khoản nhận đã cấu hình trước khi hoàn tất thanh toán (thiếu cấu hình trả 503, thiếu hoặc lệch tài khoản bị từ chối với 400); dev simulator được miễn trừ |
 | Tài khoản nhận SaaS (server allowlist) | `SAAS_BANK_ACCOUNTS` | Tùy chọn allowlist nhiều tài khoản nhận tiền SaaS phía server cho `/api/webhooks/payment`, định dạng JSON array chứa các chuỗi số tài khoản (VD: `["123456789","987654321"]`). Khi được cấu hình (chuỗi không rỗng), biến này có thẩm quyền cao nhất (authoritative) để xác thực callback: mọi tài khoản công khai hiển thị trong `NEXT_PUBLIC_SAAS_BANK_ACCOUNTS` bắt buộc phải nằm trong allowlist của server, nếu không callback cho tài khoản đó sẽ bị từ chối (400 RECEIVING_ACCOUNT_MISMATCH). Server chỉ parse mảng JSON của các chuỗi không rỗng, tự chuẩn hóa loại bỏ khoảng trắng và loại trùng giữ thứ tự xuất hiện đầu tiên. Nếu cấu hình sai định dạng (JSON lỗi, không phải mảng, mảng rỗng, hoặc phần tử không phải chuỗi/rỗng), hệ thống fail-closed về danh sách rỗng và từ chối 503 mọi callback (không fallback) |
 | Tài khoản nhận SaaS (server legacy) | `SAAS_BANK_ACCOUNT` | Tùy chọn legacy ghi đè đơn lẻ phía server cho tài khoản nhận tiền thanh toán gói SaaS (`/api/webhooks/payment`). Khi được đặt tường minh, biến này có thẩm quyền cao nhất (authoritative) để xác thực callback; mọi tài khoản công khai hiển thị trong `NEXT_PUBLIC_SAAS_BANK_ACCOUNTS` phải trùng khớp với tài khoản này, nếu không callback sẽ bị từ chối (400 RECEIVING_ACCOUNT_MISMATCH). Khi `SAAS_BANK_ACCOUNTS` vắng mặt hoặc để trống, server dùng giá trị này làm tài khoản hợp lệ; nếu cả hai biến server đều vắng mặt hoặc để trống, webhook validation ưu tiên fallback về danh sách tài khoản hợp lệ từ `NEXT_PUBLIC_SAAS_BANK_ACCOUNTS` trước khi xét `NEXT_PUBLIC_SAAS_BANK_ACCOUNT` |
@@ -114,9 +115,15 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 018_shop_staff_accounts.sql
 019_revoke_staff_trigger_execute.sql
 020_remove_legacy_base64_images.sql
+021_zitadel_identity_mapping.sql
+022_postgres_realtime_notifications.sql
+023_restore_record_staff_login_failure_atomic.sql
+20261028000100_analytics_atomic_view_count.sql
+20261028000200_floor_plan_active_orders_index.sql
+20261028000300_orders_order_code_unique.sql
 ```
 
-`npm run db:migrate` thực thi qua Supabase Management API theo cấu hình môi trường; chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát.
+`npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy migration PostgreSQL tự host theo thứ tự tên file, kiểm checksum và lưu lịch sử trong `public.schema_migrations`; script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.
 
 Migration `020` xóa URI ảnh Base64 cũ khỏi `items.image_url`, `shops.logo_url` và phần tử Base64 trong `shops.cover_urls`; URL ảnh bên ngoài cùng các bản ghi và trường khác được giữ nguyên. Nội dung ảnh Base64 bị xóa, không được chuyển sang Storage.
 

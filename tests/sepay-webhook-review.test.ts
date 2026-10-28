@@ -32,6 +32,7 @@ import {
   SEPAY_MAX_WEBHOOK_BODY_BYTES,
   SEPAY_SHOP_DISCOVERY_PAGE_SIZE,
   signSePayWebhookPayload,
+  verifySePayWebhookSignature,
 } from '../src/lib/sepay-reconciliation';
 import { issueSessionToken } from '../src/lib/server-auth';
 import { dbUpsertShopMembership } from '../src/lib/shop-permissions';
@@ -98,7 +99,7 @@ function buildSignedWebhookRequest(params: {
     typeof params.payload === 'string'
       ? params.payload
       : JSON.stringify(params.payload);
-  const timestamp = params.timestamp ?? '1761120000';
+  const timestamp = params.timestamp ?? String(Math.floor(Date.now() / 1000));
   const signature =
     params.signatureOverride !== undefined
       ? params.signatureOverride
@@ -123,6 +124,45 @@ function buildSignedWebhookRequest(params: {
     }
   );
 }
+
+test('SePay HMAC rejects malformed and stale timestamp headers outside the five-minute window', () => {
+  const rawBody = '{"id":1}';
+  const timestamp = '1761120000';
+  const signature = signSePayWebhookPayload(rawBody, timestamp, SHOP_A_SECRET);
+  const nowMs = Number(timestamp) * 1000;
+
+  assert.deepEqual(
+    verifySePayWebhookSignature({
+      rawBody,
+      timestampHeader: timestamp,
+      signatureHeader: signature,
+      secret: SHOP_A_SECRET,
+      nowMs,
+    }),
+    { valid: true, timestamp }
+  );
+  const expiredTimestamp = verifySePayWebhookSignature({
+      rawBody,
+      timestampHeader: timestamp,
+      signatureHeader: signature,
+      secret: SHOP_A_SECRET,
+      nowMs: nowMs + 300_001,
+    });
+  assert.equal(expiredTimestamp.valid, false);
+  if (expiredTimestamp.valid) assert.fail('Expected expired timestamp to be rejected');
+  assert.equal(expiredTimestamp.code, 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW');
+
+  const invalidTimestamp = verifySePayWebhookSignature({
+      rawBody,
+      timestampHeader: 'not-a-timestamp',
+      signatureHeader: signature,
+      secret: SHOP_A_SECRET,
+      nowMs,
+    });
+  assert.equal(invalidTimestamp.valid, false);
+  if (invalidTimestamp.valid) assert.fail('Expected invalid timestamp to be rejected');
+  assert.equal(invalidTimestamp.code, 'INVALID_WEBHOOK_TIMESTAMP');
+});
 
 test('SePay secret encryption at rest requires SEPAY_SECRET_ENCRYPTION_KEY and binds shopId AAD', async () => {
   const prevKey = process.env.SEPAY_SECRET_ENCRYPTION_KEY;
@@ -403,9 +443,10 @@ test('SePay webhook enforces HMAC signature over raw body, inbound transfer, acc
       transferAmount: 130000,
       referenceCode: 'FT70001',
     });
+    const signatureTimestamp = String(Math.floor(Date.now() / 1000));
     const validSig = signSePayWebhookPayload(
       validRawBody,
-      '1761120001',
+      signatureTimestamp,
       SHOP_A_SECRET
     );
     const tamperedRawBody = validRawBody.replace('130000', '130000 '); // 1 byte added
@@ -414,7 +455,7 @@ test('SePay webhook enforces HMAC signature over raw body, inbound transfer, acc
         shopId: SHOP_A_ID,
         secret: SHOP_A_SECRET,
         payload: tamperedRawBody,
-        timestamp: '1761120001',
+        timestamp: signatureTimestamp,
         signatureOverride: validSig,
       }),
       { params: Promise.resolve({ shopId: SHOP_A_ID }) }

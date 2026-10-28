@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState, useRef, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -83,6 +83,7 @@ function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { locale, setLocale, tx } = useAppI18n();
+  const didApplyInitialLocaleRef = useRef(false);
   const authRequestId =
     searchParams.get('authRequest') ||
     searchParams.get('authRequestID') ||
@@ -254,13 +255,15 @@ function LoginContent() {
   }, [searchParams]);
 
   useEffect(() => {
+    if (didApplyInitialLocaleRef.current) return;
+    didApplyInitialLocaleRef.current = true;
     const langParam = searchParams.get('lang') || searchParams.get('locale');
     if (langParam === 'en' || langParam === 'vi') {
       if (langParam !== locale) {
         setLocale(langParam);
       }
     }
-  }, [searchParams, locale, setLocale]);
+  }, [searchParams, setLocale]);
 
   useEffect(() => {
     const modeParam = searchParams.get('mode');
@@ -450,8 +453,8 @@ function LoginContent() {
       setMessage({
         type: 'success',
         text: tx(
-          'Đã gửi lại mã xác thực mới tới email của bạn.',
-          'A new verification code has been sent to your email.'
+          'Nếu tài khoản đang chờ xác thực, mã mới đã được gửi. Nếu tài khoản đã tồn tại, hãy mở liên kết đặt lại mật khẩu trong email.',
+          'If the account is awaiting verification, a new code was sent. If it already exists, open the password reset link in your email.'
         ),
       });
     } catch (error) {
@@ -1124,8 +1127,8 @@ function LoginContent() {
               {isOwnerRegistration
                 ? registrationStep === 'verify_email'
                   ? tx(
-                      'Nhập mã xác thực vừa được gửi tới hộp thư của bạn để hoàn tất tạo tài khoản Qlaok.',
-                      'Enter the verification code sent to your inbox to finish creating your Qlaok account.'
+                      'Nếu đang tạo tài khoản mới, nhập mã trong email. Nếu email đã có tài khoản, hãy mở liên kết đặt lại mật khẩu.',
+                      'Enter the email code to finish creating a new account. If the email already has an account, open the password reset link.'
                     )
                   : tx(
                       'Điền thông tin bên dưới để tạo tài khoản Chủ quán và bắt đầu thiết lập cửa hàng trên Qlaok.',
@@ -1403,8 +1406,8 @@ function LoginContent() {
                     </p>
                     <p className="text-stone-400">
                       {tx(
-                        `Chúng tôi đã gửi mã xác thực đến ${email.trim().toLowerCase()}.`,
-                        `We sent a verification code to ${email.trim().toLowerCase()}.`
+                        `Nếu email này có thể đăng ký tài khoản mới, mã xác thực đã được gửi đến ${email.trim().toLowerCase()}. Nếu đã có tài khoản, hãy dùng liên kết đặt lại mật khẩu trong email.`,
+                        `If this email can create a new account, a verification code was sent to ${email.trim().toLowerCase()}. If it already has an account, use the password reset link in the email.`
                       )}
                     </p>
                   </div>

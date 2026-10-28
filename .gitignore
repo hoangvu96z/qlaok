@@ -9,3 +9,5 @@ mobile/.env.local
 .local-db
 .agy-runs/
 .playwright-cli/
+qlaok-handoff.zip
+tsconfig.tsbuildinfo

@@ -13,6 +13,7 @@ import {
   getSupabaseDbClient,
   isSupabaseDbClientOverriddenForTests,
 } from '@/lib/db';
+import { resolveTrustedQlaokEmailOrigin } from '@/lib/auth-email-templates';
 import { isShopMembershipDbAuthoritative } from '@/lib/shop-permissions';
 import {
   compareConstantTimeString,
@@ -1244,6 +1245,7 @@ async function tryRecoverUnverifiedZitadelUser(params: {
   config: ZitadelLoginUiConfig;
   fetchImpl: FetchLike;
   nowSeconds?: number;
+  clientIp?: string;
   smtpConfig?: AuthEmailSmtpConfig;
   sendEmail?: AuthEmailSendHandler;
 }): Promise<{
@@ -1454,6 +1456,7 @@ export async function startZitadelRegistration(params: {
   fetchImpl?: FetchLike;
   config?: ZitadelLoginUiConfig;
   nowSeconds?: number;
+  clientIp?: string;
   smtpConfig?: AuthEmailSmtpConfig;
   sendEmail?: AuthEmailSendHandler;
 }): Promise<{
@@ -1596,6 +1599,43 @@ export async function startZitadelRegistration(params: {
       if (recovered) {
         return recovered;
       }
+
+      // Keep register_start indistinguishable for existing and new addresses.
+      // The existing account receives reset instructions; a short-lived decoy
+      // ticket keeps the public response shape the same without changing its
+      // password or account state.
+      try {
+        await requestZitadelPasswordReset({
+          email,
+          lang: locale,
+          origin: params.origin,
+          clientIp: params.clientIp,
+          fetchImpl,
+          config,
+          nowMs:
+            params.nowSeconds !== undefined
+              ? params.nowSeconds * 1000
+              : undefined,
+          smtpConfig: params.smtpConfig ?? config.smtpConfig,
+          sendEmail: params.sendEmail ?? config.sendEmail,
+        });
+      } catch {
+        // Preserve the same public registration response when mail delivery is
+        // throttled or unavailable. The reset endpoint logs delivery failures.
+      }
+      return {
+        registrationTicket: issueZitadelRegistrationTicket({
+          userId: crypto.randomUUID(),
+          email,
+          fullName: nameParts.displayName,
+          authRequestId: authRequest.id,
+          clientKind,
+          lang: locale,
+          nowSeconds: params.nowSeconds,
+        }),
+        authRequestId: authRequest.id,
+        email,
+      };
     }
     throw err;
   }
@@ -1906,74 +1946,10 @@ function resolvePasswordResetQlaokOrigin(
   rawOrigin: string,
   config?: Pick<ZitadelLoginUiConfig, 'issuerUrl' | 'webRedirectUri'>
 ): string {
-  const defaultOrigin = 'https://qlaok.vunph.click';
-  let issuerOrigin = '';
-  if (config?.issuerUrl) {
-    try {
-      issuerOrigin = new URL(config.issuerUrl).origin;
-    } catch {
-      issuerOrigin = '';
-    }
-  }
-  let configuredWebOrigin = '';
-  const trustedWebRedirectUri =
-    process.env.NODE_ENV === 'production'
-      ? (process.env.ZITADEL_REDIRECT_URI || '').trim()
-      : (config?.webRedirectUri || '').trim();
-  if (trustedWebRedirectUri) {
-    try {
-      const parsedWeb = new URL(trustedWebRedirectUri);
-      if (
-        (parsedWeb.protocol === 'https:' || parsedWeb.protocol === 'http:') &&
-        !parsedWeb.username &&
-        !parsedWeb.password &&
-        parsedWeb.origin !== issuerOrigin
-      ) {
-        configuredWebOrigin = parsedWeb.origin;
-      }
-    } catch {
-      configuredWebOrigin = '';
-    }
-  }
-
-  // Production reset links must always point to Qlaok's configured public URL.
-  // The request Host can be supplied by the caller and is not a trusted link origin.
-  if (process.env.NODE_ENV === 'production') {
-    return configuredWebOrigin || defaultOrigin;
-  }
-
-  const trimmed = (rawOrigin || '').trim();
-  if (trimmed) {
-    try {
-      const parsed = new URL(trimmed);
-      if (
-        (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
-        !parsed.username &&
-        !parsed.password &&
-        parsed.origin !== issuerOrigin
-      ) {
-        const isLoopback =
-          parsed.hostname === '127.0.0.1' ||
-          parsed.hostname === 'localhost' ||
-          parsed.hostname === '::1';
-        if (isLoopback && configuredWebOrigin) {
-          const webHost = new URL(configuredWebOrigin).hostname;
-          if (
-            webHost !== '127.0.0.1' &&
-            webHost !== 'localhost' &&
-            webHost !== '::1'
-          ) {
-            return configuredWebOrigin;
-          }
-        }
-        return parsed.origin;
-      }
-    } catch {
-      // Fall through to configuredWebOrigin / defaultOrigin
-    }
-  }
-
-  return configuredWebOrigin || defaultOrigin;
+  return resolveTrustedQlaokEmailOrigin(rawOrigin, {
+    issuerUrl: config?.issuerUrl,
+    webRedirectUri: config?.webRedirectUri,
+  });
 }
 
 export function buildZitadelPasswordResetUrlTemplate(

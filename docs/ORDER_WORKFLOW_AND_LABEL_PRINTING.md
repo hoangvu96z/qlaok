@@ -23,6 +23,13 @@ Both configuration modules are located in the Merchant Web Dashboard:
   - `shops.theme_config.labelPrintConfig` (typed as `ShopLabelPrintConfig`)
 - Server-side mutation validation in `PATCH /api/shops` enforces `requireShopOwnerOrAdmin` when either configuration key is modified, and executes strict validation (`validateOrderWorkflowConfig` and `validateLabelPrintConfig`), returning HTTP 400 with detailed error arrays on invalid configurations.
 
+### Order Pricing and Discount Invariants
+
+- The server recalculates each order from catalog unit prices and verified option extras. `discount_amount` is the aggregate saved amount: `promo_discount_amount + manual_discount_amount`; line-level and order-level manual discounts are included in the manual component.
+- POS edits submit the manual component separately and set `apply_shop_promotions: false`. This preserves the promotion already recorded on an order, even after that promotion expires, without treating the promotion as a manual discount.
+- When an item edit omits an order-level discount, the server preserves the prior order-level manual amount, recalculates line-level discounts from the submitted lines once, and combines them. It does not reuse the old aggregate manual amount as a second order-level discount.
+- Fulfillment changes remain independent from payment state. Editing or completing service must not mark an order paid.
+
 ---
 
 ## 2. Shipped Workflow Templates & Transitions

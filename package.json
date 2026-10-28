@@ -14,7 +14,7 @@
     "db:preflight": "node scripts/preflight-demo-reset.mjs",
     "agy": "node scripts/agy-runner.mjs",
     "test:agy-runner": "node --test tests/agy-runner.test.mjs",
-    "test:backup": "node --test tests/backup-qlaok-db.test.mjs",
+    "test:backup": "node --test tests/backup-qlaok-db.test.mjs tests/self-hosted-postgres-backup.test.mjs",
     "test:demo-reset": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/demo-reset-purge.test.mjs tests/demo-reset-roundtrip.test.mjs",
     "test:db-reset": "npm run test:backup && node --test tests/preflight-demo-reset.test.mjs tests/demo-reset-runner.test.mjs && npm run test:demo-reset",
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts tests/supabase-readiness-cache.test.ts tests/check-order-realtime.test.mjs",

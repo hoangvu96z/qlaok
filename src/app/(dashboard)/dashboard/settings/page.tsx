@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useCallback, useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Save,
@@ -32,6 +32,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { useDashboard } from '@/lib/dashboard-context';
+import { membershipHasPermission } from '@/lib/dashboard-nav';
 import { getAuthHeaders, isSuperAdminEmail } from '@/lib/auth-session';
 import {
   BusinessVertical,
@@ -189,8 +190,30 @@ function resolveSettingsTabFromHash(hash: string): SettingsTabId | null {
 }
 
 export default function DashboardSettingsPage() {
-  const { activeShop, profile, updateActiveShop, refreshDashboard } = useDashboard();
+  const {
+    activeShop,
+    activeMembership,
+    profile,
+    updateActiveShop,
+    refreshDashboard,
+  } = useDashboard();
   const { locale, t, tx } = useAppI18n();
+  const isSuperAdminBypass = Boolean(
+    profile?.role === 'admin' && isSuperAdminEmail(profile.email)
+  );
+  const canManageShopSettings =
+    isSuperAdminBypass ||
+    membershipHasPermission(activeMembership, 'settings.manage');
+  const canManageBankSettings =
+    isSuperAdminBypass ||
+    membershipHasPermission(activeMembership, 'settings.bank');
+  const visibleSettingsTabs = useMemo(
+    () =>
+      SETTINGS_TABS.filter((tab) =>
+        tab.id === 'payments' ? canManageBankSettings : canManageShopSettings
+      ),
+    [canManageBankSettings, canManageShopSettings]
+  );
 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -314,7 +337,10 @@ export default function DashboardSettingsPage() {
       const currentHash = window.location.hash.replace(/^#/, '').trim();
       if (!currentHash) return;
       const targetTab = resolveSettingsTabFromHash(currentHash);
-      if (targetTab) {
+      if (
+        targetTab &&
+        visibleSettingsTabs.some((tab) => tab.id === targetTab)
+      ) {
         setActiveTab(targetTab);
         scrollToHash(currentHash);
       }
@@ -323,9 +349,17 @@ export default function DashboardSettingsPage() {
     handleHash();
     window.addEventListener('hashchange', handleHash);
     return () => window.removeEventListener('hashchange', handleHash);
-  }, []);
+  }, [visibleSettingsTabs]);
+
+  useEffect(() => {
+    if (visibleSettingsTabs.some((tab) => tab.id === activeTab)) return;
+    if (visibleSettingsTabs.length > 0) {
+      setActiveTab(visibleSettingsTabs[0].id);
+    }
+  }, [activeTab, visibleSettingsTabs]);
 
   const handleSelectTab = (tabId: SettingsTabId) => {
+    if (!visibleSettingsTabs.some((tab) => tab.id === tabId)) return;
     setActiveTab(tabId);
     if (typeof window !== 'undefined') {
       const currentHash = window.location.hash.replace(/^#/, '').trim();
@@ -336,7 +370,7 @@ export default function DashboardSettingsPage() {
   };
 
   const handleTabKeyDown = (e: React.KeyboardEvent) => {
-    const tabIds = SETTINGS_TABS.map((t) => t.id);
+    const tabIds = visibleSettingsTabs.map((t) => t.id);
     const currentIndex = tabIds.indexOf(activeTab);
     if (currentIndex === -1) return;
 
@@ -476,9 +510,6 @@ export default function DashboardSettingsPage() {
     );
   }
 
-  const isSuperAdminBypass = Boolean(
-    profile?.role === 'admin' && isSuperAdminEmail(profile.email)
-  );
   const ownerPlanResolved =
     isSuperAdminBypass ||
     (ownerPlanForShop?.shopId === activeShop.id &&
@@ -550,8 +581,10 @@ export default function DashboardSettingsPage() {
   );
 
   const performSaveSettings = async () => {
-    const normalizedSlug = normalizeShopSlugInput(slug);
-    if (!normalizedSlug) {
+    const normalizedSlug = canManageShopSettings
+      ? normalizeShopSlugInput(slug)
+      : activeShop.slug;
+    if (canManageShopSettings && !normalizedSlug) {
       setErrorMsg(
         tx(
           'Vui lòng nhập đường dẫn QR (Slug) hợp lệ.',
@@ -578,7 +611,9 @@ export default function DashboardSettingsPage() {
             : paymentConfig.bankName || selectedBank?.shortName || 'Ví / Ngân hàng',
         accountNumber: (paymentConfig.accountNumber || '').trim(),
         accountName: stripVietnameseAccents(
-          paymentConfig.accountName || name || activeShop.name
+          paymentConfig.accountName ||
+            (canManageShopSettings ? name : activeShop.name) ||
+            activeShop.name
         ),
         transferPrefix: (paymentConfig.transferPrefix || 'QLAOK').trim(),
         customQrUrl: (paymentConfig.customQrUrl || '').trim(),
@@ -590,11 +625,12 @@ export default function DashboardSettingsPage() {
       const {
         orderWorkflow: _preservedOrderWorkflow,
         labelPrintConfig: _preservedLabelPrintConfig,
+        paymentConfig: _preservedPaymentConfig,
         ...restThemeConfig
       } = activeShop.theme_config || {};
-      const nextThemeConfig: ShopThemeConfig = {
-        ...restThemeConfig,
-        ...(canEditCustomTheme
+      const nextThemeConfig: Partial<ShopThemeConfig> = {
+        ...(canManageShopSettings ? restThemeConfig : {}),
+        ...(canManageShopSettings && canEditCustomTheme
           ? {
               primaryColor,
               layout: layoutMode,
@@ -603,51 +639,58 @@ export default function DashboardSettingsPage() {
               backgroundOverlayOpacity,
             }
           : {}),
-        paymentConfig: cleanedPaymentConfig,
-        ...(activeShop.owner_id === profile?.id
+        ...(canManageBankSettings
+          ? { paymentConfig: cleanedPaymentConfig }
+          : {}),
+        ...(canManageShopSettings && activeShop.owner_id === profile?.id
           ? { serviceRequestNotificationRule }
           : {}),
       };
 
-      const nextCoverUrls = coverUrl.trim()
-        ? [coverUrl.trim(), ...(activeShop.cover_urls || []).slice(1)]
-        : activeShop.cover_urls || [];
+      const nextCoverUrls = canManageShopSettings
+        ? coverUrl.trim()
+          ? [coverUrl.trim(), ...(activeShop.cover_urls || []).slice(1)]
+          : activeShop.cover_urls || []
+        : undefined;
+
+      const settingsPatch: Record<string, unknown> = canManageShopSettings
+        ? {
+            name,
+            slug: normalizedSlug,
+            vertical,
+            logo_url: logoUrl.trim() || null,
+            cover_urls: nextCoverUrls,
+            tagline_i18n: {
+              ...activeShop.tagline_i18n,
+              vi: taglineVi,
+            },
+            description_i18n: {
+              ...activeShop.description_i18n,
+              vi: descVi,
+            },
+            address,
+            city,
+            phone_contact: phoneContact,
+            zalo_phone: zaloPhone,
+            google_maps_url: googleMapsUrl,
+            google_review_url: googleReviewUrl,
+            wifi_info: {
+              ssid: wifiSsid,
+              password: wifiPassword,
+            },
+            theme_config: nextThemeConfig,
+            supported_langs: supportedLangs,
+            ...buildOpeningHoursSettingsPatch({
+              openingHours,
+              openingHoursConfirmed,
+            }),
+          }
+        : { theme_config: nextThemeConfig };
 
       const res = await fetch('/api/shops', {
         method: 'PATCH',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          id: activeShop.id,
-          name,
-          slug: normalizedSlug,
-          vertical,
-          logo_url: logoUrl.trim() || null,
-          cover_urls: nextCoverUrls,
-          tagline_i18n: {
-            ...activeShop.tagline_i18n,
-            vi: taglineVi,
-          },
-          description_i18n: {
-            ...activeShop.description_i18n,
-            vi: descVi,
-          },
-          address,
-          city,
-          phone_contact: phoneContact,
-          zalo_phone: zaloPhone,
-          google_maps_url: googleMapsUrl,
-          google_review_url: googleReviewUrl,
-          wifi_info: {
-            ssid: wifiSsid,
-            password: wifiPassword,
-          },
-          theme_config: nextThemeConfig,
-          supported_langs: supportedLangs,
-          ...buildOpeningHoursSettingsPatch({
-            openingHours,
-            openingHoursConfirmed,
-          }),
-        }),
+        body: JSON.stringify({ id: activeShop.id, ...settingsPatch }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -703,7 +746,9 @@ export default function DashboardSettingsPage() {
       }
       setSaveFeedback({
         kind: 'success',
-        message: tx('Đã lưu cài đặt cửa hàng.', 'Store settings saved.'),
+        message: canManageShopSettings
+          ? tx('Đã lưu cài đặt cửa hàng.', 'Store settings saved.')
+          : tx('Đã lưu cài đặt thanh toán.', 'Payment settings saved.'),
       });
     } catch (err) {
       setSaveFeedback({
@@ -720,8 +765,10 @@ export default function DashboardSettingsPage() {
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    const normalizedSlug = normalizeShopSlugInput(slug);
-    if (!normalizedSlug) {
+    const normalizedSlug = canManageShopSettings
+      ? normalizeShopSlugInput(slug)
+      : activeShop?.slug;
+    if (canManageShopSettings && !normalizedSlug) {
       setErrorMsg(
         tx(
           'Vui lòng nhập đường dẫn QR (Slug) hợp lệ.',
@@ -731,7 +778,7 @@ export default function DashboardSettingsPage() {
       return;
     }
 
-    if (slugConfirmation.required) {
+    if (canManageShopSettings && slugConfirmation.required) {
       setIsSlugConfirmModalOpen(true);
       return;
     }
@@ -801,10 +848,15 @@ export default function DashboardSettingsPage() {
             )}
           </h1>
           <p className="text-xs text-slate-500">
-            {tx(
-              'Cấu hình tài khoản nhận tiền, màu sắc thương hiệu, thông tin liên hệ và xem trước ở khung bên phải.',
-              'Configure bank payment QR, brand colors, store info, and preview live in the right panel.'
-            )}
+            {canManageShopSettings
+              ? tx(
+                  'Cấu hình tài khoản nhận tiền, màu sắc thương hiệu, thông tin liên hệ và xem trước ở khung bên phải.',
+                  'Configure bank payment QR, brand colors, store info, and preview live in the right panel.'
+                )
+              : tx(
+                  'Cấu hình tài khoản nhận tiền và mã QR thanh toán của quán.',
+                  'Configure the store payment account and QR code.'
+                )}
           </p>
         </div>
 
@@ -845,7 +897,9 @@ export default function DashboardSettingsPage() {
             <span>
               {saving
                 ? t('common.saving')
-                : tx('Lưu cài đặt', 'Save Settings')}
+                : canManageShopSettings
+                  ? tx('Lưu cài đặt', 'Save settings')
+                  : tx('Lưu thanh toán', 'Save payment settings')}
             </span>
           </button>
         </div>
@@ -865,7 +919,7 @@ export default function DashboardSettingsPage() {
           onKeyDown={handleTabKeyDown}
           className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto py-1 scroll-smooth"
         >
-          {SETTINGS_TABS.map((tab) => {
+          {visibleSettingsTabs.map((tab) => {
             const isSelected = activeTab === tab.id;
             const TabIcon = tab.icon;
             return (

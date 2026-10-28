@@ -3,8 +3,11 @@ import { ensureSupabaseReadyAndSeeded, getSupabaseDbClient } from '@/lib/db';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 import { isGarageConfigured } from '@/lib/garage-storage';
 import { getGeminiClient } from '@/lib/gemini';
+import { requireSuperAdmin } from '@/lib/server-auth';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const adminAuth = await requireSuperAdmin(req);
+  const includeDiagnostics = !adminAuth.errorResponse;
   const sbStatus = await ensureSupabaseReadyAndSeeded();
   const isReady = Boolean(sbStatus.ready && !sbStatus.error);
   const isSeeded = Boolean(isReady && sbStatus.seeded);
@@ -18,7 +21,7 @@ export async function GET() {
     provinces: 34,
   };
 
-  if (isReady) {
+  if (isReady && includeDiagnostics) {
     const sb = getSupabaseDbClient();
     const [shopsC, catsC, itemsC, postsC, analyticsC, provsC] =
       await Promise.all([
@@ -40,12 +43,17 @@ export async function GET() {
     };
   }
 
+  const publicStatus = {
+    status: isReady ? 'ok' : 'degraded',
+    service: 'qlaok-backend',
+    timestamp: new Date().toISOString(),
+  };
+
   return NextResponse.json(
-    {
-      status: isReady ? 'ok' : 'degraded',
-      service: 'qlaok-backend',
-      dataSource: 'self-hosted-postgres',
-      timestamp: new Date().toISOString(),
+    includeDiagnostics
+      ? {
+          ...publicStatus,
+          dataSource: 'self-hosted-postgres',
       environment: {
         postgresConfigured: isSupabaseConfigured(),
         postgresTablesReady: isReady,
@@ -62,7 +70,8 @@ export async function GET() {
         aiProvider: `9router (${getGeminiClient()?.baseUrl || 'https://vunph.click/v1'} • text: ${getGeminiClient()?.model || 'combo1'} • vision: ${getGeminiClient()?.visionModel || 'combo2'})`,
       },
       counts,
-    },
+        }
+      : publicStatus,
     { status: isReady ? 200 : 503 }
   );
 }

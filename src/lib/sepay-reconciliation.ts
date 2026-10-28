@@ -29,6 +29,7 @@ export const MIN_SEPAY_ENCRYPTION_KEY_LENGTH = 32;
 export const MIN_SEPAY_HMAC_SECRET_LENGTH = 16;
 export const MAX_SEPAY_HMAC_SECRET_LENGTH = 512;
 export const SEPAY_MAX_WEBHOOK_BODY_BYTES = 64 * 1024; // 64 KiB max unauthenticated raw body
+export const SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
 
 export type SePayWebhookReasonCode =
   | 'OK'
@@ -42,6 +43,8 @@ export type SePayWebhookReasonCode =
   | 'SEPAY_SECRET_DECRYPT_FAILED'
   | 'SHOP_BANK_ACCOUNT_NOT_CONFIGURED'
   | 'MISSING_WEBHOOK_TIMESTAMP'
+  | 'INVALID_WEBHOOK_TIMESTAMP'
+  | 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW'
   | 'MISSING_WEBHOOK_SIGNATURE'
   | 'INVALID_WEBHOOK_SIGNATURE'
   | 'INVALID_WEBHOOK_PAYLOAD'
@@ -683,12 +686,15 @@ export function verifySePayWebhookSignature(params: {
   signatureHeader: string | null | undefined;
   timestampHeader: string | null | undefined;
   secret: string;
+  nowMs?: number;
 }):
   | { valid: true; timestamp: string }
   | {
       valid: false;
       code:
         | 'MISSING_WEBHOOK_TIMESTAMP'
+        | 'INVALID_WEBHOOK_TIMESTAMP'
+        | 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW'
         | 'MISSING_WEBHOOK_SIGNATURE'
         | 'INVALID_WEBHOOK_SIGNATURE';
       reason: string;
@@ -699,6 +705,14 @@ export function verifySePayWebhookSignature(params: {
       valid: false,
       code: 'MISSING_WEBHOOK_TIMESTAMP',
       reason: 'Thiếu header X-SePay-Timestamp hợp lệ.',
+    };
+  }
+
+  if (!/^\d{10}(?:\d{3})?$/.test(timestamp)) {
+    return {
+      valid: false,
+      code: 'INVALID_WEBHOOK_TIMESTAMP',
+      reason: 'Header X-SePay-Timestamp phải là Unix timestamp theo giây hoặc mili giây.',
     };
   }
 
@@ -740,6 +754,22 @@ export function verifySePayWebhookSignature(params: {
       valid: false,
       code: 'INVALID_WEBHOOK_SIGNATURE',
       reason: 'Chữ ký HMAC X-SePay-Signature không khớp với nội dung gốc.',
+    };
+  }
+
+  const rawTimestamp = Number(timestamp);
+  const timestampMs = timestamp.length === 13 ? rawTimestamp : rawTimestamp * 1000;
+  const nowMs = params.nowMs ?? Date.now();
+  if (
+    !Number.isSafeInteger(rawTimestamp) ||
+    !Number.isFinite(nowMs) ||
+    Math.abs(nowMs - timestampMs) >
+      SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS * 1000
+  ) {
+    return {
+      valid: false,
+      code: 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW',
+      reason: 'Webhook timestamp nằm ngoài cửa sổ cho phép 5 phút.',
     };
   }
 
@@ -1092,6 +1122,10 @@ function describeReasonCode(code: SePayWebhookReasonCode): string {
       return 'Cửa hàng chưa cấu hình số tài khoản ngân hàng nhận VietQR tự động.';
     case 'MISSING_WEBHOOK_TIMESTAMP':
       return 'Thiếu hoặc sai định dạng header X-SePay-Timestamp.';
+    case 'INVALID_WEBHOOK_TIMESTAMP':
+      return 'Header X-SePay-Timestamp không phải Unix timestamp hợp lệ.';
+    case 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW':
+      return 'Thời điểm gửi webhook nằm ngoài cửa sổ cho phép 5 phút.';
     case 'MISSING_WEBHOOK_SIGNATURE':
       return 'Thiếu header chữ ký X-SePay-Signature.';
     case 'INVALID_WEBHOOK_SIGNATURE':

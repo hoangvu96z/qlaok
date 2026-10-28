@@ -356,9 +356,17 @@ export default function StorefrontDoorPage() {
               <span className="block text-base font-black tracking-tight">
                 {mainCtaLabel}
               </span>
-              <span className="block text-xs text-white/85">
-                🇻🇳 🇬🇧 🇰🇷 🇯🇵 🇨🇳 🇪🇸 🇮🇹 🇷🇺 • Multi-language Menu
-              </span>
+                <span className="block text-xs text-white/85">
+                  {allowedLangs
+                    .map((lang) =>
+                      ({
+                        vi: '🇻🇳', en: '🇬🇧', ko: '🇰🇷', ja: '🇯🇵',
+                        zh: '🇨🇳', es: '🇪🇸', it: '🇮🇹', ru: '🇷🇺',
+                      })[lang]
+                    )
+                    .join(' ')}{' '}
+                  • {locale === 'en' ? 'Menu' : 'Thực đơn'}
+                </span>
             </div>
           </div>
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-900 shadow-xs">

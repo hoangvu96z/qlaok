@@ -153,7 +153,7 @@ test('HTTP 401 automatic sign-out attempts push token cleanup before clearing lo
   ]);
 });
 
-test('HTTP 401 when access token is invalid does not recurse on DELETE /api/push-tokens 401 and still clears local session', async () => {
+test('HTTP 401 when access token is invalid does not recurse, clears the local session, and preserves push state for retry', async () => {
   resetSharedMobilePushRegistrationState();
   const sharedState = getSharedMobilePushRegistrationState();
   sharedState.expoPushToken = 'ExponentPushToken[expiredJwt401]';
@@ -197,9 +197,12 @@ test('HTTP 401 when access token is invalid does not recurse on DELETE /api/push
   assert.equal(unauthorizedCallbacks, 1);
   assert.equal(signOutCalls, 1);
   assert.equal(activeToken, null);
-  assert.equal(sharedState.expoPushToken, null);
-  assert.equal(sharedState.lastRegisteredScope, '');
-  assert.equal(sharedState.registeredShopIds.size, 0);
+  assert.equal(sharedState.expoPushToken, 'ExponentPushToken[expiredJwt401]');
+  assert.equal(
+    sharedState.lastRegisteredScope,
+    'user-1:shop-a:ExponentPushToken[expiredJwt401]:vi'
+  );
+  assert.equal(sharedState.registeredShopIds.has('shop-a'), true);
   assert.deepEqual(events, [
     'GET:http://dev:3000/api/orders:Bearer expired-jwt:401',
     'DELETE:http://dev:3000/api/push-tokens:Bearer expired-jwt:401',

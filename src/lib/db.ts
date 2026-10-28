@@ -1790,34 +1790,53 @@ export async function dbRecordAnalyticsEvent(params: {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
+  const { data: shop, error: shopError } = await sb
+    .from('shops')
+    .select('id, is_published')
+    .eq('id', params.shop_id)
+    .maybeSingle();
+  if (shopError) throw new Error('ANALYTICS_SHOP_LOOKUP_FAILED', { cause: shopError });
+  if (!shop || shop.is_published === false) {
+    throw new Error('SHOP_NOT_TRACKABLE');
+  }
+
+  const itemId = params.item_id?.trim() || null;
+  if (params.event_type === 'item_view') {
+    if (!itemId) throw new Error('ITEM_NOT_IN_SHOP');
+    const { data: item, error: itemError } = await sb
+      .from('items')
+      .select('id')
+      .eq('id', itemId)
+      .eq('shop_id', params.shop_id)
+      .maybeSingle();
+    if (itemError) throw new Error('ANALYTICS_ITEM_LOOKUP_FAILED', { cause: itemError });
+    if (!item) throw new Error('ITEM_NOT_IN_SHOP');
+  }
+
   const { data, error } = await sb
     .from('analytics_events')
     .insert({
       shop_id: params.shop_id,
       event_type: params.event_type,
-      item_id: params.item_id || null,
+      item_id: itemId,
       visitor_lang: params.visitor_lang || 'vi',
       user_agent: params.user_agent || 'unknown',
     })
     .select('*')
     .single();
 
-  if (params.event_type === 'item_view' && params.item_id) {
-    const { data: currentItem } = await sb
-      .from('items')
-      .select('view_count')
-      .eq('id', params.item_id)
-      .single();
-
-    if (currentItem) {
-      await sb
-        .from('items')
-        .update({ view_count: (currentItem.view_count || 0) + 1 })
-        .eq('id', params.item_id);
+  if (error) throw new Error(error.message);
+  if (params.event_type === 'item_view' && itemId) {
+    const { error: incrementError } = await sb.rpc(
+      'increment_item_view_count',
+      { p_shop_id: params.shop_id, p_item_id: itemId }
+    );
+    if (incrementError) {
+      throw new Error('ANALYTICS_VIEW_COUNT_UPDATE_FAILED', {
+        cause: incrementError,
+      });
     }
   }
-
-  if (error) throw new Error(error.message);
   return data as AnalyticsEvent;
 }
 

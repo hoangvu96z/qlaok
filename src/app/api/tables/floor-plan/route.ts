@@ -155,6 +155,7 @@ export async function GET(req: Request) {
               'id, shop_id, table_id, table_label, status, payment_status, total_amount'
             )
             .eq('shop_id', shopId)
+            .or('status.in.(new,preparing),and(status.eq.completed,payment_status.eq.unpaid)')
             .order('id', { ascending: true }),
         'orders'
       ),

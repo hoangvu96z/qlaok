@@ -19,6 +19,7 @@ interface RecordedQueryCall {
   table: string;
   select?: string;
   filters: QueryFilter[];
+  orExpression?: string;
   order?: QueryOrder;
   range?: { from: number; to: number };
 }
@@ -36,6 +37,67 @@ interface FakeSupabaseConfig {
     to: number,
     filters: QueryFilter[]
   ) => { data: unknown[] | null; error: { message: string } | null };
+}
+
+/**
+ * Evaluates the subset of PostgREST `or=` expressions the floor-plan route uses:
+ * `col.eq.value`, `col.in.(a,b)`, and `and(...)` / `or(...)` groups.
+ * Matching is simulated in the fake client so a route regression that drops or
+ * narrows the filter shows up as a wrong row set, not just a missing call.
+ */
+function matchesPostgrestOrExpression(
+  row: Record<string, unknown>,
+  expression: string
+): boolean {
+  const terms = splitTopLevel(expression);
+  return terms.some((term) => matchesPostgrestTerm(row, term));
+}
+
+function splitTopLevel(expression: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of expression) {
+    if (char === '(') depth += 1;
+    if (char === ')') depth -= 1;
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function matchesPostgrestTerm(
+  row: Record<string, unknown>,
+  term: string
+): boolean {
+  const trimmed = term.trim();
+  const groupMatch = /^(and|or)\((.*)\)$/s.exec(trimmed);
+  if (groupMatch) {
+    const [, operator, inner] = groupMatch;
+    const innerTerms = splitTopLevel(inner);
+    const results = innerTerms.map((t) => matchesPostgrestTerm(row, t));
+    return operator === 'and' ? results.every(Boolean) : results.some(Boolean);
+  }
+
+  const inMatch = /^([A-Za-z0-9_]+)\.in\.\((.*)\)$/s.exec(trimmed);
+  if (inMatch) {
+    const [, column, values] = inMatch;
+    const allowed = values.split(',').map((v) => v.trim().replace(/^"|"$/g, ''));
+    return allowed.includes(String(row[column]));
+  }
+
+  const eqMatch = /^([A-Za-z0-9_]+)\.eq\.(.*)$/s.exec(trimmed);
+  if (eqMatch) {
+    const [, column, value] = eqMatch;
+    return String(row[column]) === value.replace(/^"|"$/g, '');
+  }
+
+  throw new Error(`Unsupported PostgREST filter in fake client: ${term}`);
 }
 
 function createFakeSupabaseClient(config: FakeSupabaseConfig = {}) {
@@ -107,6 +169,7 @@ function createFakeSupabaseClient(config: FakeSupabaseConfig = {}) {
         const filters: QueryFilter[] = [];
         let selectCols: string | undefined;
         let orderObj: QueryOrder | undefined;
+        let orExpression: string | undefined;
 
         const query = {
           select(cols?: string) {
@@ -115,6 +178,10 @@ function createFakeSupabaseClient(config: FakeSupabaseConfig = {}) {
           },
           eq(column: string, value: unknown) {
             filters.push({ column, value });
+            return query;
+          },
+          or(expression: string) {
+            orExpression = expression;
             return query;
           },
           order(column: string, options?: { ascending?: boolean }) {
@@ -126,6 +193,7 @@ function createFakeSupabaseClient(config: FakeSupabaseConfig = {}) {
               table: 'orders',
               select: selectCols,
               filters: [...filters],
+              orExpression,
               order: orderObj,
               range: { from, to },
             });
@@ -137,6 +205,12 @@ function createFakeSupabaseClient(config: FakeSupabaseConfig = {}) {
             let filtered = config.ordersData ?? [];
             for (const f of filters) {
               filtered = filtered.filter((row) => row[f.column] === f.value);
+            }
+            if (orExpression) {
+              const expression = orExpression;
+              filtered = filtered.filter((row) =>
+                matchesPostgrestOrExpression(row, expression)
+              );
             }
             return {
               data: filtered.slice(from, to + 1),
@@ -353,6 +427,11 @@ test('(b) successful GET returns only the documented 13 response keys, excludes 
     for (const call of orderRangeCalls) {
       assert.deepEqual(call.filters, [{ column: 'shop_id', value: targetShopId }]);
       assert.deepEqual(call.order, { column: 'id', options: { ascending: true } });
+      assert.equal(
+        call.orExpression,
+        'status.in.(new,preparing),and(status.eq.completed,payment_status.eq.unpaid)',
+        'The floor plan must filter orders server-side to open/unpaid tickets'
+      );
     }
 
     const tableCalls = fakeClient.queryLogs.filter((q) => q.table === 'shop_tables');

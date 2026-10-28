@@ -37,6 +37,12 @@ import { getShopPaymentQrInfo } from '@/lib/payment-qr';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { filterSelectableTables } from '@/lib/table-helpers';
+import {
+  buildPosOrderDiscountPayload,
+  calculateOrderDiscountTotals,
+  getStoredManualDiscountAmount,
+  getStoredPromoDiscountAmount,
+} from '@/lib/order-discounts';
 
 export interface PosOrderLine {
   lineId: string;
@@ -57,6 +63,7 @@ interface PosCounterWorkspaceProps {
   orders?: ShopOrder[];
   editingOrder?: ShopOrder | null;
   autoPrintOnPay: boolean;
+  canApplyDiscount: boolean;
   onOrderCreated: (order: ShopOrder, shouldPrint: boolean) => void;
   onCancelEditOrder?: () => void;
   onPrintOrder?: (order: ShopOrder) => void;
@@ -183,6 +190,7 @@ export function PosCounterWorkspace({
   orders = [],
   editingOrder = null,
   autoPrintOnPay,
+  canApplyDiscount,
   onOrderCreated,
   onCancelEditOrder,
   onPrintOrder,
@@ -267,6 +275,10 @@ export function PosCounterWorkspace({
   const [showTablePicker, setShowTablePicker] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [lines, setLines] = useState<PosOrderLine[]>([]);
+  const [inheritedDiscounts, setInheritedDiscounts] = useState({
+    manual: 0,
+    promo: 0,
+  });
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
 
   // Load editingOrder prop into POS ticket whenever editingOrder changes
@@ -275,6 +287,10 @@ export function PosCounterWorkspace({
     setSelectedTableId(targetOrder.table_id ?? null);
     setTableLabel(targetOrder.table_label || 'Mang về / Tại quầy');
     setPaymentMethod(targetOrder.payment_method || 'cash');
+    setInheritedDiscounts({
+      manual: getStoredManualDiscountAmount(targetOrder),
+      promo: getStoredPromoDiscountAmount(targetOrder),
+    });
     const hydrated = hydratePosLinesFromOrder(targetOrder, items, shop.id);
     setLines(hydrated);
     setSelectedLineId(hydrated[0]?.lineId || null);
@@ -285,6 +301,7 @@ export function PosCounterWorkspace({
   const clearEditingOrder = () => {
     setActiveEditingOrder(null);
     setLines([]);
+    setInheritedDiscounts({ manual: 0, promo: 0 });
     setSelectedLineId(null);
     setSelectedTableId(null);
     setTableLabel('Mang về / Tại quầy');
@@ -412,20 +429,31 @@ export function PosCounterWorkspace({
   const totals = useMemo(() => {
     let subtotal = 0;
     let totalDiscount = 0;
-    let grandTotal = 0;
     let totalQty = 0;
 
     for (const line of lines) {
-      const { catalogGrossUnit, finalLineTotal, discountSaved } =
-        calcLineAmounts(line);
+      const { catalogGrossUnit, discountSaved } = calcLineAmounts(line);
       subtotal += catalogGrossUnit * line.quantity;
       totalDiscount += discountSaved;
-      grandTotal += finalLineTotal;
       totalQty += line.quantity;
     }
 
-    return { subtotal, totalDiscount, grandTotal, totalQty };
-  }, [lines]);
+    const discountTotals = calculateOrderDiscountTotals({
+      subtotalAmount: subtotal,
+      lineManualDiscountAmount: totalDiscount,
+      inheritedManualDiscountAmount: inheritedDiscounts.manual,
+      promoDiscountAmount: inheritedDiscounts.promo,
+    });
+
+    return {
+      subtotal,
+      totalDiscount: discountTotals.discountAmount,
+      manualDiscountAmount: discountTotals.manualDiscountAmount,
+      promoDiscountAmount: discountTotals.promoDiscountAmount,
+      grandTotal: discountTotals.totalAmount,
+      totalQty,
+    };
+  }, [lines, inheritedDiscounts]);
 
   // Add or merge line into ticket
   const addOrMergeLine = (
@@ -622,6 +650,7 @@ export function PosCounterWorkspace({
   // Handle POS Numpad Key Press
   const handleNumpadKey = (key: string) => {
     if (!selectedLine) return;
+    if (numpadMode === 'disc' && !canApplyDiscount) return;
 
     if (key === 'BACKSPACE') {
       const nextBuf = numpadBuffer.slice(0, -1);
@@ -765,6 +794,10 @@ export function PosCounterWorkspace({
       setSubmitError(null);
 
       const isEditing = Boolean(activeEditingOrder);
+      const discountPayload = buildPosOrderDiscountPayload({
+        manualDiscountAmount: totals.manualDiscountAmount,
+        totalAmount: totals.grandTotal,
+      });
       const res = await fetch('/api/orders', {
         method: isEditing ? 'PATCH' : 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -781,9 +814,7 @@ export function PosCounterWorkspace({
                 payment_status: markPaidImmediately
                   ? 'paid'
                   : activeEditingOrder.payment_status,
-                discount_amount: totals.totalDiscount,
-                expected_total: totals.grandTotal,
-                apply_shop_promotions: false,
+                ...discountPayload,
                 items: payloadItems,
               }
             : {
@@ -793,11 +824,9 @@ export function PosCounterWorkspace({
                 visitor_lang: 'vi',
                 payment_method: paymentMethod,
                 payment_status: markPaidImmediately ? 'paid' : 'unpaid',
-                discount_amount: totals.totalDiscount,
-                expected_total: totals.grandTotal,
-                apply_shop_promotions: false,
                 source: 'counter_pos',
                 items: payloadItems,
+                ...discountPayload,
               }
         ),
       });
@@ -817,6 +846,7 @@ export function PosCounterWorkspace({
       const savedOrder: ShopOrder | null = resData?.order || null;
 
       setLines([]);
+      setInheritedDiscounts({ manual: 0, promo: 0 });
       setSelectedLineId(null);
       setShowQrConfirmModal(false);
       setActiveEditingOrder(null);
@@ -892,7 +922,7 @@ export function PosCounterWorkspace({
               </strong>{' '}
               •{' '}
               <strong className="text-amber-300">
-                {formatCurrency(todayStats.revenue, shop.currency)}
+                {formatCurrency(todayStats.revenue, shop.currency, locale)}
               </strong>
             </span>
             <span className="rounded-md bg-emerald-500 px-1.5 py-0.5 text-[10px] font-black text-slate-950">
@@ -1319,11 +1349,19 @@ export function PosCounterWorkspace({
                 {formatCurrency(totals.subtotal, shop.currency)}
               </span>
             </div>
-            {totals.totalDiscount > 0 && (
+            {totals.promoDiscountAmount > 0 && (
+              <div className="flex items-center justify-between text-xs text-rose-600">
+                <span>{tx('Khuyến mãi quán:', 'Shop promotion:')}</span>
+                <span className="font-bold">
+                  -{formatCurrency(totals.promoDiscountAmount, shop.currency)}
+                </span>
+              </div>
+            )}
+            {totals.manualDiscountAmount > 0 && (
               <div className="flex items-center justify-between text-xs text-rose-600">
                 <span>{t('pos.discount')}:</span>
                 <span className="font-bold">
-                  -{formatCurrency(totals.totalDiscount, shop.currency)}
+                  -{formatCurrency(totals.manualDiscountAmount, shop.currency)}
                 </span>
               </div>
             )}
@@ -1472,7 +1510,7 @@ export function PosCounterWorkspace({
                   {digit}
                 </button>
               ))}
-              <button
+              {canApplyDiscount && <button
                 type="button"
                 onClick={() => setNumpadMode('disc')}
                 className={`py-2.5 text-xs font-black transition ${
@@ -1482,7 +1520,7 @@ export function PosCounterWorkspace({
                 }`}
               >
                 {tx('% Giảm', '% Disc')}
-              </button>
+              </button>}
 
               {['7', '8', '9'].map((digit) => (
                 <button
@@ -1668,7 +1706,7 @@ export function PosCounterWorkspace({
 
                         {/* Top-Right Price Badge (Odoo/Viindoo POS style) */}
                         <span className="absolute right-2 top-2 rounded-lg bg-emerald-600/95 px-2 py-0.5 text-[11px] font-black text-white shadow-xs backdrop-blur-2xs">
-                          {formatCurrency(item.price, shop.currency)}
+                          {formatCurrency(item.price, shop.currency, locale)}
                         </span>
 
                         {/* Top-Left Quantity in Ticket or Stock Badge */}

@@ -1,4 +1,4 @@
-import type { CatalogItem, Category, PlanTier } from '@/types/qlaok';
+import type { CatalogItem, Category, I18nText, PlanTier } from '@/types/qlaok';
 
 export interface ParsedCatalogSuccess {
   ok: true;
@@ -12,6 +12,18 @@ export interface ParsedCatalogFailure {
 }
 
 export type ParsedCatalogResponse = ParsedCatalogSuccess | ParsedCatalogFailure;
+
+export function isCurrentCatalogRequest(params: {
+  requestShopId: string;
+  currentShopId: string | null;
+  requestId: number;
+  currentRequestId: number;
+}): boolean {
+  return (
+    params.requestShopId === params.currentShopId &&
+    params.requestId === params.currentRequestId
+  );
+}
 
 /**
  * Validates and extracts catalog data from the /api/catalog HTTP response.
@@ -106,4 +118,49 @@ export function shouldShowCatalogEmptyState(params: {
   if (params.loading) return false;
   if (!params.hasLoaded) return false;
   return params.filteredCount === 0;
+}
+
+/**
+ * Determines whether a category rename input is a valid mutation, a no-op, or invalid blank.
+ */
+export function getCategoryRenameAction(
+  currentNameVi: string,
+  nextNameVi: string
+): 'noop' | 'invalid_blank' | 'save' {
+  const trimmed = nextNameVi.trim();
+  if (!trimmed) {
+    return 'invalid_blank';
+  }
+  if (trimmed === currentNameVi.trim()) {
+    return 'noop';
+  }
+  return 'save';
+}
+
+/**
+ * Builds the name_i18n object for category rename (or creation) from a fresh translation result.
+ * If translation fails or lacks a non-empty English translation, falls back strictly to { vi: newName, en: newName }.
+ * Old translations from prior category states are NOT retained or merged to avoid stale labels.
+ */
+export function buildCategoryNameI18n(
+  newNameVi: string,
+  freshTranslation?: Partial<I18nText> | null
+): I18nText {
+  const trimmed = newNameVi.trim();
+  if (
+    freshTranslation &&
+    typeof freshTranslation === 'object' &&
+    typeof freshTranslation.en === 'string' &&
+    freshTranslation.en.trim()
+  ) {
+    return {
+      ...freshTranslation,
+      vi: trimmed,
+      en: freshTranslation.en.trim(),
+    };
+  }
+  return {
+    vi: trimmed,
+    en: trimmed,
+  };
 }

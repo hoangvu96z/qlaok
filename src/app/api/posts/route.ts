@@ -9,9 +9,15 @@ import { requireShopOwnerOrAdmin } from '@/lib/server-auth';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const shopId = searchParams.get('shopId') || undefined;
+  const shopId = (searchParams.get('shopId') || '').trim();
+  if (!shopId) {
+    return NextResponse.json(
+      { error: 'Missing shopId', code: 'SHOP_ID_REQUIRED' },
+      { status: 400 }
+    );
+  }
   const posts = await dbGetShopPosts(shopId);
-  return NextResponse.json({ posts });
+  return NextResponse.json({ posts: posts.filter((post) => post.is_active) });
 }
 
 export async function POST(req: Request) {

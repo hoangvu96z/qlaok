@@ -19,12 +19,17 @@ import type {
 import { getSupabaseDbClient } from './db';
 import { checkShopOpenStatus, DEFAULT_SHOP_TIMEZONE } from './i18n-helper';
 import {
+  calculateLineManualDiscountAmount,
   computeSharedOrderQuote,
   getItemFlashSalePrice,
   isFlashSaleActiveNow,
   isPromoBannerActiveNow,
   type SharedOrderQuoteResult,
 } from './order-pricing';
+import {
+  getStoredManualDiscountAmount,
+  getStoredPromoDiscountAmount,
+} from './order-discounts';
 import {
   resolveCompletedTerminalWorkflowStep,
   resolveOrderWorkflowMutation,
@@ -584,7 +589,7 @@ function writeStore(data: MposStoreData) {
     fs.mkdirSync(STORE_DIR, { recursive: true });
     fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
   } catch (err) {
-    console.error('Failed to persist mpos-store.json:', err);
+    throw new Error('MPOS_STORE_WRITE_FAILED', { cause: err });
   }
 }
 
@@ -855,6 +860,14 @@ async function orderRpc(name: string, args: Record<string, unknown>): Promise<un
   return data;
 }
 
+function isOrderCodeUniqueViolation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return (
+    /order_code/i.test(message) &&
+    /(23505|duplicate key|unique constraint)/i.test(message)
+  );
+}
+
 function orderStockDemand(order: ShopOrder): Map<string, number> {
   const demand = new Map<string, number>();
   if (order.status === 'cancelled' && !order.waste_recorded) return demand;
@@ -1108,6 +1121,7 @@ export async function quoteOrderPricing(params: {
   discount_amount?: number;
   discount_code?: string;
   apply_shop_promotions?: boolean;
+  preservedPromoDiscountAmount?: number;
   canApplyManualDiscount?: boolean;
   themeConfigOverride?: ShopThemeConfig | null;
   itemMapOverride?: Map<string, CatalogItem>;
@@ -1137,6 +1151,7 @@ export async function quoteOrderPricing(params: {
     applyShopPromotions: params.apply_shop_promotions !== false,
     discountCode: params.discount_code,
     manualOrderDiscountAmount: params.discount_amount,
+    preservedPromoDiscountAmount: params.preservedPromoDiscountAmount,
     canApplyManualDiscount: canApplyManual,
     now: params.now,
   });
@@ -2045,8 +2060,27 @@ export async function dbCreateOrder(params: {
     };
 
     if (isOrderDbConfigured()) {
-      const committed = await orderRpc('commit_order_with_inventory', { p_order: newOrder,
-        p_inventory_deltas: Array.from(demandByItem, ([item_id, delta]) => ({ item_id, delta })) });
+      let committed: unknown;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          committed = await orderRpc('commit_order_with_inventory', {
+            p_order: newOrder,
+            p_inventory_deltas: Array.from(demandByItem, ([item_id, delta]) => ({
+              item_id,
+              delta,
+            })),
+          });
+          break;
+        } catch (error) {
+          if (!isOrderCodeUniqueViolation(error) || attempt === 4) throw error;
+          // The transaction rolls inventory back with the failed insert. Pick a
+          // wider candidate and retry the complete atomic RPC.
+          newOrder.order_code = `ORD-${Math.floor(10_000 + Math.random() * 90_000)}`;
+        }
+      }
+      if (committed === undefined) {
+        throw new Error('DB_COMMIT_FAILED: Máy chủ không xác nhận ghi đơn hàng.');
+      }
       const normalizedCommitted = normalizeOrderRecord(committed as ShopOrder);
       if (normalizedCommitted.id === newOrder.id) {
         newlyCreatedOrders.add(normalizedCommitted);
@@ -2151,6 +2185,31 @@ export async function dbUpdateOrderStatus(
       throw new Error(`INVALID_STATUS: Trạng thái đơn "${requestedStatus}" không hợp lệ.`);
     }
 
+    if (requestedStatus === 'completed' && patch.payment_status === 'paid') {
+      throw new Error(
+        'FULFILLMENT_CANNOT_COLLECT_PAYMENT: Hoàn tất phục vụ không được tự xác nhận đã thanh toán.'
+      );
+    }
+
+    const isCancellingPaidOrder =
+      requestedStatus === 'cancelled' &&
+      existing.status !== 'cancelled' &&
+      existing.payment_status === 'paid';
+    if (isCancellingPaidOrder) {
+      const refundReason = patch.refund_reason?.trim() || '';
+      const cancelledReason = patch.cancelled_reason?.trim() || '';
+      if (patch.payment_status !== 'refunded') {
+        throw new Error(
+          'PAID_ORDER_REQUIRES_EXPLICIT_REFUND: Đơn đã thanh toán phải được xác nhận hoàn tiền trước khi hủy.'
+        );
+      }
+      if (!refundReason) throw new Error('REFUND_REASON_REQUIRED');
+      if (!cancelledReason) throw new Error('CANCEL_REASON_REQUIRED');
+      if (refundReason.length > 500 || cancelledReason.length > 500) {
+        throw new Error('REASON_TOO_LONG');
+      }
+    }
+
     // State machine guard: completed order cannot revert backward to 'new'
     if (existing.status === 'completed' && requestedStatus === 'new') {
       throw new Error(
@@ -2162,7 +2221,7 @@ export async function dbUpdateOrderStatus(
     const isChangingItems = Array.isArray(patch.items);
     const isChangingDiscount =
       patch.discount_amount !== undefined &&
-      Number(patch.discount_amount) !== Number(existing.discount_amount || 0);
+      Number(patch.discount_amount) !== getStoredManualDiscountAmount(existing);
     const isChangingTableId =
       patch.table_id !== undefined &&
       (patch.table_id?.trim() || null) !== (existing.table_id || null);
@@ -2403,18 +2462,28 @@ export async function dbUpdateOrderStatus(
             line.quantity,
         0
       );
+      const existingManualDiscountAmount = getStoredManualDiscountAmount(existing);
+      const preservedOrderManualDiscountAmount =
+        patch.canApplyDiscount === true
+          ? Math.max(
+              0,
+              existingManualDiscountAmount -
+                calculateLineManualDiscountAmount(existing.items || [])
+            )
+          : existingManualDiscountAmount;
       const requestedDiscount =
         patch.discount_amount !== undefined
           ? Number(patch.discount_amount)
-          : Number(existing.discount_amount || 0);
+          : preservedOrderManualDiscountAmount;
       if (!Number.isFinite(requestedDiscount) || requestedDiscount < 0) {
         throw new Error('INVALID_DISCOUNT: Số tiền giảm giá không hợp lệ.');
       }
-      nextDiscountAmount = Math.min(
-        nextSubtotalAmount,
-        Math.max(0, Math.round(requestedDiscount))
-      );
-      nextManualDiscountAmount = nextDiscountAmount;
+      nextManualDiscountAmount = Math.max(0, Math.round(
+        patch.discount_amount !== undefined && patch.canApplyDiscount === false
+          ? existingManualDiscountAmount
+          : requestedDiscount
+      ));
+      nextDiscountAmount = nextManualDiscountAmount;
       nextTotalAmount = Math.max(0, nextSubtotalAmount - nextDiscountAmount);
       nextBillVersion += 1;
     } else if (patch.discount_amount !== undefined) {
@@ -2430,25 +2499,53 @@ export async function dbUpdateOrderStatus(
             line.quantity,
         0
       );
-      nextDiscountAmount = Math.min(
-        nextSubtotalAmount,
-        Math.max(0, Math.round(requestedDiscount))
-      );
-      nextManualDiscountAmount = nextDiscountAmount;
+      const existingManualDiscountAmount = getStoredManualDiscountAmount(existing);
+      nextManualDiscountAmount = Math.max(0, Math.round(
+        patch.canApplyDiscount === false
+          ? existingManualDiscountAmount
+          : requestedDiscount
+      ));
+      nextDiscountAmount = nextManualDiscountAmount;
       nextTotalAmount = Math.max(0, nextSubtotalAmount - nextDiscountAmount);
-      if (nextDiscountAmount !== Number(existing.discount_amount || 0)) {
+      if (
+        patch.canApplyDiscount !== false &&
+        nextManualDiscountAmount !== existingManualDiscountAmount
+      ) {
         nextBillVersion += 1;
       }
     }
 
     if (isChangingItems || patch.discount_amount !== undefined) {
+      const existingManualDiscountAmount = getStoredManualDiscountAmount(existing);
+      const preservedOrderManualDiscountAmount =
+        patch.canApplyDiscount === true
+          ? Math.max(
+              0,
+              existingManualDiscountAmount -
+                calculateLineManualDiscountAmount(existing.items || [])
+            )
+          : existingManualDiscountAmount;
+      const requestedManualDiscountAmount =
+        patch.discount_amount !== undefined && patch.canApplyDiscount !== false
+          ? Number(patch.discount_amount)
+          : preservedOrderManualDiscountAmount;
+      const shouldApplyShopPromotions =
+        patch.apply_shop_promotions ??
+        Boolean(existing.discount_code || existing.promo_discount_amount);
       const quote = computeSharedOrderQuote({
         lines: nextItems, themeConfig: loaded.themeConfig,
-        applyShopPromotions: patch.apply_shop_promotions ?? Boolean(existing.discount_code || existing.promo_discount_amount),
+        applyShopPromotions: shouldApplyShopPromotions,
+        // POS edits send false to keep the promotion already recorded on this order,
+        // even if its configured promotion has expired since checkout.
+        preservedPromoDiscountAmount:
+          patch.apply_shop_promotions === false
+            ? getStoredPromoDiscountAmount(existing)
+            : undefined,
         discountCode: existing.discount_code,
-        manualOrderDiscountAmount: patch.canApplyDiscount === false ? 0 :
-          (patch.discount_amount ?? existing.manual_discount_amount ?? existing.discount_amount ?? 0),
-        canApplyManualDiscount: patch.canApplyDiscount !== false,
+        manualOrderDiscountAmount: requestedManualDiscountAmount,
+        // Changed incoming discounts were rejected at the route permission boundary;
+        // keep already authorized discounts when an editor lacks discount.apply.
+        canApplyManualDiscount: true,
       });
       nextSubtotalAmount = quote.subtotal_amount; nextDiscountAmount = quote.discount_amount;
       nextPromoDiscountAmount = quote.promo_discount_amount; nextManualDiscountAmount = quote.manual_discount_amount;
@@ -2518,19 +2615,10 @@ export async function dbUpdateOrderStatus(
 
     const nowIso = new Date().toISOString();
 
-    let nextPaymentStatus: OrderPaymentStatus =
+    const nextPaymentStatus: OrderPaymentStatus =
       patch.payment_status !== undefined
         ? patch.payment_status
         : existing.payment_status;
-
-    // If a paid order is cancelled, transition payment_status to 'refunded' automatically
-    if (
-      existing.payment_status === 'paid' &&
-      nextStatus === 'cancelled' &&
-      patch.payment_status === undefined
-    ) {
-      nextPaymentStatus = 'refunded';
-    }
 
     if (!VALID_PAYMENT_STATUSES.has(nextPaymentStatus)) {
       throw new Error(

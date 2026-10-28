@@ -90,9 +90,36 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 1 }), /Tổng tiền/);
     const paid = await dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 20000 });
     assert.equal(paid.status, 'new', 'payment must not mark fulfillment completed');
+    await assert.rejects(
+      dbUpdateOrderStatus(order.id, { status: 'completed', payment_status: 'paid' }),
+      /FULFILLMENT_CANNOT_COLLECT_PAYMENT/
+    );
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'unpaid' }), /INVALID_PAYMENT_TRANSITION/);
     await dbUpdateOrderStatus(order.id, { payment_status: 'refunded', refund_reason: 'Fixture refund' });
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid' }), /INVALID_PAYMENT_TRANSITION/);
+    const paidCancellation = await create(1, 'Paid cancellation fixture');
+    await dbUpdateOrderStatus(paidCancellation.id, { payment_status: 'paid' });
+    await assert.rejects(
+      dbUpdateOrderStatus(paidCancellation.id, { status: 'cancelled' }),
+      /PAID_ORDER_REQUIRES_EXPLICIT_REFUND/
+    );
+    await assert.rejects(
+      dbUpdateOrderStatus(paidCancellation.id, {
+        status: 'cancelled',
+        payment_status: 'refunded',
+        cancelled_reason: 'Customer cancelled',
+      }),
+      /REFUND_REASON_REQUIRED/
+    );
+    const cancelledPaidOrder = await dbUpdateOrderStatus(paidCancellation.id, {
+      status: 'cancelled',
+      payment_status: 'refunded',
+      refund_reason: 'Manual refund confirmed',
+      cancelled_reason: 'Customer cancelled',
+    });
+    assert.equal(cancelledPaidOrder.payment_status, 'refunded');
+    assert.equal(cancelledPaidOrder.refund_reason, 'Manual refund confirmed');
+    assert.equal(cancelledPaidOrder.cancelled_reason, 'Customer cancelled');
     const guest = await create(1);
     await dbUpdateOrderStatus(guest.id, { status: 'preparing' });
     await assert.rejects(dbUpdateOrderStatus(guest.id, { require_new_unpaid: true, customer_note: 'late customer edit' }), /ORDER_ALREADY_PAID/);
@@ -107,6 +134,68 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
     const replay = await dbSettleTableBill({ shop_id: 'engine-shop', session_id: round1.session_id, payment_method: 'cash', payment_idempotency_key: 'table-b' });
     assert.deepEqual(replay.order_ids, [round1.id]);
     assert.equal((await dbGetOrderById(round2.id))?.payment_status, 'unpaid', 'replay must not collect a later round');
+
+    const discounted = await dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label: 'Discount fixture',
+      discount_amount: 500,
+      apply_shop_promotions: true,
+      canApplyDiscount: true,
+      themeConfigOverride: {
+        primaryColor: '#000000',
+        layout: 'list',
+        promoBanner: {
+          enabled: true,
+          title: 'Fixture promotion',
+          discountType: 'percent',
+          discountValue: 10,
+        },
+      },
+      items: [{ item_id: 'engine-item', name_vi: 'Fixture', quantity: 2, unit_price: 10000, extra_price: 0, selected_choices: [] }],
+    });
+    assert.equal(discounted.subtotal_amount, 20000);
+    assert.equal(discounted.promo_discount_amount, 2000);
+    assert.equal(discounted.manual_discount_amount, 500);
+    assert.equal(discounted.discount_amount, 2500);
+    assert.equal(discounted.total_amount, 17500);
+
+    const discountPreserved = await dbUpdateOrderStatus(discounted.id, {
+      items: discounted.items,
+      discount_amount: discounted.manual_discount_amount,
+      apply_shop_promotions: false,
+      canApplyDiscount: false,
+      expected_total: discounted.total_amount,
+    });
+    assert.equal(discountPreserved.promo_discount_amount, 2000);
+    assert.equal(discountPreserved.manual_discount_amount, 500);
+    assert.equal(discountPreserved.discount_amount, 2500);
+    assert.equal(discountPreserved.total_amount, 17500);
+
+    const lineDiscounted = await dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label: 'Line discount fixture',
+      discount_amount: 500,
+      canApplyDiscount: true,
+      items: [{
+        item_id: 'engine-item',
+        name_vi: 'Fixture',
+        quantity: 2,
+        unit_price: 10000,
+        original_unit_price: 10000,
+        custom_unit_price: 9000,
+        extra_price: 0,
+        selected_choices: [],
+      }],
+    });
+    assert.equal(lineDiscounted.manual_discount_amount, 2500);
+    assert.equal(lineDiscounted.total_amount, 17500);
+
+    const lineDiscountPreserved = await dbUpdateOrderStatus(lineDiscounted.id, {
+      items: lineDiscounted.items,
+      canApplyDiscount: true,
+    });
+    assert.equal(lineDiscountPreserved.manual_discount_amount, 2500);
+    assert.equal(lineDiscountPreserved.total_amount, 17500);
   } finally { setMposDbClientForTests(null); await db.close(); }
 });
 
@@ -721,10 +810,10 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
       ],
     });
     await dbUpdateOrderStatus(orderForRefund.id, {
-      status: 'completed',
       payment_status: 'paid',
       expected_total: 10000,
     });
+    await dbUpdateOrderStatus(orderForRefund.id, { status: 'completed' });
 
     const emptyRefundRes = await patchOrdersRoute(
       new Request('http://localhost/api/orders', {

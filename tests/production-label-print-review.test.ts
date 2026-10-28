@@ -2,10 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   DEFAULT_SHOP_LABEL_PRINT_CONFIG,
-  MAX_LABEL_COPIES_PER_UNIT,
-  MAX_MAX_LABELS_PER_PRINT,
-  MIN_LABEL_COPIES_PER_UNIT,
-  MIN_MAX_LABELS_PER_PRINT,
 } from '@/lib/label-print-config';
 import {
   buildProductionLabelBatch,
@@ -468,11 +464,11 @@ test('9. invalid config fails closed with INVALID_CONFIG', () => {
   assert.equal(buildProductionLabelBatch(order, 'not-a-config' as unknown as ShopLabelPrintConfig).code, 'INVALID_CONFIG');
 
   // Invalid split_mode
-  const badSplit = createMockConfig({ split_mode: 'all_at_once' as unknown as any });
+  const badSplit = createMockConfig({ split_mode: 'all_at_once' as never });
   assert.equal(buildProductionLabelBatch(order, badSplit).code, 'INVALID_CONFIG');
 
   // Invalid paper_preset
-  const badPaper = createMockConfig({ paper_preset: 'a4_printer' as unknown as any });
+  const badPaper = createMockConfig({ paper_preset: 'a4_printer' as never });
   assert.equal(buildProductionLabelBatch(order, badPaper).code, 'INVALID_CONFIG');
 
   // Invalid copies_per_unit (< 1, > 5, or float)

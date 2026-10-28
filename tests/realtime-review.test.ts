@@ -44,6 +44,7 @@ const { GET: orderEventsGet } = await import('@/app/api/orders/events/route');
 import type {
   OrderSseEvent,
   PostgresListenerClientLike,
+  PostgresNotificationMessage,
   PostgresOrderNotification,
 } from '@/lib/order-events';
 
@@ -56,7 +57,7 @@ interface MockUpstreamHarness {
 }
 
 function createMockUpstreamHarness(): MockUpstreamHarness {
-  type Listener = (...args: any[]) => void;
+  type Listener = Parameters<NonNullable<PostgresListenerClientLike['on']>>[1];
   const connections: Array<{
     active: boolean;
     listeners: Record<string, Listener[]>;
@@ -101,7 +102,7 @@ function createMockUpstreamHarness(): MockUpstreamHarness {
       for (const connection of connections) {
         if (!connection.active) continue;
         for (const listener of connection.listeners.error || []) {
-          listener(new Error('Connection terminated'));
+          (listener as () => void)();
         }
       }
     },
@@ -109,7 +110,7 @@ function createMockUpstreamHarness(): MockUpstreamHarness {
       for (const connection of connections) {
         if (!connection.active) continue;
         for (const listener of connection.listeners.notification || []) {
-          listener({
+          (listener as (message: PostgresNotificationMessage) => void)({
             channel: DEFAULT_POSTGRES_CHANNEL,
             payload: JSON.stringify(payload),
           });
@@ -591,7 +592,7 @@ test('PostgreSQL LISTEN listener lifecycle: connect, listen query, minimal paylo
   let connectCount = 0;
   let endCount = 0;
   const queries: string[] = [];
-  const listeners: Record<string, Array<(...args: any[]) => void>> = {};
+  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
 
   const mockPgClient = {
     connect: async () => {
@@ -600,12 +601,12 @@ test('PostgreSQL LISTEN listener lifecycle: connect, listen query, minimal paylo
     query: async (sql: string) => {
       queries.push(sql);
     },
-    on: (event: string, listener: (...args: any[]) => void) => {
+    on: (event: string, listener: (...args: unknown[]) => void) => {
       listeners[event] = listeners[event] || [];
       listeners[event].push(listener);
       return mockPgClient;
     },
-    removeListener: (event: string, listener: (...args: any[]) => void) => {
+    removeListener: (event: string, listener: (...args: unknown[]) => void) => {
       if (listeners[event]) {
         listeners[event] = listeners[event].filter((l) => l !== listener);
       }
@@ -616,7 +617,9 @@ test('PostgreSQL LISTEN listener lifecycle: connect, listen query, minimal paylo
     },
   };
 
-  setOrderEventsClientFactoryForTests(() => mockPgClient as any);
+  setOrderEventsClientFactoryForTests(
+    () => mockPgClient as unknown as PostgresListenerClientLike
+  );
   const broker = getOrderEventsBroker();
   setOrderEventsStreamOptionsForTests({
     broker,

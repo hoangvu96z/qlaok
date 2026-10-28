@@ -13,9 +13,6 @@ import {
 } from '@/lib/auth-session';
 import {
   ensureSuperAdminSeeded,
-  hashPassword,
-  readCredentials,
-  writeCredentials,
 } from '@/lib/auth-credentials';
 import {
   dbGetAllOrders,
@@ -406,17 +403,29 @@ export async function POST(req: Request) {
     const body = await req.json();
     const { action } = body;
 
-    recordAdminAuditLog({
-      actorId: auth.user.sub,
-      actorEmail: auth.user.email,
-      action: String(action || 'unknown'),
-      targetId: body.ownerId || body.shopId || body.orderId || body.orderCode,
-      details: {
-        plan: body.plan,
-        email: body.email,
-        isPublished: body.isPublished,
-      },
-    });
+    if (action === 'reset_owner_password') {
+      return NextResponse.json(
+        {
+          error:
+            'Mật khẩu Chủ quán được quản lý qua Zitadel. Hãy dùng mục Quên mật khẩu tại trang đăng nhập Qlaok.',
+          code: 'OWNER_PASSWORD_RESET_VIA_OIDC',
+        },
+        { status: 410 }
+      );
+    }
+
+    const recordSuccessfulAudit = () =>
+      recordAdminAuditLog({
+        actorId: auth.user.sub,
+        actorEmail: auth.user.email,
+        action: String(action || 'unknown'),
+        targetId: body.ownerId || body.shopId || body.orderId || body.orderCode,
+        details: {
+          plan: body.plan,
+          email: body.email,
+          isPublished: body.isPublished,
+        },
+      });
 
     if (action === 'reseed_demo_data' && !shouldAutoSeedDemoData()) {
       return NextResponse.json(
@@ -492,6 +501,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
+      recordSuccessfulAudit();
       return NextResponse.json({ owner: data });
     }
 
@@ -499,13 +509,11 @@ export async function POST(req: Request) {
     if (action === 'create_owner') {
       const {
         email = '',
-        password = '',
         fullName = '',
         phone = '',
         plan = 'free',
       } = body as {
         email: string;
-        password?: string;
         fullName?: string;
         phone?: string;
         plan?: PlanTier;
@@ -519,8 +527,6 @@ export async function POST(req: Request) {
         );
       }
 
-      const finalPassword =
-        password && password.length >= 6 ? password : 'qlaok123456';
       const newOwnerId = `owner-${crypto.randomUUID()}`;
 
       let expiresAt: string | null = null;
@@ -550,37 +556,8 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      const creds = readCredentials();
-      creds[normalizedEmail] = {
-        passwordHash: hashPassword(finalPassword),
-        profileId: created.id,
-      };
-      writeCredentials(creds);
-
+      recordSuccessfulAudit();
       return NextResponse.json({ owner: created }, { status: 201 });
-    }
-
-    // 3. Reset Owner Password from Admin
-    if (action === 'reset_owner_password') {
-      const { ownerId, email, newPassword } = body as {
-        ownerId: string;
-        email: string;
-        newPassword: string;
-      };
-      if (!email || !newPassword || newPassword.length < 6) {
-        return NextResponse.json(
-          { error: 'Mật khẩu mới phải từ 6 ký tự trở lên.' },
-          { status: 400 }
-        );
-      }
-      const normalizedEmail = email.trim().toLowerCase();
-      const creds = readCredentials();
-      creds[normalizedEmail] = {
-        passwordHash: hashPassword(newPassword),
-        profileId: ownerId,
-      };
-      writeCredentials(creds);
-      return NextResponse.json({ ok: true });
     }
 
     // 4. Delete Owner Account
@@ -617,12 +594,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      if (email) {
-        const creds = readCredentials();
-        delete creds[email.trim().toLowerCase()];
-        writeCredentials(creds);
-      }
-
+      recordSuccessfulAudit();
       return NextResponse.json({ ok: true });
     }
 
@@ -645,6 +617,7 @@ export async function POST(req: Request) {
           sbClient: sb,
           skipEnsureSeeded: true,
         });
+        recordSuccessfulAudit();
         return NextResponse.json({ shop: updatedShop });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -670,6 +643,7 @@ export async function POST(req: Request) {
       }
 
       await dbDeleteShopSlugAliases(shopId, sb);
+      recordSuccessfulAudit();
       return NextResponse.json({ ok: true });
     }
 
@@ -731,25 +705,85 @@ export async function POST(req: Request) {
           allowUnverifiedAmount: false,
         }
       );
+      recordSuccessfulAudit();
       return NextResponse.json({ ok: true, result });
     }
 
     // 8. Update Global mPOS Order Status
     if (action === 'update_order_status') {
-      const { orderId, status, payment_method, payment_status } = body as {
+      const {
+        orderId,
+        status,
+        payment_method,
+        payment_status,
+        refund_reason,
+        cancelled_reason,
+      } = body as {
         orderId: string;
         status?: OrderStatus;
         payment_method?: PaymentMethod;
-        payment_status?: 'unpaid' | 'paid';
+        payment_status?: 'unpaid' | 'paid' | 'refunded';
+        refund_reason?: string;
+        cancelled_reason?: string;
       };
       if (!orderId) {
         return NextResponse.json({ error: 'Thiếu orderId' }, { status: 400 });
       }
+
+      if (
+        payment_status === 'paid' ||
+        (payment_status !== undefined &&
+          (payment_status !== 'refunded' || status !== 'cancelled'))
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Trạng thái thanh toán phải được xác nhận qua giao dịch đã kiểm chứng.',
+            code: 'PAYMENT_STATUS_REQUIRES_VERIFIED_TRANSACTION',
+          },
+          { status: 400 }
+        );
+      }
+
+      if (status === 'cancelled') {
+        const cancelReason =
+          typeof cancelled_reason === 'string' ? cancelled_reason.trim() : '';
+        const refundReason =
+          typeof refund_reason === 'string' ? refund_reason.trim() : '';
+        if (!cancelReason) {
+          return NextResponse.json(
+            { error: 'Vui lòng nhập lý do hủy đơn.', code: 'CANCEL_REASON_REQUIRED' },
+            { status: 400 }
+          );
+        }
+        if (cancelReason.length > 500) {
+          return NextResponse.json(
+            { error: 'Lý do hủy đơn không được vượt quá 500 ký tự.', code: 'REASON_TOO_LONG' },
+            { status: 400 }
+          );
+        }
+        if (payment_status === 'refunded' && !refundReason) {
+          return NextResponse.json(
+            { error: 'Vui lòng nhập lý do hoàn tiền.', code: 'REFUND_REASON_REQUIRED' },
+            { status: 400 }
+          );
+        }
+        if (refundReason.length > 500) {
+          return NextResponse.json(
+            { error: 'Lý do hoàn tiền không được vượt quá 500 ký tự.', code: 'REASON_TOO_LONG' },
+            { status: 400 }
+          );
+        }
+      }
+
       const updated = await dbUpdateOrderStatus(orderId, {
         status,
         payment_method,
         payment_status,
+        refund_reason,
+        cancelled_reason,
       });
+      recordSuccessfulAudit();
       return NextResponse.json({ order: updated });
     }
 
@@ -815,6 +849,7 @@ export async function POST(req: Request) {
         }
       }
 
+      recordSuccessfulAudit();
       return NextResponse.json({
         ok: true,
         message: 'Đã đồng bộ lại dữ liệu mẫu 3 cửa hàng Demo thành công.',
@@ -834,7 +869,10 @@ export async function POST(req: Request) {
     let status = 500;
     if (message.startsWith('PAYMENT_ORDER_NOT_FOUND')) {
       status = 404;
-    } else if (message.startsWith('PAYMENT_ORDER_NOT_PENDING')) {
+    } else if (
+      message.startsWith('PAYMENT_ORDER_NOT_PENDING') ||
+      message.startsWith('PAID_ORDER_REQUIRES_EXPLICIT_REFUND')
+    ) {
       status = 409;
     } else if (
       message.startsWith('PAYMENT_AMOUNT_MISMATCH') ||
@@ -842,7 +880,11 @@ export async function POST(req: Request) {
       message.startsWith('MISSING_ORDER_CODE') ||
       message.startsWith('MISSING_BANK_REF') ||
       message.startsWith('INVALID_PAYMENT_AMOUNT') ||
-      message.startsWith('PAYMENT_AMOUNT_REQUIRED')
+      message.startsWith('PAYMENT_AMOUNT_REQUIRED') ||
+      message.startsWith('REFUND_REASON_REQUIRED') ||
+      message.startsWith('CANCEL_REASON_REQUIRED') ||
+      message.startsWith('REASON_TOO_LONG') ||
+      message.startsWith('FULFILLMENT_CANNOT_COLLECT_PAYMENT')
     ) {
       status = 400;
     }

@@ -18,7 +18,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Plus,
-  KeyRound,
   LogOut,
   Sparkles,
   QrCode,
@@ -198,7 +197,6 @@ export default function SuperAdminPortalPage() {
   const [newOwnerEmail, setNewOwnerEmail] = useState('');
   const [newOwnerName, setNewOwnerName] = useState('');
   const [newOwnerPhone, setNewOwnerPhone] = useState('');
-  const [newOwnerPassword, setNewOwnerPassword] = useState('');
   const [newOwnerPlan, setNewOwnerPlan] = useState<PlanTier>('basic');
 
   const [shopSearch, setShopSearch] = useState('');
@@ -481,7 +479,6 @@ export default function SuperAdminPortalPage() {
         email: newOwnerEmail,
         fullName: newOwnerName,
         phone: newOwnerPhone,
-        password: newOwnerPassword || 'qlaok123456',
         plan: newOwnerPlan,
       },
       tx(
@@ -494,34 +491,8 @@ export default function SuperAdminPortalPage() {
       setNewOwnerEmail('');
       setNewOwnerName('');
       setNewOwnerPhone('');
-      setNewOwnerPassword('');
       setShowCreateOwner(false);
     }
-  };
-
-  const handleResetOwnerPassword = async (owner: EnrichedOwner) => {
-    const newPass = window.prompt(
-      tx(
-        'Nhập mật khẩu mới cho tài khoản {email} (tối thiểu 6 ký tự):',
-        'Enter new password for {email} (min 6 characters):',
-        { email: owner.email }
-      ),
-      'qlaok123456'
-    );
-    if (!newPass) return;
-    await runAdminAction(
-      {
-        action: 'reset_owner_password',
-        ownerId: owner.id,
-        email: owner.email,
-        newPassword: newPass,
-      },
-      tx(
-        'Đã cập nhật mật khẩu mới cho {email}!',
-        'Updated password for {email}!',
-        { email: owner.email }
-      )
-    );
   };
 
   const handleTestAiTranslate = async () => {
@@ -1012,17 +983,6 @@ export default function SuperAdminPortalPage() {
         const isRootAdmin = owner.email.toLowerCase() === SUPER_ADMIN_EMAIL;
         return (
           <div className="inline-flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleResetOwnerPassword(owner);
-              }}
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-800 dark:text-slate-200 hover:border-amber-400"
-            >
-              <KeyRound className="h-3 w-3 text-amber-600 dark:text-amber-400" />
-              <span>{tx('Đổi MK', 'Reset PW')}</span>
-            </button>
             {!isRootAdmin && (
               <button
                 type="button"
@@ -1200,7 +1160,6 @@ export default function SuperAdminPortalPage() {
                     action: 'update_order_status',
                     orderId: order.id,
                     status: 'completed',
-                    payment_status: 'paid',
                   },
                   tx('Đã hoàn tất đơn #{code}', 'Completed order #{code}', {
                     code: order.order_code,
@@ -1212,17 +1171,22 @@ export default function SuperAdminPortalPage() {
               {tx('Hoàn tất', 'Complete')}
             </button>
           )}
-          {order.status !== 'cancelled' && (
+          {order.status !== 'cancelled' && order.payment_status !== 'paid' && (
             <button
               type="button"
               disabled={actionBusy}
               onClick={(e) => {
                 e.stopPropagation();
+                const cancelledReason = window.prompt(
+                  tx('Nhập lý do hủy đơn', 'Enter a reason for cancelling this order')
+                )?.trim();
+                if (!cancelledReason) return;
                 runAdminAction(
                   {
                     action: 'update_order_status',
                     orderId: order.id,
                     status: 'cancelled',
+                    cancelled_reason: cancelledReason,
                   },
                   tx(
                     'Đã hủy đơn #{code} và hoàn tồn kho',
@@ -2186,7 +2150,13 @@ export default function SuperAdminPortalPage() {
                       {t('common.close')}
                     </button>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                  <p className="text-xs text-slate-400">
+                    {tx(
+                      'Chủ quán đăng nhập và khôi phục mật khẩu qua Zitadel tại trang Đăng nhập Qlaok.',
+                      'Owners sign in and recover passwords through Zitadel on the Qlaok login page.'
+                    )}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <input
                       type="email"
                       required
@@ -2208,16 +2178,6 @@ export default function SuperAdminPortalPage() {
                       value={newOwnerPhone}
                       onChange={(e) => setNewOwnerPhone(e.target.value)}
                       placeholder={tx('Số điện thoại / Zalo', 'Phone / Zalo')}
-                      className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
-                    />
-                    <input
-                      type="text"
-                      value={newOwnerPassword}
-                      onChange={(e) => setNewOwnerPassword(e.target.value)}
-                      placeholder={tx(
-                        'Mật khẩu (mặc định: qlaok123456)',
-                        'Password (default: qlaok123456)'
-                      )}
                       className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
                     />
                     <div className="flex gap-2">

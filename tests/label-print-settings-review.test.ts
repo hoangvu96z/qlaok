@@ -22,8 +22,6 @@ import {
   getDefaultShopLabelPrintConfig,
   resolveShopLabelPrintConfig,
   validateLabelPrintConfig,
-  type LabelPaperPreset,
-  type LabelSplitMode,
 } from '@/lib/label-print-config';
 import { issueSessionToken } from '@/lib/server-auth';
 import { setShopMembershipDbClientForTest } from '@/lib/shop-permissions';
@@ -791,13 +789,15 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
     assert.ok(dbRow);
     const dbTheme = (typeof dbRow.theme_config === 'string'
       ? JSON.parse(dbRow.theme_config)
-      : dbRow.theme_config) as Record<string, any>;
+      : dbRow.theme_config) as ShopThemeConfig;
 
     // Verify labelPrintConfig is saved accurately
+    assert.ok(dbTheme.labelPrintConfig);
     assert.equal(dbTheme.labelPrintConfig.paper_preset, 'cup_sticker_40x30');
     assert.equal(dbTheme.labelPrintConfig.copies_per_unit, 2);
     assert.equal(dbTheme.labelPrintConfig.max_labels_per_print, 40);
     assert.equal(dbTheme.labelPrintConfig.show_price, true);
+    assert.ok(dbTheme.labelPrintConfig.custom_footer_i18n);
     assert.equal(
       dbTheme.labelPrintConfig.custom_footer_i18n.vi,
       'Chúc bạn một ngày vui vẻ!'
@@ -806,9 +806,12 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
     // Verify UNRELATED theme keys are strictly preserved!
     assert.equal(dbTheme.primaryColor, '#8b5cf6');
     assert.equal(dbTheme.layout, 'grid');
+    assert.ok(dbTheme.promoBanner);
     assert.equal(dbTheme.promoBanner.title, 'Khuyến mãi hè');
     assert.equal(dbTheme.promoBanner.discountValue, 20);
+    assert.ok(dbTheme.paymentQr);
     assert.equal(dbTheme.paymentQr.bankId, 'MB');
+    assert.ok(dbTheme.orderWorkflow);
     assert.equal(dbTheme.orderWorkflow.template_id, 'classic_kitchen');
 
     // C. General Settings save (which omits labelPrintConfig) does NOT overwrite or wipe labelPrintConfig
@@ -846,7 +849,7 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
 
     const postGenTheme = (typeof postGenShop.theme_config === 'string'
       ? JSON.parse(postGenShop.theme_config)
-      : postGenShop.theme_config) as Record<string, any>;
+      : postGenShop.theme_config) as ShopThemeConfig;
 
     // Primary color updated by general settings
     assert.equal(postGenTheme.primaryColor, '#10b981');
@@ -856,11 +859,13 @@ test('6. End-to-end PATCH /api/shops persistence with PGlite preserves unrelated
     assert.ok(postGenTheme.labelPrintConfig, 'labelPrintConfig must be preserved');
     assert.equal(postGenTheme.labelPrintConfig.paper_preset, 'cup_sticker_40x30');
     assert.equal(postGenTheme.labelPrintConfig.copies_per_unit, 2);
+    assert.ok(postGenTheme.labelPrintConfig.custom_footer_i18n);
     assert.equal(
       postGenTheme.labelPrintConfig.custom_footer_i18n.vi,
       'Chúc bạn một ngày vui vẻ!'
     );
     // orderWorkflow was also preserved
+    assert.ok(postGenTheme.orderWorkflow);
     assert.equal(postGenTheme.orderWorkflow.template_id, 'classic_kitchen');
 
     // D. Server-side plan enforcement uses the shop owner's plan and rejects

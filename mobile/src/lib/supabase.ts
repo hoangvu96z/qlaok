@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { NativeModules, Platform } from 'react-native';
 import { createApiClient } from './api-client';
+import { resolveMobileApiBaseUrl } from './api-base-url';
 import {
   clearOwnerSession,
   getOwnerAccessToken,
@@ -32,8 +33,6 @@ export function isSupabaseCloudUrl(rawUrl?: string | null): boolean {
  * 4. Production HTTPS server (`https://qlaok.vunph.click`).
  */
 export function resolveApiBaseUrl(): string {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-
   // Extract Metro bundler host IP if available in dev mode
   let metroHostIp: string | null = null;
   try {
@@ -48,42 +47,13 @@ export function resolveApiBaseUrl(): string {
     // ignore NativeModules inspection errors
   }
 
-  if (envUrl) {
-    const isLocalhostEnv =
-      envUrl.includes('localhost') || envUrl.includes('127.0.0.1');
-    if (!isLocalhostEnv) {
-      return envUrl.replace(/\/+$/, '');
-    }
-    // If .env has localhost but we are on a physical phone connected via LAN IP to Metro, swap localhost -> metroHostIp
-    if (metroHostIp) {
-      return envUrl
-        .replace('localhost', metroHostIp)
-        .replace('127.0.0.1', metroHostIp)
-        .replace(/\/+$/, '');
-    }
-    if (Platform.OS === 'android') {
-      return envUrl
-        .replace('localhost', '10.0.2.2')
-        .replace('127.0.0.1', '10.0.2.2')
-        .replace(/\/+$/, '');
-    }
-    return envUrl.replace(/\/+$/, '');
-  }
-
-  if (__DEV__) {
-    if (metroHostIp) {
-      return `http://${metroHostIp}:3000`;
-    }
-    if (Platform.OS === 'android') {
-      return 'http://10.0.2.2:3000';
-    }
-    if (Platform.OS === 'web') {
-      return 'http://localhost:3000';
-    }
-  }
-
-  if (__DEV__) return 'http://localhost:3000';
-  return PRODUCTION_API_URL;
+  return resolveMobileApiBaseUrl({
+    envUrl: process.env.EXPO_PUBLIC_API_URL,
+    isDev: Boolean(__DEV__),
+    platform: Platform.OS,
+    metroHostIp,
+    productionApiUrl: PRODUCTION_API_URL,
+  });
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();

@@ -147,10 +147,43 @@ export interface SharedOrderQuoteResult {
   applied_discount_code?: string;
 }
 
+export function calculateLineManualDiscountAmount(
+  lines: readonly OrderLineItem[]
+): number {
+  let amount = 0;
+
+  for (const line of lines) {
+    const quantity = Math.max(1, Number(line.quantity || 1));
+    const unitPrice = Math.max(
+      0,
+      Number(line.original_unit_price ?? line.unit_price ?? 0)
+    );
+
+    if (
+      line.custom_unit_price !== undefined &&
+      line.custom_unit_price !== null &&
+      Number.isFinite(Number(line.custom_unit_price))
+    ) {
+      const customPrice = Math.max(0, Math.round(Number(line.custom_unit_price)));
+      amount += Math.max(0, unitPrice - customPrice) * quantity;
+    } else if (
+      line.discount_percent !== undefined &&
+      Number(line.discount_percent) > 0
+    ) {
+      const percentage = Math.min(100, Math.max(0, Number(line.discount_percent)));
+      amount += Math.round(unitPrice * (percentage / 100)) * quantity;
+    }
+  }
+
+  return amount;
+}
+
 export function computeSharedOrderQuote(params: {
   lines: OrderLineItem[];
   themeConfig?: ShopThemeConfig | null;
   applyShopPromotions?: boolean;
+  /** Existing promotion total retained when editing an order without recalculation. */
+  preservedPromoDiscountAmount?: number;
   discountCode?: string;
   manualOrderDiscountAmount?: number;
   canApplyManualDiscount?: boolean;
@@ -162,7 +195,6 @@ export function computeSharedOrderQuote(params: {
 
   let subtotalAmount = 0;
   let flashDiscountAmount = 0;
-  let lineManualDiscountAmount = 0;
 
   const flashSale = params.themeConfig?.flashSale;
   const promoBanner = params.themeConfig?.promoBanner;
@@ -206,25 +238,11 @@ export function computeSharedOrderQuote(params: {
       eligibleFlashDiscount += lineFlashDisc;
     }
 
-    if (params.canApplyManualDiscount) {
-      if (
-        line.custom_unit_price !== undefined &&
-        line.custom_unit_price !== null &&
-        Number.isFinite(Number(line.custom_unit_price))
-      ) {
-        const customPrice = Math.max(0, Math.round(Number(line.custom_unit_price)));
-        const diff = Math.max(0, unitPrice - customPrice);
-        lineManualDiscountAmount += diff * qty;
-      } else if (
-        line.discount_percent !== undefined &&
-        Number(line.discount_percent) > 0
-      ) {
-        const pct = Math.min(100, Math.max(0, Number(line.discount_percent)));
-        const diff = Math.round(unitPrice * (pct / 100));
-        lineManualDiscountAmount += diff * qty;
-      }
-    }
   }
+
+  const lineManualDiscountAmount = params.canApplyManualDiscount
+    ? calculateLineManualDiscountAmount(lines)
+    : 0;
 
   if (flashDiscountAmount > 0 && flashSale?.title) {
     appliedPromotions.push(`Flash Sale: ${flashSale.title}`);
@@ -296,10 +314,21 @@ export function computeSharedOrderQuote(params: {
     }
   }
 
-  const promoDiscountAmount = Math.min(
+  const configuredPromoDiscountAmount = Math.min(
     subtotalAmount,
     flashDiscountAmount + promoBannerDiscountAmount
   );
+  let promoDiscountAmount = configuredPromoDiscountAmount;
+  if (params.preservedPromoDiscountAmount !== undefined) {
+    const preservedPromoDiscount = Number(params.preservedPromoDiscountAmount);
+    if (!Number.isFinite(preservedPromoDiscount) || preservedPromoDiscount < 0) {
+      throw new Error('INVALID_DISCOUNT: Số tiền khuyến mãi đã lưu không hợp lệ.');
+    }
+    promoDiscountAmount = Math.min(
+      subtotalAmount,
+      Math.round(preservedPromoDiscount)
+    );
+  }
 
   const rawManualOrderDiscount = params.canApplyManualDiscount
     ? Number(params.manualOrderDiscountAmount || 0)

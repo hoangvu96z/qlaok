@@ -749,10 +749,14 @@ export async function PATCH(req: Request) {
     ];
     let requiresOwnerOrAdmin = false;
     let nonOwnerThemeKeyChanged = false;
+    let nonBankThemeKeySubmitted = false;
+    let bankKeySubmitted = false;
     for (const key of Object.keys(incomingTheme || {})) {
       const changed =
         JSON.stringify(incomingTheme?.[key as keyof ShopThemeConfig]) !==
         JSON.stringify(prevTheme[key as keyof ShopThemeConfig]);
+      if (bankKeys.includes(key)) bankKeySubmitted = true;
+      else nonBankThemeKeySubmitted = true;
       if (ownerOnlyKeys.includes(key)) {
         if (changed) {
           requiresOwnerOrAdmin = true;
@@ -761,8 +765,8 @@ export async function PATCH(req: Request) {
       }
       if (!changed) continue;
       nonOwnerThemeKeyChanged = true;
-      if (bankKeys.includes(key)) requiredPerms.add('settings.bank');
-      else if (promoKeys.includes(key)) requiredPerms.add('promotions.manage');
+      if (promoKeys.includes(key)) requiredPerms.add('promotions.manage');
+      else if (bankKeys.includes(key)) requiredPerms.add('settings.bank');
       else requiredPerms.add('settings.manage');
     }
     const hasExplicitOwnerOnlyKey = Boolean(
@@ -778,8 +782,18 @@ export async function PATCH(req: Request) {
     ) {
       requiresOwnerOrAdmin = true;
     }
-    if (Object.keys(patch).some((key) => key !== 'theme_config') || !requiredPerms.size) {
+    if (Object.keys(patch).some((key) => key !== 'theme_config')) {
       requiredPerms.add('settings.manage');
+    } else if (!requiredPerms.size) {
+      // Nothing changed. A payload that only carries bank keys is still a
+      // bank-settings save (bank-only managers re-saving the payment tab), while
+      // re-sending an unchanged bank block together with general settings must
+      // not escalate to settings.bank.
+      requiredPerms.add(
+        bankKeySubmitted && !nonBankThemeKeySubmitted
+          ? 'settings.bank'
+          : 'settings.manage'
+      );
     }
 
     if (requiresOwnerOrAdmin) {

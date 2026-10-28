@@ -2,10 +2,45 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildMigrationPsqlArgs,
   checksumSql,
   migrateSelfHosted,
   planMigrations,
 } from '../scripts/migrate-self-hosted.mjs';
+
+test('self-hosted migration psql args wrap ordinary SQL in one transaction', () => {
+  assert.deepEqual(
+    buildMigrationPsqlArgs({
+      fullPath: '/migrations/003_orders.sql',
+      sql: 'ALTER TABLE public.orders ADD COLUMN note TEXT;',
+    }),
+    ['--single-transaction', '-f', '/migrations/003_orders.sql']
+  );
+});
+
+test('self-hosted migration psql args do not double-wrap explicit transaction files', () => {
+  assert.deepEqual(
+    buildMigrationPsqlArgs({
+      fullPath: '/migrations/002z_reconcile.sql',
+      sql: '-- historical migration\nBEGIN;\nUPDATE public.payment_transactions SET bank_ref_id = NULL;\nCOMMIT;\n',
+    }),
+    ['-f', '/migrations/002z_reconcile.sql']
+  );
+});
+
+test('self-hosted migration psql args wrap DO blocks that are not top-level transactions', () => {
+  assert.deepEqual(
+    buildMigrationPsqlArgs({
+      fullPath: '/migrations/004_guard.sql',
+      sql: `DO $$
+BEGIN
+  PERFORM 1;
+END;
+$$;`,
+    }),
+    ['--single-transaction', '-f', '/migrations/004_guard.sql']
+  );
+});
 
 test('self-hosted migration planning applies missing migrations in filename order', () => {
   const first = { filename: '002_second.sql', checksum: 'b'.repeat(64) };

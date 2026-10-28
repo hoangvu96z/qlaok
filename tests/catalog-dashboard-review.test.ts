@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildCategoryNameI18n,
+  getCategoryRenameAction,
+  isCurrentCatalogRequest,
   parseCatalogApiResponse,
   resolveNextCatalogData,
   shouldShowCatalogEmptyState,
   shouldShowCatalogLoadErrorBanner,
   shouldShowCatalogLoadErrorState,
 } from '@/lib/dashboard-catalog';
-import type { CatalogItem, Category } from '@/types/qlaok';
+import type { CatalogItem, Category, I18nText } from '@/types/qlaok';
 
 const sampleCategory: Category = {
   id: 'cat-1',
@@ -30,6 +33,38 @@ const sampleItem: CatalogItem = {
   view_count: 0,
   sort_order: 1,
 };
+
+test('isCurrentCatalogRequest ignores stale responses from an earlier request or shop', () => {
+  assert.equal(
+    isCurrentCatalogRequest({
+      requestShopId: 'shop-a',
+      currentShopId: 'shop-b',
+      requestId: 2,
+      currentRequestId: 2,
+    }),
+    false,
+    'A response from the previously active shop must be discarded'
+  );
+  assert.equal(
+    isCurrentCatalogRequest({
+      requestShopId: 'shop-a',
+      currentShopId: 'shop-a',
+      requestId: 1,
+      currentRequestId: 2,
+    }),
+    false,
+    'An older request for the same shop must be discarded after a newer refresh'
+  );
+  assert.equal(
+    isCurrentCatalogRequest({
+      requestShopId: 'shop-a',
+      currentShopId: 'shop-a',
+      requestId: 2,
+      currentRequestId: 2,
+    }),
+    true
+  );
+});
 
 test('parseCatalogApiResponse classifies success vs failure locale-independently without returning raw error fields', () => {
   // 1. Non-2xx with technical server error payload: classifies as failure, never returns raw error fields
@@ -302,6 +337,91 @@ test('catalog pagination clamps page correctly when items change or are deleted'
   );
 });
 
+test('buildCategoryNameI18n handles translation fallback and prevents stale translation leakage', () => {
+  // 1. Translation fallback when AI fails or returns null/undefined/empty
+  const fallbackNull = buildCategoryNameI18n('Món Nước', null);
+  assert.deepEqual(
+    fallbackNull,
+    { vi: 'Món Nước', en: 'Món Nước' },
+    'Null translation must fall back to { vi: newName, en: newName }'
+  );
+
+  const fallbackUndef = buildCategoryNameI18n('Món Nước');
+  assert.deepEqual(
+    fallbackUndef,
+    { vi: 'Món Nước', en: 'Món Nước' },
+    'Undefined translation must fall back to { vi: newName, en: newName }'
+  );
+
+  const fallbackEmpty = buildCategoryNameI18n('  Món Nước  ', {});
+  assert.deepEqual(
+    fallbackEmpty,
+    { vi: 'Món Nước', en: 'Món Nước' },
+    'Empty translation map must trim name and fall back to { vi: newName, en: newName }'
+  );
+
+  const fallbackBlankEn = buildCategoryNameI18n('Món Nước', { en: '   ' });
+  assert.deepEqual(
+    fallbackBlankEn,
+    { vi: 'Món Nước', en: 'Món Nước' },
+    'Blank en translation must fall back to newName for en'
+  );
+
+  // 2. Fresh translation adoption
+  const freshWithTranslations = buildCategoryNameI18n('Món Nước', {
+    en: 'Beverages',
+    ko: '음료',
+    ja: '飲み物',
+  });
+  assert.deepEqual(
+    freshWithTranslations,
+    { vi: 'Món Nước', en: 'Beverages', ko: '음료', ja: '飲み物' },
+    'Valid fresh translations must be adopted with trimmed Vietnamese name'
+  );
+
+  // 3. Stale-translation avoidance
+  // Given an existing category that previously had old translations:
+  const oldCategoryNameI18n: I18nText = {
+    vi: 'Cà phê',
+    en: 'Old Coffee',
+    ja: '古いコーヒー',
+    ko: '오래된 커피',
+  };
+  // When renaming to 'Trà Đào' and translation fails:
+  const renameFallback = buildCategoryNameI18n('Trà Đào', null);
+  assert.deepEqual(
+    renameFallback,
+    { vi: 'Trà Đào', en: 'Trà Đào' },
+    'Renaming with translation fallback must not retain old category translations'
+  );
+  assert.equal('ja' in renameFallback, false, 'Must not reuse stale ja from old category');
+  assert.equal('ko' in renameFallback, false, 'Must not reuse stale ko from old category');
+  assert.notEqual(renameFallback.en, oldCategoryNameI18n.en, 'Must not keep old English name');
+
+  // When renaming to 'Trà Đào' with fresh AI translation that only translated en:
+  const renameFreshEn = buildCategoryNameI18n('Trà Đào', { en: 'Peach Tea' });
+  assert.deepEqual(
+    renameFreshEn,
+    { vi: 'Trà Đào', en: 'Peach Tea' },
+    'Must strictly use fresh translation and not inherit stale translations from old category'
+  );
+  assert.equal('ja' in renameFreshEn, false, 'Must not carry over previous ja translation');
+});
+
+test('getCategoryRenameAction validates blank names and detects unchanged names as no-op', () => {
+  // Blank inputs: whitespace-only or empty
+  assert.equal(getCategoryRenameAction('Cà phê', ''), 'invalid_blank');
+  assert.equal(getCategoryRenameAction('Cà phê', '   '), 'invalid_blank');
+
+  // Unchanged name (with or without surrounding whitespace) -> noop
+  assert.equal(getCategoryRenameAction('Cà phê', 'Cà phê'), 'noop');
+  assert.equal(getCategoryRenameAction('Cà phê', '  Cà phê  '), 'noop');
+
+  // Valid new name -> save
+  assert.equal(getCategoryRenameAction('Cà phê', 'Cà phê muối'), 'save');
+  assert.equal(getCategoryRenameAction('Cà phê', '  Trà sữa  '), 'save');
+});
+
 test('QuickItemRow and DashboardCatalogPage render accessible row and page selection checkboxes', async () => {
   await import('./tsx-review-loader.mjs');
   const { registerHooks } = await import('node:module');
@@ -312,7 +432,7 @@ test('QuickItemRow and DashboardCatalogPage render accessible row and page selec
           format: 'module',
           shortCircuit: true,
           source:
-            "export function useDashboard() { return { activeShop: { id: 'shop-test', name: 'Test Shop', vertical: 'fnb', membership: { id: 'mem-1', shop_id: 'shop-test', user_id: 'user-1', role: 'owner', status: 'active', permissions: ['catalog.manage', 'inventory.adjust', 'inventory.view'] } }, profile: { id: 'user-1', plan: 'free' } }; }",
+            "export function useDashboard() { const perms = globalThis.__TEST_DASHBOARD_PERMISSIONS__ || ['catalog.manage', 'inventory.adjust', 'inventory.view']; const role = perms.includes('catalog.manage') ? 'owner' : 'cashier'; const mem = { id: 'mem-1', shop_id: 'shop-test', user_id: 'user-1', role, is_active: true, permissions: perms }; return { activeShop: { id: 'shop-test', name: 'Test Shop', vertical: 'fnb', membership: mem }, activeMembership: mem, profile: { id: 'user-1', plan: 'free' } }; }",
         };
       }
       return next(url, context);
@@ -327,6 +447,8 @@ test('QuickItemRow and DashboardCatalogPage render accessible row and page selec
     createElement(QuickItemRow, {
       item: sampleItem,
       selected: false,
+      canManageCatalog: true,
+      canAdjustInventory: true,
       onToggleSelect: () => {},
       onToggleAvailable: async () => true,
       onUpdatePrice: async () => true,
@@ -366,6 +488,8 @@ test('QuickItemRow and DashboardCatalogPage render accessible row and page selec
       item: sampleItem,
       selected: true,
       selectionDisabled: true,
+      canManageCatalog: true,
+      canAdjustInventory: true,
       onToggleSelect: () => {},
       onToggleAvailable: async () => true,
       onUpdatePrice: async () => true,
@@ -404,5 +528,28 @@ test('QuickItemRow and DashboardCatalogPage render accessible row and page selec
   assert.ok(
     pageHtml.includes('data-testid="catalog-loading-state"'),
     'DashboardCatalogPage must render initial loading state while fetching catalog data'
+  );
+
+  // Permission gate: category mutation affordances (creation form) must be visible to catalog managers
+  assert.ok(
+    pageHtml.includes('Thêm danh mục') || pageHtml.includes('Add Category'),
+    'DashboardCatalogPage must render Add Category affordance for members with catalog.manage'
+  );
+
+  // Permission gate: inventory-only members must NOT see structural mutation controls
+  // @ts-expect-error test hook override
+  globalThis.__TEST_DASHBOARD_PERMISSIONS__ = ['inventory.adjust', 'inventory.view'];
+  const inventoryOnlyPageHtml = renderToStaticMarkup(createElement(DashboardCatalogPage));
+  // @ts-expect-error test hook cleanup
+  delete globalThis.__TEST_DASHBOARD_PERMISSIONS__;
+
+  assert.ok(
+    !inventoryOnlyPageHtml.includes('Thêm danh mục') &&
+      !inventoryOnlyPageHtml.includes('Add Category'),
+    'DashboardCatalogPage must NOT render category create control for inventory-only members'
+  );
+  assert.ok(
+    inventoryOnlyPageHtml.includes('data-testid="catalog-loading-state"'),
+    'Inventory-only members must still see the standard catalog loading state and menu navigation'
   );
 });

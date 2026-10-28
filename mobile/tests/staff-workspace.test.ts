@@ -573,6 +573,11 @@ test('App session routing: waits for both owner and staff boot, separates StaffW
 
   // 5. Explicit staff sign-out clears staff session AND cleans coexisting owner session via unregisterPushOnLogout before returning to login
   const callOrder: string[] = [];
+  const pushState = pushNotificationsModule.getSharedMobilePushRegistrationState();
+  pushState.expoPushToken = 'ExponentPushToken[ownerLogoutCleanup]';
+  pushState.lastRegisteredScope =
+    'owner-supabase-uuid-1:shop-a:ExponentPushToken[ownerLogoutCleanup]:vi';
+  pushState.registeredShopIds.add('shop-a');
   const cleanupResult = await executeStaffSignOutCleanup({
     clearStaff: async () => {
       callOrder.push('clearStaffSession');

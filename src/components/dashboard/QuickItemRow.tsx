@@ -24,6 +24,8 @@ import {
 
 export interface QuickItemRowProps {
   item: CatalogItem;
+  canManageCatalog: boolean;
+  canAdjustInventory: boolean;
   selected?: boolean;
   onToggleSelect?: (itemId: string, nextSelected: boolean) => void;
   selectionDisabled?: boolean;
@@ -39,6 +41,8 @@ export interface QuickItemRowProps {
 
 export function QuickItemRow({
   item,
+  canManageCatalog,
+  canAdjustInventory,
   selected = false,
   onToggleSelect,
   selectionDisabled = false,
@@ -55,10 +59,20 @@ export function QuickItemRow({
   const [priceError, setPriceError] = useState<string | null>(null);
   const [savingPrice, setSavingPrice] = useState(false);
   const [priceSaved, setPriceSaved] = useState(false);
+  const priceSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stockSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const uploadingPhotoRef = useRef(false);
   const [photoFeedback, setPhotoFeedback] = useState<FeedbackToastMessage | null>(null);
   const [imgBroken, setImgBroken] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (priceSavedTimerRef.current) clearTimeout(priceSavedTimerRef.current);
+      if (stockSavedTimerRef.current) clearTimeout(stockSavedTimerRef.current);
+    },
+    []
+  );
 
   const [stockInput, setStockInput] = useState(
     item.stock_quantity === null || item.stock_quantity === undefined
@@ -116,7 +130,11 @@ export function QuickItemRow({
     }
     setPriceInput(String(nextPrice));
     setPriceSaved(true);
-    setTimeout(() => setPriceSaved(false), 1800);
+    if (priceSavedTimerRef.current) clearTimeout(priceSavedTimerRef.current);
+    priceSavedTimerRef.current = setTimeout(() => {
+      priceSavedTimerRef.current = null;
+      setPriceSaved(false);
+    }, 1800);
   };
 
   const handleStockBlurOrEnter = async () => {
@@ -152,7 +170,11 @@ export function QuickItemRow({
     }
     setStockInput(nextStock === null ? '' : String(nextStock));
     setStockSaved(true);
-    setTimeout(() => setStockSaved(false), 1800);
+    if (stockSavedTimerRef.current) clearTimeout(stockSavedTimerRef.current);
+    stockSavedTimerRef.current = setTimeout(() => {
+      stockSavedTimerRef.current = null;
+      setStockSaved(false);
+    }, 1800);
   };
 
   const handleDirectPhotoSelect = async (
@@ -394,7 +416,7 @@ export function QuickItemRow({
         {/* Right Section: Availability + Inline Price & Stock + Action Buttons */}
         <div className="flex items-center justify-between lg:justify-end gap-2 sm:gap-3 shrink-0 flex-wrap sm:flex-nowrap border-t border-slate-100 pt-2 lg:border-t-0 lg:pt-0">
           {/* Availability Toggle Switch */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          {canAdjustInventory && <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               role="switch"
@@ -424,9 +446,10 @@ export function QuickItemRow({
                 ? tx('Còn hàng', 'Available')
                 : tx('Tạm hết', 'Sold out')}
             </span>
-          </div>
+          </div>}
 
           {/* Quick Price Input */}
+          {canManageCatalog && (
           <div className="flex items-center gap-1 shrink-0">
             <label
               htmlFor={`price-${item.id}`}
@@ -491,9 +514,10 @@ export function QuickItemRow({
               </span>
             )}
           </div>
+          )}
 
           {/* Quick Stock Input */}
-          {onUpdateStock && (
+          {canAdjustInventory && onUpdateStock && (
             <div className="flex items-center gap-1 shrink-0">
               <label
                 htmlFor={`stock-${item.id}`}
@@ -568,7 +592,7 @@ export function QuickItemRow({
           {/* Action Buttons */}
           <div className="flex items-center gap-1 shrink-0">
             {/* Featured toggle */}
-            <button
+            {canManageCatalog && <button
               type="button"
               onClick={() => onToggleFeatured(item, !item.is_featured)}
               className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border transition-colors ${
@@ -583,10 +607,10 @@ export function QuickItemRow({
               aria-label={tx('Nổi bật', 'Featured')}
             >
               <Sparkles className="h-3.5 w-3.5" />
-            </button>
+            </button>}
 
             {/* Options & Translations */}
-            <button
+            {canManageCatalog && <button
               type="button"
               onClick={() => onEditTranslations(item)}
               className="inline-flex h-8 items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
@@ -594,9 +618,10 @@ export function QuickItemRow({
             >
               <Languages className="h-3.5 w-3.5" />
               <span className="hidden xl:inline">{tx('Tùy chọn', 'Options')}</span>
-            </button>
+            </button>}
 
             {/* Photo upload action */}
+            {canManageCatalog && (
             <label
               className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 ${
                 uploadingPhoto ? 'pointer-events-none cursor-wait opacity-60' : 'cursor-pointer'
@@ -619,8 +644,10 @@ export function QuickItemRow({
                 onChange={handleDirectPhotoSelect}
               />
             </label>
+            )}
 
             {/* Delete button */}
+            {canManageCatalog && (
             <button
               type="button"
               onClick={() => onDelete(item.id)}
@@ -630,6 +657,7 @@ export function QuickItemRow({
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
+            )}
           </div>
         </div>
       </div>

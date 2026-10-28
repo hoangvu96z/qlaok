@@ -46,7 +46,7 @@ export const DASHBOARD_NAV_REQUIREMENTS: Record<string, DashboardNavRequirement>
     anyOf: ['orders.view', 'reports.view', 'settings.manage'],
   },
   '/dashboard/posts': { anyOf: ['promotions.manage'] },
-  '/dashboard/settings': { anyOf: ['settings.manage'] },
+  '/dashboard/settings': { anyOf: ['settings.manage', 'settings.bank'] },
   '/dashboard/billing': { ownerOnly: true },
 };
 

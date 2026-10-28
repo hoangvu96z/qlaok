@@ -597,6 +597,50 @@ test('/api/ai/ocr-menu requires auth and gates real OCR by plan allowAiOcr', asy
   assert.equal(allowed.status, 400);
 });
 
+test('/api/ai/ocr-menu rejects malformed and oversized input before OCR/AI processing', async () => {
+  profilePlan = 'premium';
+
+  const invalidJson = await ocrPost(
+    new Request('http://localhost/api/ai/ocr-menu', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`,
+      },
+      body: '{"imageBase64":',
+    })
+  );
+  assert.equal(invalidJson.status, 400);
+  assert.equal((await invalidJson.json()).code, 'INVALID_JSON');
+
+  const invalidImage = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, { imageBase64: 'not-base64' })
+  );
+  assert.equal(invalidImage.status, 400);
+  assert.equal((await invalidImage.json()).code, 'INVALID_OCR_INPUT');
+
+  const oversizedText = await ocrPost(
+    post('/api/ai/ocr-menu', ownerToken, {
+      rawOcrText: 'x'.repeat(20_001),
+    })
+  );
+  assert.equal(oversizedText.status, 413);
+  assert.equal((await oversizedText.json()).code, 'OCR_REQUEST_TOO_LARGE');
+
+  const oversizedBody = await ocrPost(
+    new Request('http://localhost/api/ai/ocr-menu', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`,
+      },
+      body: JSON.stringify({ rawOcrText: 'x'.repeat(8 * 1024 * 1024) }),
+    })
+  );
+  assert.equal(oversizedBody.status, 413);
+  assert.equal((await oversizedBody.json()).code, 'OCR_REQUEST_TOO_LARGE');
+});
+
 test('/api/ai/ocr-menu rate limits at 10 requests per window', async () => {
   profilePlan = 'free';
   for (let i = 0; i < AI_RATE_LIMITS.ocr.max; i += 1) {

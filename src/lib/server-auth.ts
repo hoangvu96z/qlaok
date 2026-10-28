@@ -22,6 +22,8 @@ import {
 import type { Profile, ShopMembership, ShopPermission } from '@/types/qlaok';
 
 export const SESSION_COOKIE_NAME = 'qlaok_session';
+const DEVELOPMENT_SESSION_SIGNING_SECRET = crypto.randomBytes(32).toString('base64url');
+let warnedAboutDevelopmentSessionSecret = false;
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export const POSTGREST_JWT_DEFAULT_TTL_SECONDS = 60 * 60; // 1 hour
 export const POSTGREST_JWT_ISSUER = 'qlaok-postgrest';
@@ -74,26 +76,23 @@ export function isShopBoundStaffSession(
 }
 
 export function isServerSigningSecretConfigured(): boolean {
-  const configured =
-    process.env.SESSION_SECRET ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.PAYMENT_WEBHOOK_SECRET;
-  return Boolean(configured && configured.trim().length >= 16);
+  const configured = process.env.SESSION_SECRET?.trim() || '';
+  return configured.length >= 16;
 }
 
 function getSigningSecret(): string {
-  const configured =
-    process.env.SESSION_SECRET ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.PAYMENT_WEBHOOK_SECRET;
+  const configured = process.env.SESSION_SECRET;
   if (configured && configured.trim().length >= 16) {
     return configured.trim();
   }
   if (process.env.NODE_ENV === 'production') {
     throw new Error('SESSION_SECRET (at least 16 characters) is required in production.');
   }
-  // Deterministic fallback for local dev/test environments without SESSION_SECRET
-  return 'qlaok-server-hmac-secret-key-v2-do-not-share-in-client';
+  if (!warnedAboutDevelopmentSessionSecret) {
+    console.warn('SESSION_SECRET is missing or too short; using a process-local random development secret.');
+    warnedAboutDevelopmentSessionSecret = true;
+  }
+  return DEVELOPMENT_SESSION_SIGNING_SECRET;
 }
 
 function signBase64Url(input: string, secret: string): string {
@@ -654,13 +653,11 @@ export async function requireSuperAdmin(req: Request): Promise<
   try {
     user = await verifyRequestUser(req);
   } catch (err) {
+    console.error('[auth] Super-admin session verification failed', err);
     return {
       errorResponse: NextResponse.json(
         {
-          error:
-            err instanceof Error
-              ? err.message
-              : 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
+          error: 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
           code: 'SERVER_AUTH_MISCONFIGURED',
         },
         { status: 500 }
@@ -1044,6 +1041,48 @@ const AUDIT_LOG_FILE = path.join(
   '.local-db',
   'admin-audit.log.jsonl'
 );
+const MAX_AUDIT_LOG_BYTES = 5 * 1024 * 1024;
+
+function appendPrivateAuditRecord(
+  targetFile: string,
+  payload: Record<string, unknown>,
+  label: string
+): void {
+  let fd: number | null = null;
+  try {
+    const dir = path.dirname(targetFile);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+
+    if (fs.existsSync(targetFile) && fs.statSync(targetFile).size >= MAX_AUDIT_LOG_BYTES) {
+      const rotatedFile = `${targetFile}.1`;
+      if (fs.existsSync(rotatedFile)) fs.unlinkSync(rotatedFile);
+      fs.renameSync(targetFile, rotatedFile);
+      fs.chmodSync(rotatedFile, 0o600);
+    }
+
+    fd = fs.openSync(
+      targetFile,
+      fs.constants.O_WRONLY |
+        fs.constants.O_APPEND |
+        fs.constants.O_CREAT |
+        (fs.constants.O_NOFOLLOW || 0),
+      0o600
+    );
+    fs.fchmodSync(fd, 0o600);
+    fs.writeSync(fd, `${JSON.stringify(payload)}\n`, undefined, 'utf8');
+  } catch (error) {
+    console.error(`Failed to append ${label} audit record:`, error);
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (error) {
+        console.error(`Failed to close ${label} audit log:`, error);
+      }
+    }
+  }
+}
 
 export function recordAdminAuditLog(entry: {
   actorId: string;
@@ -1052,18 +1091,38 @@ export function recordAdminAuditLog(entry: {
   targetId?: string;
   details?: Record<string, unknown>;
 }): void {
+  appendPrivateAuditRecord(
+    AUDIT_LOG_FILE,
+    { timestamp: new Date().toISOString(), ...entry },
+    'admin'
+  );
+}
+
+export function readAdminAuditLog(limit = 200): Record<string, unknown>[] {
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(500, Math.max(1, Math.floor(limit)))
+    : 200;
   try {
-    const dir = path.dirname(AUDIT_LOG_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    const lines = fs
+      .readFileSync(AUDIT_LOG_FILE, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .slice(-safeLimit);
+    return lines.flatMap((line) => {
+      try {
+        const entry = JSON.parse(line) as unknown;
+        return entry && typeof entry === 'object' && !Array.isArray(entry)
+          ? [entry as Record<string, unknown>]
+          : [];
+      } catch {
+        return [];
+      }
+    }).reverse();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.error('Failed to read admin audit log:', error);
     }
-    const payload = {
-      timestamp: new Date().toISOString(),
-      ...entry,
-    };
-    fs.appendFileSync(AUDIT_LOG_FILE, `${JSON.stringify(payload)}\n`, 'utf8');
-  } catch {
-    // ignore fs write error in read-only containers
+    return [];
   }
 }
 
@@ -1089,22 +1148,10 @@ export function recordOrderAuditLog(entry: {
   after?: Record<string, unknown>;
   details?: Record<string, unknown>;
 }): void {
-  try {
-    const targetFile = testOrderAuditLogFileOverride || ORDER_AUDIT_LOG_FILE;
-    const dir = path.dirname(targetFile);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const payload = {
-      timestamp: new Date().toISOString(),
-      ...entry,
-    };
-    fs.appendFileSync(
-      targetFile,
-      `${JSON.stringify(payload)}\n`,
-      'utf8'
-    );
-  } catch {
-    // ignore fs write error in read-only containers
-  }
+  const targetFile = testOrderAuditLogFileOverride || ORDER_AUDIT_LOG_FILE;
+  appendPrivateAuditRecord(
+    targetFile,
+    { timestamp: new Date().toISOString(), ...entry },
+    'order'
+  );
 }

@@ -4,6 +4,13 @@ import assert from "node:assert/strict";
 const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:3000";
 const LOCALES = ["vi", "en", "ko", "ja", "zh"];
 
+// Optional Super Admin session (minted through Zitadel on the test server).
+// Only tests that call Super-Admin-only endpoints need it; without it those
+// checks are reported as skipped instead of silently passing.
+const SUPER_ADMIN_TOKEN = (process.env.E2E_SUPER_ADMIN_TOKEN || "").trim();
+// Provider webhook prerequisites for the SaaS billing flow.
+const WEBHOOK_SECRET = (process.env.PAYMENT_WEBHOOK_SECRET || "").trim();
+
 let cachedAccessToken = null;
 
 async function ensureAccessToken() {
@@ -35,18 +42,43 @@ async function fetchJson(path, options = {}) {
   return { status: res.status, data };
 }
 
-test("1. Health Check API & Live Supabase Connection (/api/health)", async () => {
-  const { status, data } = await fetchJson("/api/health");
+test("1. Health Check API (/api/health)", async () => {
+  // Anonymous callers only receive the minimal liveness body; counts and
+  // environment diagnostics are Super-Admin-only (see /api/health route).
+  const { status, data } = await fetchJson("/api/health", {
+    unauthenticated: true,
+  });
   assert.equal(status, 200);
   assert.equal(data.status, "ok");
   assert.equal(data.service, "qlaok-backend");
-  assert.equal(data.dataSource, "supabase");
-  assert.equal(data.environment.supabaseConfigured, true);
-  assert.equal(data.environment.supabaseTablesReady, true);
-  assert.equal(data.counts.provinces, 34, "Should have all 34 Vietnam provinces");
-  assert.ok(data.counts.shops >= 3, "Should have at least 3 seeded demo shops");
-  assert.ok(data.counts.categories >= 6, "Should have seeded categories");
-  assert.ok(data.counts.items >= 10, "Should have seeded items");
+  assert.equal(typeof data.timestamp, "string");
+  assert.deepEqual(
+    Object.keys(data).sort(),
+    ["service", "status", "timestamp"],
+    "Public health payload must not leak diagnostics"
+  );
+  assert.equal("dataSource" in data, false);
+  assert.equal("counts" in data, false);
+
+  if (!SUPER_ADMIN_TOKEN) {
+    console.log(
+      "SKIP /api/health diagnostics: set E2E_SUPER_ADMIN_TOKEN to verify " +
+        "dataSource/environment/counts with a Super Admin session."
+    );
+    return;
+  }
+
+  const admin = await fetchJson("/api/health", {
+    headers: { Authorization: `Bearer ${SUPER_ADMIN_TOKEN}` },
+  });
+  assert.equal(admin.status, 200);
+  assert.equal(admin.data.dataSource, "self-hosted-postgres");
+  assert.equal(admin.data.environment.postgresConfigured, true);
+  assert.equal(admin.data.environment.postgresTablesReady, true);
+  assert.equal(admin.data.counts.provinces, 34, "Should have all 34 Vietnam provinces");
+  assert.ok(admin.data.counts.shops >= 3, "Should have at least 3 seeded demo shops");
+  assert.ok(admin.data.counts.categories >= 6, "Should have seeded categories");
+  assert.ok(admin.data.counts.items >= 10, "Should have seeded items");
 });
 
 
@@ -333,11 +365,10 @@ test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment
 
   // Simulate webhook callback from bank transfer (server must have PAYMENT_WEBHOOK_SECRET configured;
   // there is no hardcoded fallback secret).
-  const webhookSecret = process.env.PAYMENT_WEBHOOK_SECRET || "";
-  assert.ok(webhookSecret, "PAYMENT_WEBHOOK_SECRET must be set for the e2e webhook test");
+  assert.ok(WEBHOOK_SECRET, "PAYMENT_WEBHOOK_SECRET must be set for the e2e webhook test");
   const webhook = await fetchJson("/api/webhooks/payment", {
     method: "POST",
-    headers: { "x-webhook-secret": webhookSecret },
+    headers: { "x-webhook-secret": WEBHOOK_SECRET },
     body: JSON.stringify({
       content: `CHUYEN KHOAN ${orderCode} NANG CAP GOI`,
       referenceCode: "FT2628799999",
@@ -401,44 +432,19 @@ test("11. PWA Manifest, Icon & Service Worker (/manifest.webmanifest, /icon.svg,
   assert.ok(swText.includes("qlaok-pwa-v1"));
 });
 
-test("12. Mobile Owner App Direct Supabase Flow (Shops, Provinces, Menu Toggle & Analytics)", async () => {
-  const { createClient } = await import("@supabase/supabase-js");
-  const sb = createClient(
-    "https://kftmrjmmympztzztunxf.supabase.co",
-    "sb_publishable_BpW2kqz1l3LfN8MFvngWLw_2YxmIgBv"
-  );
+test("12. Mobile owner app reads shops and catalog through Qlaok APIs", async () => {
+  const shops = await fetchJson("/api/shops?slug=pho-hoi-an", {
+    unauthenticated: true,
+  });
+  assert.equal(shops.status, 200);
+  assert.equal(shops.data.shop.slug, "pho-hoi-an");
 
-  const { data: provinces, error: provErr } = await sb
-    .from("provinces")
-    .select("code, name, region")
-    .order("sort_order", { ascending: true });
-  assert.equal(provErr, null);
-  assert.equal(provinces.length, 34, "Mobile app queries all 34 Vietnam provinces");
-
-  const { data: items, error: itemErr } = await sb
-    .from("items")
-    .select("id, price, is_available")
-    .eq("shop_id", "shop-fnb-001")
-    .limit(1);
-  assert.equal(itemErr, null);
-  assert.equal(items.length, 1);
-
-  const targetItem = items[0];
-  const toggledVal = !targetItem.is_available;
-
-  // Toggle availability like mobile Switch
-  const { error: toggleErr } = await sb
-    .from("items")
-    .update({ is_available: toggledVal })
-    .eq("id", targetItem.id);
-  assert.equal(toggleErr, null);
-
-  // Restore original state
-  const { error: restoreErr } = await sb
-    .from("items")
-    .update({ is_available: targetItem.is_available })
-    .eq("id", targetItem.id);
-  assert.equal(restoreErr, null);
+  const catalog = await fetchJson("/api/catalog?shopId=shop-fnb-001", {
+    unauthenticated: true,
+  });
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.data.shop.id, "shop-fnb-001");
+  assert.ok(Array.isArray(catalog.data.items));
 });
 
 test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Analytics (/api/orders)", async () => {

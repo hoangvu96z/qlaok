@@ -295,7 +295,7 @@ test('syncMobilePushRegistration retries after failed registration and unregiste
   ]);
 });
 
-test('unregisterPushOnLogout attempts cleanup before signOut and still clears local session when DELETE fails with 401', async () => {
+test('unregisterPushOnLogout attempts cleanup before signOut and keeps push state when DELETE fails with 401', async () => {
   const state = createMobilePushRegistrationState();
   state.expoPushToken = 'ExponentPushToken[invalidAccess401]';
   state.lastRegisteredScope =
@@ -328,9 +328,12 @@ test('unregisterPushOnLogout attempts cleanup before signOut and still clears lo
   assert.equal(result.token, 'ExponentPushToken[invalidAccess401]');
   assert.equal(result.signOutError, null);
   assert.equal(hasLocalSession, false);
-  assert.equal(state.expoPushToken, null);
-  assert.equal(state.lastRegisteredScope, '');
-  assert.equal(state.registeredShopIds.size, 0);
+  assert.equal(state.expoPushToken, 'ExponentPushToken[invalidAccess401]');
+  assert.equal(
+    state.lastRegisteredScope,
+    'user-1:shop-a:ExponentPushToken[invalidAccess401]:vi'
+  );
+  assert.equal(state.registeredShopIds.has('shop-a'), true);
   assert.deepEqual(events, [
     'DELETE:/api/push-tokens:session=true',
     'signOut:clearLocalSession',

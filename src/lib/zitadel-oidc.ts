@@ -247,6 +247,9 @@ export function isValidZitadelSub(sub: unknown): sub is string {
   );
 }
 
+const DEVELOPMENT_OIDC_SIGNING_SECRET = crypto.randomBytes(32).toString('base64url');
+let warnedAboutDevelopmentOidcSecret = false;
+
 function getOidcSigningSecret(): string {
   const configured = process.env.SESSION_SECRET;
   if (configured && configured.trim().length >= 16) {
@@ -262,7 +265,11 @@ function getOidcSigningSecret(): string {
       500
     );
   }
-  return 'qlaok-local-dev-oidc-tx-secret-do-not-use-in-prod';
+  if (!warnedAboutDevelopmentOidcSecret) {
+    console.warn('SESSION_SECRET is missing or too short; using a process-local random development OIDC secret.');
+    warnedAboutDevelopmentOidcSecret = true;
+  }
+  return DEVELOPMENT_OIDC_SIGNING_SECRET;
 }
 
 export function generateRandomUrlSafe(byteLength = 32): string {

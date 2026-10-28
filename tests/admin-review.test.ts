@@ -33,6 +33,9 @@ const {
 const { GET: healthGet } = await import('@/app/api/health/route');
 const {
   issueSessionToken,
+  isServerSigningSecretConfigured,
+  readAdminAuditLog,
+  recordAdminAuditLog,
   requireSuperAdmin,
   requireAuthenticatedUser,
 } = await import('@/lib/server-auth');
@@ -88,14 +91,40 @@ test('requireSupabaseServiceRoleClient rejects missing, publishable, and anon ro
   delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 });
 
+test('admin audit JSONL files are private, rotate at the size limit, and can be read newest-first', () => {
+  const logPath = path.join(fixture, '.local-db', 'admin-audit.log.jsonl');
+  recordAdminAuditLog({
+    actorId: 'admin-fixture',
+    actorEmail: 'admin@example.test',
+    action: 'first-action',
+  });
+  assert.equal(fs.statSync(logPath).mode & 0o777, 0o600);
+  assert.equal(readAdminAuditLog(1)[0]?.action, 'first-action');
+
+  fs.writeFileSync(logPath, 'x'.repeat(5 * 1024 * 1024), { mode: 0o600 });
+  recordAdminAuditLog({
+    actorId: 'admin-fixture',
+    actorEmail: 'admin@example.test',
+    action: 'after-rotation',
+  });
+  assert.equal(fs.statSync(`${logPath}.1`).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(logPath).mode & 0o777, 0o600);
+  assert.equal(readAdminAuditLog(1)[0]?.action, 'after-rotation');
+});
+
 test('requireSuperAdmin and requireAuthenticatedUser return structured 500 when production SESSION_SECRET is missing', async () => {
   const prevEnv = process.env.NODE_ENV;
   (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
   delete process.env.SESSION_SECRET;
-  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-  delete process.env.PAYMENT_WEBHOOK_SECRET;
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key-that-must-not-sign-sessions';
+  process.env.PAYMENT_WEBHOOK_SECRET = 'payment-webhook-key-that-must-not-sign-sessions';
 
   try {
+    assert.equal(
+      isServerSigningSecretConfigured(),
+      false,
+      'service and webhook secrets must never substitute for SESSION_SECRET'
+    );
     const req = new Request('http://localhost/api/admin', {
       headers: { Authorization: 'Bearer fake.token' },
     });
@@ -113,6 +142,8 @@ test('requireSuperAdmin and requireAuthenticatedUser return structured 500 when 
     assert.equal(adminBody.code, 'SERVER_AUTH_MISCONFIGURED');
   } finally {
     (process.env as Record<string, string | undefined>).NODE_ENV = prevEnv;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
   }
 });
 
@@ -161,6 +192,54 @@ test('/api/admin enforces Super Admin authentication and rejects missing service
     delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
   }
+});
+
+test('/api/admin routes owner password recovery through Zitadel instead of local credentials', async () => {
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+  setSupabaseDbClientForTests(null);
+
+  const resetResponse = await adminPost(
+    new Request('http://localhost/api/admin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        action: 'reset_owner_password',
+        ownerId: 'owner-1',
+        email: 'owner@example.test',
+        newPassword: 'ignored-password',
+      }),
+    })
+  );
+  assert.equal(resetResponse.status, 410);
+  assert.equal(
+    (await resetResponse.json()).code,
+    'OWNER_PASSWORD_RESET_VIA_OIDC'
+  );
+
+  const adminPageSource = fs.readFileSync(
+    path.join(originalCwd, 'src/app/(admin)/admin/page.tsx'),
+    'utf8'
+  );
+  const adminRouteSource = fs.readFileSync(
+    path.join(originalCwd, 'src/app/api/admin/route.ts'),
+    'utf8'
+  );
+  const credentialSource = fs.readFileSync(
+    path.join(originalCwd, 'src/lib/auth-credentials.ts'),
+    'utf8'
+  );
+  assert.doesNotMatch(adminPageSource, /newOwnerPassword|handleResetOwnerPassword/);
+  assert.match(adminPageSource, /Owners sign in and recover passwords through Zitadel/);
+  assert.doesNotMatch(adminRouteSource, /readCredentials|writeCredentials/);
+  assert.doesNotMatch(credentialSource, /CredentialMap|readCredentials|writeCredentials|INITIAL_SUPER_ADMIN_PASSWORD/);
 });
 
 test('/api/admin surfaces database query errors instead of returning empty fake data', async () => {
@@ -572,10 +651,10 @@ test('POST /api/auth rejects direct owner password login/register with OIDC_REQU
   }
 });
 
-test('existing Super Admin session syncs against the real profile without changing credentials', async () => {
-  const { writeCredentials, readCredentials, hashPassword } = await import('@/lib/auth-credentials');
-  const passwordHash = hashPassword('fixture-old-password');
-  writeCredentials({ [SUPER_ADMIN_EMAIL]: { passwordHash, profileId: SUPER_ADMIN_ID } });
+test('Super Admin profile seeding ignores the obsolete initial password environment variable', async () => {
+  const { ensureSuperAdminSeeded } = await import('@/lib/auth-credentials');
+  const previousInitialPassword = process.env.INITIAL_SUPER_ADMIN_PASSWORD;
+  process.env.INITIAL_SUPER_ADMIN_PASSWORD = 'obsolete-fixture-password';
   const profile = { id: SUPER_ADMIN_ID, email: SUPER_ADMIN_EMAIL, full_name: 'Admin fixture', plan: 'premium' };
   function chain(result: unknown): Record<string, unknown> {
     const value: Record<string, unknown> = { then: (resolve: (r: unknown) => unknown) => Promise.resolve(result).then(resolve) };
@@ -583,28 +662,23 @@ test('existing Super Admin session syncs against the real profile without changi
     return value;
   }
   const db = { from: (table: string) => chain({ data: table === 'profiles' ? [profile] : [{ id: 'fixture-shop' }], error: null }) };
-  const adminToken = issueSessionToken({
-    id: SUPER_ADMIN_ID,
-    email: SUPER_ADMIN_EMAIL,
-    role: 'admin',
-    is_admin: true,
-  });
   setSupabaseDbClientForTests(db as never);
   try {
-    const response = await authPost(new Request('http://localhost/api/auth', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${adminToken}`,
-      },
-      body: JSON.stringify({ action: 'sync_user', email: SUPER_ADMIN_EMAIL }),
-    }));
-    const body = await response.json();
-    assert.equal(response.status, 200, JSON.stringify(body));
-    assert.equal(body.user.id, SUPER_ADMIN_ID);
-    assert.equal(body.isAdmin, true);
-    assert.equal(readCredentials()[SUPER_ADMIN_EMAIL].passwordHash, passwordHash);
-  } finally { setSupabaseDbClientForTests(null); }
+    const seeded = await ensureSuperAdminSeeded();
+    assert.equal(seeded.id, SUPER_ADMIN_ID);
+    assert.equal(seeded.is_admin, true);
+    assert.equal(
+      fs.existsSync(path.join(fixture, '.local-db', 'auth-credentials.json')),
+      false
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (previousInitialPassword === undefined) {
+      delete process.env.INITIAL_SUPER_ADMIN_PASSWORD;
+    } else {
+      process.env.INITIAL_SUPER_ADMIN_PASSWORD = previousInitialPassword;
+    }
+  }
 });
 
 test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in NODE_ENV=production when public.shops is empty while preserving non-production demo seeding', async () => {
@@ -715,9 +789,11 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
   };
 
   setSupabaseDbClientForTests(mockDbClient as never);
+  const prevSessionSecretForProdTest = process.env.SESSION_SECRET;
   try {
     // 1. In production with an empty public.shops table: zero seed writes occur and schema is reported ready
     (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    process.env.SESSION_SECRET = 'prod-test-session-secret-32-chars-minimum!';
     const prodReady = await ensureSupabaseReadyAndSeeded();
     assert.equal(prodReady.ready, true);
     assert.equal(prodReady.seeded, false);
@@ -727,7 +803,35 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
       'ensureSupabaseReadyAndSeeded must not write any demo records in production'
     );
 
-    const healthRes = await healthGet();
+    // Diagnostics (and therefore dataSource) are Super-Admin only; anonymous callers
+    // get the minimal public status.
+    const anonHealthRes = await healthGet(
+      new Request('http://localhost/api/health')
+    );
+    assert.equal(anonHealthRes.status, 200);
+    const anonHealthBody = await anonHealthRes.json();
+    assert.deepEqual(Object.keys(anonHealthBody).sort(), [
+      'service',
+      'status',
+      'timestamp',
+    ]);
+    assert.equal(
+      'dataSource' in anonHealthBody,
+      false,
+      'public health response must not leak diagnostics'
+    );
+
+    const prodAdminToken = issueSessionToken({
+      id: SUPER_ADMIN_ID,
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const healthRes = await healthGet(
+      new Request('http://localhost/api/health', {
+        headers: { Authorization: `Bearer ${prodAdminToken}` },
+      })
+    );
     assert.equal(healthRes.status, 200);
     const healthBody = await healthRes.json();
     assert.equal(healthBody.status, 'ok');
@@ -815,7 +919,11 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     // Reset shopsRows so /api/health also hits the failed seed path
     shopsRows = [];
     profilesRows = [];
-    const failedHealthRes = await healthGet();
+    const failedHealthRes = await healthGet(
+      new Request('http://localhost/api/health', {
+        headers: { Authorization: `Bearer ${prodAdminToken}` },
+      })
+    );
     assert.equal(failedHealthRes.status, 503);
     const failedHealthBody = await failedHealthRes.json();
     assert.equal(failedHealthBody.status, 'degraded');
@@ -859,16 +967,7 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     assert.equal(shopsRows.length, 3);
 
     // 5. POST /api/admin action reseed_demo_data is rejected in NODE_ENV=production before any DB write
-    const prevSessionSecret = process.env.SESSION_SECRET;
-    process.env.SESSION_SECRET = 'prod-test-session-secret-32-chars-minimum!';
     try {
-      const prodAdminToken = issueSessionToken({
-        id: SUPER_ADMIN_ID,
-        email: SUPER_ADMIN_EMAIL,
-        role: 'admin',
-        is_admin: true,
-      });
-
       writeOperations.length = 0;
       (process.env as Record<string, string | undefined>).NODE_ENV =
         'production';
@@ -942,10 +1041,10 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
         'dev/test reseed_demo_data upserts profiles, shops, categories, items, posts, and payment_transactions'
       );
     } finally {
-      if (prevSessionSecret === undefined) {
+      if (prevSessionSecretForProdTest === undefined) {
         delete process.env.SESSION_SECRET;
       } else {
-        process.env.SESSION_SECRET = prevSessionSecret;
+        process.env.SESSION_SECRET = prevSessionSecretForProdTest;
       }
     }
 

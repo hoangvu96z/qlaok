@@ -21,6 +21,8 @@ import {
   CheckCircle2,
   FolderInput,
   Tag,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { getAuthHeaders } from '@/lib/auth-session';
 import { useDashboard } from '@/lib/dashboard-context';
@@ -44,6 +46,9 @@ import {
 } from '@/lib/catalog-excel';
 import { CatalogExcelImportModal } from '@/components/dashboard/CatalogExcelImportModal';
 import {
+  buildCategoryNameI18n,
+  getCategoryRenameAction,
+  isCurrentCatalogRequest,
   parseCatalogApiResponse,
   resolveNextCatalogData,
   shouldShowCatalogEmptyState,
@@ -57,6 +62,175 @@ interface CatalogMutationError {
   ctaLabel?: string;
 }
 
+interface CategoryChipProps {
+  cat: Category;
+  count: number;
+  active: boolean;
+  canManageCatalog: boolean;
+  isEditing: boolean;
+  isSaving: boolean;
+  editingName: string;
+  deletingCategoryId?: string | null;
+  savingCategoryId?: string | null;
+  categoriesCount: number;
+  onSelect: () => void;
+  onStartRename: () => void;
+  onCancelRename: () => void;
+  onChangeEditingName: (name: string) => void;
+  onSubmitRename: () => void;
+  onDelete: () => void;
+}
+
+function CategoryChip({
+  cat,
+  count,
+  active,
+  canManageCatalog,
+  isEditing,
+  isSaving,
+  editingName,
+  deletingCategoryId,
+  savingCategoryId,
+  categoriesCount,
+  onSelect,
+  onStartRename,
+  onCancelRename,
+  onChangeEditingName,
+  onSubmitRename,
+  onDelete,
+}: CategoryChipProps) {
+  const { tx } = useAppI18n();
+
+  if (isEditing) {
+    return (
+      <div
+        className={`inline-flex items-center gap-1.5 shrink-0 rounded-xl px-2 py-1 text-xs font-bold transition-colors ${
+          active
+            ? 'bg-emerald-600 text-white ring-2 ring-emerald-400'
+            : 'bg-slate-100 text-slate-700 ring-1 ring-slate-300'
+        }`}
+      >
+        <form
+          data-testid={`category-rename-form-${cat.id}`}
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmitRename();
+          }}
+          className="inline-flex items-center gap-1"
+        >
+          <label
+            htmlFor={`rename-category-input-${cat.id}`}
+            className="sr-only"
+          >
+            {tx('Tên danh mục', 'Category name')}
+          </label>
+          <input
+            id={`rename-category-input-${cat.id}`}
+            data-testid={`category-rename-input-${cat.id}`}
+            type="text"
+            value={editingName}
+            onChange={(e) => onChangeEditingName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onSubmitRename();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onCancelRename();
+              }
+            }}
+            disabled={isSaving}
+            autoFocus
+            aria-label={tx('Tên danh mục', 'Category name')}
+            className={`w-28 sm:w-36 rounded-lg px-2 py-0.5 text-xs font-semibold focus:outline-none ${
+              active
+                ? 'bg-emerald-700 text-white placeholder-emerald-200 border border-emerald-400 focus:border-white'
+                : 'bg-white text-slate-900 border border-slate-300 focus:border-emerald-500'
+            } disabled:opacity-50`}
+          />
+          <button
+            type="submit"
+            data-testid={`category-rename-save-${cat.id}`}
+            disabled={isSaving || !editingName.trim()}
+            className="rounded-lg p-1 opacity-80 hover:opacity-100 disabled:opacity-40"
+            title={tx('Lưu', 'Save')}
+            aria-label={tx('Lưu', 'Save')}
+          >
+            {isSaving ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Check className="h-3 w-3" />
+            )}
+          </button>
+          <button
+            type="button"
+            data-testid={`category-rename-cancel-${cat.id}`}
+            onClick={onCancelRename}
+            disabled={isSaving}
+            className="rounded-lg p-1 opacity-80 hover:opacity-100 disabled:opacity-40"
+            title={tx('Hủy', 'Cancel')}
+            aria-label={tx('Hủy', 'Cancel')}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`inline-flex items-center gap-1 shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
+        active
+          ? 'bg-emerald-600 text-white'
+          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+      }`}
+    >
+      <button
+        type="button"
+        data-testid={`category-chip-select-${cat.id}`}
+        onClick={onSelect}
+      >
+        {cat.name_i18n.vi} ({count})
+      </button>
+      {canManageCatalog && (
+        <button
+          type="button"
+          data-testid={`rename-category-btn-${cat.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStartRename();
+          }}
+          disabled={savingCategoryId !== null && savingCategoryId !== undefined}
+          className="ml-1 opacity-60 hover:opacity-100 disabled:opacity-30"
+          title={tx('Đổi tên danh mục', 'Rename category')}
+          aria-label={tx('Đổi tên danh mục: {name}', 'Rename category: {name}', {
+            name: cat.name_i18n.vi,
+          })}
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      )}
+      {canManageCatalog && categoriesCount > 1 && (
+        <button
+          type="button"
+          data-testid={`delete-category-btn-${cat.id}`}
+          onClick={onDelete}
+          disabled={
+            deletingCategoryId === cat.id ||
+            (savingCategoryId !== null && savingCategoryId !== undefined)
+          }
+          className="ml-1 opacity-60 hover:opacity-100 disabled:cursor-wait disabled:opacity-30"
+          title={tx('Xóa danh mục', 'Delete category')}
+          aria-label={tx('Xóa danh mục', 'Delete category')}
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardCatalogPage() {
   const { activeShop, activeMembership } = useDashboard();
   const { locale, t, tx } = useAppI18n();
@@ -67,6 +241,9 @@ export default function DashboardCatalogPage() {
   const [loadError, setLoadError] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [savingCategoryId, setSavingCategoryId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [ownerPlan, setOwnerPlan] = useState<PlanTier>('free');
@@ -81,6 +258,7 @@ export default function DashboardCatalogPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<CatalogItem | null>(null);
   const [toastMsg, setToastMsg] = useState('');
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [pageSize, setPageSize] = useState<CatalogPageSize>(20);
   const [currentPage, setCurrentPage] = useState(1);
@@ -102,6 +280,19 @@ export default function DashboardCatalogPage() {
     details?: Array<{ id: string; name?: string; error?: string }>;
   } | null>(null);
   const selectPageCheckboxRef = useRef<HTMLInputElement>(null);
+  const activeShopIdRef = useRef<string | null>(activeShop?.id ?? null);
+  const catalogLoadSequenceRef = useRef(0);
+
+  useEffect(() => {
+    activeShopIdRef.current = activeShop?.id ?? null;
+  }, [activeShop?.id]);
+
+  const isItemInCurrentShop = (item: CatalogItem) =>
+    Boolean(
+      activeShop?.id &&
+        activeShopIdRef.current === activeShop.id &&
+        item.shop_id === activeShop.id
+    );
 
   const clearBulkSelectionAndDrafts = useCallback(() => {
     setSelectedItemIds((prev) => (prev.size === 0 ? prev : new Set()));
@@ -113,13 +304,23 @@ export default function DashboardCatalogPage() {
   const loadCatalog = useCallback(
     async (silent = false) => {
       if (!activeShop) return;
+      const shopId = activeShop.id;
+      const requestId = ++catalogLoadSequenceRef.current;
+      const isCurrentRequest = () =>
+        isCurrentCatalogRequest({
+          requestShopId: shopId,
+          currentShopId: activeShopIdRef.current,
+          requestId,
+          currentRequestId: catalogLoadSequenceRef.current,
+        });
       if (!silent) setLoading(true);
       try {
-        const res = await fetch(`/api/catalog?shopId=${activeShop.id}`, {
+        const res = await fetch(`/api/catalog?shopId=${encodeURIComponent(shopId)}`, {
           headers: getAuthHeaders(),
           cache: 'no-store',
         });
         const data = await res.json().catch(() => null);
+        if (!isCurrentRequest()) return;
         const parsed = parseCatalogApiResponse(res.ok, data);
         setCategories((prev) =>
           resolveNextCatalogData({ categories: prev, items: [], ownerPlan: 'free' }, parsed).categories
@@ -137,9 +338,11 @@ export default function DashboardCatalogPage() {
           setLoadError(true);
         }
       } catch {
-        setLoadError(true);
+        if (isCurrentRequest()) setLoadError(true);
       } finally {
-        if (!silent) setLoading(false);
+        if (!silent && isCurrentRequest()) {
+          setLoading(false);
+        }
       }
     },
     [activeShop]
@@ -156,8 +359,14 @@ export default function DashboardCatalogPage() {
     setHasLoaded(false);
     setMutationError(null);
     setBulkResultBanner(null);
+    setEditingCategoryId(null);
+    setEditingCategoryName('');
+    setSavingCategoryId(null);
     clearBulkSelectionAndDrafts();
     void loadCatalog(false);
+    return () => {
+      catalogLoadSequenceRef.current += 1;
+    };
   }, [loadCatalog, clearBulkSelectionAndDrafts]);
 
   useEffect(() => {
@@ -187,9 +396,20 @@ export default function DashboardCatalogPage() {
   };
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastMsg(msg);
-    setTimeout(() => setToastMsg(''), 2500);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMsg('');
+      toastTimerRef.current = null;
+    }, 2500);
   };
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    []
+  );
 
   /** Converts a failed response / thrown error into a user-facing message (plan limits get a billing CTA). */
   const toMutationError = (
@@ -221,8 +441,13 @@ export default function DashboardCatalogPage() {
     init: RequestInit,
     fallback: string
   ): Promise<boolean> => {
+    const expectedShopId = activeShop?.id;
+    if (!expectedShopId || activeShopIdRef.current !== expectedShopId) {
+      return false;
+    }
     try {
       const res = await fetch(input, init);
+      if (activeShopIdRef.current !== expectedShopId) return false;
       if (res.ok) {
         setMutationError(null);
         return true;
@@ -231,24 +456,31 @@ export default function DashboardCatalogPage() {
       setMutationError(toMutationError(payload, fallback));
       return false;
     } catch (err) {
+      if (activeShopIdRef.current !== expectedShopId) return false;
       setMutationError(toMutationError(err, fallback));
       return false;
     }
   };
 
-  const upsertItem = (item: CatalogItem) =>
-    sendCatalogMutation(
+  const upsertItem = (item: CatalogItem) => {
+    if (!isItemInCurrentShop(item) || !activeShop) return Promise.resolve(false);
+    return sendCatalogMutation(
       '/api/catalog',
       {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ action: 'upsert_item', item }),
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: { ...item, shop_id: activeShop.id },
+        }),
       },
       tx('Không thể lưu thay đổi món', 'Could not save item changes')
     );
+  };
 
   /** Restores the server-confirmed item snapshot after a rejected optimistic update. */
   const rollbackItem = (original: CatalogItem) => {
+    if (!isItemInCurrentShop(original)) return;
     setItems((prev) => prev.map((i) => (i.id === original.id ? original : i)));
   };
 
@@ -256,6 +488,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextAvailable: boolean
   ): Promise<boolean> => {
+    if (!isItemInCurrentShop(item)) return false;
     // Optimistic update
     setItems((prev) =>
       prev.map((i) =>
@@ -268,12 +501,18 @@ export default function DashboardCatalogPage() {
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'upsert_item',
-          item: { ...item, is_available: nextAvailable },
+          item: {
+            ...item,
+            shop_id: activeShop!.id,
+            is_available: nextAvailable,
+          },
         }),
       });
+      if (!isItemInCurrentShop(item)) return false;
 
       if (!res.ok) {
         const payload = await res.json().catch(() => null);
+        if (!isItemInCurrentShop(item)) return false;
         rollbackItem(item);
         setMutationError(
           toMutationError(
@@ -285,6 +524,7 @@ export default function DashboardCatalogPage() {
       }
 
       const payload = await res.json().catch(() => null);
+      if (!isItemInCurrentShop(item)) return false;
       const rawItem =
         payload && typeof payload === 'object'
           ? (payload as { item?: unknown }).item
@@ -294,6 +534,7 @@ export default function DashboardCatalogPage() {
         typeof rawItem === 'object' &&
         typeof (rawItem as { id?: unknown }).id === 'string' &&
         (rawItem as { id: string }).id === item.id &&
+        (rawItem as { shop_id?: unknown }).shop_id === item.shop_id &&
         typeof (rawItem as { is_available?: unknown }).is_available === 'boolean';
 
       if (!isValidServerItem) {
@@ -352,6 +593,7 @@ export default function DashboardCatalogPage() {
       );
       return true;
     } catch (err) {
+      if (!isItemInCurrentShop(item)) return false;
       rollbackItem(item);
       setMutationError(
         toMutationError(
@@ -367,6 +609,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextPrice: number
   ): Promise<boolean> => {
+    if (!isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
@@ -383,6 +626,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextStock: number | null
   ): Promise<boolean> => {
+    if (!isItemInCurrentShop(item)) return false;
     const nextAvailable =
       nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
     setItems((prev) =>
@@ -422,6 +666,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextFeatured: boolean
   ): Promise<boolean> => {
+    if (!isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, is_featured: nextFeatured } : i
@@ -440,6 +685,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextImageUrl: string
   ): Promise<boolean> => {
+    if (!isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, image_url: nextImageUrl } : i
@@ -461,6 +707,7 @@ export default function DashboardCatalogPage() {
 
   const handleDeleteItem = async (itemId: string): Promise<boolean> => {
     const target = items.find((i) => i.id === itemId);
+    if (!target || !isItemInCurrentShop(target)) return false;
     const confirmed = await confirm({
       variant: 'danger',
       title: tx('Xóa món khỏi thực đơn?', 'Delete this item from the menu?'),
@@ -471,7 +718,7 @@ export default function DashboardCatalogPage() {
       ),
       confirmLabel: t('common.delete'),
     });
-    if (!confirmed) return false;
+    if (!confirmed || !isItemInCurrentShop(target)) return false;
 
     const originalIndex = items.findIndex((i) => i.id === itemId);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
@@ -480,6 +727,7 @@ export default function DashboardCatalogPage() {
       { method: 'DELETE', headers: getAuthHeaders() },
       tx('Không thể xóa món', 'Could not delete item')
     );
+    if (!isItemInCurrentShop(target)) return false;
     if (!ok) {
       if (target) {
         setItems((prev) => {
@@ -504,7 +752,7 @@ export default function DashboardCatalogPage() {
 
   const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeShop || !newCategoryName.trim()) return;
+    if (!activeShop || !canManageCatalog || !newCategoryName.trim()) return;
     setAddingCategory(true);
     try {
       const nameVi = newCategoryName.trim();
@@ -537,7 +785,7 @@ export default function DashboardCatalogPage() {
             action: 'upsert_category',
             category: {
               shop_id: activeShop.id,
-              name_i18n: translatedName || { vi: nameVi, en: nameVi },
+              name_i18n: buildCategoryNameI18n(nameVi, translatedName),
             },
           }),
         },
@@ -560,7 +808,92 @@ export default function DashboardCatalogPage() {
     }
   };
 
+  const handleStartRenameCategory = (cat: Category) => {
+    setEditingCategoryId(cat.id);
+    setEditingCategoryName(cat.name_i18n.vi || '');
+  };
+
+  const handleCancelRenameCategory = () => {
+    setEditingCategoryId(null);
+    setEditingCategoryName('');
+  };
+
+  const handleRenameCategory = async (cat: Category) => {
+    if (!activeShop || !canManageCatalog) return;
+    const action = getCategoryRenameAction(cat.name_i18n.vi, editingCategoryName);
+    if (action === 'invalid_blank') {
+      setMutationError({
+        message: tx('Tên danh mục không được để trống.', 'Category name cannot be blank.'),
+      });
+      return;
+    }
+    if (action === 'noop') {
+      handleCancelRenameCategory();
+      return;
+    }
+
+    const trimmedName = editingCategoryName.trim();
+    setSavingCategoryId(cat.id);
+    setMutationError(null);
+    try {
+      let freshTranslation: Category['name_i18n'] | null = null;
+      try {
+        const transRes = await fetch('/api/ai/translate', {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            vertical: activeShop.vertical,
+            categoryNameVi: trimmedName,
+            itemNameVi: trimmedName,
+          }),
+        });
+        if (transRes.ok) {
+          const transData = await transRes.json().catch(() => null);
+          freshTranslation = transData?.name_i18n || null;
+        }
+      } catch {
+        // Translation is best-effort; fallback to { vi: trimmedName, en: trimmedName }
+      }
+
+      const nextNameI18n = buildCategoryNameI18n(trimmedName, freshTranslation);
+
+      const ok = await sendCatalogMutation(
+        '/api/catalog',
+        {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            action: 'upsert_category',
+            category: {
+              id: cat.id,
+              shop_id: activeShop.id,
+              name_i18n: nextNameI18n,
+            },
+          }),
+        },
+        tx('Không thể đổi tên danh mục', 'Could not rename category')
+      );
+
+      if (!ok) {
+        // Keep the editor open on save failure
+        return;
+      }
+
+      handleCancelRenameCategory();
+      await loadCatalog(true);
+      notifyRealtime();
+      showToast(
+        tx('Đã đổi tên danh mục: {name}', 'Renamed category: {name}', {
+          name: trimmedName,
+        })
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  };
+
   const handleDeleteCategory = async (cat: Category) => {
+    if (!canManageCatalog) return;
     const itemCount = items.filter((i) => i.category_id === cat.id).length;
     const confirmed = await confirm({
       variant: 'danger',
@@ -1486,33 +1819,35 @@ export default function DashboardCatalogPage() {
 
       {/* Add Category Form & Filter Pills */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-        <form
-          onSubmit={handleCreateCategory}
-          className="flex items-center gap-2"
-        >
-          <input
-            type="text"
-            value={newCategoryName}
-            onChange={(e) => setNewCategoryName(e.target.value)}
-            placeholder={tx(
-              'Nhập tên danh mục mới (VD: Món Nước, Làm Móng, Đặc Sản)...',
-              'New category name (e.g. Drinks, Nail Care, Specialties)...'
-            )}
-            className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
-          />
-          <button
-            type="submit"
-            disabled={addingCategory || !newCategoryName.trim()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+        {canManageCatalog && (
+          <form
+            onSubmit={handleCreateCategory}
+            className="flex items-center gap-2"
           >
-            <FolderPlus className="h-3.5 w-3.5" />
-            <span>
-              {addingCategory
-                ? tx('Đang tạo...', 'Creating...')
-                : tx('Thêm danh mục', 'Add Category')}
-            </span>
-          </button>
-        </form>
+            <input
+              type="text"
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder={tx(
+                'Nhập tên danh mục mới (VD: Món Nước, Làm Móng, Đặc Sản)...',
+                'New category name (e.g. Drinks, Nail Care, Specialties)...'
+              )}
+              className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={addingCategory || !newCategoryName.trim()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              <span>
+                {addingCategory
+                  ? tx('Đang tạo...', 'Creating...')
+                  : tx('Thêm danh mục', 'Add Category')}
+              </span>
+            </button>
+          </form>
+        )}
 
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1">
           <button
@@ -1536,40 +1871,35 @@ export default function DashboardCatalogPage() {
           {categories.map((cat) => {
             const count = items.filter((i) => i.category_id === cat.id).length;
             const active = selectedCategoryId === cat.id;
+            const isEditing = canManageCatalog && editingCategoryId === cat.id;
+            const isSaving = savingCategoryId === cat.id;
+
             return (
-              <div
+              <CategoryChip
                 key={cat.id}
-                className={`inline-flex items-center gap-1 shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors ${
-                  active
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (selectedCategoryId !== cat.id) {
-                      clearBulkSelectionAndDrafts();
-                    }
-                    setSelectedCategoryId(cat.id);
-                    setCurrentPage(1);
-                  }}
-                >
-                  {cat.name_i18n.vi} ({count})
-                </button>
-                {categories.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => void handleDeleteCategory(cat)}
-                    disabled={deletingCategoryId === cat.id}
-                    className="ml-1 opacity-60 hover:opacity-100 disabled:cursor-wait disabled:opacity-30"
-                    title={tx('Xóa danh mục', 'Delete category')}
-                    aria-label={tx('Xóa danh mục', 'Delete category')}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
+                cat={cat}
+                count={count}
+                active={active}
+                canManageCatalog={canManageCatalog}
+                isEditing={isEditing}
+                isSaving={isSaving}
+                editingName={editingCategoryName}
+                deletingCategoryId={deletingCategoryId}
+                savingCategoryId={savingCategoryId}
+                categoriesCount={categories.length}
+                onSelect={() => {
+                  if (selectedCategoryId !== cat.id) {
+                    clearBulkSelectionAndDrafts();
+                  }
+                  setSelectedCategoryId(cat.id);
+                  setCurrentPage(1);
+                }}
+                onStartRename={() => handleStartRenameCategory(cat)}
+                onCancelRename={handleCancelRenameCategory}
+                onChangeEditingName={setEditingCategoryName}
+                onSubmitRename={() => void handleRenameCategory(cat)}
+                onDelete={() => void handleDeleteCategory(cat)}
+              />
             );
           })}
         </div>
@@ -2011,6 +2341,8 @@ export default function DashboardCatalogPage() {
               <QuickItemRow
                 key={item.id}
                 item={item}
+                canManageCatalog={canManageCatalog}
+                canAdjustInventory={canAdjustInventory}
                 selected={selectedItemIds.has(item.id)}
                 onToggleSelect={handleToggleSelectItem}
                 selectionDisabled={Boolean(bulkActionPending)}

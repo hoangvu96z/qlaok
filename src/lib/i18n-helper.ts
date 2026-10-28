@@ -145,11 +145,21 @@ export function tField(
   return field[locale] || field.en || field.vi || '';
 }
 
-export function formatCurrency(amount: number, currency = 'VND'): string {
-  if (currency === 'VND') {
+export function formatCurrency(
+  amount: number,
+  currency = 'VND',
+  locale: SupportedLocale = 'vi'
+): string {
+  if (!Number.isFinite(amount)) return '—';
+  if (currency === 'VND' && locale === 'vi') {
     return `${amount.toLocaleString('vi-VN')}đ`;
   }
-  return `${amount.toLocaleString()} ${currency}`;
+  const formatted = new Intl.NumberFormat(locale, {
+    ...(currency === 'VND'
+      ? { style: 'currency', currency: 'VND', maximumFractionDigits: 0 }
+      : { maximumFractionDigits: 2 }),
+  }).format(amount);
+  return currency === 'VND' ? formatted : `${formatted} ${currency}`;
 }
 
 export function formatTableLabel(
@@ -1237,7 +1247,7 @@ export function localizeStorefrontTableError(
     return labels.tablesLoadError;
   }
 
-  return error;
+  return labels.tablesLoadError;
 }
 
 export interface GuestOrderLabelSet {
@@ -1381,6 +1391,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: '가격 또는 프로모션이 변경되었습니다. 총액을 확인한 후 다시 보내 주세요.',
     errorTableInvalid: '유효하지 않은 테이블입니다. 이용 가능한 테이블 또는 포장을 선택해 주세요.',
     errorTableInactive: '이 테이블은 현재 이용할 수 없습니다. 다른 테이블 또는 포장을 선택해 주세요.',
+    errorTrackingToken: '이 기기에서 주문을 더 이상 추적할 수 없습니다. 직원에게 문의해 주세요.',
     errorGeneric: '주문을 보낼 수 없습니다. 다시 시도해 주세요.',
     statusCancelledTitle: '주문이 취소되었습니다',
     statusCancelledSub: '이 주문은 취소되었습니다. 문의 사항은 직원에게 말씀해 주세요.',
@@ -1411,6 +1422,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: '価格またはキャンペーンが変更されました。合計金額をご確認のうえ再送信してください。',
     errorTableInvalid: '無効なテーブルです。利用可能なテーブルまたはお持ち帰りを選択してください。',
     errorTableInactive: 'このテーブルは現在ご利用いただけません。別のテーブルまたはお持ち帰りを選択してください。',
+    errorTrackingToken: 'この端末では注文を追跡できなくなりました。スタッフにお尋ねください。',
     errorGeneric: '注文を送信できませんでした。もう一度お試しください。',
     statusCancelledTitle: '注文はキャンセルされました',
     statusCancelledSub: 'この注文はキャンセルされました。ご不明な点はスタッフにお尋ねください。',
@@ -1440,6 +1452,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: '价格或优惠已变更，请核对总金额后重新提交。',
     errorTableInvalid: '桌号无效，请选择可用的桌号或外带。',
     errorTableInactive: '该桌暂停服务，请选择其他桌号或外带。',
+    errorTrackingToken: '此设备无法继续追踪此订单，请联系工作人员。',
     errorGeneric: '无法发送订单，请重试。',
     statusCancelledTitle: '订单已取消',
     statusCancelledSub: '该订单已取消。如有疑问请联系服务员。',
@@ -1470,6 +1483,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: 'Los precios o promociones han cambiado. Revisa el total y envía de nuevo.',
     errorTableInvalid: 'Mesa no válida. Selecciona una mesa activa o Para llevar.',
     errorTableInactive: 'Esta mesa no está disponible. Selecciona otra mesa o Para llevar.',
+    errorTrackingToken: 'Ya no se puede seguir este pedido desde este dispositivo. Consulta al personal.',
     errorGeneric: 'No se pudo enviar el pedido. Inténtalo de nuevo.',
     statusCancelledTitle: 'Pedido cancelado',
     statusCancelledSub: 'Este pedido ha sido cancelado. Consulta al personal si tienes dudas.',
@@ -1500,6 +1514,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: 'Prezzi o promozioni sono cambiati. Controlla il totale e invia di nuovo.',
     errorTableInvalid: 'Tavolo non valido. Seleziona un tavolo attivo o Asporto.',
     errorTableInactive: 'Questo tavolo non è disponibile. Seleziona un altro tavolo o Asporto.',
+    errorTrackingToken: 'Non è più possibile seguire questo ordine da questo dispositivo. Chiedi al personale.',
     errorGeneric: 'Impossibile inviare l\'ordine. Riprova.',
     statusCancelledTitle: 'Ordine annullato',
     statusCancelledSub: 'Questo ordine è stato annullato. Per domande rivolgiti al personale.',
@@ -1530,6 +1545,7 @@ export const GUEST_ORDER_LABELS: Record<
     errorPriceChanged: 'Цены или акции изменились. Проверьте сумму и отправьте снова.',
     errorTableInvalid: 'Недействительный стол. Выберите активный стол или «Навынос».',
     errorTableInactive: 'Этот стол недоступен. Выберите другой стол или «Навынос».',
+    errorTrackingToken: 'Отслеживание заказа на этом устройстве больше недоступно. Обратитесь к персоналу.',
     errorGeneric: 'Не удалось отправить заказ. Попробуйте снова.',
     statusCancelledTitle: 'Заказ отменён',
     statusCancelledSub: 'Этот заказ был отменён. По вопросам обратитесь к персоналу.',

@@ -76,9 +76,7 @@ import {
 } from '@/lib/server-auth';
 import {
   hashPassword,
-  readCredentials,
   verifyPassword,
-  writeCredentials,
 } from '@/lib/auth-credentials';
 import { GET as adminGet, POST as adminPost } from '@/app/api/admin/route';
 import { POST as authPost } from '@/app/api/auth/route';
@@ -1083,15 +1081,39 @@ describe('Suite 7: mPOS Order, Inventory & Revenue Engine (mpos-store.ts)', () =
     const prep = await dbUpdateOrderStatus(created.id, { status: 'preparing' });
     assert.equal(prep.status, 'preparing');
 
-    const comp = await dbUpdateOrderStatus(created.id, {
-      status: 'completed',
-      payment_status: 'paid',
-    });
+    // Fulfillment and payment are independent: completing service never marks paid
+    const comp = await dbUpdateOrderStatus(created.id, { status: 'completed' });
     assert.equal(comp.status, 'completed');
-    assert.equal(comp.payment_status, 'paid');
+    assert.equal(
+      comp.payment_status,
+      'unpaid',
+      'Completing service must not implicitly collect payment'
+    );
+    await assert.rejects(
+      () =>
+        dbUpdateOrderStatus(created.id, {
+          status: 'completed',
+          payment_status: 'paid',
+        }),
+      /FULFILLMENT_CANNOT_COLLECT_PAYMENT/
+    );
 
+    const paid = await dbUpdateOrderStatus(created.id, {
+      payment_status: 'paid',
+      payment_method: 'cash',
+    });
+    assert.equal(paid.payment_status, 'paid');
+
+    // A paid order can only be cancelled with an explicit refund plus reasons
+    await assert.rejects(
+      () => dbUpdateOrderStatus(created.id, { status: 'cancelled' }),
+      /PAID_ORDER_REQUIRES_EXPLICIT_REFUND/
+    );
     const cancelled = await dbUpdateOrderStatus(created.id, {
       status: 'cancelled',
+      payment_status: 'refunded',
+      refund_reason: 'Khách đổi ý',
+      cancelled_reason: 'Khách đổi ý',
     });
     assert.equal(cancelled.status, 'cancelled');
 
@@ -2059,10 +2081,15 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
     const paidData = await cashierCollectRes.json();
     assert.equal(paidData.order.payment_status, 'paid');
 
-    // Clean up membership & order
+    // Clean up membership & order (the paid order needs an explicit refund to cancel)
     await dbDeleteShopMembership(shopId, staffUserId);
     await dbDeleteShopMembership(shopId, cashierUserId);
-    await dbUpdateOrderStatus(testOrder.id, { status: 'cancelled' });
+    await dbUpdateOrderStatus(testOrder.id, {
+      status: 'cancelled',
+      payment_status: 'refunded',
+      refund_reason: 'Dọn dẹp dữ liệu kiểm thử',
+      cancelled_reason: 'Dọn dẹp dữ liệu kiểm thử',
+    });
   });
 
   test('9.3 Shared quote engine calculates Flash Sale, Promo Banner voucher, and manual POS discounts accurately', () => {
@@ -2295,7 +2322,12 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
       'Once paid, order total must be added to collected revenue'
     );
 
-    await dbUpdateOrderStatus(servedUnpaid.id, { status: 'cancelled' });
+    await dbUpdateOrderStatus(servedUnpaid.id, {
+      status: 'cancelled',
+      payment_status: 'refunded',
+      refund_reason: 'Dọn dẹp dữ liệu kiểm thử',
+      cancelled_reason: 'Dọn dẹp dữ liệu kiểm thử',
+    });
   });
 
   test('9.6 Table bill combines multiple unpaid rounds for the same table session and settles them together', async () => {
@@ -2355,8 +2387,15 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
     assert.equal(r1After?.payment_status, 'paid');
     assert.equal(r2After?.payment_status, 'paid');
 
-    await dbUpdateOrderStatus(round1.id, { status: 'cancelled' });
-    await dbUpdateOrderStatus(round2.id, { status: 'cancelled' });
+    // Settled rounds are paid, so cancelling them needs an explicit refund
+    const refundPatch = {
+      status: 'cancelled' as const,
+      payment_status: 'refunded' as const,
+      refund_reason: 'Dọn dẹp dữ liệu kiểm thử',
+      cancelled_reason: 'Dọn dẹp dữ liệu kiểm thử',
+    };
+    await dbUpdateOrderStatus(round1.id, refundPatch);
+    await dbUpdateOrderStatus(round2.id, refundPatch);
   });
 
   test('9.7 Customer tracking_token allows pre-acceptance order edit while new+unpaid and blocks edit once preparing', async () => {
@@ -2652,7 +2691,12 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
       assert.equal(cancelPaidRes.status, 409);
       const cancelPaidJson = await cancelPaidRes.json();
       assert.equal(cancelPaidJson.code, 'ORDER_ALREADY_ACCEPTED');
-      await dbUpdateOrderStatus(paidOrder.id, { status: 'cancelled' });
+      await dbUpdateOrderStatus(paidOrder.id, {
+        status: 'cancelled',
+        payment_status: 'refunded',
+        refund_reason: 'Dọn dẹp dữ liệu kiểm thử',
+        cancelled_reason: 'Dọn dẹp dữ liệu kiểm thử',
+      });
     } finally {
       try {
         try {
@@ -2663,7 +2707,12 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
             await dbUpdateOrderStatus(preparingOrder.id, { status: 'cancelled' }).catch(() => {});
           }
           if (paidOrder?.id) {
-            await dbUpdateOrderStatus(paidOrder.id, { status: 'cancelled' }).catch(() => {});
+            await dbUpdateOrderStatus(paidOrder.id, {
+              status: 'cancelled',
+              payment_status: 'refunded',
+              refund_reason: 'Dọn dẹp dữ liệu kiểm thử',
+              cancelled_reason: 'Dọn dẹp dữ liệu kiểm thử',
+            }).catch(() => {});
           }
         } finally {
           await setItemStockMetadata(testItemId, originalStockQuantity, originalSoldCount);
@@ -2914,7 +2963,27 @@ describe('Suite 9B: Staff login routing, role-based nav, inventory.adjust & memb
     assert.equal(canAccessDashboardHref('/dashboard/orders', { ...staff, is_active: false }), false);
 
     assert.equal(getFallbackDashboardHref(staff), '/dashboard/orders');
-    assert.deepEqual(getNavRequirementForPath('/dashboard/settings/anything'), { anyOf: ['settings.manage'] });
+    assert.deepEqual(getNavRequirementForPath('/dashboard/settings/anything'), {
+      anyOf: ['settings.manage', 'settings.bank'],
+    });
+    // either permission alone opens the settings page
+    assert.equal(
+      canAccessDashboardHref('/dashboard/settings', {
+        role: 'staff',
+        permissions: ['settings.bank'],
+        is_active: true,
+      }),
+      true,
+      'a bank-settings-only member can reach /dashboard/settings'
+    );
+    assert.equal(
+      canAccessDashboardHref('/dashboard/settings', {
+        role: 'staff',
+        permissions: ['settings.manage'],
+        is_active: true,
+      }),
+      true
+    );
   });
 
   test('9B.5 catalog API upsert_item still rejects unauthenticated callers and non-members before any write', async () => {
@@ -3420,93 +3489,62 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       assert.equal(demoRes.reason, 'unsupported_account');
     }
 
-    // 2b. Public /api/auth check_recovery and helpers cannot be used to enumerate custom-credential vs unknown emails
-    const initialCreds = readCredentials();
+    // 2b. Public /api/auth check_recovery cannot be used to enumerate email addresses
     const customEmail = 'custom-cred-owner@example.com';
     const unknownEmail = 'unknown-nonexistent-owner@example.com';
-    try {
-      writeCredentials({
-        ...initialCreds,
-        [customEmail]: {
-          passwordHash: hashPassword('customPass123'),
-          profileId: 'owner-custom-cred-test',
-        },
-      });
+    const demoCheckRes = await authPost(
+      new Request('http://localhost/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'check_recovery',
+          email: 'chuquan@qlaok.vn',
+        }),
+      })
+    );
+    assert.equal(demoCheckRes.status, 409);
+    const demoCheckBody = await demoCheckRes.json();
+    assert.equal(demoCheckBody.supported, false);
+    assert.equal(demoCheckBody.reason, 'unsupported_account');
 
-      const demoCheckRes = await authPost(
+    const adminCheckRes = await authPost(
+      new Request('http://localhost/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'check_recovery',
+          email: 'hoangvu96z@gmail.com',
+        }),
+      })
+    );
+    assert.equal(adminCheckRes.status, 409);
+
+    const genericRecoveryCheck = async (email: string) => {
+      const response = await authPost(
         new Request('http://localhost/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'check_recovery',
-            email: 'chuquan@qlaok.vn',
-          }),
+          body: JSON.stringify({ action: 'check_recovery', email }),
         })
       );
-      assert.equal(demoCheckRes.status, 409);
-      const demoCheckBody = await demoCheckRes.json();
-      assert.equal(demoCheckBody.supported, false);
-      assert.equal(demoCheckBody.reason, 'unsupported_account');
+      return { status: response.status, body: await response.json() };
+    };
+    const customCheck = await genericRecoveryCheck(customEmail);
+    const unknownCheck = await genericRecoveryCheck(unknownEmail);
+    assert.deepEqual(customCheck, unknownCheck);
+    assert.equal(customCheck.status, 200);
+    assert.equal(customCheck.body.accepted, true);
+    assert.equal(customCheck.body.supported, true);
+    assert.match(customCheck.body.notice, /^Nếu email thuộc tài khoản/);
+    assert.doesNotMatch(customCheck.body.notice, /^Đã gửi/i);
 
-      const adminCheckRes = await authPost(
-        new Request('http://localhost/api/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'check_recovery',
-            email: 'hoangvu96z@gmail.com',
-          }),
-        })
-      );
-      assert.equal(adminCheckRes.status, 409);
-
-      const customCheckRes = await authPost(
-        new Request('http://localhost/api/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'check_recovery',
-            email: customEmail,
-          }),
-        })
-      );
-      const unknownCheckRes = await authPost(
-        new Request('http://localhost/api/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'check_recovery',
-            email: unknownEmail,
-          }),
-        })
-      );
-
-      // Identical HTTP status and identical JSON payload for custom-credential and unknown emails
-      assert.equal(customCheckRes.status, 200);
-      assert.equal(unknownCheckRes.status, 200);
-      const customCheckBody = await customCheckRes.json();
-      const unknownCheckBody = await unknownCheckRes.json();
-      assert.deepEqual(customCheckBody, unknownCheckBody);
-      assert.equal(customCheckBody.accepted, true);
-      assert.equal(customCheckBody.supported, true);
-      assert.match(customCheckBody.notice, /^Nếu email thuộc tài khoản/);
-      assert.doesNotMatch(customCheckBody.notice, /^Đã gửi/i);
-
-      // Client helper also returns uniform generic guidance without confirming account existence
-      const viGeneric = formatGenericPasswordRecoveryNotice(customEmail, 'vi');
-      const enGeneric = formatWebGenericPasswordRecoveryNotice(
-        unknownEmail,
-        'en'
-      );
-      assert.match(viGeneric, /^Nếu custom-cred-owner@example\.com/);
-      assert.match(viGeneric, /Tài khoản mật khẩu nội bộ, dùng thử hoặc quản trị/);
-      assert.doesNotMatch(viGeneric, /^Đã gửi/i);
-      assert.match(enGeneric, /^If unknown-nonexistent-owner@example\.com/);
-      assert.match(enGeneric, /Local-password, demo, or admin accounts/);
-      assert.doesNotMatch(enGeneric, /^Reset instructions sent/i);
-    } finally {
-      writeCredentials(initialCreds);
-    }
+    // Client helper also returns generic guidance without claiming delivery.
+    const viGeneric = formatGenericPasswordRecoveryNotice(null, 'vi');
+    const enGeneric = formatWebGenericPasswordRecoveryNotice(null, 'en');
+    assert.match(viGeneric, /^Nếu email thuộc tài khoản/);
+    assert.doesNotMatch(viGeneric, /^Đã gửi/i);
+    assert.match(enGeneric, /^If the email belongs to an account/);
+    assert.doesNotMatch(enGeneric, /^Reset instructions sent/i);
 
     // 3. Missing authClient reports unsupported_provider
     const noProviderRes = await requestMobilePasswordRecovery({
@@ -5613,6 +5651,8 @@ describe('Suite 24: SePay VietQR order reconciliation helpers', () => {
       '{"id":92704,"accountNumber":"0123499999","content":"QLAOK ORD-7788","transferType":"in","transferAmount":120000}';
     const timestamp = '1761123456';
     const secret = 'sepay_unit_test_hmac_secret_2026';
+    // Replay protection checks the timestamp against the wall clock, so pin it.
+    const nowMs = Number(timestamp) * 1000;
 
     const validSig = signSePayWebhookPayload(rawBody, timestamp, secret);
     assert.match(validSig, /^sha256=[0-9a-f]{64}$/);
@@ -5622,6 +5662,7 @@ describe('Suite 24: SePay VietQR order reconciliation helpers', () => {
       signatureHeader: validSig,
       timestampHeader: timestamp,
       secret,
+      nowMs,
     });
     assert.equal(okResult.valid, true);
 
@@ -5633,11 +5674,37 @@ describe('Suite 24: SePay VietQR order reconciliation helpers', () => {
       signatureHeader: validSig,
       timestampHeader: timestamp,
       secret,
+      nowMs,
     });
     assert.equal(tamperedResult.valid, false);
     if (!tamperedResult.valid) {
       assert.equal(tamperedResult.code, 'INVALID_WEBHOOK_SIGNATURE');
     }
+
+    // Replay window: a correctly signed payload older than the tolerance is rejected
+    const replayedResult = verifySePayWebhookSignature({
+      rawBody: Buffer.from(rawBody, 'utf8'),
+      signatureHeader: validSig,
+      timestampHeader: timestamp,
+      secret,
+      nowMs: nowMs + 6 * 60 * 1000,
+    });
+    assert.equal(replayedResult.valid, false);
+    if (!replayedResult.valid) {
+      assert.equal(replayedResult.code, 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW');
+    }
+
+    // Millisecond timestamps are accepted and hashed as-is
+    const msTimestamp = `${nowMs}`;
+    const msSignature = signSePayWebhookPayload(rawBody, msTimestamp, secret);
+    const msResult = verifySePayWebhookSignature({
+      rawBody: Buffer.from(rawBody, 'utf8'),
+      signatureHeader: msSignature,
+      timestampHeader: msTimestamp,
+      secret,
+      nowMs,
+    });
+    assert.equal(msResult.valid, true);
   });
 
   test('24.2 correlateSePayOrderFromTransfer requires configured transfer prefix and exact single order_code match', async () => {
@@ -6970,7 +7037,8 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       setSupabaseDbClientForTests(null);
     }
 
-    // 5. Missing shop returns fallback seed with ownerPlan: 'free' and redacts profile on HTTP response
+    // 5. Missing shop: the helper still returns the seed fallback, but HTTP GET must
+    // not serve another shop's catalog under the requested id (404 SHOP_NOT_FOUND)
     const mockEmptyShopDb = createMockSupabaseForGetShopCatalog({
       shops: {},
     });
@@ -6981,23 +7049,28 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       assert.equal(catalog.ownerPlan, 'free');
       assert.equal(catalog.profile.email, SEED_PROFILE.email, 'Helper preserves fallback SEED_PROFILE');
 
-      const fallbackApiRes = await catalogGet(
+      const missingApiRes = await catalogGet(
         new Request('http://localhost:3000/api/catalog?shopId=shop-nonexistent')
       );
-      assert.equal(fallbackApiRes.status, 200);
-      const rawFallbackText = await fallbackApiRes.clone().text();
-      const fallbackApiBody = await fallbackApiRes.json();
-      assert.equal(fallbackApiBody.shop.id, SEED_SHOPS[0].id);
-      assert.ok(Array.isArray(fallbackApiBody.categories));
-      assert.ok(Array.isArray(fallbackApiBody.items));
-      assert.equal(fallbackApiBody.ownerPlan, 'free');
-      assert.equal('profile' in fallbackApiBody, false, 'Fallback GET /api/catalog must not include profile');
-      assert.equal(fallbackApiBody.profile, undefined);
+      assert.equal(missingApiRes.status, 404);
+      const rawMissingText = await missingApiRes.clone().text();
+      const missingApiBody = await missingApiRes.json();
+      assert.equal(missingApiBody.code, 'SHOP_NOT_FOUND');
+      assert.equal('shop' in missingApiBody, false, '404 must not return a different shop');
+      assert.equal('categories' in missingApiBody, false);
+      assert.equal('items' in missingApiBody, false);
       assert.equal(
-        rawFallbackText.includes(SEED_PROFILE.email),
+        rawMissingText.includes(SEED_PROFILE.email),
         false,
-        'Fallback GET /api/catalog must not serialize SEED_PROFILE email'
+        '404 response must not serialize SEED_PROFILE email'
       );
+
+      // A blank shopId is rejected before any DB work
+      const blankApiRes = await catalogGet(
+        new Request('http://localhost:3000/api/catalog')
+      );
+      assert.equal(blankApiRes.status, 400);
+      assert.equal((await blankApiRes.json()).code, 'SHOP_ID_REQUIRED');
     } finally {
       setSupabaseDbClientForTests(null);
     }

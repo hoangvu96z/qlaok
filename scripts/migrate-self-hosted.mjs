@@ -12,6 +12,32 @@ export function checksumSql(sql) {
   return crypto.createHash('sha256').update(sql, 'utf8').digest('hex');
 }
 
+/**
+ * Build psql arguments that make each migration atomic. A small number of
+ * historical files already contain their own top-level BEGIN/COMMIT pair;
+ * keep those files byte-for-byte unchanged because applied checksums are
+ * immutable, and avoid nesting psql's transaction around them.
+ */
+export function buildMigrationPsqlArgs(migration) {
+  const sql = String(migration.sql ?? '');
+  const withoutLeadingComments = sql.replace(
+    /^(?:(?:\s+)|(?:--[^\n]*(?:\n|$))|(?:\/\*[\s\S]*?\*\/))*/,
+    ''
+  );
+  const withoutTrailingComments = sql.replace(
+    /(?:(?:\s+)|(?:--[^\n]*(?:\n|$))|(?:\/\*[\s\S]*?\*\/))*$/,
+    ''
+  );
+  const hasExplicitTransaction =
+    /^BEGIN\s*;/i.test(withoutLeadingComments) &&
+    /COMMIT\s*;$/i.test(withoutTrailingComments);
+  return [
+    ...(hasExplicitTransaction ? [] : ['--single-transaction']),
+    '-f',
+    migration.fullPath,
+  ];
+}
+
 export function planMigrations(migrations, history) {
   const apply = [];
   const skip = [];
@@ -78,10 +104,12 @@ function readLocalMigrations() {
     .filter((entry) => entry.isFile() && MIGRATION_FILE_PATTERN.test(entry.name))
     .map((entry) => {
       const fullPath = path.join(MIGRATIONS_DIR, entry.name);
+      const sql = fs.readFileSync(fullPath, 'utf8');
       return {
         filename: entry.name,
         fullPath,
-        checksum: checksumSql(fs.readFileSync(fullPath, 'utf8')),
+        sql,
+        checksum: checksumSql(sql),
       };
     })
     .sort((a, b) => a.filename.localeCompare(b.filename));
@@ -117,7 +145,8 @@ function recordMigration(migration) {
 export function migrateSelfHosted({
   migrations = readLocalMigrations(),
   history = readMigrationHistory(),
-  applyMigration = (migration) => runPsql(['-f', migration.fullPath]),
+  applyMigration = (migration) =>
+    runPsql(buildMigrationPsqlArgs(migration)),
   saveMigration = recordMigration,
   log = console.log,
 } = {}) {

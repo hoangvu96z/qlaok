@@ -367,7 +367,8 @@ export default function CounterOrdersPage() {
                 tableLabel: brandNewOrder.table_label || translateRef.current('Tại quầy', 'Counter'),
                 totalFormatted: formatCurrency(
                   Number(brandNewOrder.total_amount) || 0,
-                  activeShop.currency
+                  activeShop.currency,
+                  locale
                 ),
                 itemsSummary,
                 shopName: activeShop.name,
@@ -450,7 +451,7 @@ export default function CounterOrdersPage() {
         if (!silent && !disposedRef.current && scopeRef.current === scope) setLoading(false);
       }
     },
-    [activeShop, profile?.id]
+    [activeShop, locale, profile?.id]
   );
 
   useEffect(() => {
@@ -1440,6 +1441,7 @@ export default function CounterOrdersPage() {
             editingOrder={editingOrder}
             onCancelEditOrder={() => setEditingOrder(null)}
             autoPrintOnPay={autoPrintOnPay}
+            canApplyDiscount={hasPermission('discount.apply')}
             onPrintOrder={(ord) => {
               setPrintingInitialTicketType(undefined);
               setPrintingOrder(ord);
@@ -2014,7 +2016,7 @@ export default function CounterOrdersPage() {
                           </button>
                         )}
 
-                        <button
+                        {hasPermission('orders.print_kitchen') && <button
                           type="button"
                           data-testid={`order-print-labels-${order.id}`}
                           onClick={() => {
@@ -2025,9 +2027,11 @@ export default function CounterOrdersPage() {
                         >
                           <Tag className="h-4 w-4 text-emerald-600" />
                           <span>{tx('In tem', 'Print labels')}</span>
-                        </button>
+                        </button>}
 
-                        <button
+                        {(order.payment_status === 'paid'
+                          ? hasPermission('orders.print_kitchen')
+                          : hasPermission('orders.print_provisional')) && <button
                           type="button"
                           onClick={() => {
                             setPrintingInitialTicketType(undefined);
@@ -2045,7 +2049,7 @@ export default function CounterOrdersPage() {
                               ? t('orders.actionPrintReceipt')
                               : t('orders.actionProvisionalBill')}
                           </span>
-                        </button>
+                        </button>}
                       </div>
                     )}
                   </div>
@@ -2515,7 +2519,8 @@ export default function CounterOrdersPage() {
                             ),
                             totalFormatted: formatCurrency(
                               125000,
-                              activeShop?.currency || 'VND'
+                              activeShop?.currency || 'VND',
+                              locale
                             ),
                             itemsSummary: tx(
                               '2x Phở Bò Tái Lăn, 1x Trà Đào',
