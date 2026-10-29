@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Wifi, Copy, Check } from 'lucide-react';
 import { SupportedLocale, WifiInfo } from '@/types/qlaok';
 import { UI_LABELS } from '@/lib/i18n-helper';
+import { getContrastTextColor } from '@/lib/theme-contrast';
 
 interface WifiBadgeProps {
   wifi: WifiInfo;
@@ -20,6 +21,7 @@ export function WifiBadge({
 }: WifiBadgeProps) {
   const [copied, setCopied] = useState(false);
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
+  const iconColor = getContrastTextColor(primaryColor);
 
   if (!wifi?.ssid) return null;
 
@@ -57,8 +59,8 @@ export function WifiBadge({
     <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex items-center justify-between gap-3">
       <div className="flex items-center gap-3 min-w-0">
         <div
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-sm"
-          style={{ backgroundColor: primaryColor }}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm"
+          style={{ backgroundColor: primaryColor, color: iconColor }}
         >
           <Wifi className="h-5 w-5" />
         </div>

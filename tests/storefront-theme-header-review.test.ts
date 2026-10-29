@@ -5,6 +5,8 @@ import {
   getHexLuminance,
   isLightColor,
   getContrastTextColor,
+  getAccessibleAccentTextColor,
+  getContrastRatio,
 } from '../src/lib/theme-contrast';
 
 test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() strings', () => {
@@ -26,6 +28,20 @@ test('theme-contrast: chooses the stronger readable foreground for varied shop c
     const ratio = (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05);
     assert.ok(ratio >= 4.5, `${color}: contrast ${ratio.toFixed(2)} is below 4.5`);
   }
+});
+
+test('theme-contrast: adjusts accent text dynamically to meet surface contrast', () => {
+  const emeraldText = getAccessibleAccentTextColor('#10b981');
+  assert.notEqual(emeraldText, '#10b981');
+  assert.ok(getContrastRatio(emeraldText, '#ffffff') >= 4.5);
+  assert.equal(getAccessibleAccentTextColor('#064e3b'), '#064e3b');
+
+  const redText = getAccessibleAccentTextColor('#ef4444');
+  assert.notEqual(redText, '#ef4444');
+  assert.ok(getContrastRatio(redText, '#ffffff') >= 4.5);
+
+  const textOnDarkSurface = getAccessibleAccentTextColor('#10b981', '#020617');
+  assert.ok(getContrastRatio(textOnDarkSurface, '#020617') >= 4.5);
 });
 
 test('theme-contrast: distinguishes light vs dark brand swatches accurately', () => {

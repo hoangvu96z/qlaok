@@ -41,6 +41,82 @@ export function getHexLuminance(color?: string | null): number {
 }
 
 /**
+ * Calculates the WCAG contrast ratio between a foreground and a background.
+ */
+export function getContrastRatio(
+  foreground?: string | null,
+  background?: string | null
+): number {
+  const foregroundLuminance = getHexLuminance(foreground);
+  const backgroundLuminance = getHexLuminance(background);
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  );
+}
+
+/**
+ * Keeps a shop's accent color for text when it is readable on the surface.
+ * Otherwise, shifts it toward the higher-contrast black or white endpoint just
+ * enough to meet the requested ratio while preserving the chosen hue as much
+ * as possible.
+ */
+export function getAccessibleAccentTextColor(
+  color?: string | null,
+  background = '#ffffff',
+  minimumContrast = 4.5
+): string {
+  const source = parseRgb(color);
+  const surface = parseRgb(background);
+  if (!surface) return '#020617';
+  if (!source) return getContrastTextColor(background);
+
+  const normalizedColor = `#${source
+    .map((channel) => Math.max(0, Math.min(255, channel)).toString(16).padStart(2, '0'))
+    .join('')}`;
+  if (getContrastRatio(normalizedColor, background) >= minimumContrast) {
+    return normalizedColor;
+  }
+
+  const endpoints: Array<[number, number, number]> = [
+    [0, 0, 0],
+    [255, 255, 255],
+  ];
+  const endpoint = endpoints.reduce((best, candidate) => {
+    const bestHex = `#${best.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+    const candidateHex = `#${candidate.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+    return getContrastRatio(candidateHex, background) > getContrastRatio(bestHex, background)
+      ? candidate
+      : best;
+  });
+
+  let low = 0;
+  let high = 1;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const amount = (low + high) / 2;
+    const candidate = source.map((channel, index) =>
+      Math.round(channel + (endpoint[index] - channel) * amount)
+    ) as [number, number, number];
+    const candidateHex = `#${candidate
+      .map((channel) => channel.toString(16).padStart(2, '0'))
+      .join('')}`;
+    if (getContrastRatio(candidateHex, background) >= minimumContrast) {
+      high = amount;
+    } else {
+      low = amount;
+    }
+  }
+
+  return `#${source
+    .map((channel, index) =>
+      Math.round(channel + (endpoint[index] - channel) * high)
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`;
+}
+
+/**
  * Returns true if a color has high relative luminance (is "light"),
  * meaning dark text/elements provide better contrast than white text.
  * Compare actual WCAG contrast ratios for slate-950 and white.

@@ -16,6 +16,10 @@ import {
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
+import {
+  getAccessibleAccentTextColor,
+  getContrastTextColor,
+} from '@/lib/theme-contrast';
 
 interface ItemDetailDrawerProps {
   item: CatalogItem | null;
@@ -43,6 +47,8 @@ export function ItemDetailDrawer({
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const quickTags = QUICK_TAGS_BY_VERTICAL[vertical] || [];
+  const accentTextColor = getAccessibleAccentTextColor(primaryColor);
+  const accentOnPrimaryColor = getContrastTextColor(primaryColor);
 
   useEffect(() => {
     if (item) {
@@ -182,7 +188,7 @@ export function ItemDetailDrawer({
                   <div className="text-right shrink-0">
                     <div
                       className="text-lg font-extrabold"
-                      style={{ color: primaryColor }}
+                      style={{ color: accentTextColor }}
                     >
                       {formatCurrency(item.price, currency)}
                     </div>
@@ -395,10 +401,11 @@ export function ItemDetailDrawer({
                   type="button"
                   onClick={handleConfirm}
                   disabled={!item.is_available}
+                  className="flex-1 flex items-center justify-between rounded-2xl px-5 py-3.5 text-sm font-bold shadow-md transition-transform active:scale-98 disabled:opacity-50"
                   style={{
                     backgroundColor: item.is_available ? primaryColor : '#94a3b8',
+                    color: item.is_available ? accentOnPrimaryColor : '#ffffff',
                   }}
-                  className="flex-1 flex items-center justify-between rounded-2xl px-5 py-3.5 text-sm font-bold text-white shadow-md transition-transform active:scale-98 disabled:opacity-50"
                 >
                   <span>{labels.addToOrder}</span>
                   <span>{formatCurrency(totalPrice, currency)}</span>

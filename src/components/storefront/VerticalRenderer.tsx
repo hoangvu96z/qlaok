@@ -9,6 +9,10 @@ import {
   SupportedLocale,
 } from '@/types/qlaok';
 import { formatCurrency, tField, UI_LABELS } from '@/lib/i18n-helper';
+import {
+  getAccessibleAccentTextColor,
+  getContrastTextColor,
+} from '@/lib/theme-contrast';
 
 interface VerticalRendererProps {
   vertical: BusinessVertical;
@@ -40,6 +44,8 @@ export function VerticalRenderer({
   onQuickAdd,
 }: VerticalRendererProps) {
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
+  const accentTextColor = getAccessibleAccentTextColor(primaryColor);
+  const accentOnPrimaryColor = getContrastTextColor(primaryColor);
   const q = searchQuery.trim().toLowerCase();
   const useGridLayout = layoutMode === 'grid' || (layoutMode !== 'list' && vertical === 'retail');
 
@@ -163,7 +169,7 @@ export function VerticalRenderer({
                         <div className="pt-1 flex items-baseline gap-2">
                           <span
                             className="text-sm font-extrabold"
-                            style={{ color: primaryColor }}
+                            style={{ color: accentTextColor }}
                           >
                             {formatCurrency(item.price, currency)}
                           </span>
@@ -192,8 +198,8 @@ export function VerticalRenderer({
                           <button
                             type="button"
                             onClick={(e) => onQuickAdd(item, e)}
-                            style={{ backgroundColor: primaryColor }}
-                            className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full text-white shadow-md ring-2 ring-white transition-transform active:scale-90"
+                            className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full shadow-md ring-2 ring-white transition-transform active:scale-90"
+                            style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
                             aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                           >
                             <Plus className="h-4 w-4" />
@@ -257,7 +263,7 @@ export function VerticalRenderer({
                         <div className="text-right shrink-0 flex items-center gap-2">
                           <span
                             className="text-sm font-extrabold"
-                            style={{ color: primaryColor }}
+                            style={{ color: accentTextColor }}
                           >
                             {formatCurrency(item.price, currency)}
                           </span>
@@ -265,8 +271,8 @@ export function VerticalRenderer({
                             <button
                               type="button"
                               onClick={(e) => onQuickAdd(item, e)}
-                              style={{ backgroundColor: primaryColor }}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg text-white shadow-xs active:scale-90"
+                              className="flex h-7 w-7 items-center justify-center rounded-lg shadow-xs active:scale-90"
+                              style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
                               aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                             >
                               <Plus className="h-3.5 w-3.5" />
@@ -400,7 +406,7 @@ export function VerticalRenderer({
                           <div>
                             <div
                               className="text-sm font-extrabold"
-                              style={{ color: primaryColor }}
+                              style={{ color: accentTextColor }}
                             >
                               {formatCurrency(item.price, currency)}
                             </div>
@@ -416,8 +422,8 @@ export function VerticalRenderer({
                             <button
                               type="button"
                               onClick={(e) => onQuickAdd(item, e)}
-                              style={{ backgroundColor: primaryColor }}
-                              className="flex h-7 w-7 items-center justify-center rounded-full text-white shadow-xs active:scale-90"
+                              className="flex h-7 w-7 items-center justify-center rounded-full shadow-xs active:scale-90"
+                              style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
                               aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
                             >
                               <ShoppingBag className="h-3.5 w-3.5" />
