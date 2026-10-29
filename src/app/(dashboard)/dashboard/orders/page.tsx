@@ -35,7 +35,6 @@ import {
   resolveCounterTodayTabLabel,
   startOrderLiveSync,
   type CounterOrdersSnapshotState,
-  type CounterTodayTabState,
   type OrderLiveStatus,
   type OrderLiveSyncHandle,
 } from '@/lib/order-live-sync';

@@ -287,7 +287,7 @@ export default function DashboardCatalogPage() {
     activeShopIdRef.current = activeShop?.id ?? null;
   }, [activeShop?.id]);
 
-  const isItemInCurrentShop = (item: CatalogItem) =>
+  const isItemInCurrentShop = (item: Pick<CatalogItem, 'shop_id'>) =>
     Boolean(
       activeShop?.id &&
         activeShopIdRef.current === activeShop.id &&
@@ -462,20 +462,71 @@ export default function DashboardCatalogPage() {
     }
   };
 
-  const upsertItem = (item: CatalogItem) => {
-    if (!isItemInCurrentShop(item) || !activeShop) return Promise.resolve(false);
-    return sendCatalogMutation(
-      '/api/catalog',
-      {
+  type CatalogItemMutationPatch = Partial<CatalogItem> & {
+    id: string;
+    shop_id: string;
+    category_id: string;
+    expected_stock_quantity?: number | null;
+  };
+
+  const upsertItem = async (
+    patch: CatalogItemMutationPatch
+  ): Promise<boolean> => {
+    if (!isItemInCurrentShop(patch) || !activeShop) return false;
+    const expectedShopId = activeShop.id;
+    if (activeShopIdRef.current !== expectedShopId) return false;
+    const fallback = tx(
+      'Không thể lưu thay đổi món',
+      'Could not save item changes'
+    );
+    try {
+      const res = await fetch('/api/catalog', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'upsert_item',
-          item: { ...item, shop_id: activeShop.id },
+          item: { ...patch, shop_id: expectedShopId },
         }),
-      },
-      tx('Không thể lưu thay đổi món', 'Could not save item changes')
-    );
+      });
+      if (activeShopIdRef.current !== expectedShopId) return false;
+      const payload = await res.json().catch(() => null);
+      if (activeShopIdRef.current !== expectedShopId) return false;
+
+      if (!res.ok) {
+        const isStockConflict =
+          res.status === 409 ||
+          (payload &&
+            typeof payload === 'object' &&
+            (payload as { code?: unknown }).code === 'STOCK_CONFLICT');
+        setMutationError(toMutationError(payload, fallback));
+        if (isStockConflict) {
+          void loadCatalog(true);
+        }
+        return false;
+      }
+
+      const rawItem =
+        payload && typeof payload === 'object'
+          ? (payload as { item?: unknown }).item
+          : null;
+      if (
+        rawItem &&
+        typeof rawItem === 'object' &&
+        (rawItem as { id?: unknown }).id === patch.id &&
+        (rawItem as { shop_id?: unknown }).shop_id === expectedShopId
+      ) {
+        const serverItem = rawItem as CatalogItem;
+        setItems((prev) =>
+          prev.map((i) => (i.id === patch.id ? { ...i, ...serverItem } : i))
+        );
+      }
+      setMutationError(null);
+      return true;
+    } catch (err) {
+      if (activeShopIdRef.current !== expectedShopId) return false;
+      setMutationError(toMutationError(err, fallback));
+      return false;
+    }
   };
 
   /** Restores the server-confirmed item snapshot after a rejected optimistic update. */
@@ -502,8 +553,9 @@ export default function DashboardCatalogPage() {
         body: JSON.stringify({
           action: 'upsert_item',
           item: {
-            ...item,
+            id: item.id,
             shop_id: activeShop!.id,
+            category_id: item.category_id,
             is_available: nextAvailable,
           },
         }),
@@ -613,7 +665,12 @@ export default function DashboardCatalogPage() {
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
-    const ok = await upsertItem({ ...item, price: nextPrice });
+    const ok = await upsertItem({
+      id: item.id,
+      shop_id: item.shop_id,
+      category_id: item.category_id,
+      price: nextPrice,
+    });
     if (!ok) {
       rollbackItem(item);
       return false;
@@ -627,8 +684,14 @@ export default function DashboardCatalogPage() {
     nextStock: number | null
   ): Promise<boolean> => {
     if (!isItemInCurrentShop(item)) return false;
+    const prevStock =
+      item.stock_quantity === undefined ? null : item.stock_quantity;
     const nextAvailable =
-      nextStock === 0 ? false : nextStock && nextStock > 0 ? true : item.is_available;
+      nextStock === 0
+        ? false
+        : nextStock !== null && nextStock > 0
+          ? true
+          : item.is_available;
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id
@@ -637,9 +700,12 @@ export default function DashboardCatalogPage() {
       )
     );
     const ok = await upsertItem({
-      ...item,
+      id: item.id,
+      shop_id: item.shop_id,
+      category_id: item.category_id,
       stock_quantity: nextStock,
-      is_available: nextAvailable,
+      expected_stock_quantity: prevStock,
+      ...(nextStock !== null ? { is_available: nextAvailable } : {}),
     });
     if (!ok) {
       rollbackItem(item);
@@ -672,7 +738,12 @@ export default function DashboardCatalogPage() {
         i.id === item.id ? { ...i, is_featured: nextFeatured } : i
       )
     );
-    const ok = await upsertItem({ ...item, is_featured: nextFeatured });
+    const ok = await upsertItem({
+      id: item.id,
+      shop_id: item.shop_id,
+      category_id: item.category_id,
+      is_featured: nextFeatured,
+    });
     if (!ok) {
       rollbackItem(item);
       return false;
@@ -691,7 +762,12 @@ export default function DashboardCatalogPage() {
         i.id === item.id ? { ...i, image_url: nextImageUrl } : i
       )
     );
-    const ok = await upsertItem({ ...item, image_url: nextImageUrl });
+    const ok = await upsertItem({
+      id: item.id,
+      shop_id: item.shop_id,
+      category_id: item.category_id,
+      image_url: nextImageUrl,
+    });
     if (!ok) {
       rollbackItem(item);
       return false;

@@ -6,7 +6,7 @@ import {
   NewOrderToastCard,
   TOAST_POSITION_CLASSES,
   type NewOrderToastCardProps,
-} from '@/app/(dashboard)/dashboard/layout';
+} from '@/components/dashboard/NewOrderToastCard';
 import type { OrderToastPosition } from '@/lib/order-chime';
 
 /**

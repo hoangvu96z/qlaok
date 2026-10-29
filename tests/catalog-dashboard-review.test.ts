@@ -553,3 +553,75 @@ test('QuickItemRow and DashboardCatalogPage render accessible row and page selec
     'Inventory-only members must still see the standard catalog loading state and menu navigation'
   );
 });
+
+test('Web and Mobile catalog UI callers send narrow item patches, attach expected_stock_quantity on stock updates, and refresh on STOCK_CONFLICT', async () => {
+  const { readFileSync } = await import('node:fs');
+  const path = await import('node:path');
+  const catalogPageSource = readFileSync(
+    path.join(process.cwd(), 'src/app/(dashboard)/dashboard/catalog/page.tsx'),
+    'utf8'
+  );
+  const excelModalSource = readFileSync(
+    path.join(process.cwd(), 'src/components/dashboard/CatalogExcelImportModal.tsx'),
+    'utf8'
+  );
+  const translationModalSource = readFileSync(
+    path.join(process.cwd(), 'src/components/dashboard/TranslationEditorModal.tsx'),
+    'utf8'
+  );
+  const mobileCatalogSource = readFileSync(
+    path.join(process.cwd(), 'mobile/src/components/tabs/CatalogTab.tsx'),
+    'utf8'
+  );
+
+  // 1. DashboardCatalogPage sends narrow patches and expected_stock_quantity on stock updates, and reloads on 409/STOCK_CONFLICT
+  assert.ok(
+    catalogPageSource.includes('expected_stock_quantity: prevStock'),
+    'DashboardCatalogPage handleUpdateStock must pass expected_stock_quantity: prevStock for atomic CAS'
+  );
+  assert.ok(
+    catalogPageSource.includes(".code === 'STOCK_CONFLICT'") &&
+      catalogPageSource.includes('res.status === 409') &&
+      catalogPageSource.includes('void loadCatalog(true)'),
+    'DashboardCatalogPage upsertItem must detect 409 / STOCK_CONFLICT and refresh catalog data'
+  );
+  assert.ok(
+    !catalogPageSource.includes('upsertItem({ ...item, price') &&
+      !catalogPageSource.includes('upsertItem({ ...item, is_featured') &&
+      !catalogPageSource.includes('upsertItem({ ...item, image_url'),
+    'DashboardCatalogPage quick handlers must not spread full stale item snapshots on price/featured/image edits'
+  );
+
+  // 2. CatalogExcelImportModal uses buildCatalogExcelBulkUpdateItems and refreshes catalog when updatedCount > 0 or STOCK_CONFLICT occurs
+  assert.ok(
+    excelModalSource.includes('buildCatalogExcelBulkUpdateItems(') &&
+      excelModalSource.includes('validationResult.validRows'),
+    'CatalogExcelImportModal must build narrow bulk update payloads via buildCatalogExcelBulkUpdateItems'
+  );
+  assert.ok(
+    excelModalSource.includes("r.code === 'STOCK_CONFLICT'") &&
+      excelModalSource.includes("data?.code === 'STOCK_CONFLICT'"),
+    'CatalogExcelImportModal must handle STOCK_CONFLICT responses and refresh catalog state'
+  );
+
+  // 3. TranslationEditorModal does not unconditionally overwrite stock_quantity or unchanged is_available on existing items
+  assert.ok(
+    translationModalSource.includes('isAvailable !== editingItem.is_available'),
+    'TranslationEditorModal must only send is_available on existing items when explicitly toggled'
+  );
+
+  // 4. Mobile CatalogTab sends narrow patches, passes expected_stock_quantity: prevStock, and refreshes shop data on failure/conflict
+  assert.ok(
+    mobileCatalogSource.includes('expected_stock_quantity: prevStock'),
+    'Mobile CatalogTab handleUpdateItemStock must send expected_stock_quantity: prevStock'
+  );
+  assert.ok(
+    !mobileCatalogSource.includes('item: { ...item, price:') &&
+      !mobileCatalogSource.includes('item: { ...item, is_available:'),
+    'Mobile CatalogTab must not spread full stale item objects on price or availability edits'
+  );
+  assert.ok(
+    mobileCatalogSource.includes('onReloadShopData(activeShop?.id)'),
+    'Mobile CatalogTab must reload shop data when a stock update conflicts or fails'
+  );
+});

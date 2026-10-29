@@ -355,7 +355,9 @@ export function TranslationEditorModal({
             : null,
           duration_mins: durationMins ? Number(durationMins) : null,
           image_url: imageUrl.trim() || null,
-          is_available: isAvailable,
+          ...(!editingItem || isAvailable !== editingItem.is_available
+            ? { is_available: isAvailable }
+            : {}),
           is_featured: isFeatured,
           name_i18n: nameI18n,
           desc_i18n: descI18n,

@@ -6694,23 +6694,43 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       assert.equal(recordedItemUpdates[0].patch.is_available, true);
       assert.equal('stock_quantity' in recordedItemUpdates[0].patch, false);
 
-      // 4. Explicit stock update behavior preserved: restocking zero-stock item to positive stock allows availability
+      // 4. Explicit stock update behavior preserved: restocking zero-stock item to positive stock requires expected_stock_quantity CAS and allows availability
       recordedItemUpdates.length = 0;
+      await assert.rejects(
+        async () => {
+          await dbUpsertItem({
+            id: 'item-zero-stock',
+            shop_id: 'shop-stock-1',
+            category_id: 'cat-stock-1',
+            stock_quantity: 5,
+            is_available: true,
+          });
+        },
+        /STOCK_CONFLICT/
+      );
+      assert.equal(
+        recordedItemUpdates.length,
+        0,
+        'Missing expected_stock_quantity must reject before any item update'
+      );
+
       const restocked = await dbUpsertItem({
         id: 'item-zero-stock',
         shop_id: 'shop-stock-1',
         category_id: 'cat-stock-1',
         stock_quantity: 5,
+        expected_stock_quantity: 0,
         is_available: true,
       });
       assert.equal(restocked.stock_quantity, 5);
       assert.equal(restocked.is_available, true);
       assert.equal(
         recordedItemUpdates.length,
-        2,
-        'Explicit stock_quantity must invoke setItemStockMetadata before item update'
+        1,
+        'Explicit stock_quantity must update stock_quantity and availability in a single atomic item update'
       );
       assert.equal(recordedItemUpdates[0].patch.stock_quantity, 5);
+      assert.equal(recordedItemUpdates[0].patch.is_available, true);
     } finally {
       setMposDbClientForTests(null);
       setSupabaseDbClientForTests(null);

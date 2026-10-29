@@ -67,7 +67,9 @@ export const CatalogTab = memo(function CatalogTab({
         body: JSON.stringify({
           action: 'upsert_item',
           item: {
-            ...item,
+            id: item.id,
+            shop_id: activeShop?.id ?? item.shop_id,
+            category_id: item.category_id,
             is_available: nextVal,
           },
         }),
@@ -148,7 +150,9 @@ export const CatalogTab = memo(function CatalogTab({
         body: JSON.stringify({
           action: 'upsert_item',
           item: {
-            ...item,
+            id: item.id,
+            shop_id: activeShop?.id ?? item.shop_id,
+            category_id: item.category_id,
             price: nextPrice,
           },
         }),
@@ -165,10 +169,11 @@ export const CatalogTab = memo(function CatalogTab({
       }
       setItems((prev) =>
         prev.map((current) =>
-          current.id === item.id ? payload.item! : current
+          current.id === item.id ? { ...current, ...payload.item! } : current
         )
       );
     } catch (error) {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)));
       Alert.alert(
         t('catalog.errPriceTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')
@@ -182,10 +187,12 @@ export const CatalogTab = memo(function CatalogTab({
     nextStock: number | null
   ) => {
     if (!canAdjustInventory && !canManageCatalog) return;
+    const prevStock =
+      item.stock_quantity === undefined ? null : item.stock_quantity;
     const nextAvail =
       nextStock === 0
         ? false
-        : nextStock && nextStock > 0
+        : nextStock !== null && nextStock > 0
           ? true
           : item.is_available;
 
@@ -198,19 +205,34 @@ export const CatalogTab = memo(function CatalogTab({
     );
 
     try {
-      await fetchApi('/api/catalog', {
+      const response = await fetchApi('/api/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'upsert_item',
           item: {
-            ...item,
+            id: item.id,
+            shop_id: activeShop?.id ?? item.shop_id,
+            category_id: item.category_id,
             stock_quantity: nextStock,
-            is_available: nextAvail,
+            expected_stock_quantity: prevStock,
+            ...(nextStock !== null ? { is_available: nextAvail } : {}),
           },
         }),
       });
+      const payload = (await response.json().catch(() => null)) as
+        | { item?: MobileCatalogItem }
+        | null;
+      if (!payload?.item || payload.item.id !== item.id) {
+        throw new Error(t('common.tryAgain'));
+      }
+      setItems((prev) =>
+        prev.map((current) =>
+          current.id === item.id ? { ...current, ...payload.item! } : current
+        )
+      );
     } catch (error) {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)));
       Alert.alert(
         t('catalog.errStockTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')

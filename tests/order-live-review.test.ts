@@ -5,7 +5,6 @@ import {
   createInitialCounterOrdersState,
   deriveCounterOrdersViewState,
   filterCounterTodayTabOrders,
-  getVnDateKey,
   readOrderEvents,
   reconcileCounterOrdersFetch,
   resolveCounterTodayTabLabel,
@@ -503,10 +502,23 @@ test('DashboardShell renders the shared full-card new-order toast and dismisses 
   assert.match(dashboardToastProps, /newOrderBadgeLabel=\{t\(/);
   assert.match(dashboardToastProps, /totalLabel=\{tx\(/);
 
-  const componentMatch = layoutSource.match(
-    /export function NewOrderToastCard\([\s\S]*?\n\}\n\nfunction DashboardShell/
+  assert.match(
+    layoutSource,
+    /import\s*\{[\s\S]*?\bNewOrderToastCard\b[\s\S]*?\}\s*from\s*['"]@\/components\/dashboard\/NewOrderToastCard['"][\s\S]*?function DashboardShell/,
+    'DashboardLayout must import shared NewOrderToastCard before DashboardShell without exporting non-layout symbols from layout.tsx'
   );
-  assert.ok(componentMatch, 'NewOrderToastCard implementation must exist before DashboardShell');
+
+  const toastCardSource = fsMod.readFileSync(
+    pathMod.join(
+      process.cwd(),
+      'src/components/dashboard/NewOrderToastCard.tsx'
+    ),
+    'utf8'
+  );
+  const componentMatch = toastCardSource.match(
+    /export function NewOrderToastCard\([\s\S]*\n\}/
+  );
+  assert.ok(componentMatch, 'NewOrderToastCard implementation must exist in shared component');
   const cardComponent = componentMatch[0];
 
   // The actual shared component uses one full-card link and one dismiss callback.

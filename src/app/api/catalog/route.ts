@@ -282,10 +282,27 @@ export async function POST(req: Request) {
         auth.membership,
         'catalog.manage'
       );
+      const hasExpectedStock =
+        (Object.prototype.hasOwnProperty.call(
+          incoming,
+          'expected_stock_quantity'
+        ) &&
+          incoming.expected_stock_quantity !== undefined) ||
+        (Object.prototype.hasOwnProperty.call(
+          incoming,
+          'expectedStockQuantity'
+        ) &&
+          incoming.expectedStockQuantity !== undefined);
+
+      const hasNonInventoryCatalogChanges =
+        Boolean(existing) && !permissionOptions.includes('inventory.adjust');
+
       let payload: Record<string, unknown>;
       if (canManageCatalog || !existing) {
-        if (incoming.price !== undefined) {
-          const parsedPrice = parseCatalogPriceValue(incoming.price);
+        payload = { ...incoming };
+
+        if (payload.price !== undefined) {
+          const parsedPrice = parseCatalogPriceValue(payload.price);
           if (!parsedPrice.valid) {
             return NextResponse.json(
               {
@@ -296,12 +313,123 @@ export async function POST(req: Request) {
               { status: 400 }
             );
           }
-          payload = { ...incoming, price: parsedPrice.price };
-        } else {
-          payload = incoming;
+          payload.price = parsedPrice.price;
+        }
+
+        if (payload.stock_quantity !== undefined) {
+          const parsedStock = parseCatalogStockValue(payload.stock_quantity);
+          if (!parsedStock.valid) {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'INVALID_STOCK_QUANTITY',
+                error: parsedStock.error,
+              },
+              { status: 400 }
+            );
+          }
+          payload.stock_quantity = parsedStock.stock;
+        }
+
+        if (hasExpectedStock) {
+          const rawExpected = Object.prototype.hasOwnProperty.call(
+            incoming,
+            'expected_stock_quantity'
+          )
+            ? incoming.expected_stock_quantity
+            : incoming.expectedStockQuantity;
+          const parsedExpected = parseCatalogStockValue(rawExpected);
+          if (!parsedExpected.valid) {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'INVALID_EXPECTED_STOCK_QUANTITY',
+                error: parsedExpected.error,
+              },
+              { status: 400 }
+            );
+          }
+          payload.expected_stock_quantity = parsedExpected.stock;
+        } else if (existing && payload.stock_quantity !== undefined) {
+          const incomingStockNormalized = payload.stock_quantity as
+            | number
+            | null;
+          const existingStockNormalized =
+            existing.stock_quantity === undefined
+              ? null
+              : (existing.stock_quantity as number | null);
+          const isEchoedSnapshotStock =
+            incomingStockNormalized === existingStockNormalized ||
+            (typeof incomingStockNormalized === 'number' &&
+              typeof existingStockNormalized === 'number' &&
+              typeof incoming.sold_count === 'number' &&
+              Number.isInteger(incoming.sold_count) &&
+              incoming.sold_count >= 0 &&
+              typeof existing.sold_count === 'number' &&
+              Number.isInteger(existing.sold_count) &&
+              incoming.sold_count <= existing.sold_count &&
+              incomingStockNormalized + incoming.sold_count ===
+                existingStockNormalized + existing.sold_count);
+          const hasAvailabilityToggle =
+            typeof incoming.is_available === 'boolean' &&
+            incoming.is_available !== Boolean(existing.is_available);
+
+          if (hasNonInventoryCatalogChanges && isEchoedSnapshotStock) {
+            delete payload.stock_quantity;
+            delete payload.is_available;
+            delete payload.sold_count;
+          } else if (
+            hasAvailabilityToggle &&
+            incomingStockNormalized === existingStockNormalized
+          ) {
+            delete payload.stock_quantity;
+            delete payload.sold_count;
+          } else {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'STOCK_CONFLICT',
+                error:
+                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
+              },
+              { status: 409 }
+            );
+          }
         }
       } else {
         payload = buildInventoryOnlyItemPatch(incoming, existing);
+        if (
+          existing &&
+          !hasExpectedStock &&
+          payload.stock_quantity !== undefined
+        ) {
+          const incomingStockNormalized = payload.stock_quantity as
+            | number
+            | null;
+          const existingStockNormalized =
+            existing.stock_quantity === undefined
+              ? null
+              : (existing.stock_quantity as number | null);
+          const hasAvailabilityToggle =
+            typeof incoming.is_available === 'boolean' &&
+            incoming.is_available !== Boolean(existing.is_available);
+          if (
+            hasAvailabilityToggle &&
+            incomingStockNormalized === existingStockNormalized
+          ) {
+            delete payload.stock_quantity;
+          } else {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'STOCK_CONFLICT',
+                error:
+                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
+              },
+              { status: 409 }
+            );
+          }
+        }
       }
 
       const item = await dbUpsertItem(
@@ -418,7 +546,12 @@ export async function POST(req: Request) {
       }
 
       const sb = getSupabaseDbClient();
-      const results: Array<{ id: string; success: boolean; error?: string }> = [];
+      const results: Array<{
+        id: string;
+        success: boolean;
+        code?: string;
+        error?: string;
+      }> = [];
       let updatedCount = 0;
 
       for (let idx = 0; idx < incomingItems.length; idx++) {
@@ -498,6 +631,38 @@ export async function POST(req: Request) {
           nextStock = parsedStockRes.stock;
         }
 
+        const hasExpectedStock =
+          (Object.prototype.hasOwnProperty.call(
+            rawEntry,
+            'expected_stock_quantity'
+          ) &&
+            rawEntry.expected_stock_quantity !== undefined) ||
+          (Object.prototype.hasOwnProperty.call(
+            rawEntry,
+            'expectedStockQuantity'
+          ) &&
+            rawEntry.expectedStockQuantity !== undefined);
+        let expectedStockNormalized: number | null | undefined = undefined;
+        if (hasExpectedStock) {
+          const rawExp = Object.prototype.hasOwnProperty.call(
+            rawEntry,
+            'expected_stock_quantity'
+          )
+            ? rawEntry.expected_stock_quantity
+            : rawEntry.expectedStockQuantity;
+          const parsedExpRes = parseCatalogStockValue(rawExp);
+          if (!parsedExpRes.valid) {
+            results.push({
+              id: itemId,
+              success: false,
+              code: 'INVALID_EXPECTED_STOCK_QUANTITY',
+              error: parsedExpRes.error,
+            });
+            continue;
+          }
+          expectedStockNormalized = parsedExpRes.stock;
+        }
+
         // Must provide at least price or stock_quantity to update
         if (nextPrice === undefined && nextStock === undefined) {
           results.push({
@@ -519,10 +684,24 @@ export async function POST(req: Request) {
           continue;
         }
 
+        if (nextStock !== undefined && !hasExpectedStock) {
+          results.push({
+            id: itemId,
+            success: false,
+            code: 'STOCK_CONFLICT',
+            error:
+              'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
+          });
+          continue;
+        }
+
         const currentStockNormalized =
           existing.stock_quantity === undefined ? null : existing.stock_quantity;
         const stockWillChange =
-          nextStock !== undefined && nextStock !== currentStockNormalized;
+          nextStock !== undefined &&
+          (nextStock !== currentStockNormalized ||
+            (hasExpectedStock &&
+              expectedStockNormalized !== currentStockNormalized));
         if (stockWillChange && !canManageCatalog && !canAdjustInventory) {
           results.push({
             id: itemId,
@@ -537,7 +716,7 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // Match handleUpdateStock semantics for derived availability:
+        // Match handleUpdateStock semantics for derived availability when stock_quantity is updated:
         // Setting stock to 0 sets is_available = false (sold out).
         // Restoring stock to > 0 sets is_available = true.
         // Unlimited stock (null) or untouched stock leaves is_available unchanged.
@@ -546,43 +725,61 @@ export async function POST(req: Request) {
             ? false
             : typeof nextStock === 'number' && nextStock > 0
               ? true
-              : Boolean(existing.is_available);
+              : undefined;
 
         try {
-          // Strictly protect all immutable fields from workbook/payload injection:
-          // Overwrite only price, stock_quantity, and derived is_available.
+          // Strictly protect all immutable fields and untouched inventory fields:
+          // Never pass sold_count or view_count, and only write stock_quantity /
+          // derived is_available when stock_quantity was actually provided.
           await dbUpsertItem({
             id: existing.id,
             shop_id: targetShopId,
             category_id: existing.category_id,
-            name_i18n: existing.name_i18n,
-            desc_i18n: existing.desc_i18n,
-            image_url: existing.image_url,
-            is_featured: existing.is_featured,
-            sort_order: existing.sort_order,
-            options_json: existing.options_json,
-            sold_count: existing.sold_count,
-            view_count: existing.view_count,
-            price: nextPrice !== undefined ? nextPrice : Number(existing.price),
-            stock_quantity: nextStock !== undefined ? nextStock : existing.stock_quantity,
-            is_available: nextStock !== undefined ? nextAvailable : Boolean(existing.is_available),
+            ...(priceWillChange && nextPrice !== undefined
+              ? { price: nextPrice }
+              : {}),
+            ...(stockWillChange && nextStock !== undefined
+              ? {
+                  stock_quantity: nextStock,
+                  ...(hasExpectedStock
+                    ? { expected_stock_quantity: expectedStockNormalized }
+                    : {}),
+                  ...(nextAvailable !== undefined
+                    ? { is_available: nextAvailable }
+                    : {}),
+                }
+              : {}),
           });
           updatedCount++;
           results.push({ id: itemId, success: true });
         } catch (updateErr) {
-          const msg =
+          const rawMsg =
             updateErr instanceof Error ? updateErr.message : 'Cập nhật thất bại.';
-          results.push({ id: itemId, success: false, error: msg });
+          const isConflict = rawMsg.startsWith('STOCK_CONFLICT:');
+          const cleanMsg = isConflict
+            ? rawMsg.replace(/^STOCK_CONFLICT:\s*/, '')
+            : rawMsg;
+          results.push({
+            id: itemId,
+            success: false,
+            ...(isConflict ? { code: 'STOCK_CONFLICT' } : {}),
+            error: cleanMsg,
+          });
         }
       }
 
       const overallSuccess = results.length > 0 && results.every((r) => r.success);
+      const hasStockConflict = results.some((r) => r.code === 'STOCK_CONFLICT');
 
-      return NextResponse.json({
-        success: overallSuccess,
-        updatedCount,
-        results,
-      });
+      return NextResponse.json(
+        {
+          success: overallSuccess,
+          ...(hasStockConflict ? { code: 'STOCK_CONFLICT' } : {}),
+          updatedCount,
+          results,
+        },
+        { status: updatedCount === 0 && hasStockConflict ? 409 : 200 }
+      );
     }
 
     if (action === 'bulk_move_items') {
@@ -913,7 +1110,218 @@ export async function POST(req: Request) {
       const normalizedItemIds = parsedIds.itemIds;
 
       const sb = getSupabaseDbClient();
+      const rpcClient = sb as unknown as {
+        rpc?: (
+          fn: string,
+          args: Record<string, unknown>
+        ) => Promise<{
+          data: unknown;
+          error: { message?: string; code?: string } | null;
+        }>;
+      };
 
+      if (typeof rpcClient.rpc === 'function') {
+        const { data: rpcRawData, error: rpcError } = await rpcClient.rpc(
+          'bulk_set_items_availability_atomic',
+          {
+            p_shop_id: targetShopId,
+            p_item_ids: normalizedItemIds,
+            p_is_available: targetAvailable,
+          }
+        );
+
+        if (rpcError) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'DB_UPDATE_FAILED',
+              updatedCount: 0,
+              count: 0,
+              error:
+                rpcError.message ||
+                'Không thể cập nhật trạng thái còn món cho các món đã chọn.',
+            },
+            { status: 500 }
+          );
+        }
+
+        const unwrappedRpcData = Array.isArray(rpcRawData)
+          ? rpcRawData[0]
+          : rpcRawData;
+        const rpcPayload =
+          unwrappedRpcData &&
+          typeof unwrappedRpcData === 'object' &&
+          'bulk_set_items_availability_atomic' in
+            (unwrappedRpcData as Record<string, unknown>)
+            ? (unwrappedRpcData as Record<string, unknown>)
+                .bulk_set_items_availability_atomic
+            : unwrappedRpcData;
+
+        if (
+          !rpcPayload ||
+          typeof rpcPayload !== 'object' ||
+          typeof (rpcPayload as { success?: unknown }).success !== 'boolean'
+        ) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'DB_UPDATE_FAILED',
+              updatedCount: 0,
+              count: 0,
+              error:
+                'Không thể xác nhận kết quả cập nhật trạng thái còn món từ cơ sở dữ liệu.',
+            },
+            { status: 500 }
+          );
+        }
+
+        const typedRpc = rpcPayload as {
+          success: boolean;
+          code?: string;
+          error?: string;
+          updated_count?: unknown;
+          count?: unknown;
+          zero_stock_item_ids?: unknown;
+        };
+
+        if (!typedRpc.success) {
+          const failureCode =
+            typeof typedRpc.code === 'string'
+              ? typedRpc.code
+              : 'DB_UPDATE_FAILED';
+
+          if (failureCode === 'ITEM_NOT_IN_SHOP') {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'ITEM_NOT_IN_SHOP',
+                error:
+                  typedRpc.error ||
+                  'Một hoặc nhiều món không tồn tại hoặc không thuộc cửa hàng này.',
+              },
+              { status: 400 }
+            );
+          }
+
+          if (failureCode === 'ZERO_STOCK_CANNOT_MARK_AVAILABLE') {
+            const zeroStockItemIds = Array.isArray(
+              typedRpc.zero_stock_item_ids
+            )
+              ? typedRpc.zero_stock_item_ids.filter(
+                  (id): id is string => typeof id === 'string'
+                )
+              : [];
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'ZERO_STOCK_CANNOT_MARK_AVAILABLE',
+                updatedCount: 0,
+                count: 0,
+                zeroStockItemIds,
+                error:
+                  typedRpc.error ||
+                  'Không thể bật còn hàng cho món có tồn kho bằng 0. Vui lòng nhập thêm tồn kho hoặc chuyển món sang tồn kho không giới hạn (∞) trước.',
+              },
+              { status: 409 }
+            );
+          }
+
+          if (failureCode === 'BULK_AVAILABILITY_COUNT_MISMATCH') {
+            return NextResponse.json(
+              {
+                success: false,
+                code: 'BULK_AVAILABILITY_COUNT_MISMATCH',
+                updatedCount: 0,
+                count: 0,
+                error:
+                  typedRpc.error ||
+                  'Số lượng món được cập nhật trạng thái không khớp với yêu cầu.',
+              },
+              { status: 409 }
+            );
+          }
+
+          if (
+            failureCode === 'INVALID_SHOP_ID' ||
+            failureCode === 'INVALID_AVAILABILITY' ||
+            failureCode === 'EMPTY_ITEM_IDS' ||
+            failureCode === 'INVALID_ITEM_IDS'
+          ) {
+            return NextResponse.json(
+              {
+                success: false,
+                code: failureCode,
+                error:
+                  typedRpc.error || 'Dữ liệu cập nhật hàng loạt không hợp lệ.',
+              },
+              { status: 400 }
+            );
+          }
+
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'DB_UPDATE_FAILED',
+              updatedCount: 0,
+              count: 0,
+              error:
+                typedRpc.error ||
+                'Không thể cập nhật trạng thái còn món cho các món đã chọn.',
+            },
+            { status: 500 }
+          );
+        }
+
+        const rpcAffectedCount =
+          typeof typedRpc.updated_count === 'number'
+            ? typedRpc.updated_count
+            : typeof typedRpc.count === 'number'
+              ? typedRpc.count
+              : null;
+
+        if (
+          rpcAffectedCount === null ||
+          rpcAffectedCount !== normalizedItemIds.length
+        ) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'BULK_AVAILABILITY_COUNT_MISMATCH',
+              updatedCount: 0,
+              count: 0,
+              error:
+                'Số lượng món được cập nhật trạng thái không khớp với yêu cầu.',
+            },
+            { status: 409 }
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          updatedCount: rpcAffectedCount,
+          count: rpcAffectedCount,
+          is_available: targetAvailable,
+          isAvailable: targetAvailable,
+          itemIds: normalizedItemIds,
+        });
+      }
+
+      if (process.env.NODE_ENV === 'production') {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'DB_UPDATE_FAILED',
+            updatedCount: 0,
+            count: 0,
+            error:
+              'Cơ sở dữ liệu không hỗ trợ RPC cập nhật trạng thái món nguyên tử (bulk_set_items_availability_atomic).',
+          },
+          { status: 500 }
+        );
+      }
+
+      // Non-production unit-test mock fallback when `sb.rpc` is not implemented on the stub.
+      // Never performs compensating snapshot rollback updates that could clobber concurrent writes.
       const verifiedItems = await fetchAndVerifyShopItems(
         sb,
         targetShopId,
@@ -950,15 +1358,28 @@ export async function POST(req: Request) {
         }
       }
 
-      const {
-        data: updatedRows,
-        error: updateErr,
-        count: updateCount,
-      } = await sb
+      let updateQuery = sb
         .from('items')
         .update({ is_available: targetAvailable }, { count: 'exact' })
         .eq('shop_id', targetShopId)
         .in('id', normalizedItemIds);
+
+      if (
+        targetAvailable &&
+        typeof (updateQuery as { or?: unknown }).or === 'function'
+      ) {
+        updateQuery = (
+          updateQuery as unknown as {
+            or: (filters: string) => typeof updateQuery;
+          }
+        ).or('stock_quantity.is.null,stock_quantity.gt.0');
+      }
+
+      const {
+        data: updatedRows,
+        error: updateErr,
+        count: updateCount,
+      } = await updateQuery;
 
       if (updateErr) {
         return NextResponse.json(
@@ -1011,6 +1432,46 @@ export async function POST(req: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Catalog operation failed';
+    if (message.startsWith('STOCK_CONFLICT:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'STOCK_CONFLICT',
+          error: message.replace(/^STOCK_CONFLICT:\s*/, ''),
+        },
+        { status: 409 }
+      );
+    }
+    if (message.startsWith('INVALID_STOCK_QUANTITY:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'INVALID_STOCK_QUANTITY',
+          error: message.replace(/^INVALID_STOCK_QUANTITY:\s*/, ''),
+        },
+        { status: 400 }
+      );
+    }
+    if (message.startsWith('INVALID_EXPECTED_STOCK_QUANTITY:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'INVALID_EXPECTED_STOCK_QUANTITY',
+          error: message.replace(/^INVALID_EXPECTED_STOCK_QUANTITY:\s*/, ''),
+        },
+        { status: 400 }
+      );
+    }
+    if (message.startsWith('INVALID_ITEM_PRICE:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'INVALID_ITEM_PRICE',
+          error: message.replace(/^INVALID_ITEM_PRICE:\s*/, ''),
+        },
+        { status: 400 }
+      );
+    }
     return NextResponse.json({ success: false, error: message }, { status: 400 });
   }
 }

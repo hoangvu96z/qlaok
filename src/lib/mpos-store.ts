@@ -678,6 +678,30 @@ export async function setItemStockMetadata(
   }
 }
 
+export function syncLocalItemStockOnly(
+  itemId: string,
+  stockQuantity: number | null,
+  fallbackSoldCount?: number
+) {
+  if (isOrderDbConfigured()) return;
+  const store = readStore();
+  const prev = store.inventory[itemId];
+  const normalizedFallbackSold =
+    typeof fallbackSoldCount === 'number' &&
+    Number.isFinite(fallbackSoldCount) &&
+    fallbackSoldCount >= 0
+      ? Math.floor(fallbackSoldCount)
+      : 0;
+  store.inventory[itemId] = {
+    stock_quantity: stockQuantity,
+    sold_count:
+      prev !== undefined
+        ? Math.max(prev.sold_count, normalizedFallbackSold)
+        : normalizedFallbackSold,
+  };
+  writeStore(store);
+}
+
 const VN_OFFSET_MS = 7 * 3600 * 1000;
 
 export function getVietnamDateKey(

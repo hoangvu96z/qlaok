@@ -1575,5 +1575,112 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       shopId: 'sql-shop',
     });
 
+    // 11. Verify 20261029000100_bulk_set_items_availability_atomic.sql:
+    // Re-run migration to verify idempotency
+    await db.exec('RESET ROLE');
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261029000100_bulk_set_items_availability_atomic.sql',
+        'utf8'
+      )
+    );
+
+    // Direct client execution by anon and authenticated is denied
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.role', 'anon', false), set_config('request.jwt.claims', '{\"role\":\"anon\"}', false); SET ROLE anon;"
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['item-1']::text[], true)"
+      ),
+      /permission denied/i
+    );
+
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.role', 'authenticated', false), set_config('request.jwt.claims', '{\"role\":\"authenticated\"}', false); SET ROLE authenticated;"
+    );
+    await assert.rejects(
+      db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['item-1']::text[], true)"
+      ),
+      /permission denied/i
+    );
+
+    // Switch to service_role and seed catalog fixtures for bulk atomic availability tests
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role;"
+    );
+    await db.exec(`
+      INSERT INTO categories (id, shop_id, sort_order, name_i18n)
+      VALUES
+        ('sql-bulk-cat', 'sql-shop', 1, '{"vi":"Món Chính"}'),
+        ('sql-bulk-pub-cat', 'sql-pub-shop', 1, '{"vi":"Món Khác"}');
+      INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+      VALUES
+        ('sql-bulk-null', 'sql-shop', 'sql-bulk-cat', '{"vi":"Trà Đá"}', 5000, NULL, 0, false),
+        ('sql-bulk-pos', 'sql-shop', 'sql-bulk-cat', '{"vi":"Phở Bò"}', 55000, 4, 0, false),
+        ('sql-bulk-zero', 'sql-shop', 'sql-bulk-cat', '{"vi":"Bánh Mì"}', 25000, 0, 3, false),
+        ('sql-bulk-other-shop', 'sql-pub-shop', 'sql-bulk-pub-cat', '{"vi":"Bún Chả"}', 45000, 5, 0, false);
+    `);
+
+    // Cross-shop item in batch must fail all-or-nothing with ITEM_NOT_IN_SHOP
+    const crossShopBulkRes = (
+      await db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['sql-bulk-null','sql-bulk-other-shop']::text[], true) AS result"
+      )
+    ).rows[0].result;
+    assert.equal(crossShopBulkRes.success, false);
+    assert.equal(crossShopBulkRes.code, 'ITEM_NOT_IN_SHOP');
+
+    // Zero-stock item in batch with p_is_available = true must fail all-or-nothing with ZERO_STOCK_CANNOT_MARK_AVAILABLE
+    const zeroStockBulkRes = (
+      await db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['sql-bulk-null','sql-bulk-pos','sql-bulk-zero']::text[], true) AS result"
+      )
+    ).rows[0].result;
+    assert.equal(zeroStockBulkRes.success, false);
+    assert.equal(zeroStockBulkRes.code, 'ZERO_STOCK_CANNOT_MARK_AVAILABLE');
+    assert.deepEqual(zeroStockBulkRes.zero_stock_item_ids, ['sql-bulk-zero']);
+
+    const itemsAfterRejectedBulk = (
+      await db.query(
+        "SELECT id, is_available FROM items WHERE id IN ('sql-bulk-null','sql-bulk-pos','sql-bulk-zero') ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(itemsAfterRejectedBulk, [
+      { id: 'sql-bulk-null', is_available: false },
+      { id: 'sql-bulk-pos', is_available: false },
+      { id: 'sql-bulk-zero', is_available: false },
+    ]);
+
+    // Valid batch (unlimited null + positive stock) succeeds atomically
+    const validBulkTrueRes = (
+      await db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['sql-bulk-null','sql-bulk-pos']::text[], true) AS result"
+      )
+    ).rows[0].result;
+    assert.equal(validBulkTrueRes.success, true);
+    assert.equal(validBulkTrueRes.updated_count, 2);
+
+    const itemsAfterValidBulkTrue = (
+      await db.query(
+        "SELECT id, is_available FROM items WHERE id IN ('sql-bulk-null','sql-bulk-pos','sql-bulk-zero') ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(itemsAfterValidBulkTrue, [
+      { id: 'sql-bulk-null', is_available: true },
+      { id: 'sql-bulk-pos', is_available: true },
+      { id: 'sql-bulk-zero', is_available: false },
+    ]);
+
+    // Bulk false succeeds on all items including zero-stock
+    const validBulkFalseRes = (
+      await db.query(
+        "SELECT public.bulk_set_items_availability_atomic('sql-shop', ARRAY['sql-bulk-null','sql-bulk-pos','sql-bulk-zero']::text[], false) AS result"
+      )
+    ).rows[0].result;
+    assert.equal(validBulkFalseRes.success, true);
+    assert.equal(validBulkFalseRes.updated_count, 3);
+
   } finally { await db.close(); }
 });

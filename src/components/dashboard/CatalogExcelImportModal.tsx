@@ -18,6 +18,7 @@ import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { getAuthHeaders } from '@/lib/auth-session';
 import {
   parseAndValidateCatalogExcel,
+  buildCatalogExcelBulkUpdateItems,
   downloadCatalogXlsx,
   MAX_CATALOG_EXCEL_FILE_SIZE,
   type CatalogImportValidationResult,
@@ -191,11 +192,9 @@ export function CatalogExcelImportModal({
     setPartialResult(null);
 
     try {
-      const itemsPayload = validationResult.validRows.map((r) => ({
-        id: r.rawId,
-        price: r.parsedPrice,
-        stock_quantity: r.parsedStock,
-      }));
+      const itemsPayload = buildCatalogExcelBulkUpdateItems(
+        validationResult.validRows
+      );
 
       const res = await fetch('/api/catalog', {
         method: 'POST',
@@ -208,19 +207,27 @@ export function CatalogExcelImportModal({
       });
 
       const data = await res.json().catch(() => null);
-      const results: Array<{ id: string; success: boolean; error?: string }> =
-        Array.isArray(data?.results) ? data.results : [];
+      const results: Array<{
+        id: string;
+        success: boolean;
+        code?: string;
+        error?: string;
+      }> = Array.isArray(data?.results) ? data.results : [];
       const updatedCount: number =
         typeof data?.updatedCount === 'number' ? data.updatedCount : 0;
       const failedResults = results.filter((r) => !r.success);
+      const hasStockConflict =
+        res.status === 409 ||
+        data?.code === 'STOCK_CONFLICT' ||
+        failedResults.some((r) => r.code === 'STOCK_CONFLICT');
 
-      // If at least one item was updated, notify parent so page reloads catalog & broadcasts catalog_changed!
-      if (updatedCount > 0) {
+      // If at least one item was updated OR a stock conflict occurred, notify parent so page reloads fresh catalog!
+      if (updatedCount > 0 || hasStockConflict) {
         onSuccess(updatedCount);
       }
 
-      // If HTTP error and zero updates succeeded
-      if (!res.ok && updatedCount === 0) {
+      // If HTTP error and zero updates succeeded and no per-item results exist
+      if (!res.ok && updatedCount === 0 && failedResults.length === 0) {
         const errorMsg =
           data?.error || tx('Không thể áp dụng cập nhật', 'Could not apply updates');
         setApplyError(errorMsg);
@@ -233,7 +240,7 @@ export function CatalogExcelImportModal({
         return;
       }
 
-      // Partial success or per-item failures:
+      // Partial success or per-item failures (including STOCK_CONFLICT):
       // Prevent user from applying the same stale preview a second time!
       setHasApplied(true);
       setPartialResult({
@@ -244,6 +251,7 @@ export function CatalogExcelImportModal({
       if (updatedCount === 0 && failedResults.length > 0) {
         setApplyError(
           data?.error ||
+            failedResults[0]?.error ||
             tx(
               'Tất cả {count} món đều cập nhật thất bại.',
               'All {count} items failed to update.',

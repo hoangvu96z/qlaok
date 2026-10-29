@@ -121,6 +121,8 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 20261028000100_analytics_atomic_view_count.sql
 20261028000200_floor_plan_active_orders_index.sql
 20261028000300_orders_order_code_unique.sql
+20261028000400_orders_pos_idempotency_prefix_unique.sql
+20261029000100_bulk_set_items_availability_atomic.sql
 ```
 
 `npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy migration PostgreSQL tự host theo thứ tự tên file, kiểm checksum và lưu lịch sử trong `public.schema_migrations`; script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.

@@ -12,6 +12,7 @@ import {
   paginateCatalogItems,
 } from '@/lib/catalog-pagination';
 import {
+  buildCatalogExcelBulkUpdateItems,
   buildCatalogXlsxWorkbook,
   hasValidZipMagicBytes,
   parseAndValidateCatalogExcel,
@@ -1035,6 +1036,7 @@ test('POST /api/catalog bulk_update_price_stock derives is_available matching ha
               id: 'item-fnb-001',
               price: 68000,
               stock_quantity: 0,
+              expected_stock_quantity: 10,
               // Injected fields that must be strictly ignored:
               shop_id: 'attacker-shop',
               sold_count: 999999,
@@ -1070,7 +1072,13 @@ test('POST /api/catalog bulk_update_price_stock derives is_available matching ha
         body: JSON.stringify({
           action: 'bulk_update_price_stock',
           shopId: 'shop-fnb-001',
-          items: [{ id: 'item-fnb-001', stock_quantity: 30 }],
+          items: [
+            {
+              id: 'item-fnb-001',
+              stock_quantity: 30,
+              expected_stock_quantity: 0,
+            },
+          ],
         }),
       })
     );
@@ -1094,7 +1102,13 @@ test('POST /api/catalog bulk_update_price_stock derives is_available matching ha
         body: JSON.stringify({
           action: 'bulk_update_price_stock',
           shopId: 'shop-fnb-001',
-          items: [{ id: 'item-fnb-001', stock_quantity: null }],
+          items: [
+            {
+              id: 'item-fnb-001',
+              stock_quantity: null,
+              expected_stock_quantity: 30,
+            },
+          ],
         }),
       })
     );
@@ -1345,7 +1359,13 @@ test('POST /api/catalog bulk_update_price_stock enforces integer-VND rule and re
         body: JSON.stringify({
           action: 'bulk_update_price_stock',
           shopId: 'shop-fnb-001',
-          items: [{ id: 'item-fnb-001', stock_quantity: 42 }],
+          items: [
+            {
+              id: 'item-fnb-001',
+              stock_quantity: 42,
+              expected_stock_quantity: 10,
+            },
+          ],
         }),
       })
     );
@@ -1695,6 +1715,7 @@ function createBulkCatalogMockHarness(options?: {
           ) {
             const eqFilters: Record<string, unknown> = {};
             const inFilters: Record<string, unknown[]> = {};
+            const orFilters: string[] = [];
             const executeUpdate = () => {
               updateCalls.push({
                 patch: { ...patch },
@@ -1717,7 +1738,18 @@ function createBulkCatalogMockHarness(options?: {
                 const inMatch = Object.entries(inFilters).every(([k, vals]) =>
                   vals.includes(item[k])
                 );
-                if (eqMatch && inMatch) {
+                const orMatch = orFilters.every((expr) => {
+                  if (expr === 'stock_quantity.is.null,stock_quantity.gt.0') {
+                    return (
+                      item.stock_quantity === null ||
+                      item.stock_quantity === undefined ||
+                      (typeof item.stock_quantity === 'number' &&
+                        item.stock_quantity > 0)
+                    );
+                  }
+                  return true;
+                });
+                if (eqMatch && inMatch && orMatch) {
                   itemsStore[i] = { ...itemsStore[i], ...patch };
                   updated.push({ ...itemsStore[i] });
                 }
@@ -1740,6 +1772,10 @@ function createBulkCatalogMockHarness(options?: {
               },
               in(field: string, vals: unknown[]) {
                 inFilters[field] = [...vals];
+                return builder;
+              },
+              or(expr: string) {
+                orFilters.push(expr);
                 return builder;
               },
               then(
@@ -4116,5 +4152,2873 @@ test('POST /api/catalog bulk_import and dbBulkImportCatalog validate all item pr
     assert.equal(dataValidBulk.createdItems[1].price, 1_000_000_000);
   } finally {
     setSupabaseDbClientForTests(null);
+  }
+});
+
+// ==========================================
+// Suite 10: Catalog Inventory Race Protection & Atomic Compare-And-Swap
+// ==========================================
+
+function createAtomicCatalogTestDb(
+  itemsStore: CatalogItem[],
+  categoriesStore: Array<{ id: string; shop_id: string }> = [
+    { id: 'cat-fnb-001', shop_id: 'shop-fnb-001' },
+  ],
+  hooks?: {
+    onBeforeItemUpdate?: (patch: Partial<CatalogItem>) => void | Promise<void>;
+  }
+) {
+  return {
+    from(table: string) {
+      if (table === 'items') {
+        return {
+          select(_fields = '*', opts?: { count?: string; head?: boolean }) {
+            if (opts?.head) {
+              return {
+                eq(_field: string, val: unknown) {
+                  const count = itemsStore.filter((i) => i.shop_id === val).length;
+                  return Promise.resolve({ count, error: null });
+                },
+              };
+            }
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const match = itemsStore.find(
+                      (item) => (item as unknown as Record<string, unknown>)[field] === val
+                    );
+                    return { data: match ? { ...match } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          insert(payload: CatalogItem) {
+            itemsStore.push({ ...payload });
+            return {
+              select(_fields = '*') {
+                return {
+                  async single() {
+                    return { data: { ...payload }, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(patch: Partial<CatalogItem>) {
+            const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+            const builder = {
+              eq(field: string, val: unknown) {
+                filters.push((row) => row[field] === val);
+                return builder;
+              },
+              is(field: string, val: unknown) {
+                filters.push((row) => row[field] === val);
+                return builder;
+              },
+              or(expr: string) {
+                if (expr === 'stock_quantity.is.null,stock_quantity.gt.0') {
+                  filters.push(
+                    (row) =>
+                      row.stock_quantity === null ||
+                      row.stock_quantity === undefined ||
+                      (typeof row.stock_quantity === 'number' &&
+                        row.stock_quantity > 0)
+                  );
+                }
+                return builder;
+              },
+              select(_fields = '*') {
+                return {
+                  async single() {
+                    if (hooks?.onBeforeItemUpdate) {
+                      await hooks.onBeforeItemUpdate(patch);
+                    }
+                    const idx = itemsStore.findIndex((item) =>
+                      filters.every((fn) => fn(item as unknown as Record<string, unknown>))
+                    );
+                    if (idx < 0) {
+                      return {
+                        data: null,
+                        error: {
+                          code: 'PGRST116',
+                          message: 'JSON object requested, multiple (or no) rows returned',
+                        },
+                      };
+                    }
+                    itemsStore[idx] = { ...itemsStore[idx], ...patch };
+                    return { data: { ...itemsStore[idx] }, error: null };
+                  },
+                };
+              },
+            };
+            return builder;
+          },
+          upsert(payload: CatalogItem) {
+            const idx = itemsStore.findIndex((i) => i.id === payload.id);
+            if (idx >= 0) {
+              itemsStore[idx] = { ...itemsStore[idx], ...payload };
+            } else {
+              itemsStore.push({ ...payload });
+            }
+            return {
+              select(_fields = '*') {
+                return {
+                  async single() {
+                    const item = itemsStore.find((i) => i.id === payload.id);
+                    return { data: item ? { ...item } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'categories') {
+        return {
+          select(_fields = '*') {
+            return {
+              eq(field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    const match = categoriesStore.find(
+                      (c) => (c as Record<string, unknown>)[field] === val
+                    );
+                    return { data: match ? { ...match } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'shops') {
+        return {
+          select(_fields = '*') {
+            return {
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'shop-fnb-001') {
+                      return {
+                        data: { id: 'shop-fnb-001', owner_id: 'owner-demo-001' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select(_fields = '*') {
+            return {
+              eq(_field: string, val: unknown) {
+                return {
+                  async maybeSingle() {
+                    if (val === 'owner-demo-001') {
+                      return {
+                        data: { id: 'owner-demo-001', plan: 'premium' },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      return {};
+    },
+  };
+}
+
+test('Catalog race protection: 2 interleaved orders exhausting stock + stale price/featured/image/translation edits preserve stock_quantity, sold_count, and sold-out is_available', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  // Initial state: stock_quantity = 5, sold_count = 0, price = 40000, is_available = true
+  const staleDashboardSnapshot: CatalogItem = {
+    id: 'item-race-001',
+    shop_id: 'shop-fnb-001',
+    category_id: 'cat-fnb-001',
+    name_i18n: { vi: 'Cà phê muối', en: 'Salted Coffee' },
+    desc_i18n: { vi: 'Thơm béo', en: 'Creamy' },
+    price: 40000,
+    stock_quantity: 5,
+    is_available: true,
+    is_featured: false,
+    options_json: [],
+    view_count: 10,
+    sold_count: 0,
+    sort_order: 1,
+  };
+
+  const itemsStore: CatalogItem[] = [{ ...staleDashboardSnapshot }];
+  setSupabaseDbClientForTests(createAtomicCatalogTestDb(itemsStore));
+
+  try {
+    // Simulate Order #1 (qty 2) and Order #2 (qty 3) deducting all 5 units in DB while dashboard is open
+    itemsStore[0] = {
+      ...itemsStore[0],
+      stock_quantity: 0,
+      sold_count: 5,
+      is_available: false,
+    };
+
+    // Case A: Narrow price edit from updated Web/Mobile UI
+    const resNarrowPrice = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-race-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            price: 45000,
+          },
+        }),
+      })
+    );
+    assert.equal(resNarrowPrice.status, 200);
+    const bodyNarrowPrice = await resNarrowPrice.json();
+    assert.equal(bodyNarrowPrice.item.price, 45000);
+    assert.equal(bodyNarrowPrice.item.stock_quantity, 0);
+    assert.equal(bodyNarrowPrice.item.sold_count, 5);
+    assert.equal(bodyNarrowPrice.item.is_available, false);
+
+    // Case B: Legacy/stale full-object spread price edit ({ ...staleDashboardSnapshot, price: 47000 })
+    // Even if a client echoes stale stock_quantity: 5, sold_count: 0, is_available: true without expected_stock_quantity,
+    // the server must NOT overwrite stock_quantity, sold_count, or is_available!
+    const resStaleSpreadPrice = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleDashboardSnapshot,
+            price: 47000,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaleSpreadPrice.status, 200);
+    const bodyStaleSpread = await resStaleSpreadPrice.json();
+    assert.equal(bodyStaleSpread.item.price, 47000);
+    assert.equal(
+      bodyStaleSpread.item.stock_quantity,
+      0,
+      'Stale price edit must never resurrect exhausted stock_quantity'
+    );
+    assert.equal(
+      bodyStaleSpread.item.sold_count,
+      5,
+      'Stale price edit must never reset server-managed sold_count'
+    );
+    assert.equal(
+      bodyStaleSpread.item.is_available,
+      false,
+      'Stale price edit must never mark sold-out item as available'
+    );
+
+    // Case C: Non-stock edits (is_featured, image_url, translations) + forged sold_count
+    const resMetadataEdit = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-race-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            name_i18n: { vi: 'Cà phê muối Huế', en: 'Hue Salted Coffee' },
+            is_featured: true,
+            image_url: 'https://example.com/coffee.jpg',
+            sold_count: 9999,
+            view_count: 8888,
+          },
+        }),
+      })
+    );
+    assert.equal(resMetadataEdit.status, 200);
+    const bodyMetadata = await resMetadataEdit.json();
+    assert.equal(bodyMetadata.item.name_i18n.vi, 'Cà phê muối Huế');
+    assert.equal(bodyMetadata.item.is_featured, true);
+    assert.equal(bodyMetadata.item.image_url, 'https://example.com/coffee.jpg');
+    assert.equal(bodyMetadata.item.stock_quantity, 0);
+    assert.equal(bodyMetadata.item.sold_count, 5, 'Client-supplied sold_count must be ignored');
+    assert.equal(bodyMetadata.item.view_count, 10, 'Client-supplied view_count must be ignored');
+    assert.equal(bodyMetadata.item.is_available, false);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('Catalog atomic CAS: stock edit after interleaved order returns 409 STOCK_CONFLICT, and succeeds after refresh', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const initialItem: CatalogItem = {
+    id: 'item-cas-001',
+    shop_id: 'shop-fnb-001',
+    category_id: 'cat-fnb-001',
+    name_i18n: { vi: 'Trà sữa nướng', en: 'Roasted Milk Tea' },
+    desc_i18n: { vi: '', en: '' },
+    price: 35000,
+    stock_quantity: 5,
+    is_available: true,
+    is_featured: false,
+    options_json: [],
+    view_count: 0,
+    sold_count: 0,
+    sort_order: 1,
+  };
+
+  const itemsStore: CatalogItem[] = [{ ...initialItem }];
+  setSupabaseDbClientForTests(createAtomicCatalogTestDb(itemsStore));
+
+  try {
+    // Interleaved order deducts 2 units: stock_quantity becomes 3, sold_count becomes 2
+    itemsStore[0] = {
+      ...itemsStore[0],
+      stock_quantity: 3,
+      sold_count: 2,
+    };
+
+    // 1. Manager attempts stock edit to 10 with stale expected_stock_quantity: 5 -> must fail with 409 STOCK_CONFLICT
+    const resConflict = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-cas-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 10,
+            expected_stock_quantity: 5,
+          },
+        }),
+      })
+    );
+    assert.equal(resConflict.status, 409);
+    const bodyConflict = await resConflict.json();
+    assert.equal(bodyConflict.code, 'STOCK_CONFLICT');
+    assert.equal(itemsStore[0].stock_quantity, 3, 'DB stock must remain untouched on CAS conflict');
+    assert.equal(itemsStore[0].sold_count, 2, 'DB sold_count must remain untouched on CAS conflict');
+
+    // 2. Legacy spread stock edit without expected_stock_quantity but carrying stale sold_count: 0 -> also fails with 409 STOCK_CONFLICT
+    const resLegacySpreadConflict = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...initialItem,
+            stock_quantity: 10,
+          },
+        }),
+      })
+    );
+    assert.equal(resLegacySpreadConflict.status, 409);
+    const bodyLegacyConflict = await resLegacySpreadConflict.json();
+    assert.equal(bodyLegacyConflict.code, 'STOCK_CONFLICT');
+    assert.equal(itemsStore[0].stock_quantity, 3);
+
+    // 3. Manager refreshes UI (sees stock_quantity = 3) and retries setting stock_quantity = 10 with expected_stock_quantity: 3
+    const resRetrySuccess = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-cas-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 10,
+            expected_stock_quantity: 3,
+          },
+        }),
+      })
+    );
+    assert.equal(resRetrySuccess.status, 200);
+    const bodyRetry = await resRetrySuccess.json();
+    assert.equal(bodyRetry.item.stock_quantity, 10);
+    assert.equal(bodyRetry.item.sold_count, 2, 'sold_count must remain 2 after stock update');
+    assert.equal(bodyRetry.item.is_available, true);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('Excel import: price-only row does not send or overwrite stock_quantity, while stock-edited row enforces expected_stock_quantity CAS', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const exportedItems: CatalogItem[] = [
+    {
+      id: 'item-excel-price-only',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-001',
+      name_i18n: { vi: 'Bạc xỉu', en: 'White Coffee' },
+      desc_i18n: { vi: '', en: '' },
+      price: 30000,
+      stock_quantity: 5,
+      is_available: true,
+      is_featured: false,
+      options_json: [],
+      view_count: 0,
+      sold_count: 1,
+      sort_order: 1,
+    },
+    {
+      id: 'item-excel-stock-edit',
+      shop_id: 'shop-fnb-001',
+      category_id: 'cat-fnb-001',
+      name_i18n: { vi: 'Bánh sừng bò', en: 'Croissant' },
+      desc_i18n: { vi: '', en: '' },
+      price: 25000,
+      stock_quantity: 8,
+      is_available: true,
+      is_featured: false,
+      options_json: [],
+      view_count: 0,
+      sold_count: 4,
+      sort_order: 2,
+    },
+  ];
+
+  // Build Excel workbook from snapshot before orders happen
+  const initialBytes = await buildCatalogXlsxWorkbook(exportedItems, [
+    {
+      id: 'cat-fnb-001',
+      shop_id: 'shop-fnb-001',
+      name_i18n: { vi: 'Đồ uống' },
+      sort_order: 1,
+      is_active: true,
+    },
+  ]);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(Uint8Array.from(initialBytes).buffer);
+
+  const sheet = workbook.getWorksheet('ThucDon')!;
+  // Row 2 is item-excel-price-only: edit ONLY price (col 5 -> 36000), leave stock cell at 5
+  sheet.getRow(2).getCell(5).value = 36000;
+  // Row 3 is item-excel-stock-edit: edit stock (col 6 -> 20), leave price at 25000
+  sheet.getRow(3).getCell(6).value = 20;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const validation = await parseAndValidateCatalogExcel(
+    new Uint8Array(buffer),
+    exportedItems
+  );
+
+  assert.equal(validation.validRows.length, 2);
+  const bulkItems = buildCatalogExcelBulkUpdateItems(validation.validRows);
+  assert.deepEqual(bulkItems, [
+    {
+      id: 'item-excel-price-only',
+      price: 36000,
+    },
+    {
+      id: 'item-excel-stock-edit',
+      stock_quantity: 20,
+      expected_stock_quantity: 8,
+    },
+  ]);
+
+  // Now simulate orders happening on BOTH items before the user clicks "Apply Import":
+  // - item-excel-price-only: stock drops 5 -> 2, sold_count 1 -> 4
+  // - item-excel-stock-edit: stock drops 8 -> 6, sold_count 4 -> 6
+  const itemsStore: CatalogItem[] = [
+    { ...exportedItems[0], stock_quantity: 2, sold_count: 4 },
+    { ...exportedItems[1], stock_quantity: 6, sold_count: 6 },
+  ];
+  setSupabaseDbClientForTests(createAtomicCatalogTestDb(itemsStore));
+
+  try {
+    const resBulk = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId: 'shop-fnb-001',
+          items: bulkItems,
+        }),
+      })
+    );
+
+    assert.equal(resBulk.status, 200);
+    const bodyBulk = await resBulk.json();
+    assert.equal(bodyBulk.success, false);
+    assert.equal(bodyBulk.code, 'STOCK_CONFLICT');
+    assert.equal(bodyBulk.updatedCount, 1);
+    assert.equal(bodyBulk.results.length, 2);
+
+    // Price-only item succeeded and kept live stock_quantity = 2, sold_count = 4
+    const updatedPriceItem = itemsStore.find((i) => i.id === 'item-excel-price-only')!;
+    assert.equal(updatedPriceItem.price, 36000);
+    assert.equal(updatedPriceItem.stock_quantity, 2);
+    assert.equal(updatedPriceItem.sold_count, 4);
+
+    // Stock-edited item had a concurrent order (expected 8 vs actual 6) -> flagged with STOCK_CONFLICT, stock_quantity = 6 preserved
+    const conflictResult = bodyBulk.results.find(
+      (r: { id: string }) => r.id === 'item-excel-stock-edit'
+    );
+    assert.equal(conflictResult.success, false);
+    assert.equal(conflictResult.code, 'STOCK_CONFLICT');
+
+    const untouchedStockItem = itemsStore.find((i) => i.id === 'item-excel-stock-edit')!;
+    assert.equal(untouchedStockItem.stock_quantity, 6);
+    assert.equal(untouchedStockItem.sold_count, 6);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('Catalog stock transitions: null (unlimited), 0 (sold out), positive stock, and new item insert handle CAS and server-managed sold_count accurately', async () => {
+  const { POST } = await import('@/app/api/catalog/route');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+
+  const ownerToken = issueSessionToken({
+    id: 'owner-demo-001',
+    email: 'chuquan@qlaok.vn',
+    role: 'owner',
+  });
+
+  const itemsStore: CatalogItem[] = [];
+  setSupabaseDbClientForTests(createAtomicCatalogTestDb(itemsStore));
+
+  try {
+    // 1. Insert new item with unlimited stock (null) and forged sold_count: 500
+    const resInsertUnlimited = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            name_i18n: { vi: 'Trà sen vàng', en: 'Lotus Tea' },
+            desc_i18n: { vi: '', en: '' },
+            price: 45000,
+            stock_quantity: null,
+            is_available: true,
+            sold_count: 500,
+          },
+        }),
+      })
+    );
+    assert.equal(resInsertUnlimited.status, 200);
+    const createdUnlimited = (await resInsertUnlimited.json()).item;
+    assert.equal(createdUnlimited.stock_quantity, null);
+    assert.equal(createdUnlimited.is_available, true);
+    assert.equal(createdUnlimited.sold_count, 0, 'New item insert must initialize sold_count to 0');
+
+    // 2. Transition null -> 10 with expected_stock_quantity: null succeeds
+    const resNullToTen = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 10,
+            expected_stock_quantity: null,
+          },
+        }),
+      })
+    );
+    assert.equal(resNullToTen.status, 200);
+    assert.equal(itemsStore[0].stock_quantity, 10);
+
+    // 3. Stale attempt to transition null -> 5 when stock is already 10 fails with 409 STOCK_CONFLICT
+    const resStaleNull = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 5,
+            expected_stock_quantity: null,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaleNull.status, 409);
+    assert.equal((await resStaleNull.json()).code, 'STOCK_CONFLICT');
+    assert.equal(itemsStore[0].stock_quantity, 10);
+
+    // 4. Transition 10 -> 0 sets is_available = false
+    const resTenToZero = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 0,
+            expected_stock_quantity: 10,
+          },
+        }),
+      })
+    );
+    assert.equal(resTenToZero.status, 200);
+    assert.equal(itemsStore[0].stock_quantity, 0);
+    assert.equal(itemsStore[0].is_available, false);
+
+    // 5. Transition 0 -> 8 restores is_available = true
+    const resZeroToEight = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: 8,
+            expected_stock_quantity: 0,
+          },
+        }),
+      })
+    );
+    assert.equal(resZeroToEight.status, 200);
+    assert.equal(itemsStore[0].stock_quantity, 8);
+    assert.equal(itemsStore[0].is_available, true);
+
+    // 6. Transition 8 -> null (unlimited) with expected_stock_quantity: 8 succeeds
+    const resEightToNull = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: 'item-lifecycle-001',
+            shop_id: 'shop-fnb-001',
+            category_id: 'cat-fnb-001',
+            stock_quantity: null,
+            expected_stock_quantity: 8,
+          },
+        }),
+      })
+    );
+    assert.equal(resEightToNull.status, 200);
+    assert.equal(itemsStore[0].stock_quantity, null);
+    assert.equal(itemsStore[0].is_available, true);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalog stock race scenarios end-to-end', async (t) => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { execSync, spawn } = await import('node:child_process');
+  const pgModule = await import('pg');
+  const pg = pgModule.default || pgModule;
+
+  if (!fs.existsSync('/opt/homebrew/bin/initdb') || !fs.existsSync('/opt/homebrew/bin/postgres')) {
+    t.skip('Local PostgreSQL binaries not found at /opt/homebrew/bin');
+    return;
+  }
+
+  const { POST: catalogPost, GET: catalogGet } = await import('@/app/api/catalog/route');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import('@/lib/shop-permissions');
+  const { setMposDbClientForTests } = await import('@/lib/mpos-store');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+
+  const testPort = 55459;
+  const tempPgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qlaok-pg-cat-race-fix-'));
+  let pgProc: ReturnType<typeof spawn> | null = null;
+  const openClients: Array<InstanceType<typeof pg.Client>> = [];
+
+  async function createPgClient() {
+    const client = new pg.Client({
+      host: '127.0.0.1',
+      port: testPort,
+      user: 'qlaok_race_admin',
+      database: 'postgres',
+    });
+    await client.connect();
+    openClients.push(client);
+    return client;
+  }
+
+  try {
+    execSync(`/opt/homebrew/bin/initdb -D "${tempPgDir}" -A trust -U qlaok_race_admin --no-instructions`, {
+      stdio: 'pipe',
+    });
+
+    pgProc = spawn(
+      '/opt/homebrew/bin/postgres',
+      [
+        '-D',
+        tempPgDir,
+        '-p',
+        String(testPort),
+        '-k',
+        '/tmp',
+        '-h',
+        '127.0.0.1',
+        '-c',
+        'listen_addresses=127.0.0.1',
+        '-c',
+        'fsync=off',
+        '-c',
+        'synchronous_commit=off',
+      ],
+      { stdio: 'pipe' }
+    );
+
+    let pgReady = false;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise((r) => setTimeout(r, 150));
+      try {
+        const probe = new pg.Client({
+          host: '127.0.0.1',
+          port: testPort,
+          user: 'qlaok_race_admin',
+          database: 'postgres',
+        });
+        await probe.connect();
+        await probe.query('SELECT 1;');
+        await probe.end();
+        pgReady = true;
+        break;
+      } catch {
+        // retry
+      }
+    }
+    assert.equal(pgReady, true, 'Ephemeral PostgreSQL must start');
+
+    const adminClient = await createPgClient();
+    const orderRpcClient = await createPgClient();
+
+    await adminClient.query(`
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+      CREATE TABLE public.profiles (
+        id TEXT PRIMARY KEY,
+        email VARCHAR(255),
+        role TEXT NOT NULL DEFAULT 'owner',
+        plan TEXT NOT NULL DEFAULT 'premium',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE public.shops (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+        slug VARCHAR(100) UNIQUE NOT NULL,
+        name VARCHAR(150) NOT NULL,
+        vertical VARCHAR(20) NOT NULL DEFAULT 'fnb',
+        tagline_i18n JSONB NOT NULL DEFAULT '{"vi": ""}'::jsonb,
+        description_i18n JSONB NOT NULL DEFAULT '{"vi": ""}'::jsonb,
+        city VARCHAR(100) NOT NULL DEFAULT 'TP. Hồ Chí Minh',
+        supported_langs TEXT[] NOT NULL DEFAULT ARRAY['vi', 'en'],
+        currency VARCHAR(10) NOT NULL DEFAULT 'VND',
+        theme_config JSONB NOT NULL DEFAULT '{"primaryColor": "#10b981"}'::jsonb,
+        is_published BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE public.categories (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        name_i18n JSONB NOT NULL DEFAULT '{"vi": "Danh mục"}'::jsonb,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE public.items (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+        category_id TEXT NOT NULL REFERENCES public.categories(id) ON DELETE CASCADE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        price NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        compare_at_price NUMERIC(12, 0),
+        unit_i18n JSONB DEFAULT '{"vi": "phần", "en": "portion"}'::jsonb,
+        duration_mins INTEGER,
+        image_url TEXT,
+        is_available BOOLEAN NOT NULL DEFAULT TRUE,
+        is_featured BOOLEAN NOT NULL DEFAULT FALSE,
+        name_i18n JSONB NOT NULL DEFAULT '{"vi": ""}'::jsonb,
+        desc_i18n JSONB NOT NULL DEFAULT '{"vi": ""}'::jsonb,
+        options_json JSONB DEFAULT '[]'::jsonb,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        stock_quantity INTEGER DEFAULT NULL,
+        sold_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE public.shop_tables (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+        table_code VARCHAR(30) NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        seat_capacity INTEGER NOT NULL DEFAULT 4,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE public.shop_memberships (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'owner',
+        permissions TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE public.orders (
+        id TEXT PRIMARY KEY,
+        order_code VARCHAR(30) NOT NULL,
+        shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+        table_id TEXT REFERENCES public.shop_tables(id) ON DELETE SET NULL,
+        table_label VARCHAR(60) NOT NULL DEFAULT 'Tại quầy',
+        session_id TEXT,
+        bill_version INTEGER NOT NULL DEFAULT 1,
+        visitor_lang VARCHAR(10) NOT NULL DEFAULT 'vi',
+        customer_note TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'new',
+        workflow_step_id VARCHAR(50) DEFAULT 'received',
+        payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
+        payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+        subtotal_amount NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        discount_amount NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        promo_discount_amount NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        manual_discount_amount NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        discount_code VARCHAR(50) DEFAULT NULL,
+        discount_reason TEXT DEFAULT NULL,
+        total_amount NUMERIC(12, 0) NOT NULL DEFAULT 0,
+        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+        source VARCHAR(20) NOT NULL DEFAULT 'qr_table',
+        tracking_token VARCHAR(100) DEFAULT NULL,
+        idempotency_key VARCHAR(100) DEFAULT NULL,
+        payment_idempotency_key VARCHAR(100) DEFAULT NULL,
+        paid_at TIMESTAMPTZ DEFAULT NULL,
+        paid_by TEXT DEFAULT NULL,
+        refunded_at TIMESTAMPTZ DEFAULT NULL,
+        refund_reason TEXT DEFAULT NULL,
+        refunded_by TEXT DEFAULT NULL,
+        cancelled_reason TEXT DEFAULT NULL,
+        cancel_reason TEXT DEFAULT NULL,
+        waste_recorded BOOLEAN NOT NULL DEFAULT FALSE,
+        print_count INTEGER NOT NULL DEFAULT 0,
+        kitchen_printed_count INTEGER NOT NULL DEFAULT 0,
+        provisional_printed_count INTEGER NOT NULL DEFAULT 0,
+        receipt_printed_count INTEGER NOT NULL DEFAULT 0,
+        label_printed_count INTEGER NOT NULL DEFAULT 0,
+        last_printed_at TIMESTAMPTZ DEFAULT NULL,
+        last_printed_by TEXT DEFAULT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await adminClient.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+          CREATE ROLE service_role NOLOGIN;
+        END IF;
+      END
+      $$;
+      CREATE OR REPLACE FUNCTION public.is_client_request_context()
+      RETURNS BOOLEAN
+      LANGUAGE sql
+      STABLE
+      AS $$
+        SELECT
+          current_user IN ('anon', 'authenticated')
+          OR COALESCE(current_setting('request.jwt.claim.role', true), '') IN ('anon', 'authenticated');
+      $$;
+    `);
+
+    const migration017Content = fs.readFileSync('supabase/migrations/017_order_workflow_rpc.sql', 'utf8');
+    const rpcMatch = migration017Content.match(
+      /CREATE OR REPLACE FUNCTION public\.commit_order_with_inventory[\s\S]*?END;\s*\$\$;/m
+    );
+    assert.ok(rpcMatch, 'commit_order_with_inventory must exist in migration 017');
+    await adminClient.query(rpcMatch[0]);
+
+    const bulkAvailMigrationSql = fs.readFileSync(
+      'supabase/migrations/20261029000100_bulk_set_items_availability_atomic.sql',
+      'utf8'
+    );
+    await adminClient.query(bulkAvailMigrationSql);
+
+    let queryQueue = Promise.resolve();
+    function safePgQuery(sql: string, params: unknown[]) {
+      const next = queryQueue.then(() => adminClient.query(sql, params));
+      queryQueue = next.then(
+        () => {},
+        () => {}
+      );
+      return next;
+    }
+
+    function normalizeRow(row: Record<string, unknown>) {
+      const normalized = { ...row };
+      for (const [k, v] of Object.entries(normalized)) {
+        if (typeof v === 'string' && (v.startsWith('{') || v.startsWith('['))) {
+          try {
+            normalized[k] = JSON.parse(v);
+          } catch {
+            // keep string
+          }
+        }
+      }
+      return normalized;
+    }
+
+    let beforeUpdateHook:
+      | ((
+          tableName: string,
+          updatePayload: Record<string, unknown>,
+          filters: Array<{ col: string; val: unknown; op: string }>,
+          orClauses: string[]
+        ) => Promise<void> | void)
+      | null = null;
+
+    class PostgresQueryBuilder {
+      tableName: string;
+      filters: Array<{ col: string; val: unknown; op: string }> = [];
+      orClauses: string[] = [];
+      selectedCols = '*';
+      selectOptions: { head?: boolean; count?: string } = {};
+      orderClauses: Array<{ col: string; ascending: boolean }> = [];
+      updatePayload: Record<string, unknown> | null = null;
+      insertPayload: Record<string, unknown> | Array<Record<string, unknown>> | null = null;
+      limitCount: number | null = null;
+      singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
+
+      constructor(tableName: string) {
+        this.tableName = tableName;
+      }
+      select(cols = '*', options: { head?: boolean; count?: string } = {}) {
+        this.selectedCols = cols;
+        this.selectOptions = options;
+        return this;
+      }
+      order(col: string, options: { ascending?: boolean } = {}) {
+        this.orderClauses.push({ col, ascending: options.ascending !== false });
+        return this;
+      }
+      update(payload: Record<string, unknown>) {
+        this.updatePayload = payload;
+        return this;
+      }
+      insert(payload: Record<string, unknown> | Array<Record<string, unknown>>) {
+        this.insertPayload = payload;
+        return this;
+      }
+      upsert(payload: Record<string, unknown> | Array<Record<string, unknown>>) {
+        this.insertPayload = payload;
+        return this;
+      }
+      eq(col: string, val: unknown) {
+        this.filters.push({ col, val, op: '=' });
+        return this;
+      }
+      is(col: string, val: unknown) {
+        this.filters.push({ col, val, op: '=' });
+        return this;
+      }
+      in(col: string, vals: unknown[]) {
+        this.filters.push({ col, val: vals, op: 'IN' });
+        return this;
+      }
+      or(expr: string) {
+        this.orClauses.push(expr);
+        return this;
+      }
+      limit(n: number) {
+        this.limitCount = n;
+        return this;
+      }
+      single() {
+        this.singleMode = 'single';
+        return this.execute();
+      }
+      maybeSingle() {
+        this.singleMode = 'maybeSingle';
+        return this.execute();
+      }
+      then(
+        resolve?: ((value: unknown) => unknown) | null,
+        reject?: ((reason: unknown) => unknown) | null
+      ) {
+        return this.execute().then(resolve ?? undefined, reject ?? undefined);
+      }
+      async execute() {
+        try {
+          if (this.updatePayload && beforeUpdateHook) {
+            await beforeUpdateHook(
+              this.tableName,
+              this.updatePayload,
+              this.filters,
+              this.orClauses
+            );
+          }
+
+          const params: unknown[] = [];
+          const conditions: string[] = [];
+          for (const f of this.filters) {
+            if (f.op === 'IN' && Array.isArray(f.val)) {
+              params.push(f.val);
+              conditions.push(`"${f.col}" = ANY($${params.length}::text[])`);
+              continue;
+            }
+            if (f.val === null) {
+              conditions.push(f.op === '=' ? `"${f.col}" IS NULL` : `"${f.col}" IS NOT NULL`);
+              continue;
+            }
+            params.push(f.val);
+            conditions.push(`"${f.col}" ${f.op} $${params.length}`);
+          }
+          for (const expr of this.orClauses) {
+            if (expr === 'stock_quantity.is.null,stock_quantity.gt.0') {
+              conditions.push(`("stock_quantity" IS NULL OR "stock_quantity" > 0)`);
+            }
+          }
+          const whereClause =
+            conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
+
+          if (this.updatePayload) {
+            const setClauses: string[] = [];
+            for (const [k, v] of Object.entries(this.updatePayload)) {
+              params.push(typeof v === 'object' && v !== null ? JSON.stringify(v) : v);
+              setClauses.push(`"${k}" = $${params.length}`);
+            }
+            const sql = `UPDATE "${this.tableName}" SET ${setClauses.join(', ')}${whereClause} RETURNING *;`;
+            const res = await safePgQuery(sql, params);
+            const rows = res.rows.map(normalizeRow);
+            if (this.singleMode === 'single') {
+              if (rows.length === 0) {
+                return { data: null, error: { message: 'Row not found', code: 'PGRST116' } };
+              }
+              return { data: rows[0], error: null };
+            }
+            if (this.singleMode === 'maybeSingle') return { data: rows[0] || null, error: null };
+            return { data: rows, count: rows.length, error: null };
+          }
+
+          if (this.insertPayload) {
+            const rowsToInsert = Array.isArray(this.insertPayload)
+              ? this.insertPayload
+              : [this.insertPayload];
+            const cols = Object.keys(rowsToInsert[0]);
+            const colNames = cols.map((c) => `"${c}"`).join(', ');
+            const valClauses: string[] = [];
+            for (const r of rowsToInsert) {
+              const rowParams = cols.map((c) => {
+                const val = r[c];
+                params.push(typeof val === 'object' && val !== null ? JSON.stringify(val) : val);
+                return `$${params.length}`;
+              });
+              valClauses.push(`(${rowParams.join(', ')})`);
+            }
+            const sql = `INSERT INTO "${this.tableName}" (${colNames}) VALUES ${valClauses.join(', ')} RETURNING *;`;
+            const res = await safePgQuery(sql, params);
+            const rows = res.rows.map(normalizeRow);
+            if (this.singleMode === 'single') return { data: rows[0], error: null };
+            if (this.singleMode === 'maybeSingle') return { data: rows[0] || null, error: null };
+            return { data: rows, count: rows.length, error: null };
+          }
+
+          if (this.selectOptions?.head) {
+            const countRes = await safePgQuery(
+              `SELECT count(*)::int as count FROM "${this.tableName}"${whereClause};`,
+              params
+            );
+            return { data: null, count: countRes.rows[0]?.count ?? 0, error: null };
+          }
+
+          const orderClause =
+            this.orderClauses.length > 0
+              ? ' ORDER BY ' +
+                this.orderClauses
+                  .map((o) => `"${o.col}" ${o.ascending ? 'ASC' : 'DESC'}`)
+                  .join(', ')
+              : '';
+          const limitClause = this.limitCount ? ` LIMIT ${this.limitCount}` : '';
+          const res = await safePgQuery(
+            `SELECT * FROM "${this.tableName}"${whereClause}${orderClause}${limitClause};`,
+            params
+          );
+          const rows = res.rows.map(normalizeRow);
+          if (this.singleMode === 'single') return { data: rows[0], error: null };
+          if (this.singleMode === 'maybeSingle') return { data: rows[0] || null, error: null };
+          return { data: rows, count: rows.length, error: null };
+        } catch (err) {
+          const e = err as { message?: string; code?: string };
+          return { data: null, error: { message: e.message || 'PG error', code: e.code || 'PG_ERR' } };
+        }
+      }
+    }
+
+    const pgAdapter = {
+      from: (tableName: string) => new PostgresQueryBuilder(tableName),
+      rpc: async (fnName: string, args: Record<string, unknown>) => {
+        try {
+          if (fnName === 'bulk_set_items_availability_atomic') {
+            const res = await safePgQuery(
+              `SELECT public.bulk_set_items_availability_atomic($1::text, $2::text[], $3::boolean) AS result;`,
+              [
+                args.p_shop_id ?? null,
+                Array.isArray(args.p_item_ids) ? args.p_item_ids : null,
+                typeof args.p_is_available === 'boolean'
+                  ? args.p_is_available
+                  : null,
+              ]
+            );
+            return { data: res.rows[0]?.result ?? null, error: null };
+          }
+          throw new Error(`Unsupported RPC in pgAdapter: ${fnName}`);
+        } catch (err) {
+          const e = err as { message?: string; code?: string };
+          return {
+            data: null,
+            error: {
+              message: e.message || 'PG RPC error',
+              code: e.code || 'PG_RPC_ERR',
+            },
+          };
+        }
+      },
+    };
+    setSupabaseDbClientForTests(pgAdapter);
+    setShopMembershipDbClientForTest(pgAdapter as unknown as Parameters<typeof setShopMembershipDbClientForTest>[0]);
+    setMposDbClientForTests(pgAdapter, true);
+
+    const ownerId = '00000000-0000-4000-8000-000000000901';
+    const shopId = 'shop-cat-race-001';
+    const catId = 'cat-race-001';
+    const tableId = 'tbl-race-001';
+
+    await adminClient.query(
+      `INSERT INTO profiles (id, email, role, plan) VALUES ($1, 'owner-race@isolated.local', 'owner', 'premium')`,
+      [ownerId]
+    );
+    await adminClient.query(
+      `INSERT INTO shops (id, owner_id, slug, name, vertical, is_published) VALUES ($1, $2, 'quan-test-race', 'Quán Test Race', 'fnb', true)`,
+      [shopId, ownerId]
+    );
+    await adminClient.query(
+      `INSERT INTO categories (id, shop_id, sort_order, name_i18n) VALUES ($1, $2, 1, '{"vi": "Đồ uống"}'::jsonb)`,
+      [catId, shopId]
+    );
+    await adminClient.query(
+      `INSERT INTO shop_tables (id, shop_id, table_code, name, is_active) VALUES ($1, $2, 'T01', 'Bàn 01', true)`,
+      [tableId, shopId]
+    );
+    await adminClient.query(
+      `INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active)
+       VALUES ('mem-race-owner', $1, $2, 'owner', ARRAY['catalog.manage', 'inventory.adjust'], true)`,
+      [shopId, ownerId]
+    );
+
+    const ownerToken = issueSessionToken({
+      id: ownerId,
+      email: 'owner-race@isolated.local',
+      role: 'owner',
+      account_type: 'owner',
+    });
+
+    // Scenario 1: Stock edit conflict after interleaved order RPC + retry + unlimited (null) CAS + legacy client without expected_stock_quantity
+    const item1Id = 'item-race-stock-1';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES ($1, $2, $3, '{"vi": "Cà Phê Sữa Đá"}'::jsonb, 35000, 5, 0, true)`,
+      [item1Id, shopId, catId]
+    );
+
+    const getRes1 = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    const clientSnapshot1 = (await getRes1.json()).items.find((i: CatalogItem) => i.id === item1Id);
+
+    // Order RPC deducts 2 (stock: 5 -> 3, sold: 0 -> 2)
+    await orderRpcClient.query(`SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`, [
+      JSON.stringify({
+        id: 'ord-pg-1',
+        order_code: 'ORD-PG-1',
+        shop_id: shopId,
+        table_id: tableId,
+        table_label: 'Bàn 01',
+        idempotency_key: 'idemp-pg-1',
+        total_amount: 70000,
+        subtotal_amount: 70000,
+        payment_status: 'unpaid',
+        status: 'new',
+        items: [{ item_id: item1Id, quantity: 2, unit_price: 35000, extra_price: 0, name_vi: 'Cà Phê Sữa Đá' }],
+      }),
+      JSON.stringify([{ item_id: item1Id, delta: 2 }]),
+    ]);
+
+    // 1A. Stale stock edit (expected_stock_quantity: 5) -> must return 409 STOCK_CONFLICT and NOT overwrite DB
+    const postStaleStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 10,
+            expected_stock_quantity: clientSnapshot1.stock_quantity,
+          },
+        }),
+      })
+    );
+    assert.equal(postStaleStock.status, 409);
+    assert.equal((await postStaleStock.json()).code, 'STOCK_CONFLICT');
+
+    // 1B. Legacy narrow stock edit WITHOUT expected_stock_quantity -> must return 409 STOCK_CONFLICT and NOT overwrite DB
+    const postLegacyNarrowStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 10,
+          },
+        }),
+      })
+    );
+    assert.equal(postLegacyNarrowStock.status, 409);
+    assert.equal((await postLegacyNarrowStock.json()).code, 'STOCK_CONFLICT');
+
+    // 1C. Legacy full-spread stock edit WITHOUT expected_stock_quantity -> must return 409 STOCK_CONFLICT and NOT overwrite DB
+    const postLegacySpreadStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...clientSnapshot1,
+            shop_id: shopId,
+            stock_quantity: 10,
+          },
+        }),
+      })
+    );
+    assert.equal(postLegacySpreadStock.status, 409);
+    assert.equal((await postLegacySpreadStock.json()).code, 'STOCK_CONFLICT');
+
+    // 1D. Legacy unlimited (null) stock edit WITHOUT expected_stock_quantity -> must return 409 STOCK_CONFLICT and NOT overwrite DB
+    const postLegacyNullStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: null,
+          },
+        }),
+      })
+    );
+    assert.equal(postLegacyNullStock.status, 409);
+    assert.equal((await postLegacyNullStock.json()).code, 'STOCK_CONFLICT');
+
+    // 1E. Legacy no-op full spread (echoing stale stock_quantity: 5 without changing catalog fields) -> must return 409 STOCK_CONFLICT
+    const postLegacyNoopSpread = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...clientSnapshot1,
+            shop_id: shopId,
+          },
+        }),
+      })
+    );
+    assert.equal(postLegacyNoopSpread.status, 409);
+    assert.equal((await postLegacyNoopSpread.json()).code, 'STOCK_CONFLICT');
+
+    const { rows: rowsAfterConflict } = await adminClient.query(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = $1`,
+      [item1Id]
+    );
+    assert.equal(rowsAfterConflict[0].stock_quantity, 3);
+    assert.equal(rowsAfterConflict[0].sold_count, 2);
+
+    // 1F. Client re-reads GET /api/catalog (sees stock_quantity = 3) and retries with expected_stock_quantity: 3 -> succeeds
+    const getRes1Refresh = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    const refreshedSnapshot1 = (await getRes1Refresh.json()).items.find((i: CatalogItem) => i.id === item1Id);
+    assert.equal(refreshedSnapshot1.stock_quantity, 3);
+
+    const postFreshStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 10,
+            expected_stock_quantity: refreshedSnapshot1.stock_quantity,
+          },
+        }),
+      })
+    );
+    assert.equal(postFreshStock.status, 200);
+
+    // 1G. Transition 10 -> null (unlimited) with expected_stock_quantity: 10, then null -> 6 with expected_stock_quantity: null
+    const postToNull = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: null,
+            expected_stock_quantity: 10,
+          },
+        }),
+      })
+    );
+    assert.equal(postToNull.status, 200);
+    const { rows: rowsUnlimited } = await adminClient.query(
+      `SELECT stock_quantity, sold_count FROM items WHERE id = $1`,
+      [item1Id]
+    );
+    assert.equal(rowsUnlimited[0].stock_quantity, null);
+    assert.equal(rowsUnlimited[0].sold_count, 2);
+
+    const postFromNullToSix = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 6,
+            expected_stock_quantity: null,
+          },
+        }),
+      })
+    );
+    assert.equal(postFromNullToSix.status, 200);
+
+    // Stale attempt with expected_stock_quantity: null when DB is now 6 must fail with 409 STOCK_CONFLICT
+    const postStaleNullExpectation = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item1Id,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 4,
+            expected_stock_quantity: null,
+          },
+        }),
+      })
+    );
+    assert.equal(postStaleNullExpectation.status, 409);
+    assert.equal((await postStaleNullExpectation.json()).code, 'STOCK_CONFLICT');
+
+    // Scenario 2: 2 orders drain stock (5 -> 3 -> 0), then stale price edit (both narrow and spread) preserves stock=0, sold=5, is_available=false
+    const item2Id = 'item-race-price-2';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES ($1, $2, $3, '{"vi": "Trà Đào Cam Sả"}'::jsonb, 40000, 5, 0, true)`,
+      [item2Id, shopId, catId]
+    );
+
+    const getRes2 = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    const clientSnapshot2 = (await getRes2.json()).items.find((i: CatalogItem) => i.id === item2Id);
+
+    // Order #1 buys 2, Order #2 buys 3 -> stock=0, sold=5, is_available=false
+    await orderRpcClient.query(`SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`, [
+      JSON.stringify({
+        id: 'ord-pg-2a',
+        order_code: 'ORD-PG-2A',
+        shop_id: shopId,
+        table_id: tableId,
+        table_label: 'Bàn 01',
+        idempotency_key: 'idemp-pg-2a',
+        total_amount: 80000,
+        subtotal_amount: 80000,
+        payment_status: 'unpaid',
+        status: 'new',
+        items: [{ item_id: item2Id, quantity: 2, unit_price: 40000, extra_price: 0, name_vi: 'Trà Đào Cam Sả' }],
+      }),
+      JSON.stringify([{ item_id: item2Id, delta: 2 }]),
+    ]);
+    await orderRpcClient.query(`SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`, [
+      JSON.stringify({
+        id: 'ord-pg-2b',
+        order_code: 'ORD-PG-2B',
+        shop_id: shopId,
+        table_id: tableId,
+        table_label: 'Bàn 01',
+        idempotency_key: 'idemp-pg-2b',
+        total_amount: 120000,
+        subtotal_amount: 120000,
+        payment_status: 'unpaid',
+        status: 'new',
+        items: [{ item_id: item2Id, quantity: 3, unit_price: 40000, extra_price: 0, name_vi: 'Trà Đào Cam Sả' }],
+      }),
+      JSON.stringify([{ item_id: item2Id, delta: 3 }]),
+    ]);
+
+    // 2A. Narrow price edit ({ id, shop_id, category_id, price: 43000 })
+    const postNarrowPriceRes = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: item2Id,
+            shop_id: shopId,
+            category_id: catId,
+            price: 43000,
+          },
+        }),
+      })
+    );
+    assert.equal(postNarrowPriceRes.status, 200);
+
+    // 2B. Legacy stale spread price edit ({ ...clientSnapshot2, price: 45000 })
+    const postPriceRes = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...clientSnapshot2,
+            shop_id: shopId,
+            price: 45000,
+          },
+        }),
+      })
+    );
+    assert.equal(postPriceRes.status, 200);
+
+    // 2C. Ambiguous legacy payload trying to change BOTH price and stock_quantity without expected_stock_quantity -> rejected with 409
+    const postAmbiguousPriceAndStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...clientSnapshot2,
+            shop_id: shopId,
+            price: 49000,
+            stock_quantity: 12,
+          },
+        }),
+      })
+    );
+    assert.equal(postAmbiguousPriceAndStock.status, 409);
+    assert.equal((await postAmbiguousPriceAndStock.json()).code, 'STOCK_CONFLICT');
+
+    const { rows: rowsAfterPriceEdit } = await adminClient.query(
+      `SELECT stock_quantity, sold_count, is_available, price::int AS price FROM items WHERE id = $1`,
+      [item2Id]
+    );
+    assert.equal(rowsAfterPriceEdit[0].price, 45000);
+    assert.equal(rowsAfterPriceEdit[0].stock_quantity, 0);
+    assert.equal(rowsAfterPriceEdit[0].sold_count, 5);
+    assert.equal(rowsAfterPriceEdit[0].is_available, false);
+
+    // Scenario 3: Bulk (Excel import + bulk price bar + legacy bulk without expected_stock_quantity + null stock)
+    const itemBulkPriceId = 'item-race-bulk-price-3';
+    const itemBulkStockId = 'item-race-bulk-stock-4';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES
+         ($1, $3, $4, '{"vi": "Bạc Xỉu Đá"}'::jsonb, 30000, 5, 1, true),
+         ($2, $3, $4, '{"vi": "Bánh Sừng Bò"}'::jsonb, 25000, 8, 4, true)`,
+      [itemBulkPriceId, itemBulkStockId, shopId, catId]
+    );
+
+    const getResBulk = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    const bulkExportItems = (await getResBulk.json()).items.filter((i: CatalogItem) =>
+      [itemBulkPriceId, itemBulkStockId].includes(i.id)
+    );
+
+    const excelBytes = await buildCatalogXlsxWorkbook(bulkExportItems, [
+      { id: catId, shop_id: shopId, name_i18n: { vi: 'Đồ uống' }, sort_order: 1, is_active: true },
+    ]);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Uint8Array.from(excelBytes).buffer);
+    const ws = wb.getWorksheet('ThucDon')!;
+    for (let r = 2; r <= ws.rowCount; r++) {
+      const row = ws.getRow(r);
+      const idVal = String(row.getCell(1).value || '').trim();
+      if (idVal === itemBulkPriceId) {
+        row.getCell(5).value = 36000; // price-only edit in Excel
+      } else if (idVal === itemBulkStockId) {
+        row.getCell(6).value = 20; // stock edit in Excel
+      }
+    }
+    const editedExcelBuf = await wb.xlsx.writeBuffer();
+    const excelValidation = await parseAndValidateCatalogExcel(
+      new Uint8Array(editedExcelBuf),
+      bulkExportItems
+    );
+    const excelBulkPayload = buildCatalogExcelBulkUpdateItems(excelValidation.validRows);
+
+    // Concurrent orders deduct stock on BOTH items before Excel import is applied:
+    // itemBulkPriceId: stock 5 -> 2, sold 1 -> 4
+    // itemBulkStockId: stock 8 -> 5, sold 4 -> 7
+    await orderRpcClient.query(`SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`, [
+      JSON.stringify({
+        id: 'ord-pg-3',
+        order_code: 'ORD-PG-3',
+        shop_id: shopId,
+        table_id: tableId,
+        table_label: 'Bàn 01',
+        idempotency_key: 'idemp-pg-3',
+        total_amount: 165000,
+        subtotal_amount: 165000,
+        payment_status: 'unpaid',
+        status: 'new',
+        items: [
+          { item_id: itemBulkPriceId, quantity: 3, unit_price: 30000, extra_price: 0, name_vi: 'Bạc Xỉu Đá' },
+          { item_id: itemBulkStockId, quantity: 3, unit_price: 25000, extra_price: 0, name_vi: 'Bánh Sừng Bò' },
+        ],
+      }),
+      JSON.stringify([
+        { item_id: itemBulkPriceId, delta: 3 },
+        { item_id: itemBulkStockId, delta: 3 },
+      ]),
+    ]);
+
+    // 3A. Apply Excel bulk update: price-only row succeeds (preserving stock=2, sold=4); stock-edited row fails with STOCK_CONFLICT (preserving stock=5, sold=7)
+    const resExcelBulk = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId,
+          items: excelBulkPayload,
+        }),
+      })
+    );
+    assert.equal(resExcelBulk.status, 200);
+    const bodyExcelBulk = await resExcelBulk.json();
+    assert.equal(bodyExcelBulk.success, false);
+    assert.equal(bodyExcelBulk.code, 'STOCK_CONFLICT');
+    assert.equal(bodyExcelBulk.updatedCount, 1);
+
+    const { rows: rowsBulkPrice } = await adminClient.query(
+      `SELECT price::int AS price, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemBulkPriceId]
+    );
+    assert.equal(rowsBulkPrice[0].price, 36000);
+    assert.equal(rowsBulkPrice[0].stock_quantity, 2);
+    assert.equal(rowsBulkPrice[0].sold_count, 4);
+
+    const { rows: rowsBulkStock } = await adminClient.query(
+      `SELECT price::int AS price, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemBulkStockId]
+    );
+    assert.equal(rowsBulkStock[0].price, 25000);
+    assert.equal(rowsBulkStock[0].stock_quantity, 5);
+    assert.equal(rowsBulkStock[0].sold_count, 7);
+
+    // 3B. Legacy bulk_update_price_stock payloads without expected_stock_quantity (finite, mixed price+stock, and null unlimited) must all be rejected with 409 STOCK_CONFLICT
+    const resLegacyBulkMissingSnapshot = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId,
+          items: [
+            { id: itemBulkPriceId, price: 39000, stock_quantity: 5 },
+            { id: itemBulkStockId, stock_quantity: null },
+          ],
+        }),
+      })
+    );
+    assert.equal(resLegacyBulkMissingSnapshot.status, 409);
+    const bodyLegacyMissing = await resLegacyBulkMissingSnapshot.json();
+    assert.equal(bodyLegacyMissing.success, false);
+    assert.equal(bodyLegacyMissing.code, 'STOCK_CONFLICT');
+    assert.equal(bodyLegacyMissing.updatedCount, 0);
+
+    const { rows: rowsAfterLegacyBulk } = await adminClient.query(
+      `SELECT id, price::int AS price, stock_quantity, sold_count FROM items WHERE id = ANY($1::text[]) ORDER BY id`,
+      [[itemBulkPriceId, itemBulkStockId]]
+    );
+    assert.equal(rowsAfterLegacyBulk[0].price, 36000);
+    assert.equal(rowsAfterLegacyBulk[0].stock_quantity, 2);
+    assert.equal(rowsAfterLegacyBulk[0].sold_count, 4);
+    assert.equal(rowsAfterLegacyBulk[1].price, 25000);
+    assert.equal(rowsAfterLegacyBulk[1].stock_quantity, 5);
+    assert.equal(rowsAfterLegacyBulk[1].sold_count, 7);
+
+    // Scenario 4: Single-item availability toggle (is_available=true) racing with concurrent order draining stock to 0 after pre-read and before UPDATE
+    const invStaffId = '00000000-0000-4000-8000-000000000902';
+    const catCashierId = '00000000-0000-4000-8000-000000000903';
+    const viewStaffId = '00000000-0000-4000-8000-000000000904';
+    await adminClient.query(
+      `INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active)
+       VALUES
+         ('mem-race-inv-staff', $1, $2, 'staff', ARRAY['inventory.adjust'], true),
+         ('mem-race-cat-cashier', $1, $3, 'cashier', ARRAY['catalog.manage'], true),
+         ('mem-race-view-staff', $1, $4, 'staff', ARRAY['catalog.view'], true)`,
+      [shopId, invStaffId, catCashierId, viewStaffId]
+    );
+    const invStaffToken = issueSessionToken({
+      id: invStaffId,
+      email: 'inv-staff@isolated.local',
+      role: 'staff',
+    });
+    const catCashierToken = issueSessionToken({
+      id: catCashierId,
+      email: 'cat-cashier@isolated.local',
+      role: 'cashier',
+    });
+    const viewStaffToken = issueSessionToken({
+      id: viewStaffId,
+      email: 'view-staff@isolated.local',
+      role: 'staff',
+    });
+
+    const itemAvailRaceZeroId = 'item-race-avail-zero-5';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES ($1, $2, $3, '{"vi": "Bánh Mì Chảo"}'::jsonb, 45000, 1, 0, true)`,
+      [itemAvailRaceZeroId, shopId, catId]
+    );
+
+    // 4A. Narrow Web/Mobile availability toggle (is_available: true) races with concurrent order draining stock 1 -> 0 after pre-read and before UPDATE
+    let observedNonZeroPredicateOnSingle = false;
+    let singleRaceHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload, _filters, orClauses) => {
+      if (
+        tableName === 'items' &&
+        !singleRaceHookFired &&
+        updatePayload.is_available === true
+      ) {
+        singleRaceHookFired = true;
+        observedNonZeroPredicateOnSingle = orClauses.includes(
+          'stock_quantity.is.null,stock_quantity.gt.0'
+        );
+        await orderRpcClient.query(
+          `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+          [
+            JSON.stringify({
+              id: 'ord-pg-4a',
+              order_code: 'ORD-PG-4A',
+              shop_id: shopId,
+              table_id: tableId,
+              table_label: 'Bàn 01',
+              idempotency_key: 'idemp-pg-4a',
+              total_amount: 45000,
+              subtotal_amount: 45000,
+              payment_status: 'unpaid',
+              status: 'new',
+              items: [
+                {
+                  item_id: itemAvailRaceZeroId,
+                  quantity: 1,
+                  unit_price: 45000,
+                  extra_price: 0,
+                  name_vi: 'Bánh Mì Chảo',
+                },
+              ],
+            }),
+            JSON.stringify([{ item_id: itemAvailRaceZeroId, delta: 1 }]),
+          ]
+        );
+      }
+    };
+
+    const resSingleAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemAvailRaceZeroId,
+            shop_id: shopId,
+            category_id: catId,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    beforeUpdateHook = null;
+
+    assert.equal(singleRaceHookFired, true, 'Mid-handler order race hook must fire before UPDATE');
+    assert.equal(
+      observedNonZeroPredicateOnSingle,
+      true,
+      'dbUpsertItem UPDATE must include atomic stock_quantity.is.null,stock_quantity.gt.0 predicate'
+    );
+    assert.equal(resSingleAvailRace.status, 200);
+    const bodySingleAvailRace = await resSingleAvailRace.json();
+    assert.equal(
+      bodySingleAvailRace.item.stock_quantity,
+      0,
+      'Returned item must reflect stock_quantity = 0'
+    );
+    assert.equal(
+      bodySingleAvailRace.item.sold_count,
+      1,
+      'Returned item must reflect sold_count = 1 from concurrent order'
+    );
+    assert.equal(
+      bodySingleAvailRace.item.is_available,
+      false,
+      'Returned item must keep is_available = false when concurrent order drained stock to 0'
+    );
+
+    const { rows: rowsSingleAvailRace } = await adminClient.query(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = $1`,
+      [itemAvailRaceZeroId]
+    );
+    assert.equal(rowsSingleAvailRace[0].stock_quantity, 0);
+    assert.equal(rowsSingleAvailRace[0].sold_count, 1);
+    assert.equal(rowsSingleAvailRace[0].is_available, false);
+
+    // 4B. Legacy spread availability toggle + price edit with is_available=true racing with order draining stock 1 -> 0 after pre-read
+    await adminClient.query(
+      `UPDATE items SET stock_quantity = 1, is_available = false WHERE id = $1`,
+      [itemAvailRaceZeroId]
+    );
+    const getLegacySnapRes = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    const legacySnap = (await getLegacySnapRes.json()).items.find(
+      (i: CatalogItem) => i.id === itemAvailRaceZeroId
+    );
+    assert.equal(legacySnap.stock_quantity, 1);
+    assert.equal(legacySnap.is_available, false);
+
+    let legacyRaceHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload) => {
+      if (
+        tableName === 'items' &&
+        !legacyRaceHookFired &&
+        updatePayload.is_available === true
+      ) {
+        legacyRaceHookFired = true;
+        // Another staff member re-enabled and a customer order immediately bought the last unit on connection #2
+        await orderRpcClient.query(
+          `UPDATE items SET is_available = true WHERE id = $1`,
+          [itemAvailRaceZeroId]
+        );
+        await orderRpcClient.query(
+          `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+          [
+            JSON.stringify({
+              id: 'ord-pg-4b',
+              order_code: 'ORD-PG-4B',
+              shop_id: shopId,
+              table_id: tableId,
+              table_label: 'Bàn 01',
+              idempotency_key: 'idemp-pg-4b',
+              total_amount: 45000,
+              subtotal_amount: 45000,
+              payment_status: 'unpaid',
+              status: 'new',
+              items: [
+                {
+                  item_id: itemAvailRaceZeroId,
+                  quantity: 1,
+                  unit_price: 45000,
+                  extra_price: 0,
+                  name_vi: 'Bánh Mì Chảo',
+                },
+              ],
+            }),
+            JSON.stringify([{ item_id: itemAvailRaceZeroId, delta: 1 }]),
+          ]
+        );
+      }
+    };
+
+    const resLegacySpreadAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...legacySnap,
+            shop_id: shopId,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    beforeUpdateHook = null;
+
+    assert.equal(legacyRaceHookFired, true);
+    assert.equal(resLegacySpreadAvailRace.status, 200);
+    const bodyLegacySpreadAvailRace = await resLegacySpreadAvailRace.json();
+    assert.equal(bodyLegacySpreadAvailRace.item.stock_quantity, 0);
+    assert.equal(bodyLegacySpreadAvailRace.item.sold_count, 2);
+    assert.equal(bodyLegacySpreadAvailRace.item.is_available, false);
+
+    // Non-stock edit (price: 49000) + is_available: true when order drains stock 1 -> 0 after pre-read saves price=49000 while keeping is_available=false
+    await adminClient.query(
+      `UPDATE items SET stock_quantity = 1, is_available = true WHERE id = $1`,
+      [itemAvailRaceZeroId]
+    );
+    let priceAndAvailRaceHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload) => {
+      if (
+        tableName === 'items' &&
+        !priceAndAvailRaceHookFired &&
+        updatePayload.is_available === true
+      ) {
+        priceAndAvailRaceHookFired = true;
+        await orderRpcClient.query(
+          `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+          [
+            JSON.stringify({
+              id: 'ord-pg-4b2',
+              order_code: 'ORD-PG-4B2',
+              shop_id: shopId,
+              table_id: tableId,
+              table_label: 'Bàn 01',
+              idempotency_key: 'idemp-pg-4b2',
+              total_amount: 45000,
+              subtotal_amount: 45000,
+              payment_status: 'unpaid',
+              status: 'new',
+              items: [
+                {
+                  item_id: itemAvailRaceZeroId,
+                  quantity: 1,
+                  unit_price: 45000,
+                  extra_price: 0,
+                  name_vi: 'Bánh Mì Chảo',
+                },
+              ],
+            }),
+            JSON.stringify([{ item_id: itemAvailRaceZeroId, delta: 1 }]),
+          ]
+        );
+      }
+    };
+
+    const resPriceAndAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemAvailRaceZeroId,
+            shop_id: shopId,
+            category_id: catId,
+            price: 49000,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    beforeUpdateHook = null;
+
+    assert.equal(priceAndAvailRaceHookFired, true);
+    assert.equal(resPriceAndAvailRace.status, 200);
+    const bodyPriceAndAvailRace = await resPriceAndAvailRace.json();
+    assert.equal(bodyPriceAndAvailRace.item.price, 49000);
+    assert.equal(bodyPriceAndAvailRace.item.stock_quantity, 0);
+    assert.equal(bodyPriceAndAvailRace.item.sold_count, 3);
+    assert.equal(bodyPriceAndAvailRace.item.is_available, false);
+
+    // 4C. Positive stock (5 -> 2 > 0 during race) and unlimited stock (null) preserve valid availability toggles
+    const itemPositiveRaceId = 'item-race-avail-pos-6';
+    const itemUnlimitedRaceId = 'item-race-avail-null-7';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES
+         ($1, $3, $4, '{"vi": "Phở Gà Ta"}'::jsonb, 50000, 5, 0, false),
+         ($2, $3, $4, '{"vi": "Trà Đá Miễn Phí"}'::jsonb, 5000, NULL, 0, false)`,
+      [itemPositiveRaceId, itemUnlimitedRaceId, shopId, catId]
+    );
+
+    let posRaceHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload) => {
+      if (
+        tableName === 'items' &&
+        !posRaceHookFired &&
+        updatePayload.is_available === true
+      ) {
+        posRaceHookFired = true;
+        await orderRpcClient.query(
+          `UPDATE items SET is_available = true WHERE id = $1`,
+          [itemPositiveRaceId]
+        );
+        await orderRpcClient.query(
+          `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+          [
+            JSON.stringify({
+              id: 'ord-pg-4c',
+              order_code: 'ORD-PG-4C',
+              shop_id: shopId,
+              table_id: tableId,
+              table_label: 'Bàn 01',
+              idempotency_key: 'idemp-pg-4c',
+              total_amount: 150000,
+              subtotal_amount: 150000,
+              payment_status: 'unpaid',
+              status: 'new',
+              items: [
+                {
+                  item_id: itemPositiveRaceId,
+                  quantity: 3,
+                  unit_price: 50000,
+                  extra_price: 0,
+                  name_vi: 'Phở Gà Ta',
+                },
+              ],
+            }),
+            JSON.stringify([{ item_id: itemPositiveRaceId, delta: 3 }]),
+          ]
+        );
+      }
+    };
+
+    const resPosAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemPositiveRaceId,
+            shop_id: shopId,
+            category_id: catId,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    beforeUpdateHook = null;
+
+    assert.equal(posRaceHookFired, true);
+    assert.equal(resPosAvailRace.status, 200);
+    const bodyPosAvailRace = await resPosAvailRace.json();
+    assert.equal(bodyPosAvailRace.item.is_available, true);
+    assert.equal(bodyPosAvailRace.item.stock_quantity, 2);
+    assert.equal(bodyPosAvailRace.item.sold_count, 3);
+
+    // Unlimited (null) stock toggle false -> true with concurrent order incrementing sold_count -> stays null & becomes true
+    let nullRaceHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload) => {
+      if (
+        tableName === 'items' &&
+        !nullRaceHookFired &&
+        updatePayload.is_available === true
+      ) {
+        nullRaceHookFired = true;
+        await orderRpcClient.query(
+          `UPDATE items SET is_available = true WHERE id = $1`,
+          [itemUnlimitedRaceId]
+        );
+        await orderRpcClient.query(
+          `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+          [
+            JSON.stringify({
+              id: 'ord-pg-4d',
+              order_code: 'ORD-PG-4D',
+              shop_id: shopId,
+              table_id: tableId,
+              table_label: 'Bàn 01',
+              idempotency_key: 'idemp-pg-4d',
+              total_amount: 20000,
+              subtotal_amount: 20000,
+              payment_status: 'unpaid',
+              status: 'new',
+              items: [
+                {
+                  item_id: itemUnlimitedRaceId,
+                  quantity: 4,
+                  unit_price: 5000,
+                  extra_price: 0,
+                  name_vi: 'Trà Đá Miễn Phí',
+                },
+              ],
+            }),
+            JSON.stringify([{ item_id: itemUnlimitedRaceId, delta: 4 }]),
+          ]
+        );
+      }
+    };
+
+    const resNullAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemUnlimitedRaceId,
+            shop_id: shopId,
+            category_id: catId,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    beforeUpdateHook = null;
+
+    assert.equal(nullRaceHookFired, true);
+    assert.equal(resNullAvailRace.status, 200);
+    const bodyNullAvailRace = await resNullAvailRace.json();
+    assert.equal(bodyNullAvailRace.item.is_available, true);
+    assert.equal(bodyNullAvailRace.item.stock_quantity, null);
+    assert.equal(bodyNullAvailRace.item.sold_count, 4);
+
+    // View-only staff is forbidden (403) from toggling availability
+    const resViewStaffForbidden = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${viewStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemUnlimitedRaceId,
+            shop_id: shopId,
+            category_id: catId,
+            is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resViewStaffForbidden.status, 403);
+    assert.equal(
+      (await resViewStaffForbidden.json()).code,
+      'INSUFFICIENT_SHOP_PERMISSION'
+    );
+
+    // Scenario 5: bulk_update_availability & bulk_set_availability real 2-connection PostgreSQL concurrency via bulk_set_items_availability_atomic
+    const itemBulkRaceZeroId = 'item-race-bulk-avail-zero-8';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES ($1, $2, $3, '{"vi": "Sữa Chua Nếp Cẩm"}'::jsonb, 32000, 1, 0, false)`,
+      [itemBulkRaceZeroId, shopId, catId]
+    );
+    await adminClient.query(
+      `UPDATE items SET is_available = false WHERE id = ANY($1::text[])`,
+      [[itemPositiveRaceId, itemUnlimitedRaceId, itemBulkRaceZeroId]]
+    );
+
+    // 5A. Connection 2 opens a transaction, concurrently flips itemPositiveRaceId to is_available = true,
+    // and commits an order draining itemBulkRaceZeroId from stock 1 -> 0 (is_available = false).
+    // While Connection 2 holds uncommitted row locks, Connection 1 invokes bulk_update_availability(is_available = true)
+    // on [itemUnlimitedRaceId, itemPositiveRaceId, itemBulkRaceZeroId], blocking on FOR UPDATE in PostgreSQL.
+    // Once Connection 2 commits, Connection 1 unblocks, rejects the batch all-or-nothing with 409 ZERO_STOCK_CANNOT_MARK_AVAILABLE,
+    // leaves itemUnlimitedRaceId as false, and NEVER overwrites Connection 2's itemPositiveRaceId = true!
+    await orderRpcClient.query('BEGIN');
+    await orderRpcClient.query(
+      `UPDATE items SET is_available = true WHERE id = $1`,
+      [itemPositiveRaceId]
+    );
+    await orderRpcClient.query(
+      `UPDATE items SET is_available = true WHERE id = $1`,
+      [itemBulkRaceZeroId]
+    );
+    await orderRpcClient.query(
+      `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+      [
+        JSON.stringify({
+          id: 'ord-pg-5a',
+          order_code: 'ORD-PG-5A',
+          shop_id: shopId,
+          table_id: tableId,
+          table_label: 'Bàn 01',
+          idempotency_key: 'idemp-pg-5a',
+          total_amount: 32000,
+          subtotal_amount: 32000,
+          payment_status: 'unpaid',
+          status: 'new',
+          items: [
+            {
+              item_id: itemBulkRaceZeroId,
+              quantity: 1,
+              unit_price: 32000,
+              extra_price: 0,
+              name_vi: 'Sữa Chua Nếp Cẩm',
+            },
+          ],
+        }),
+        JSON.stringify([{ item_id: itemBulkRaceZeroId, delta: 1 }]),
+      ]
+    );
+
+    const pendingBulkAvailPromise = catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId,
+          itemIds: [
+            itemUnlimitedRaceId,
+            itemPositiveRaceId,
+            itemBulkRaceZeroId,
+          ],
+          is_available: true,
+        }),
+      })
+    );
+
+    // Wait on Connection 2 until Connection 1's RPC is blocked on the PostgreSQL row lock
+    let observedPgLockWait = false;
+    for (let poll = 0; poll < 50; poll++) {
+      const { rows: lockRows } = await orderRpcClient.query(
+        `SELECT count(*)::int AS waiting
+         FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock'
+           AND query LIKE '%bulk_set_items_availability_atomic%'`
+      );
+      if ((lockRows[0]?.waiting ?? 0) > 0) {
+        observedPgLockWait = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(
+      observedPgLockWait,
+      true,
+      'Connection 1 bulk_set_items_availability_atomic must block on PostgreSQL FOR UPDATE lock held by Connection 2'
+    );
+
+    await orderRpcClient.query('COMMIT');
+
+    const resBulkAvailRace = await pendingBulkAvailPromise;
+    assert.equal(resBulkAvailRace.status, 409);
+    const bodyBulkAvailRace = await resBulkAvailRace.json();
+    assert.equal(bodyBulkAvailRace.success, false);
+    assert.equal(bodyBulkAvailRace.code, 'ZERO_STOCK_CANNOT_MARK_AVAILABLE');
+    assert.equal(bodyBulkAvailRace.updatedCount, 0);
+    assert.equal(bodyBulkAvailRace.count, 0);
+    assert.deepEqual(bodyBulkAvailRace.zeroStockItemIds, [itemBulkRaceZeroId]);
+
+    // Verify all-or-nothing AND that Connection 2's concurrent update on itemPositiveRaceId (is_available = true) was NOT clobbered!
+    // Alphabetical ORDER BY id: 'item-race-avail-null-7' < 'item-race-avail-pos-6' < 'item-race-bulk-avail-zero-8'
+    const { rows: rowsAfterBulkRace } = await adminClient.query(
+      `SELECT id, stock_quantity, sold_count, is_available FROM items WHERE id = ANY($1::text[]) ORDER BY id`,
+      [[itemBulkRaceZeroId, itemPositiveRaceId, itemUnlimitedRaceId]]
+    );
+    assert.equal(rowsAfterBulkRace[0].id, itemUnlimitedRaceId);
+    assert.equal(rowsAfterBulkRace[0].stock_quantity, null);
+    assert.equal(
+      rowsAfterBulkRace[0].is_available,
+      false,
+      'Unlimited item in rejected batch must remain false (all-or-nothing)'
+    );
+    assert.equal(rowsAfterBulkRace[1].id, itemPositiveRaceId);
+    assert.equal(rowsAfterBulkRace[1].stock_quantity, 2);
+    assert.equal(
+      rowsAfterBulkRace[1].is_available,
+      true,
+      'Concurrent update on itemPositiveRaceId by Connection 2 must NOT be overwritten to false'
+    );
+    assert.equal(rowsAfterBulkRace[2].id, itemBulkRaceZeroId);
+    assert.equal(rowsAfterBulkRace[2].stock_quantity, 0);
+    assert.equal(rowsAfterBulkRace[2].sold_count, 1);
+    assert.equal(rowsAfterBulkRace[2].is_available, false);
+
+    // 5B. DB trigger failure mid-batch inside bulk_set_items_availability_atomic rolls back all rows and returns 500 DB_UPDATE_FAILED
+    await adminClient.query(
+      `UPDATE items SET is_available = false WHERE id = ANY($1::text[])`,
+      [[itemUnlimitedRaceId, itemPositiveRaceId]]
+    );
+    await adminClient.query(`
+      CREATE OR REPLACE FUNCTION public.test_fail_on_second_bulk_item()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.id = '${itemPositiveRaceId}' AND NEW.is_available = TRUE THEN
+          RAISE EXCEPTION 'Simulated mid-batch DB failure on ${itemPositiveRaceId}';
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER trg_test_fail_on_second_bulk_item
+      BEFORE UPDATE ON public.items
+      FOR EACH ROW
+      EXECUTE FUNCTION public.test_fail_on_second_bulk_item();
+    `);
+
+    const resBulkTriggerFail = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId,
+          itemIds: [itemUnlimitedRaceId, itemPositiveRaceId],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resBulkTriggerFail.status, 500);
+    const bodyBulkTriggerFail = await resBulkTriggerFail.json();
+    assert.equal(bodyBulkTriggerFail.success, false);
+    assert.equal(bodyBulkTriggerFail.code, 'DB_UPDATE_FAILED');
+    assert.equal(bodyBulkTriggerFail.updatedCount, 0);
+    assert.equal(bodyBulkTriggerFail.count, 0);
+
+    await adminClient.query(`
+      DROP TRIGGER IF EXISTS trg_test_fail_on_second_bulk_item ON public.items;
+      DROP FUNCTION IF EXISTS public.test_fail_on_second_bulk_item();
+    `);
+
+    const { rows: rowsAfterTriggerFail } = await adminClient.query(
+      `SELECT id, is_available FROM items WHERE id = ANY($1::text[]) ORDER BY id`,
+      [[itemUnlimitedRaceId, itemPositiveRaceId]]
+    );
+    assert.equal(rowsAfterTriggerFail[0].id, itemUnlimitedRaceId);
+    assert.equal(
+      rowsAfterTriggerFail[0].is_available,
+      false,
+      'First item in batch must roll back to false when second item fails in RPC transaction'
+    );
+    assert.equal(rowsAfterTriggerFail[1].id, itemPositiveRaceId);
+    assert.equal(rowsAfterTriggerFail[1].is_available, false);
+
+    // 5C. Cross-shop item in batch rejected atomically with 400 ITEM_NOT_IN_SHOP
+    const otherShopId = 'shop-cat-race-002';
+    const otherCatId = 'cat-race-002';
+    const otherShopItemId = 'item-other-shop-9';
+    await adminClient.query(
+      `INSERT INTO shops (id, owner_id, slug, name, vertical, is_published) VALUES ($1, $2, 'quan-other-race', 'Quán Khác', 'fnb', true)`,
+      [otherShopId, ownerId]
+    );
+    await adminClient.query(
+      `INSERT INTO categories (id, shop_id, sort_order, name_i18n) VALUES ($1, $2, 1, '{"vi": "Khác"}'::jsonb)`,
+      [otherCatId, otherShopId]
+    );
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, price, stock_quantity, sold_count, is_available)
+       VALUES ($1, $2, $3, '{"vi": "Món Quán Khác"}'::jsonb, 25000, 10, 0, false)`,
+      [otherShopItemId, otherShopId, otherCatId]
+    );
+
+    const resCrossShopBatch = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId,
+          itemIds: [itemUnlimitedRaceId, otherShopItemId],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resCrossShopBatch.status, 400);
+    const bodyCrossShopBatch = await resCrossShopBatch.json();
+    assert.equal(bodyCrossShopBatch.success, false);
+    assert.equal(bodyCrossShopBatch.code, 'ITEM_NOT_IN_SHOP');
+
+    const { rows: rowsAfterCrossShop } = await adminClient.query(
+      `SELECT id, is_available FROM items WHERE id = $1`,
+      [itemUnlimitedRaceId]
+    );
+    assert.equal(rowsAfterCrossShop[0].is_available, false);
+
+    // 5D. View-only staff rejected with 403; inventory.adjust staff succeeds with bulk_set_availability on non-zero items; bulk false succeeds on all (null, >0, 0)
+    const resBulkViewForbidden = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${viewStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_set_availability',
+          shopId,
+          itemIds: [itemUnlimitedRaceId, itemPositiveRaceId],
+          isAvailable: true,
+        }),
+      })
+    );
+    assert.equal(resBulkViewForbidden.status, 403);
+
+    const resBulkSetValid = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_set_availability',
+          shopId,
+          itemIds: [itemUnlimitedRaceId, itemPositiveRaceId],
+          isAvailable: true,
+        }),
+      })
+    );
+    assert.equal(resBulkSetValid.status, 200);
+    const bodyBulkSetValid = await resBulkSetValid.json();
+    assert.equal(bodyBulkSetValid.success, true);
+    assert.equal(bodyBulkSetValid.updatedCount, 2);
+
+    const resBulkSetFalseAll = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId,
+          itemIds: [
+            itemUnlimitedRaceId,
+            itemPositiveRaceId,
+            itemBulkRaceZeroId,
+          ],
+          is_available: false,
+        }),
+      })
+    );
+    assert.equal(resBulkSetFalseAll.status, 200);
+    const bodyBulkSetFalseAll = await resBulkSetFalseAll.json();
+    assert.equal(bodyBulkSetFalseAll.success, true);
+    assert.equal(bodyBulkSetFalseAll.updatedCount, 3);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+    setMposDbClientForTests(null, false);
+    for (const c of openClients) {
+      try {
+        await c.end();
+      } catch {
+        // ignore
+      }
+    }
+    if (pgProc && !pgProc.killed) {
+      pgProc.kill('SIGTERM');
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    try {
+      fs.rmSync(tempPgDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+});
+
+test('dbUpsertItem zeroStock fallback and bulk_update_availability never report false success on DB failure or race mismatch', async () => {
+  const { POST: catalogPost } = await import('@/app/api/catalog/route');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import('@/lib/shop-permissions');
+  const { setMposDbClientForTests } = await import('@/lib/mpos-store');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+
+  const ownerId = '00000000-0000-4000-8000-000000000950';
+  const shopId = 'shop-zero-stock-fallback-test';
+  const catId = 'cat-zero-stock-fallback-test';
+  const itemId = 'item-zero-stock-fallback-1';
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: 'owner-zero-fallback@isolated.local',
+    role: 'owner',
+    account_type: 'owner',
+  });
+
+  try {
+    // Case 1: zeroStockQuery fails with a real DB error -> must reject (HTTP 400) and never report HTTP 200
+    let itemUpdateCallCount = 0;
+    const mockDbErrorOnZeroStockFallback = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select() {
+              const chain = {
+                eq() {
+                  return chain;
+                },
+                limit: async () => ({
+                  data: [{ id: shopId, owner_id: ownerId, slug: 'test-shop' }],
+                  error: null,
+                }),
+                maybeSingle: async () => ({
+                  data: { id: shopId, owner_id: ownerId, slug: 'test-shop' },
+                  error: null,
+                }),
+              };
+              return chain;
+            },
+          };
+        }
+        if (table === 'shop_memberships') {
+          return {
+            select() {
+              return {
+                eq() {
+                  return {
+                    eq() {
+                      return {
+                        maybeSingle: async () => ({
+                          data: {
+                            id: 'mem-1',
+                            shop_id: shopId,
+                            user_id: ownerId,
+                            role: 'owner',
+                            permissions: ['catalog.manage'],
+                            is_active: true,
+                          },
+                          error: null,
+                        }),
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'categories') {
+          return {
+            select() {
+              return {
+                eq() {
+                  return {
+                    maybeSingle: async () => ({
+                      data: { id: catId, shop_id: shopId },
+                      error: null,
+                    }),
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'items') {
+          return {
+            select() {
+              return {
+                eq() {
+                  return {
+                    maybeSingle: async () => ({
+                      // 1st read (target lookup): shop_id matches
+                      // 2nd read (existing lookup): stock_quantity = 1 (> 0)
+                      // 3rd read (currentRow lookup after updateQuery PGRST116): stock_quantity = 0 (drained by race)
+                      data:
+                        itemUpdateCallCount === 0
+                          ? {
+                              id: itemId,
+                              shop_id: shopId,
+                              category_id: catId,
+                              price: 40000,
+                              stock_quantity: 1,
+                              sold_count: 2,
+                              is_available: true,
+                            }
+                          : {
+                              id: itemId,
+                              shop_id: shopId,
+                              category_id: catId,
+                              price: 40000,
+                              stock_quantity: 0,
+                              sold_count: 3,
+                              is_available: false,
+                            },
+                      error: null,
+                    }),
+                  };
+                },
+              };
+            },
+            update() {
+              itemUpdateCallCount += 1;
+              const currentCall = itemUpdateCallCount;
+              const chain = {
+                eq() {
+                  return chain;
+                },
+                or() {
+                  return chain;
+                },
+                select() {
+                  return {
+                    single: async () => {
+                      if (currentCall === 1) {
+                        // Initial non-zero update fails with PGRST116 because stock drained to 0
+                        return {
+                          data: null,
+                          error: { code: 'PGRST116', message: 'Row not found' },
+                        };
+                      }
+                      // 2nd update (zeroStockQuery) fails with a real database write error
+                      return {
+                        data: null,
+                        error: {
+                          code: 'XX000',
+                          message: 'disk full during zeroStockQuery update',
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+              return chain;
+            },
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      },
+    };
+
+    setSupabaseDbClientForTests(mockDbErrorOnZeroStockFallback);
+    setShopMembershipDbClientForTest(
+      mockDbErrorOnZeroStockFallback as unknown as Parameters<
+        typeof setShopMembershipDbClientForTest
+      >[0]
+    );
+
+    const resZeroFallbackDbError = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemId,
+            shop_id: shopId,
+            category_id: catId,
+            price: 45000,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resZeroFallbackDbError.status, 400);
+    const bodyZeroFallbackDbError = await resZeroFallbackDbError.json();
+    assert.match(
+      bodyZeroFallbackDbError.error || '',
+      /disk full during zeroStockQuery update/
+    );
+    assert.equal(itemUpdateCallCount, 2);
+
+    // Case 2: zeroStockQuery returns PGRST116 (no row matched because stock changed away from 0 right before zeroStockQuery) -> must return 409 STOCK_CONFLICT
+    itemUpdateCallCount = 0;
+    const mockRaceMismatchOnZeroStockFallback = {
+      ...mockDbErrorOnZeroStockFallback,
+      from(table: string) {
+        if (table !== 'items') {
+          return mockDbErrorOnZeroStockFallback.from(table);
+        }
+        return {
+          select: mockDbErrorOnZeroStockFallback.from('items').select,
+          update() {
+            itemUpdateCallCount += 1;
+            const chain = {
+              eq() {
+                return chain;
+              },
+              or() {
+                return chain;
+              },
+              select() {
+                return {
+                  single: async () => ({
+                    data: null,
+                    error: {
+                      code: 'PGRST116',
+                      message:
+                        'JSON object requested, multiple (or no) rows returned',
+                    },
+                  }),
+                };
+              },
+            };
+            return chain;
+          },
+        };
+      },
+    };
+
+    setSupabaseDbClientForTests(mockRaceMismatchOnZeroStockFallback);
+    const resZeroFallbackRaceConflict = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemId,
+            shop_id: shopId,
+            category_id: catId,
+            price: 45000,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resZeroFallbackRaceConflict.status, 409);
+    const bodyZeroFallbackRaceConflict =
+      await resZeroFallbackRaceConflict.json();
+    assert.equal(bodyZeroFallbackRaceConflict.code, 'STOCK_CONFLICT');
+    assert.equal(itemUpdateCallCount, 2);
+
+    // Case 3: bulk_update_availability when RPC returns error or null payload -> 500 DB_UPDATE_FAILED (never false success)
+    const mockRpcFailureClient = {
+      from: mockDbErrorOnZeroStockFallback.from,
+      rpc: async () => ({
+        data: null,
+        error: { message: 'connection terminated during atomic bulk RPC' },
+      }),
+    };
+    setSupabaseDbClientForTests(mockRpcFailureClient);
+
+    const resBulkRpcErr = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId,
+          itemIds: [itemId],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resBulkRpcErr.status, 500);
+    const bodyBulkRpcErr = await resBulkRpcErr.json();
+    assert.equal(bodyBulkRpcErr.success, false);
+    assert.equal(bodyBulkRpcErr.code, 'DB_UPDATE_FAILED');
+    assert.equal(bodyBulkRpcErr.updatedCount, 0);
+    assert.equal(bodyBulkRpcErr.count, 0);
+
+    // Case 4: Non-production mock path (no sb.rpc) on count mismatch returns 409 BULK_AVAILABILITY_COUNT_MISMATCH without issuing a second rollback update
+    const harness = createBulkCatalogMockHarness({
+      overrideUpdateCount: 1,
+    });
+    const fnbOwnerToken = issueSessionToken({
+      id: 'owner-demo-001',
+      email: 'owner-demo@isolated.local',
+      role: 'owner',
+      account_type: 'owner',
+    });
+    setSupabaseDbClientForTests(harness.mockDbClient);
+    setShopMembershipDbClientForTest(
+      harness.mockDbClient as unknown as Parameters<
+        typeof setShopMembershipDbClientForTest
+      >[0]
+    );
+
+    const resMockMismatch = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${fnbOwnerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_availability',
+          shopId: 'shop-fnb-001',
+          itemIds: ['item-fnb-001', 'item-fnb-002'],
+          is_available: true,
+        }),
+      })
+    );
+    assert.equal(resMockMismatch.status, 409);
+    const bodyMockMismatch = await resMockMismatch.json();
+    assert.equal(bodyMockMismatch.code, 'BULK_AVAILABILITY_COUNT_MISMATCH');
+    assert.equal(
+      harness.updateCalls.length,
+      1,
+      'Must NOT issue a second compensating update(is_available: false) that could overwrite concurrent changes'
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+    setMposDbClientForTests(null, false);
   }
 });

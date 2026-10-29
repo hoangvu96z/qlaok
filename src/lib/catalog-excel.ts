@@ -667,3 +667,36 @@ export async function parseAndValidateCatalogExcel(
     errors: [],
   };
 }
+
+export interface CatalogExcelBulkUpdateItemPayload {
+  id: string;
+  price?: number;
+  stock_quantity?: number | null;
+  expected_stock_quantity?: number | null;
+}
+
+/**
+ * Builds the narrow bulk_update_price_stock payload items from validated Excel rows.
+ * Price-only rows omit stock_quantity so concurrent order stock deductions are never overwritten.
+ * Stock-modifying rows include expected_stock_quantity for atomic compare-and-swap protection.
+ */
+export function buildCatalogExcelBulkUpdateItems(
+  validRows: CatalogImportRowParsed[]
+): CatalogExcelBulkUpdateItemPayload[] {
+  return validRows.map((r) => {
+    const entry: CatalogExcelBulkUpdateItemPayload = {
+      id: r.rawId,
+    };
+    if (r.priceChanged && r.parsedPrice !== undefined) {
+      entry.price = r.parsedPrice;
+    }
+    if (r.stockChanged && r.parsedStock !== undefined) {
+      entry.stock_quantity = r.parsedStock;
+      entry.expected_stock_quantity =
+        r.matchedItem?.stock_quantity === undefined
+          ? null
+          : r.matchedItem.stock_quantity;
+    }
+    return entry;
+  });
+}

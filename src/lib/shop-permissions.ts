@@ -175,10 +175,17 @@ export const INVENTORY_ADJUST_ITEM_FIELDS = [
 const ITEM_IDENTITY_FIELDS = ['id', 'shop_id'] as const;
 
 /**
- * Server-managed / derived fields that clients echo back from GET but that
- * are never written from an inventory-only update.
+ * Server-managed / derived fields that clients echo back from GET or pass as
+ * CAS guards, and that are never treated as catalog content edits.
  */
-const ITEM_IGNORED_DIFF_FIELDS = ['created_at', 'updated_at', 'sold_count'] as const;
+const ITEM_IGNORED_DIFF_FIELDS = [
+  'created_at',
+  'updated_at',
+  'sold_count',
+  'view_count',
+  'expected_stock_quantity',
+  'expectedStockQuantity',
+] as const;
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
@@ -254,11 +261,47 @@ export function buildInventoryOnlyItemPatch(
   if (incoming.stock_quantity === null) {
     patch.stock_quantity = null;
   } else if (isNumericLike(incoming.stock_quantity)) {
-    const qty = Math.floor(Number(incoming.stock_quantity));
-    if (qty < 0) {
-      throw new Error('INVALID_STOCK_QUANTITY: Tồn kho không được âm.');
+    const num = Number(incoming.stock_quantity);
+    if (!Number.isInteger(num) || num < 0) {
+      throw new Error(
+        num < 0
+          ? 'INVALID_STOCK_QUANTITY: Tồn kho không được âm.'
+          : 'INVALID_STOCK_QUANTITY: Tồn kho phải là số nguyên.'
+      );
     }
-    patch.stock_quantity = qty;
+    patch.stock_quantity = num;
+  } else if (incoming.stock_quantity !== undefined) {
+    throw new Error('INVALID_STOCK_QUANTITY: Tồn kho không hợp lệ.');
+  }
+  const hasExpectedSnake = Object.prototype.hasOwnProperty.call(
+    incoming,
+    'expected_stock_quantity'
+  );
+  const hasExpectedCamel = Object.prototype.hasOwnProperty.call(
+    incoming,
+    'expectedStockQuantity'
+  );
+  const rawExpected = hasExpectedSnake
+    ? incoming.expected_stock_quantity
+    : incoming.expectedStockQuantity;
+  if ((hasExpectedSnake || hasExpectedCamel) && rawExpected !== undefined) {
+    if (rawExpected === null) {
+      patch.expected_stock_quantity = null;
+    } else if (isNumericLike(rawExpected)) {
+      const expNum = Number(rawExpected);
+      if (!Number.isInteger(expNum) || expNum < 0) {
+        throw new Error(
+          expNum < 0
+            ? 'INVALID_EXPECTED_STOCK_QUANTITY: Tồn kho đối chiếu không được âm.'
+            : 'INVALID_EXPECTED_STOCK_QUANTITY: Tồn kho đối chiếu phải là số nguyên.'
+        );
+      }
+      patch.expected_stock_quantity = expNum;
+    } else {
+      throw new Error(
+        'INVALID_EXPECTED_STOCK_QUANTITY: Tồn kho đối chiếu không hợp lệ.'
+      );
+    }
   }
   return patch;
 }

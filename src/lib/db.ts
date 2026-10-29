@@ -34,9 +34,12 @@ import {
 import {
   dbComputeShopRevenueAndInventoryStats,
   enrichItemsWithInventory,
-  setItemStockMetadata,
+  syncLocalItemStockOnly,
 } from './mpos-store';
-import { parseCatalogPriceValue } from './catalog-excel';
+import {
+  parseCatalogPriceValue,
+  parseCatalogStockValue,
+} from './catalog-excel';
 
 let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
@@ -1441,8 +1444,34 @@ export async function dbDeleteCategory(categoryId: string): Promise<boolean> {
   return !error;
 }
 
+function applyItemFilter<T>(query: T, column: string, value: unknown): T {
+  const q = query as Record<string, unknown>;
+  if (value === null && typeof q.is === 'function') {
+    return (q.is as (col: string, val: null) => T)(column, null);
+  }
+  if (typeof q.eq === 'function') {
+    return (q.eq as (col: string, val: unknown) => T)(column, value);
+  }
+  return query;
+}
+
+function applyNonZeroStockFilter<T>(query: T): T {
+  const q = query as Record<string, unknown>;
+  if (typeof q.or === 'function') {
+    return (q.or as (filters: string) => T)(
+      'stock_quantity.is.null,stock_quantity.gt.0'
+    );
+  }
+  return query;
+}
+
 export async function dbUpsertItem(
-  item: Partial<CatalogItem> & { shop_id: string; category_id: string }
+  item: Partial<CatalogItem> & {
+    shop_id: string;
+    category_id: string;
+    expected_stock_quantity?: number | null;
+    expectedStockQuantity?: number | null;
+  }
 ): Promise<CatalogItem> {
   let validatedPrice: number | undefined = undefined;
   if (item.price !== undefined) {
@@ -1451,6 +1480,54 @@ export async function dbUpsertItem(
       throw new Error(`INVALID_ITEM_PRICE: ${parsedPrice.error}`);
     }
     validatedPrice = parsedPrice.price;
+  }
+
+  const {
+    stock_quantity: rawIncomingStock,
+    sold_count: _ignoredSoldCount,
+    view_count: _ignoredViewCount,
+    created_at: _ignoredCreatedAt,
+    updated_at: _ignoredUpdatedAt,
+    expected_stock_quantity: rawExpectedStockSnake,
+    expectedStockQuantity: rawExpectedStockCamel,
+    ...dbSafeItem
+  } = item as Partial<CatalogItem> & {
+    shop_id: string;
+    category_id: string;
+    expected_stock_quantity?: unknown;
+    expectedStockQuantity?: unknown;
+    updated_at?: unknown;
+  };
+
+  let validatedStock: number | null | undefined = undefined;
+  if (rawIncomingStock !== undefined) {
+    const parsedStock = parseCatalogStockValue(rawIncomingStock);
+    if (!parsedStock.valid) {
+      throw new Error(`INVALID_STOCK_QUANTITY: ${parsedStock.error}`);
+    }
+    validatedStock = parsedStock.stock;
+  }
+
+  const hasExpectedStock =
+    (Object.prototype.hasOwnProperty.call(item, 'expected_stock_quantity') &&
+      rawExpectedStockSnake !== undefined) ||
+    (Object.prototype.hasOwnProperty.call(item, 'expectedStockQuantity') &&
+      rawExpectedStockCamel !== undefined);
+  const rawExpectedStock =
+    Object.prototype.hasOwnProperty.call(item, 'expected_stock_quantity') &&
+    rawExpectedStockSnake !== undefined
+      ? rawExpectedStockSnake
+      : rawExpectedStockCamel;
+
+  let validatedExpectedStock: number | null | undefined = undefined;
+  if (hasExpectedStock) {
+    const parsedExpected = parseCatalogStockValue(rawExpectedStock);
+    if (!parsedExpected.valid) {
+      throw new Error(
+        `INVALID_EXPECTED_STOCK_QUANTITY: ${parsedExpected.error}`
+      );
+    }
+    validatedExpectedStock = parsedExpected.stock;
   }
 
   await ensureSupabaseReadyAndSeeded();
@@ -1471,39 +1548,41 @@ export async function dbUpsertItem(
     }
   }
 
-  const {
-    stock_quantity: incomingStock,
-    sold_count: incomingSold,
-    ...dbSafeItem
-  } = item;
-
   if (item.id) {
     const { data: existing } = await sb
       .from('items')
-      .select('id, stock_quantity')
+      .select('id, stock_quantity, sold_count, is_available')
       .eq('id', item.id)
       .maybeSingle();
 
     if (existing) {
-      if (incomingStock !== undefined || incomingSold !== undefined) {
-        await setItemStockMetadata(item.id, incomingStock, incomingSold);
-      }
-
       const effectiveStock =
-        incomingStock !== undefined ? incomingStock : existing.stock_quantity;
+        validatedStock !== undefined ? validatedStock : existing.stock_quantity;
       const nextAvailable =
         effectiveStock === 0
           ? false
           : dbSafeItem.is_available !== undefined
-            ? dbSafeItem.is_available
-            : undefined;
+            ? Boolean(dbSafeItem.is_available)
+            : validatedStock !== undefined &&
+                validatedStock !== null &&
+                validatedStock > 0
+              ? true
+              : undefined;
 
       const updatePatch: Record<string, unknown> = {
         ...dbSafeItem,
-        is_available: nextAvailable,
         updated_at: new Date().toISOString(),
       };
-      if (nextAvailable === undefined) {
+      if (validatedStock !== undefined) {
+        updatePatch.stock_quantity = validatedStock;
+      } else {
+        delete updatePatch.stock_quantity;
+      }
+      delete updatePatch.sold_count;
+      delete updatePatch.view_count;
+      if (nextAvailable !== undefined) {
+        updatePatch.is_available = nextAvailable;
+      } else {
         delete updatePatch.is_available;
       }
       if (validatedPrice !== undefined) {
@@ -1512,14 +1591,149 @@ export async function dbUpsertItem(
         delete updatePatch.price;
       }
 
-      const { data, error } = await sb
+      const currentExistingStock =
+        existing.stock_quantity === undefined ? null : existing.stock_quantity;
+      if (validatedStock !== undefined) {
+        if (!hasExpectedStock) {
+          throw new Error(
+            'STOCK_CONFLICT: Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.'
+          );
+        }
+        const casExpectedStock = validatedExpectedStock ?? null;
+        if (casExpectedStock !== currentExistingStock) {
+          throw new Error(
+            'STOCK_CONFLICT: Tồn kho của món đã thay đổi do có đơn hàng hoặc cập nhật khác. Vui lòng tải lại dữ liệu mới nhất trước khi chỉnh sửa tồn kho.'
+          );
+        }
+      }
+
+      let updateQuery = sb
         .from('items')
         .update(updatePatch)
-        .eq('id', item.id)
-        .select('*')
-        .single();
+        .eq('id', item.id);
+
+      if (typeof (updateQuery as { eq?: unknown }).eq === 'function') {
+        updateQuery = applyItemFilter(updateQuery, 'shop_id', item.shop_id);
+        if (validatedStock !== undefined) {
+          updateQuery = applyItemFilter(
+            updateQuery,
+            'stock_quantity',
+            validatedExpectedStock ?? null
+          );
+        } else if (nextAvailable === true) {
+          updateQuery = applyNonZeroStockFilter(updateQuery);
+        }
+      }
+
+      let { data, error } = await updateQuery.select('*').single();
+
+      const isNoRowMatchResult = (
+        row: unknown,
+        err: { code?: string; message?: string } | null | undefined
+      ): boolean =>
+        (!err && !row) ||
+        Boolean(
+          err &&
+            (err.code === 'PGRST116' ||
+              /row not found|no rows|0 rows|multiple \(or no\) rows/i.test(
+                err.message || ''
+              ))
+        );
+
+      const isNoRowMatchError = isNoRowMatchResult(
+        data,
+        error as { code?: string; message?: string } | null
+      );
+
+      if (validatedStock !== undefined && isNoRowMatchError) {
+        throw new Error(
+          'STOCK_CONFLICT: Tồn kho của món đã thay đổi do có đơn hàng hoặc cập nhật khác. Vui lòng tải lại dữ liệu mới nhất trước khi chỉnh sửa tồn kho.'
+        );
+      }
+
+      if (
+        validatedStock === undefined &&
+        nextAvailable === true &&
+        isNoRowMatchError
+      ) {
+        const { data: currentRow, error: currentLookupError } = await sb
+          .from('items')
+          .select('*')
+          .eq('id', item.id)
+          .maybeSingle();
+        if (currentLookupError) {
+          throw new Error(currentLookupError.message);
+        }
+        if (!currentRow || currentRow.shop_id !== item.shop_id) {
+          throw new Error('ITEM_NOT_FOUND: Không tìm thấy món cần cập nhật.');
+        }
+        if (currentRow.stock_quantity === 0) {
+          const zeroStockPatch: Record<string, unknown> = {
+            ...updatePatch,
+            is_available: false,
+          };
+          let zeroStockQuery = sb
+            .from('items')
+            .update(zeroStockPatch)
+            .eq('id', item.id);
+          if (typeof (zeroStockQuery as { eq?: unknown }).eq === 'function') {
+            zeroStockQuery = applyItemFilter(
+              zeroStockQuery,
+              'shop_id',
+              item.shop_id
+            );
+            zeroStockQuery = applyItemFilter(
+              zeroStockQuery,
+              'stock_quantity',
+              0
+            );
+          }
+          const { data: zeroStockData, error: zeroStockError } =
+            await zeroStockQuery.select('*').single();
+          if (zeroStockData && !zeroStockError) {
+            data = zeroStockData;
+            error = null;
+          } else if (
+            isNoRowMatchResult(
+              zeroStockData,
+              zeroStockError as { code?: string; message?: string } | null
+            )
+          ) {
+            throw new Error(
+              'STOCK_CONFLICT: Tồn kho đã thay đổi. Vui lòng tải lại và thử lại.'
+            );
+          } else {
+            throw new Error(
+              zeroStockError?.message ||
+                'Không thể cập nhật món khi tồn kho bằng 0.'
+            );
+          }
+        } else {
+          throw new Error(
+            'STOCK_CONFLICT: Tồn kho đã thay đổi. Vui lòng tải lại và thử lại.'
+          );
+        }
+      }
 
       if (error) throw new Error(error.message);
+      if (!data) {
+        throw new Error('ITEM_NOT_FOUND: Không tìm thấy món cần cập nhật.');
+      }
+
+      if (validatedStock !== undefined) {
+        const authoritativeSoldCount =
+          typeof (data as { sold_count?: unknown }).sold_count === 'number'
+            ? ((data as { sold_count: number }).sold_count)
+            : typeof existing.sold_count === 'number'
+              ? existing.sold_count
+              : 0;
+        syncLocalItemStockOnly(
+          item.id,
+          validatedStock,
+          authoritativeSoldCount
+        );
+      }
+
       const updated = { ...data, price: Number(data.price) } as CatalogItem;
       return enrichItemsWithInventory([updated])[0];
     }
@@ -1572,8 +1786,8 @@ export async function dbUpsertItem(
 
   const payload: CatalogItem = {
     id: newItemId,
-    ...(incomingStock !== undefined ? { stock_quantity: incomingStock } : {}),
-    ...(incomingSold !== undefined ? { sold_count: incomingSold } : {}),
+    ...(validatedStock !== undefined ? { stock_quantity: validatedStock } : {}),
+    sold_count: 0,
     shop_id: item.shop_id,
     category_id: item.category_id,
     sort_order: item.sort_order ?? (count || 0) + 1,
@@ -1588,17 +1802,13 @@ export async function dbUpsertItem(
     },
     duration_mins: item.duration_mins ?? null,
     image_url: item.image_url || null,
-    is_available: incomingStock === 0 ? false : (item.is_available ?? true),
+    is_available: validatedStock === 0 ? false : (item.is_available ?? true),
     is_featured: item.is_featured ?? false,
     name_i18n: item.name_i18n || { vi: 'Món mới' },
     desc_i18n: item.desc_i18n || { vi: '' },
     options_json: item.options_json || [],
-    view_count: item.view_count ?? 0,
+    view_count: 0,
   };
-
-  if (incomingStock !== undefined || incomingSold !== undefined) {
-    await setItemStockMetadata(newItemId, incomingStock, incomingSold);
-  }
 
   const { data, error } = await sb
     .from('items')
@@ -1607,6 +1817,9 @@ export async function dbUpsertItem(
     .single();
 
   if (error) throw new Error(error.message);
+  if (validatedStock !== undefined) {
+    syncLocalItemStockOnly(newItemId, validatedStock);
+  }
   const created = { ...data, price: Number(data.price) } as CatalogItem;
   return enrichItemsWithInventory([created])[0];
 }
