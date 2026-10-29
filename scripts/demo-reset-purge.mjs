@@ -50,6 +50,7 @@ export const DEMO_PURGE_TABLES = Object.freeze([
 ]);
 
 export const PRESERVED_PUBLIC_TABLES = Object.freeze([
+  'admin_audit_logs',
   'provinces',
   'schema_migrations',
 ]);

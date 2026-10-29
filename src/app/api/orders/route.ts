@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   buildScopedPosWebIdempotencyKey,
@@ -54,6 +55,15 @@ function isQueryFlagDisabled(value: string | null): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === '0' || normalized === 'false';
+}
+
+function buildTableBillAuditId(shopId: string, idempotencyKey?: string): string | undefined {
+  const cleanKey = idempotencyKey?.trim();
+  if (!cleanKey) return undefined;
+  const digest = createHash('sha256')
+    .update(`${shopId}\0${cleanKey}`)
+    .digest('hex');
+  return `settle-${digest}`;
 }
 
 function sanitizeCustomerOrderView(order: ShopOrder) {
@@ -335,32 +345,50 @@ export async function POST(req: Request) {
       );
       if (auth.errorResponse) return auth.errorResponse;
 
+      const bodyPaymentIdempotencyKey =
+        typeof body.payment_idempotency_key === 'string'
+          ? body.payment_idempotency_key.trim()
+          : '';
+      const paymentIdempotencyKey =
+        bodyPaymentIdempotencyKey ||
+        req.headers.get('x-idempotency-key')?.trim() ||
+        undefined;
       const tableBill = await dbSettleTableBill({
         shop_id: shopId,
         table_id: body.table_id ?? body.tableId,
         table_label: body.table_label || body.tableLabel,
         session_id: body.session_id || body.sessionId,
         payment_method: body.payment_method || 'cash',
-        payment_idempotency_key:
-          body.payment_idempotency_key ||
-          req.headers.get('x-idempotency-key') ||
-          undefined,
+        payment_idempotency_key: paymentIdempotencyKey,
         paid_by: auth.user.sub,
         markCompleted: Boolean(body.markCompleted),
       });
 
-      recordOrderAuditLog({
+      await recordOrderAuditLog({
+        id: buildTableBillAuditId(shopId, paymentIdempotencyKey),
         shopId,
-        orderId: tableBill.order_ids.join(','),
+        orderId: [...tableBill.order_ids].sort(),
+        subjectType: 'order',
         actorId: auth.user.sub,
         actorRole: auth.membership.role,
         action: 'settle_table_bill',
+        before: {
+          payment_status: 'unpaid',
+        },
+        after: {
+          payment_status: tableBill.payment_status,
+          total_amount: tableBill.total_amount,
+          bill_version: tableBill.bill_version,
+        },
         details: {
           table_id: tableBill.table_id ?? null,
           table_label: tableBill.table_label,
           session_id: tableBill.session_id,
           total_amount: tableBill.total_amount,
           payment_method: body.payment_method || 'cash',
+          order_count: tableBill.order_ids.length,
+          order_ids: tableBill.order_ids,
+          order_codes: tableBill.order_codes,
         },
       });
 
@@ -416,9 +444,10 @@ export async function POST(req: Request) {
       }
 
       const printResult = await dbRecordOrderPrint(resolvedOrderId, ticketType);
-      recordOrderAuditLog({
+      await recordOrderAuditLog({
         shopId: existing.shop_id,
         orderId: existing.id,
+        subjectType: 'order',
         actorId: auth.user.sub,
         actorRole: auth.membership.role,
         action: `print_${ticketType}`,
@@ -685,9 +714,10 @@ export async function POST(req: Request) {
     const isOrderReplay = !wasOrderNewlyCreated(order);
 
     if (!isOrderReplay) {
-      recordOrderAuditLog({
+      await recordOrderAuditLog({
         shopId: shop_id,
         orderId: order.id,
+        subjectType: 'order',
         actorId: sessionUser?.sub || 'customer_qr',
         actorRole: membership?.role || 'customer',
         action: 'create_order',
@@ -908,9 +938,10 @@ export async function PATCH(req: Request) {
         require_new_unpaid: true,
       });
 
-      recordOrderAuditLog({
+      await recordOrderAuditLog({
         shopId: existingOrder.shop_id,
         orderId: existingOrder.id,
+        subjectType: 'order',
         actorId: 'customer_tracking',
         actorRole: 'customer',
         action:
@@ -927,6 +958,12 @@ export async function PATCH(req: Request) {
           total_amount: updatedByCustomer.total_amount,
           bill_version: updatedByCustomer.bill_version,
         },
+        reason:
+          status === 'cancelled'
+            ? updatedByCustomer.cancelled_reason ||
+              updatedByCustomer.cancel_reason ||
+              'Khách tự huỷ đơn trên web'
+            : null,
       });
 
       return NextResponse.json({
@@ -1110,9 +1147,10 @@ export async function PATCH(req: Request) {
       expected_total: body.expected_total,
     });
 
-    recordOrderAuditLog({
+    await recordOrderAuditLog({
       shopId: existingOrder.shop_id,
       orderId: existingOrder.id,
+      subjectType: 'order',
       actorId: auth.user.sub,
       actorRole: auth.membership.role,
       action: 'update_order',
@@ -1141,6 +1179,7 @@ export async function PATCH(req: Request) {
           ? { cancelled_reason: updated.cancelled_reason }
           : {}),
       },
+      reason: updated.refund_reason || updated.cancelled_reason || null,
     });
 
     return NextResponse.json({ order: updated });

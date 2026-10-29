@@ -56,11 +56,12 @@ test('DEMO_PURGE_TABLES: exports an immutable ordered list of the exact 19 app d
   assert.equal(DEMO_PURGE_TABLES.length, 19);
   assert.deepEqual([...DEMO_PURGE_TABLES], EXPECTED_PURGE_ORDER);
   assert.deepEqual([...PRESERVED_PUBLIC_TABLES], [
+    'admin_audit_logs',
     'provinces',
     'schema_migrations',
   ]);
 
-  // Verify no duplicates and exact partitioning of the 21 public tables
+  // Verify no duplicates and exact partitioning of all 22 public tables
   const uniquePurge = new Set(DEMO_PURGE_TABLES);
   assert.equal(uniquePurge.size, 19);
   assert.equal(uniquePurge.has('provinces'), false);
@@ -244,6 +245,13 @@ test('PGlite execution: enforces FK/trigger boundaries and cleanly purges all 19
         order_id TEXT NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE public.admin_audit_logs (
+        id TEXT PRIMARY KEY,
+        actor_user_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE public.table_service_requests (
         id TEXT PRIMARY KEY,
         shop_id TEXT NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
@@ -328,7 +336,7 @@ test('PGlite execution: enforces FK/trigger boundaries and cleanly purges all 19
       FOR EACH ROW EXECUTE FUNCTION public.enforce_sepay_webhook_events_boundaries();
     `);
 
-    // 2. Populate rows in auth.users, preserved tables, and all 19 app data tables
+    // 2. Populate rows in auth.users, preserved tables, and all 19 demo data tables
     await db.exec(`
       INSERT INTO auth.users (id, email) VALUES
         ('owner-demo-001', 'chuquan@qlaok.vn'),
@@ -337,6 +345,9 @@ test('PGlite execution: enforces FK/trigger boundaries and cleanly purges all 19
       INSERT INTO public.schema_migrations (filename, checksum) VALUES
         ('001_init_qlaok.sql', 'chk-001'),
         ('019_revoke_staff_trigger_execute.sql', 'chk-019');
+
+      INSERT INTO public.admin_audit_logs (id, actor_user_id, action)
+        VALUES ('admin-audit-001', 'admin-super-001', 'test_reset_preserves_audit');
 
       INSERT INTO public.provinces (code, name) VALUES
         ('ha-noi', 'Hà Nội'),
@@ -403,7 +414,7 @@ test('PGlite execution: enforces FK/trigger boundaries and cleanly purges all 19
         ('sepay-evt-001', 'shop-fnb-001', 'ord-769', 'reconciled');
     `);
 
-    // Confirm all 21 public tables have rows before purge
+    // Confirm all 22 public tables have rows before purge
     for (const table of PUBLIC_TABLES) {
       const res = await db.query(`SELECT COUNT(*)::int AS cnt FROM public.${table}`);
       assert.ok(
@@ -465,6 +476,17 @@ test('PGlite execution: enforces FK/trigger boundaries and cleanly purges all 19
       provincesAfter.rows.map((r) => r.code),
       ['da-nang', 'ha-noi', 'tp-ho-chi-minh']
     );
+
+    const adminAuditAfter = await db.query(
+      'SELECT id, actor_user_id, action FROM public.admin_audit_logs ORDER BY id'
+    );
+    assert.deepEqual(adminAuditAfter.rows, [
+      {
+        id: 'admin-audit-001',
+        actor_user_id: 'admin-super-001',
+        action: 'test_reset_preserves_audit',
+      },
+    ]);
 
     const authUsersAfter = await db.query(
       'SELECT id FROM auth.users ORDER BY id'

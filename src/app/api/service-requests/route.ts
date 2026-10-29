@@ -123,9 +123,11 @@ export async function POST(req: Request) {
     const { serviceRequest, deduplicated } = result;
 
     if (!deduplicated) {
-      recordOrderAuditLog({
+      await recordOrderAuditLog({
         shopId: serviceRequest.shop_id,
-        orderId: serviceRequest.id,
+        subjectType: 'service_request',
+        serviceRequestId: serviceRequest.id,
+        orderId: null,
         actorId: 'customer_qr',
         actorRole: 'customer',
         action: 'create_service_request',
@@ -250,9 +252,11 @@ export async function PATCH(req: Request) {
       actor_id: auth.user.sub,
     });
 
-    recordOrderAuditLog({
+    await recordOrderAuditLog({
       shopId: requestedShopId,
-      orderId: existing.id,
+      subjectType: 'service_request',
+      serviceRequestId: existing.id,
+      orderId: null,
       actorId: auth.user.sub,
       actorRole: auth.membership.role,
       action: 'update_service_request',

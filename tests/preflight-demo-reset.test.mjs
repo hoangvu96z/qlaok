@@ -179,7 +179,7 @@ test('executePreflight: passes credentials safely via PG* env without shell or s
   assert.equal(capturedCall.opts.env.PGSSLMODE, 'require');
 });
 
-test('executePreflight: parses JSON counts and verifies all 21 public tables', () => {
+test('executePreflight: parses JSON counts and verifies all expected public tables', () => {
   const payload = createSamplePayload();
   const mockSpawn = () => ({
     status: 0,
@@ -192,7 +192,7 @@ test('executePreflight: parses JSON counts and verifies all 21 public tables', (
     { spawnSync: mockSpawn }
   );
 
-  assert.equal(Object.keys(result.tables).length, 21);
+  assert.equal(Object.keys(result.tables).length, PUBLIC_TABLES.length);
   for (const table of PUBLIC_TABLES) {
     assert.equal(typeof result.tables[table], 'number');
     assert.equal(Number.isSafeInteger(result.tables[table]), true);
@@ -464,10 +464,10 @@ test('isNonNegativeSafeInteger: correctly identifies non-negative safe integers'
   assert.equal(isNonNegativeSafeInteger(Number.MAX_SAFE_INTEGER + 10), false);
 });
 
-test('getExpectedMigrationFilenames: sources exact 29 local migrations including 002z CWD-independently', () => {
+test('getExpectedMigrationFilenames: sources exact 30 local migrations including 002z CWD-independently', () => {
   assert.ok(MIGRATIONS_DIR.endsWith('supabase/migrations'));
   const filenames = getExpectedMigrationFilenames();
-  assert.equal(filenames.length, 29);
+  assert.equal(filenames.length, 30);
   assert.equal(filenames.includes('002z_reconcile_legacy_bank_refs.sql'), true);
   assert.equal(filenames.includes('001_init_qlaok.sql'), true);
   assert.equal(filenames.includes('019_revoke_staff_trigger_execute.sql'), true);
@@ -490,8 +490,20 @@ test('getExpectedMigrationFilenames: sources exact 29 local migrations including
     filenames.includes('20261028000300_orders_order_code_unique.sql'),
     true
   );
-  assert.equal(filenames.includes('20261028000400_orders_pos_idempotency_prefix_unique.sql'), true);
-  assert.equal(filenames.includes('20261029000100_bulk_set_items_availability_atomic.sql'), true);
+  assert.equal(
+    filenames.includes(
+      '20261028000400_orders_pos_idempotency_prefix_unique.sql'
+    ),
+    true
+  );
+  assert.equal(
+    filenames.includes('20261029000100_bulk_set_items_availability_atomic.sql'),
+    true
+  );
+  assert.equal(
+    filenames.includes('20261030000100_order_audit_logs_subjects.sql'),
+    true
+  );
   for (const fn of filenames) {
     assert.match(fn, /^[0-9]+[a-z]?_.*\.sql$/);
   }
@@ -500,6 +512,8 @@ test('getExpectedMigrationFilenames: sources exact 29 local migrations including
 test('PREFLIGHT_SQL: does not contain duplicate auth_users object and selects auth_users_count', () => {
   assert.equal(PREFLIGHT_SQL.includes("'auth_users',"), false);
   assert.equal(PREFLIGHT_SQL.includes("'auth_users_count',"), true);
+  assert.equal(PUBLIC_TABLES.includes('admin_audit_logs'), true);
+  assert.equal(PREFLIGHT_SQL.includes("'admin_audit_logs', (SELECT COUNT(*)::int FROM public.admin_audit_logs)"), true);
 });
 
 test('executePreflight: fails closed on subprocess error or invalid JSON without leaking raw stderr', () => {

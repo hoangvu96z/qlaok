@@ -1682,5 +1682,204 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal(validBulkFalseRes.success, true);
     assert.equal(validBulkFalseRes.updated_count, 3);
 
+    // 12. Verify 20261030000100_order_audit_logs_subjects.sql:
+    // Re-run migration to verify idempotency
+    await db.exec('RESET ROLE');
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261030000100_order_audit_logs_subjects.sql',
+        'utf8'
+      )
+    );
+    // Re-apply table-level grants as done in test harness setup to verify trigger + RLS still block client writes
+    await db.exec(
+      'GRANT SELECT, INSERT, UPDATE, DELETE ON public.order_audit_logs TO anon, authenticated, service_role;'
+    );
+
+    await db.exec(
+      "RESET ROLE; SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role;"
+    );
+
+    // Seed an order in sql-pub-shop for cross-shop mismatch verification
+    await db.exec(`
+      INSERT INTO orders (id, shop_id, order_code, table_label, total_amount, status, payment_status, items)
+      VALUES ('sql-pub-order', 'sql-pub-shop', 'PUB-ORD-1', 'Bàn 1', 80000, 'new', 'unpaid', '[]');
+    `);
+
+    // 12a. Legacy order-only insert (like migration 011 SePay RPC) auto-populates subject_type='order' and subject_id=order_id
+    await db.exec(`
+      INSERT INTO public.order_audit_logs (
+        id, shop_id, order_id, actor_user_id, actor_role, action, previous_state, next_state, reason
+      ) VALUES (
+        'audit-sql-order-legacy',
+        'sql-shop',
+        'sql-order',
+        'sepay:9001',
+        'webhook',
+        'sepay_webhook_reconcile',
+        '{"payment_status":"unpaid"}'::jsonb,
+        '{"payment_status":"paid"}'::jsonb,
+        'SePay VietQR automatic reconciliation'
+      );
+    `);
+
+    // 12b. Service request audit insert with subject_type='service_request', service_request_id='srv-real-1', order_id=NULL
+    await db.exec(`
+      INSERT INTO public.order_audit_logs (
+        id, shop_id, subject_type, subject_id, order_id, service_request_id, actor_user_id, actor_role, action, next_state, details
+      ) VALUES (
+        'audit-sql-srv-1',
+        'sql-shop',
+        'service_request',
+        'srv-real-1',
+        NULL,
+        'srv-real-1',
+        'customer_qr',
+        'customer',
+        'create_service_request',
+        '{"status":"pending","request_type":"call_staff"}'::jsonb,
+        '{"table_code":"R01"}'::jsonb
+      );
+    `);
+
+    const insertedAuditRows = (
+      await db.query(
+        "SELECT id, shop_id, subject_type, subject_id, order_id, service_request_id, action FROM public.order_audit_logs WHERE id IN ('audit-sql-order-legacy', 'audit-sql-srv-1') ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(insertedAuditRows, [
+      {
+        id: 'audit-sql-order-legacy',
+        shop_id: 'sql-shop',
+        subject_type: 'order',
+        subject_id: 'sql-order',
+        order_id: 'sql-order',
+        service_request_id: null,
+        action: 'sepay_webhook_reconcile',
+      },
+      {
+        id: 'audit-sql-srv-1',
+        shop_id: 'sql-shop',
+        subject_type: 'service_request',
+        subject_id: 'srv-real-1',
+        order_id: null,
+        service_request_id: 'srv-real-1',
+        action: 'create_service_request',
+      },
+    ]);
+
+    // 12c. Reject comma-joined order_id, cross-shop order_id, cross-shop service_request_id, and UPDATE mutation
+    await assert.rejects(
+      db.query(`
+        INSERT INTO public.order_audit_logs (
+          id, shop_id, order_id, actor_user_id, actor_role, action
+        ) VALUES (
+          'audit-bad-comma', 'sql-shop', 'sql-order,sql-pub-order', 'owner', 'owner', 'settle_table_bill'
+        )
+      `),
+      /INVALID_ORDER_AUDIT_SUBJECT/
+    );
+
+    await assert.rejects(
+      db.query(`
+        INSERT INTO public.order_audit_logs (
+          id, shop_id, order_id, actor_user_id, actor_role, action
+        ) VALUES (
+          'audit-bad-cross-order', 'sql-shop', 'sql-pub-order', 'owner', 'owner', 'update_order'
+        )
+      `),
+      /ORDER_AUDIT_SHOP_MISMATCH/
+    );
+
+    await assert.rejects(
+      db.query(`
+        INSERT INTO public.order_audit_logs (
+          id, shop_id, subject_type, service_request_id, actor_user_id, actor_role, action
+        ) VALUES (
+          'audit-bad-cross-srv', 'sql-pub-shop', 'service_request', 'srv-real-1', 'owner', 'owner', 'update_service_request'
+        )
+      `),
+      /SERVICE_REQUEST_AUDIT_SHOP_MISMATCH/
+    );
+
+    await assert.rejects(
+      db.query(`
+        UPDATE public.order_audit_logs SET action = 'tampered' WHERE id = 'audit-sql-order-legacy'
+      `),
+      /IMMUTABLE_ORDER_AUDIT_LOG/
+    );
+
+    // 12d. Direct client INSERT/UPDATE/DELETE is blocked even for shop owner; SELECT requires reports.view
+    await db.exec(`
+      RESET ROLE;
+      SET ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${owner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}"}', false);
+    `);
+
+    const ownerAuditRead = (
+      await db.query(
+        "SELECT id FROM public.order_audit_logs WHERE shop_id = 'sql-shop' ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(
+      ownerAuditRead.map((r) => r.id),
+      [
+        'audit-sepay-sql-shop-9001',
+        'audit-sepay-sql-shop-9003',
+        'audit-sql-order-legacy',
+        'audit-sql-srv-1',
+      ],
+      'shop owner with reports.view can read shop order_audit_logs via RLS'
+    );
+
+    await assert.rejects(
+      db.query(`
+        INSERT INTO public.order_audit_logs (
+          id, shop_id, order_id, actor_user_id, actor_role, action
+        ) VALUES (
+          'audit-client-forged', 'sql-shop', 'sql-order', '${owner}', 'owner', 'forged'
+        )
+      `),
+      /FORBIDDEN_ORDER_AUDIT_DIRECT_MUTATION|row-level security|permission denied/i
+    );
+
+    let clientDeletedAudit = false;
+    try {
+      clientDeletedAudit =
+        (
+          await db.query(
+            "DELETE FROM public.order_audit_logs WHERE id = 'audit-sql-order-legacy' RETURNING id"
+          )
+        ).rows.length > 0;
+    } catch {
+      clientDeletedAudit = false;
+    }
+    assert.equal(
+      clientDeletedAudit,
+      false,
+      'direct client DELETE on order_audit_logs must be denied'
+    );
+
+    // Staff and cashier without reports.view cannot read order_audit_logs via RLS
+    for (const nonReportMember of [staff, cashier]) {
+      await db.exec(`
+        RESET ROLE;
+        SET ROLE authenticated;
+        SELECT set_config('request.jwt.claim.sub', '${nonReportMember}', false);
+        SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${nonReportMember}"}', false);
+      `);
+      const nonReportRows = (
+        await db.query(
+          "SELECT id FROM public.order_audit_logs WHERE shop_id = 'sql-shop'"
+        )
+      ).rows;
+      assert.equal(
+        nonReportRows.length,
+        0,
+        'member without reports.view must not read order_audit_logs'
+      );
+    }
+
   } finally { await db.close(); }
 });

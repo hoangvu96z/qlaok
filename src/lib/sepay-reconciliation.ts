@@ -1667,9 +1667,11 @@ export async function processSePayShopWebhook(params: {
           : null;
 
       if (reconciled && !duplicate && normalizedOrder) {
-        recordOrderAuditLog({
+        await recordOrderAuditLog({
+          id: `audit-sepay-${cleanShopId}-${sepayTransactionId}`,
           shopId: cleanShopId,
           orderId: normalizedOrder.id,
+          subjectType: 'order',
           actorId: normalizedOrder.paid_by || `sepay:${sepayTransactionId}`,
           actorRole: 'webhook',
           action: 'sepay_webhook_reconcile',
@@ -1693,6 +1695,7 @@ export async function processSePayShopWebhook(params: {
             transfer_amount: parsedTransferAmount,
             account_number: providedAccountNumber,
           },
+          reason: 'SePay VietQR automatic reconciliation',
         });
         getOrderEventsBroker().notifyOrderChange(
           cleanShopId,
@@ -2057,9 +2060,11 @@ export async function processSePayShopWebhook(params: {
     store.events[eventKey] = reconciledEvt;
     writeLocalSePayStore(store);
 
-    recordOrderAuditLog({
+    await recordOrderAuditLog({
+      id: `audit-sepay-${cleanShopId}-${sepayTransactionId}`,
       shopId: cleanShopId,
       orderId: updatedOrder.id,
+      subjectType: 'order',
       actorId: paidBy,
       actorRole: 'webhook',
       action: 'sepay_webhook_reconcile',
@@ -2083,6 +2088,7 @@ export async function processSePayShopWebhook(params: {
         transfer_amount: parsedTransferAmount,
         account_number: providedAccountNumber,
       },
+      reason: 'SePay VietQR automatic reconciliation',
     });
 
     getOrderEventsBroker().notifyOrderChange(cleanShopId, updatedOrder.id);

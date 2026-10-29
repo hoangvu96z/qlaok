@@ -530,6 +530,28 @@ export interface Profile {
   updated_at?: string;
 }
 
+export type OrderAuditSubjectType = 'order' | 'service_request';
+
+export interface OrderAuditLogRecord {
+  id: string;
+  shop_id: string;
+  subject_type: OrderAuditSubjectType;
+  subject_id: string;
+  order_id: string | null;
+  service_request_id: string | null;
+  actor_user_id: string;
+  actor_id: string;
+  actor_role: string;
+  action: string;
+  previous_state?: Record<string, unknown> | null;
+  next_state?: Record<string, unknown> | null;
+  before_state?: Record<string, unknown> | null;
+  after_state?: Record<string, unknown> | null;
+  details?: Record<string, unknown> | null;
+  reason?: string | null;
+  created_at: string;
+}
+
 export interface CartSelection {
   item: CatalogItem;
   quantity: number;

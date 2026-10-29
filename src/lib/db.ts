@@ -5,6 +5,8 @@ import type {
   CatalogItem,
   Category,
   I18nText,
+  OrderAuditLogRecord,
+  OrderAuditSubjectType,
   PaymentTransaction,
   PlanTier,
   Post,
@@ -77,20 +79,22 @@ export function hasSupabaseServiceRoleKey(): boolean {
   const anonKey = (getSupabaseAnonKey() || '').trim();
   if (anonKey && serviceKey === anonKey) return false;
 
-  const jwtParts = serviceKey.split('.');
-  if (jwtParts.length === 3 && jwtParts[1]) {
-    try {
-      const payload = JSON.parse(
-        Buffer.from(jwtParts[1], 'base64url').toString('utf8')
-      ) as { role?: string };
-      if (payload.role && payload.role !== 'service_role') {
-        return false;
-      }
-    } catch {
-      // non-JWT or opaque key
-    }
+  // Supabase secret keys are opaque (sb_secret_...) while legacy service-role
+  // keys are JWTs. Do not accept arbitrary strings as elevated credentials.
+  if (serviceKey.startsWith('sb_secret_')) {
+    return serviceKey.length > 'sb_secret_'.length;
   }
-  return true;
+
+  const jwtParts = serviceKey.split('.');
+  if (jwtParts.length !== 3 || !jwtParts[1]) return false;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(jwtParts[1], 'base64url').toString('utf8')
+    ) as { role?: string };
+    return payload.role === 'service_role';
+  } catch {
+    return false;
+  }
 }
 
 export function getSupabaseDbClient(): SupabaseClient {
@@ -2520,4 +2524,393 @@ export async function dbSetProfilePlan(
 
   if (error) throw new Error(error.message);
   return data as Profile;
+}
+
+// ================= ORDER AUDIT LOG HELPERS =================
+
+const IS_NODE_TEST_PROCESS =
+  process.execArgv.includes('--test') ||
+  process.argv.includes('--test') ||
+  process.env.NODE_ENV === 'test';
+
+let testOrderAuditDbClientOverride: SupabaseClient | null = null;
+let testOrderAuditForceDbMode: boolean | null = null;
+
+export function setOrderAuditDbClientForTests(
+  client: unknown | null,
+  options?: { forceDbMode?: boolean }
+): void {
+  testOrderAuditDbClientOverride = (client as SupabaseClient | null) ?? null;
+  testOrderAuditForceDbMode =
+    options?.forceDbMode !== undefined
+      ? options.forceDbMode
+      : client !== null
+        ? true
+        : null;
+}
+
+export function isOrderAuditDbConfigured(): boolean {
+  if (testOrderAuditForceDbMode !== null) {
+    return testOrderAuditForceDbMode;
+  }
+  if (testOrderAuditDbClientOverride !== null) {
+    return true;
+  }
+  if (isSupabaseDbClientOverriddenForTests()) {
+    return true;
+  }
+  if (IS_NODE_TEST_PROCESS && process.env.QLAOK_ENABLE_TEST_SUPABASE !== '1') {
+    return false;
+  }
+  return (
+    (isSupabaseConfigured() && hasSupabaseServiceRoleKey()) ||
+    Boolean(
+      process.env.NEXT_PUBLIC_SUPABASE_URL &&
+        !process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project') &&
+        hasSupabaseServiceRoleKey()
+    )
+  );
+}
+
+function getActiveOrderAuditDbClient(): SupabaseClient {
+  if (testOrderAuditDbClientOverride) {
+    return testOrderAuditDbClientOverride;
+  }
+  return requireSupabaseServiceRoleClient('Order Audit');
+}
+
+export interface OrderAuditLogInsertRow {
+  id: string;
+  shop_id: string;
+  subject_type: OrderAuditSubjectType;
+  subject_id: string;
+  order_id: string | null;
+  service_request_id: string | null;
+  actor_id: string;
+  actor_role?: string | null;
+  action: string;
+  before_state?: Record<string, unknown> | null;
+  after_state?: Record<string, unknown> | null;
+  details?: Record<string, unknown> | null;
+  reason?: string | null;
+  created_at?: string;
+  allowDuplicateIdSkip?: boolean;
+}
+
+export const ORDER_AUDIT_LOG_SELECT_COLUMNS =
+  'id,shop_id,subject_type,subject_id,order_id,service_request_id,actor_user_id,actor_role,action,previous_state,next_state,details,reason,created_at';
+
+export function normalizeOrderAuditLogRecord(
+  raw: Record<string, unknown>
+): OrderAuditLogRecord {
+  const orderId =
+    typeof raw.order_id === 'string' && raw.order_id.trim()
+      ? raw.order_id.trim()
+      : null;
+  const serviceRequestId =
+    typeof raw.service_request_id === 'string' && raw.service_request_id.trim()
+      ? raw.service_request_id.trim()
+      : null;
+  const subjectType: OrderAuditSubjectType =
+    raw.subject_type === 'service_request' ||
+    (!orderId && Boolean(serviceRequestId))
+      ? 'service_request'
+      : 'order';
+  const subjectId =
+    typeof raw.subject_id === 'string' && raw.subject_id.trim()
+      ? raw.subject_id.trim()
+      : subjectType === 'service_request'
+        ? serviceRequestId || ''
+        : orderId || '';
+  const resolvedActorId =
+    (typeof raw.actor_user_id === 'string' && raw.actor_user_id.trim()) ||
+    (typeof raw.actor_id === 'string' && raw.actor_id.trim()) ||
+    'system';
+  const resolvedActorRole =
+    (typeof raw.actor_role === 'string' && raw.actor_role.trim()) || 'system';
+  const previousStateRaw = raw.previous_state ?? raw.before_state;
+  const nextStateRaw = raw.next_state ?? raw.after_state;
+  const previousState =
+    previousStateRaw &&
+    typeof previousStateRaw === 'object' &&
+    !Array.isArray(previousStateRaw)
+      ? (previousStateRaw as Record<string, unknown>)
+      : null;
+  const nextState =
+    nextStateRaw &&
+    typeof nextStateRaw === 'object' &&
+    !Array.isArray(nextStateRaw)
+      ? (nextStateRaw as Record<string, unknown>)
+      : null;
+
+  return {
+    id: String(raw.id || ''),
+    shop_id: String(raw.shop_id || ''),
+    subject_type: subjectType,
+    subject_id: subjectId,
+    order_id: subjectType === 'order' ? orderId || subjectId || null : null,
+    service_request_id:
+      subjectType === 'service_request'
+        ? serviceRequestId || subjectId || null
+        : null,
+    actor_user_id: resolvedActorId,
+    actor_id: resolvedActorId,
+    actor_role: resolvedActorRole,
+    action: String(raw.action || ''),
+    previous_state: previousState,
+    next_state: nextState,
+    before_state: previousState,
+    after_state: nextState,
+    details:
+      raw.details &&
+      typeof raw.details === 'object' &&
+      !Array.isArray(raw.details)
+        ? (raw.details as Record<string, unknown>)
+        : null,
+    reason:
+      typeof raw.reason === 'string' && raw.reason.trim()
+        ? raw.reason.trim()
+        : null,
+    created_at:
+      typeof raw.created_at === 'string' && raw.created_at.trim()
+        ? raw.created_at
+        : new Date(0).toISOString(),
+  };
+}
+
+export interface AdminAuditLogRecord {
+  id: string;
+  actor_user_id: string;
+  actor_email: string;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export const ADMIN_AUDIT_LOG_SELECT_COLUMNS =
+  'id,actor_user_id,actor_email,action,target_id,details,created_at';
+
+function isDuplicateKeyDbError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const errObj = error as { code?: unknown; message?: unknown; details?: unknown };
+  if (String(errObj.code || '') === '23505') return true;
+  const combined = `${String(errObj.message || '')} ${String(errObj.details || '')}`;
+  return /duplicate key value|unique constraint|(?:order|admin)_audit_logs_pkey/i.test(
+    combined
+  );
+}
+
+export async function dbInsertAdminAuditLog(
+  row: AdminAuditLogRecord
+): Promise<{ persisted: boolean; skippedDuplicate: boolean }> {
+  const sb = getActiveOrderAuditDbClient();
+  const tableClient = sb.from('admin_audit_logs');
+  if (!tableClient || typeof tableClient.insert !== 'function') {
+    throw new Error('ADMIN_AUDIT_DB_UNAVAILABLE');
+  }
+
+  const { error } = await tableClient.insert({
+    id: row.id,
+    actor_user_id: row.actor_user_id,
+    actor_email: row.actor_email,
+    action: row.action,
+    target_id: row.target_id,
+    details: row.details,
+    created_at: row.created_at,
+  });
+  if (error) {
+    if (isDuplicateKeyDbError(error)) {
+      return { persisted: true, skippedDuplicate: true };
+    }
+    throw new Error('ADMIN_AUDIT_DB_INSERT_FAILED');
+  }
+  return { persisted: true, skippedDuplicate: false };
+}
+
+export async function dbGetAdminAuditLogs(
+  limit = 200
+): Promise<AdminAuditLogRecord[]> {
+  const clampedLimit = Math.min(
+    500,
+    Math.max(1, Math.trunc(Number(limit) || 100))
+  );
+  const sb = getActiveOrderAuditDbClient();
+  const tableClient = sb.from('admin_audit_logs');
+  if (!tableClient || typeof tableClient.select !== 'function') {
+    throw new Error('ADMIN_AUDIT_DB_UNAVAILABLE');
+  }
+
+  const { data, error } = await tableClient
+    .select(ADMIN_AUDIT_LOG_SELECT_COLUMNS)
+    .order('created_at', { ascending: false })
+    .limit(clampedLimit);
+  if (error) {
+    throw new Error('ADMIN_AUDIT_DB_QUERY_FAILED');
+  }
+
+  return (Array.isArray(data) ? data : []).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const row = raw as Record<string, unknown>;
+    return [{
+      id: String(row.id || ''),
+      actor_user_id: String(row.actor_user_id || ''),
+      actor_email: String(row.actor_email || ''),
+      action: String(row.action || ''),
+      target_id:
+        typeof row.target_id === 'string' && row.target_id.trim()
+          ? row.target_id.trim()
+          : null,
+      details:
+        row.details && typeof row.details === 'object' && !Array.isArray(row.details)
+          ? (row.details as Record<string, unknown>)
+          : null,
+      created_at:
+        typeof row.created_at === 'string' && row.created_at.trim()
+          ? row.created_at
+          : new Date(0).toISOString(),
+    }];
+  });
+}
+
+export async function dbInsertOrderAuditLogs(
+  rows: OrderAuditLogInsertRow[]
+): Promise<{ persisted: boolean; skippedDuplicate: boolean }> {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { persisted: false, skippedDuplicate: false };
+  }
+
+  const sb = getActiveOrderAuditDbClient();
+  let skippedDuplicate = false;
+
+  for (const row of rows) {
+    const payload: Record<string, unknown> = {
+      id: row.id,
+      shop_id: row.shop_id,
+      subject_type: row.subject_type,
+      subject_id: row.subject_id,
+      order_id: row.order_id,
+      service_request_id: row.service_request_id,
+      actor_user_id: row.actor_id || 'system',
+      actor_role: row.actor_role || 'system',
+      action: row.action,
+      previous_state: row.before_state ?? null,
+      next_state: row.after_state ?? null,
+      details: row.details ?? null,
+      reason: row.reason ?? null,
+      ...(row.created_at ? { created_at: row.created_at } : {}),
+    };
+
+    const tableClient = sb.from('order_audit_logs');
+    if (!tableClient || typeof tableClient.insert !== 'function') {
+      throw new Error(
+        'ORDER_AUDIT_DB_UNAVAILABLE: order_audit_logs insert is not supported on active DB client.'
+      );
+    }
+
+    const insertResult = await tableClient.insert(payload);
+    const error = insertResult?.error;
+    if (error) {
+      if (row.allowDuplicateIdSkip && isDuplicateKeyDbError(error)) {
+        skippedDuplicate = true;
+        continue;
+      }
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message?: unknown }).message || 'Unknown DB error')
+          : String(error);
+      throw new Error(`ORDER_AUDIT_DB_INSERT_FAILED: ${message}`, {
+        cause: error,
+      });
+    }
+  }
+
+  return { persisted: true, skippedDuplicate };
+}
+
+export interface GetShopOrderAuditLogsFilter {
+  shopId: string;
+  orderId?: string | null;
+  serviceRequestId?: string | null;
+  subjectType?: OrderAuditSubjectType | null;
+  subjectId?: string | null;
+  action?: string | null;
+  limit?: number;
+}
+
+export async function dbGetShopOrderAuditLogs(
+  params: GetShopOrderAuditLogsFilter
+): Promise<OrderAuditLogRecord[]> {
+  const cleanShopId = (params.shopId || '').trim();
+  if (!cleanShopId) {
+    throw new Error('SHOP_ID_REQUIRED: Thiếu mã cửa hàng (shopId).');
+  }
+
+  const clampedLimit = Math.min(
+    200,
+    Math.max(1, Math.trunc(Number(params.limit) || 100))
+  );
+
+  const sb = getActiveOrderAuditDbClient();
+  const tableClient = sb.from('order_audit_logs');
+  if (!tableClient || typeof tableClient.select !== 'function') {
+    throw new Error(
+      'ORDER_AUDIT_DB_UNAVAILABLE: order_audit_logs select is not supported on active DB client.'
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let query: any = tableClient
+    .select(ORDER_AUDIT_LOG_SELECT_COLUMNS)
+    .eq('shop_id', cleanShopId);
+
+  const cleanSubjectType = params.subjectType?.trim() as
+    | OrderAuditSubjectType
+    | undefined;
+  if (
+    cleanSubjectType === 'order' ||
+    cleanSubjectType === 'service_request'
+  ) {
+    query = query.eq('subject_type', cleanSubjectType);
+  }
+
+  const cleanSubjectId = params.subjectId?.trim();
+  if (cleanSubjectId) {
+    query = query.eq('subject_id', cleanSubjectId);
+  }
+
+  const cleanOrderId = params.orderId?.trim();
+  if (cleanOrderId) {
+    query = query.eq('order_id', cleanOrderId);
+  }
+
+  const cleanServiceRequestId = params.serviceRequestId?.trim();
+  if (cleanServiceRequestId) {
+    query = query.eq('service_request_id', cleanServiceRequestId);
+  }
+
+  const cleanAction = params.action?.trim();
+  if (cleanAction) {
+    query = query.eq('action', cleanAction);
+  }
+
+  if (typeof query.order === 'function') {
+    query = query.order('created_at', { ascending: false });
+  }
+  if (typeof query.limit === 'function') {
+    query = query.limit(clampedLimit);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(
+      `ORDER_AUDIT_QUERY_FAILED: ${String(error.message || error)}`,
+      { cause: error }
+    );
+  }
+
+  const rows = Array.isArray(data)
+    ? (data as Record<string, unknown>[])
+    : [];
+  return rows.slice(0, clampedLimit).map(normalizeOrderAuditLogRecord);
 }

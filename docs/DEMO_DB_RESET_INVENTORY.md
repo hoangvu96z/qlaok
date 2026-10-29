@@ -1,15 +1,15 @@
 # Qlaok Demo Database Reset — Table Inventory & Reset Gap Analysis
 
-Updated: **2026-10-25**. Scope: read-only schema and seed inventory from repository migrations (`001`–`019`) and server modules. No live database connection or destructive SQL is executed in this document.
+Updated: **2026-10-29**. Scope: read-only schema and seed inventory from repository migrations (`001`–`019`, `20261030000100`) and server modules. No live database connection or destructive SQL is executed in this document.
 
 - **Target Supabase Project Reference (identification only):** `kftmrjmmympztzztunxf`
 - **Migration range analyzed:** `supabase/migrations/001_init_qlaok.sql` through `019_revoke_staff_trigger_execute.sql`
 
 ---
 
-## 1. App-Owned `public` Tables (Migrations `001`–`019`)
+## 1. App-Owned `public` Tables
 
-Migrations `001`–`019` create **21 tables** in the `public` schema: **19 application data tables**, **1 static reference table** (`public.provinces`), and **1 migration tracking table** (`public.schema_migrations`).
+Migrations `001`–`019` create the original 21 tables in `public`; migration `20261030000100_order_audit_logs_subjects.sql` adds `admin_audit_logs` for global Super Admin history, bringing the schema to **22 tables**. The reset purges 19 shop/demo data tables, preserves the static reference and migration tracking tables, and preserves global admin audit history.
 
 | # | Table (`public.*`) | Created / Altered In | Primary Key | Outbound Foreign Keys (`ON DELETE` behavior) | Reset Disposition |
 | --- | --- | --- | --- | --- | --- |
@@ -34,6 +34,7 @@ Migrations `001`–`019` create **21 tables** in the `public` schema: **19 appli
 | 19 | `mobile_push_tokens` | `008` | `id` (`TEXT`) | `shop_id` → `shops(id)` (`CASCADE`) | **Clear** |
 | 20 | `shop_sepay_configs` | `011` | `shop_id` (`TEXT`) | `shop_id` → `shops(id)` (`CASCADE`) | **Clear** |
 | 21 | `sepay_webhook_events` | `011` | `id` (`TEXT`) | `shop_id` → `shops(id)` (`CASCADE`); `order_id` → `orders(id)` (`SET NULL`) | **Clear** |
+| 22 | `admin_audit_logs` | `20261030000100` | `id` (`TEXT`) | None (global Super Admin audit history) | **Preserve** (append-only operational history; excluded from demo reset) |
 
 ---
 
@@ -64,7 +65,7 @@ To avoid all FK and trigger conflicts without disabling triggers or altering con
 3. **Shop-scoped operational & config tables:** `shop_tables` → `mobile_push_tokens` → `shop_sepay_configs` → `shop_staff_credentials` → `shop_memberships` → `shop_slug_aliases`
 4. **Storefront & content tables:** `analytics_events` → `posts` → `items` → `categories`
 5. **Root tenant & billing tables:** `payment_transactions` → `shops` → `profiles`
-6. **Untouched tables:** `provinces` (keep or re-upsert 34 provinces) and `schema_migrations` (keep intact).
+6. **Untouched tables:** `admin_audit_logs` (preserve global admin history), `provinces` (keep or re-upsert 34 provinces), and `schema_migrations` (keep intact).
 
 ---
 

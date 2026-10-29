@@ -55,7 +55,7 @@ function makeJwtWithRole(role: string): string {
   return `${header}.${payload}.signature`;
 }
 
-test('requireSupabaseServiceRoleClient rejects missing, publishable, and anon role keys', () => {
+test('requireSupabaseServiceRoleClient accepts only Supabase secret or legacy service-role keys', () => {
   setSupabaseDbClientForTests(null);
   process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = makeJwtWithRole('anon');
@@ -80,6 +80,14 @@ test('requireSupabaseServiceRoleClient rejects missing, publishable, and anon ro
     () => requireSupabaseServiceRoleClient('Test Admin'),
     /MISSING_SERVICE_ROLE_KEY/
   );
+
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'not-a-supabase-service-key';
+  assert.equal(hasSupabaseServiceRoleKey(), false);
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'eyJ.invalid.signature';
+  assert.equal(hasSupabaseServiceRoleKey(), false);
+
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_fake_key';
+  assert.equal(hasSupabaseServiceRoleKey(), true);
 
   process.env.SUPABASE_SERVICE_ROLE_KEY = makeJwtWithRole('service_role');
   assert.equal(hasSupabaseServiceRoleKey(), true);
@@ -1036,9 +1044,18 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
       const devReseedBody = await devReseedRes.json();
       assert.equal(devReseedBody.ok, true);
       assert.equal(
-        writeOperations.length,
+        writeOperations.filter((write) => write.table !== 'admin_audit_logs')
+          .length,
         6,
         'dev/test reseed_demo_data upserts profiles, shops, categories, items, posts, and payment_transactions'
+      );
+      assert.equal(
+        writeOperations.some(
+          (write) =>
+            write.table === 'admin_audit_logs' && write.op === 'insert'
+        ),
+        true,
+        'successful Super Admin actions append a queryable admin audit row'
       );
     } finally {
       if (prevSessionSecretForProdTest === undefined) {

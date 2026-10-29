@@ -2,7 +2,19 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
-import { dbGetShopById, getSupabaseDbClient } from '@/lib/db';
+import {
+  dbGetAdminAuditLogs,
+  dbGetShopById,
+  dbGetShopOrderAuditLogs,
+  dbInsertAdminAuditLog,
+  dbInsertOrderAuditLogs,
+  getSupabaseDbClient,
+  isOrderAuditDbConfigured,
+  normalizeOrderAuditLogRecord,
+  type AdminAuditLogRecord,
+  type GetShopOrderAuditLogsFilter,
+  type OrderAuditLogInsertRow,
+} from '@/lib/db';
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   dbGetShopMemberships,
@@ -19,7 +31,13 @@ import {
   verifyZitadelJwt,
   type ProfileDbRow,
 } from '@/lib/zitadel-oidc';
-import type { Profile, ShopMembership, ShopPermission } from '@/types/qlaok';
+import type {
+  OrderAuditLogRecord,
+  OrderAuditSubjectType,
+  Profile,
+  ShopMembership,
+  ShopPermission,
+} from '@/types/qlaok';
 
 export const SESSION_COOKIE_NAME = 'qlaok_session';
 const DEVELOPMENT_SESSION_SIGNING_SECRET = crypto.randomBytes(32).toString('base64url');
@@ -1047,7 +1065,7 @@ function appendPrivateAuditRecord(
   targetFile: string,
   payload: Record<string, unknown>,
   label: string
-): void {
+): boolean {
   let fd: number | null = null;
   try {
     const dir = path.dirname(targetFile);
@@ -1071,8 +1089,10 @@ function appendPrivateAuditRecord(
     );
     fs.fchmodSync(fd, 0o600);
     fs.writeSync(fd, `${JSON.stringify(payload)}\n`, undefined, 'utf8');
+    return true;
   } catch (error) {
     console.error(`Failed to append ${label} audit record:`, error);
+    return false;
   } finally {
     if (fd !== null) {
       try {
@@ -1084,29 +1104,98 @@ function appendPrivateAuditRecord(
   }
 }
 
-export function recordAdminAuditLog(entry: {
+export async function recordAdminAuditLog(entry: {
   actorId: string;
   actorEmail: string;
   action: string;
   targetId?: string;
   details?: Record<string, unknown>;
-}): void {
-  appendPrivateAuditRecord(
-    AUDIT_LOG_FILE,
-    { timestamp: new Date().toISOString(), ...entry },
+}): Promise<boolean> {
+  const createdAt = new Date().toISOString();
+  const targetFile = testAdminAuditLogFileOverride || AUDIT_LOG_FILE;
+  const row: AdminAuditLogRecord = {
+    id: crypto.randomUUID(),
+    actor_user_id: String(entry.actorId || '').trim() || 'system',
+    actor_email: String(entry.actorEmail || '').trim().toLowerCase(),
+    action: String(entry.action || '').trim(),
+    target_id:
+      typeof entry.targetId === 'string' && entry.targetId.trim()
+        ? entry.targetId.trim()
+        : null,
+    details: sanitizeAuditRecordObject(entry.details),
+    created_at: createdAt,
+  };
+
+  if (!row.action) {
+    console.error('ADMIN_AUDIT_WRITE_FAILED', {
+      code: 'ADMIN_AUDIT_INVALID_ACTION',
+      backupWritten: false,
+    });
+    return false;
+  }
+
+  if (isOrderAuditDbConfigured()) {
+    try {
+      await dbInsertAdminAuditLog(row);
+      return true;
+    } catch {
+      const backupWritten = appendPrivateAuditRecord(
+        targetFile,
+        {
+          ...row,
+          timestamp: row.created_at,
+          actorId: row.actor_user_id,
+          actorEmail: row.actor_email,
+          targetId: row.target_id,
+        },
+        'admin'
+      );
+      console.error('ADMIN_AUDIT_WRITE_FAILED', {
+        code: 'ADMIN_AUDIT_DB_WRITE_FAILED',
+        backupWritten,
+      });
+      return false;
+    }
+  }
+
+  const backupWritten = appendPrivateAuditRecord(
+    targetFile,
+    {
+      ...row,
+      timestamp: row.created_at,
+      actorId: row.actor_user_id,
+      actorEmail: row.actor_email,
+      targetId: row.target_id,
+    },
     'admin'
   );
+  if (process.env.NODE_ENV === 'production') {
+    console.error('ADMIN_AUDIT_WRITE_FAILED', {
+      code: 'ADMIN_AUDIT_DB_UNAVAILABLE',
+      backupWritten,
+    });
+    return false;
+  }
+  return backupWritten;
 }
 
 export function readAdminAuditLog(limit = 200): Record<string, unknown>[] {
+  const targetFile = testAdminAuditLogFileOverride || AUDIT_LOG_FILE;
   const safeLimit = Number.isFinite(limit)
     ? Math.min(500, Math.max(1, Math.floor(limit)))
     : 200;
   try {
-    const lines = fs
-      .readFileSync(AUDIT_LOG_FILE, 'utf8')
-      .split('\n')
-      .filter(Boolean)
+    const lines = [`${targetFile}.1`, targetFile]
+      .flatMap((file) => {
+        try {
+          return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+            throw error;
+          }
+          return [];
+        }
+      })
       .slice(-safeLimit);
     return lines.flatMap((line) => {
       try {
@@ -1126,6 +1215,87 @@ export function readAdminAuditLog(limit = 200): Record<string, unknown>[] {
   }
 }
 
+function normalizeAdminAuditBackupRecord(
+  raw: Record<string, unknown>
+): AdminAuditLogRecord | null {
+  const action = typeof raw.action === 'string' ? raw.action.trim() : '';
+  if (!action) return null;
+
+  const createdAt =
+    typeof raw.created_at === 'string'
+      ? raw.created_at
+      : typeof raw.timestamp === 'string'
+        ? raw.timestamp
+        : new Date(0).toISOString();
+  const id =
+    typeof raw.id === 'string' && raw.id.trim()
+      ? raw.id.trim()
+      : `legacy-${crypto
+          .createHash('sha256')
+          .update(JSON.stringify(raw))
+          .digest('hex')
+          .slice(0, 24)}`;
+
+  return {
+    id,
+    actor_user_id:
+      typeof raw.actor_user_id === 'string'
+        ? raw.actor_user_id
+        : typeof raw.actorId === 'string'
+          ? raw.actorId
+          : 'system',
+    actor_email:
+      typeof raw.actor_email === 'string'
+        ? raw.actor_email
+        : typeof raw.actorEmail === 'string'
+          ? raw.actorEmail
+          : '',
+    action,
+    target_id:
+      typeof raw.target_id === 'string'
+        ? raw.target_id
+        : typeof raw.targetId === 'string'
+          ? raw.targetId
+          : null,
+    details: sanitizeAuditRecordObject(
+      raw.details as Record<string, unknown> | null | undefined
+    ),
+    created_at: createdAt,
+  };
+}
+
+export async function queryAdminAuditLogs(
+  limit = 100
+): Promise<AdminAuditLogRecord[]> {
+  const clampedLimit = Math.min(
+    500,
+    Math.max(1, Math.trunc(Number(limit) || 100))
+  );
+
+  if (!isOrderAuditDbConfigured()) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('ADMIN_AUDIT_DB_UNAVAILABLE');
+    }
+    return readAdminAuditLog(clampedLimit).flatMap((raw) => {
+      const normalized = normalizeAdminAuditBackupRecord(raw);
+      return normalized ? [normalized] : [];
+    });
+  }
+
+  const databaseRows = await dbGetAdminAuditLogs(clampedLimit);
+  const seenIds = new Set(databaseRows.map((row) => row.id));
+  const backupRows = readAdminAuditLog(500).flatMap((raw) => {
+    const normalized = normalizeAdminAuditBackupRecord(raw);
+    if (!normalized || seenIds.has(normalized.id)) return [];
+    seenIds.add(normalized.id);
+    return [normalized];
+  });
+
+  return [...databaseRows, ...backupRows]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, clampedLimit);
+}
+
 const ORDER_AUDIT_LOG_FILE = path.join(
   process.cwd(),
   '.local-db',
@@ -1133,25 +1303,388 @@ const ORDER_AUDIT_LOG_FILE = path.join(
 );
 
 let testOrderAuditLogFileOverride: string | null = null;
+let testAdminAuditLogFileOverride: string | null = null;
 
-export function setOrderAuditLogFileForTests(path: string | null): void {
-  testOrderAuditLogFileOverride = path;
+export function setAdminAuditLogFileForTests(pathOverride: string | null): void {
+  testAdminAuditLogFileOverride = pathOverride;
 }
 
-export function recordOrderAuditLog(entry: {
+export function setOrderAuditLogFileForTests(pathOverride: string | null): void {
+  testOrderAuditLogFileOverride = pathOverride;
+}
+
+const SENSITIVE_AUDIT_KEY_PATTERN =
+  /^(?:password|pass|secret|secret_ciphertext|secret_iv|secret_tag|token|access_token|refresh_token|id_token|tracking_token|service_role|service_role_key|api_key|private_key|authorization|cookie|set-cookie|sepay_secret|sepaysecret)$/i;
+
+function sanitizeAuditValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '[TRUNCATED]';
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeAuditValue(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const normalizedKey = k
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase();
+      if (SENSITIVE_AUDIT_KEY_PATTERN.test(normalizedKey)) {
+        out[k] = '[REDACTED]';
+      } else {
+        out[k] = sanitizeAuditValue(v, depth + 1);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+function sanitizeAuditRecordObject(
+  input?: Record<string, unknown> | null
+): Record<string, unknown> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return null;
+  }
+  return sanitizeAuditValue(input, 0) as Record<string, unknown>;
+}
+
+function extractCleanAuditSubjectIds(
+  raw: string | readonly string[] | null | undefined
+): string[] {
+  const parts: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        parts.push(...item.split(','));
+      }
+    }
+  } else if (typeof raw === 'string') {
+    parts.push(...raw.split(','));
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+export interface RecordOrderAuditLogEntry {
+  id?: string;
   shopId: string;
-  orderId: string;
+  orderId?: string | readonly string[] | null;
+  serviceRequestId?: string | null;
+  subjectType?: OrderAuditSubjectType;
+  subjectId?: string | readonly string[] | null;
   actorId: string;
-  actorRole?: string;
+  actorRole?: string | null;
   action: string;
-  before?: Record<string, unknown>;
-  after?: Record<string, unknown>;
-  details?: Record<string, unknown>;
-}): void {
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  details?: Record<string, unknown> | null;
+  reason?: string | null;
+}
+
+export async function recordOrderAuditLog(
+  entry: RecordOrderAuditLogEntry
+): Promise<boolean> {
   const targetFile = testOrderAuditLogFileOverride || ORDER_AUDIT_LOG_FILE;
-  appendPrivateAuditRecord(
-    targetFile,
-    { timestamp: new Date().toISOString(), ...entry },
-    'order'
+  const cleanShopId = String(entry.shopId || '').trim();
+  const cleanAction = String(entry.action || '').trim();
+  const cleanActorId = String(entry.actorId || '').trim() || 'system';
+  const cleanActorRole =
+    typeof entry.actorRole === 'string' && entry.actorRole.trim()
+      ? entry.actorRole.trim()
+      : 'system';
+
+  const hasExplicitServiceRequestId =
+    typeof entry.serviceRequestId === 'string' &&
+    entry.serviceRequestId.trim().length > 0;
+  const hasExplicitOrderId =
+    extractCleanAuditSubjectIds(entry.orderId).length > 0;
+
+  const resolvedSubjectType: OrderAuditSubjectType =
+    entry.subjectType === 'service_request' ||
+    (!entry.subjectType && hasExplicitServiceRequestId && !hasExplicitOrderId)
+      ? 'service_request'
+      : 'order';
+
+  const targetSubjectIds = (
+    resolvedSubjectType === 'service_request'
+      ? [entry.serviceRequestId, entry.subjectId, entry.orderId]
+      : [entry.orderId, entry.subjectId]
+  )
+    .map((candidate) => extractCleanAuditSubjectIds(candidate))
+    .find((candidateIds) => candidateIds.length > 0) || [];
+
+  if (!cleanShopId || !cleanAction || targetSubjectIds.length === 0) {
+    console.error('ORDER_AUDIT_WRITE_FAILED', {
+      code: 'ORDER_AUDIT_INVALID_SUBJECT',
+      shopId: cleanShopId || null,
+      subjectType: resolvedSubjectType,
+      subjectCount: targetSubjectIds.length,
+      action: cleanAction || null,
+    });
+    return false;
+  }
+
+  const sanitizedBefore = sanitizeAuditRecordObject(entry.before);
+  const sanitizedAfter = sanitizeAuditRecordObject(entry.after);
+  const sanitizedDetails = sanitizeAuditRecordObject(entry.details);
+  const explicitReason =
+    typeof entry.reason === 'string' && entry.reason.trim()
+      ? entry.reason.trim()
+      : typeof sanitizedDetails?.reason === 'string' &&
+          sanitizedDetails.reason.trim()
+        ? sanitizedDetails.reason.trim()
+        : typeof sanitizedAfter?.refund_reason === 'string' &&
+            sanitizedAfter.refund_reason.trim()
+          ? sanitizedAfter.refund_reason.trim()
+          : typeof sanitizedAfter?.cancelled_reason === 'string' &&
+              sanitizedAfter.cancelled_reason.trim()
+            ? sanitizedAfter.cancelled_reason.trim()
+            : typeof sanitizedAfter?.cancel_reason === 'string' &&
+                sanitizedAfter.cancel_reason.trim()
+              ? sanitizedAfter.cancel_reason.trim()
+              : null;
+
+  const nowIso = new Date().toISOString();
+  const baseExplicitId =
+    typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : null;
+
+  const dbRows: OrderAuditLogInsertRow[] = [];
+  let localWriteSucceeded = true;
+
+  for (let idx = 0; idx < targetSubjectIds.length; idx += 1) {
+    const subjectId = targetSubjectIds[idx]!;
+    const rowId = baseExplicitId
+      ? targetSubjectIds.length === 1
+        ? baseExplicitId
+        : `${baseExplicitId}-${idx + 1}`
+      : typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `audit-${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${idx}`;
+
+    const orderIdValue = resolvedSubjectType === 'order' ? subjectId : null;
+    const serviceRequestIdValue =
+      resolvedSubjectType === 'service_request' ? subjectId : null;
+
+    dbRows.push({
+      id: rowId,
+      shop_id: cleanShopId,
+      subject_type: resolvedSubjectType,
+      subject_id: subjectId,
+      order_id: orderIdValue,
+      service_request_id: serviceRequestIdValue,
+      actor_id: cleanActorId,
+      actor_role: cleanActorRole,
+      action: cleanAction,
+      before_state: sanitizedBefore,
+      after_state: sanitizedAfter,
+      details: sanitizedDetails,
+      reason: explicitReason,
+      created_at: nowIso,
+      allowDuplicateIdSkip: Boolean(baseExplicitId),
+    });
+
+    const localPayload: Record<string, unknown> = {
+      id: rowId,
+      timestamp: nowIso,
+      created_at: nowIso,
+      shopId: cleanShopId,
+      shop_id: cleanShopId,
+      subjectType: resolvedSubjectType,
+      subject_type: resolvedSubjectType,
+      subjectId,
+      subject_id: subjectId,
+      orderId: orderIdValue,
+      order_id: orderIdValue,
+      serviceRequestId: serviceRequestIdValue,
+      service_request_id: serviceRequestIdValue,
+      actorId: cleanActorId,
+      actor_id: cleanActorId,
+      actor_user_id: cleanActorId,
+      actorRole: cleanActorRole,
+      actor_role: cleanActorRole,
+      action: cleanAction,
+      before: sanitizedBefore,
+      before_state: sanitizedBefore,
+      previous_state: sanitizedBefore,
+      after: sanitizedAfter,
+      after_state: sanitizedAfter,
+      next_state: sanitizedAfter,
+      details: sanitizedDetails,
+      reason: explicitReason,
+    };
+
+    const appended = appendPrivateAuditRecord(
+      targetFile,
+      localPayload,
+      'order'
+    );
+    if (!appended) {
+      localWriteSucceeded = false;
+    }
+  }
+
+  if (isOrderAuditDbConfigured()) {
+    try {
+      await dbInsertOrderAuditLogs(dbRows);
+      return true;
+    } catch {
+      console.error('ORDER_AUDIT_WRITE_FAILED', {
+        code: 'ORDER_AUDIT_DB_WRITE_FAILED',
+        shopId: cleanShopId,
+        subjectType: resolvedSubjectType,
+        subjectIds: targetSubjectIds,
+        action: cleanAction,
+        localBackupWritten: localWriteSucceeded,
+      });
+      return false;
+    }
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    console.error('ORDER_AUDIT_WRITE_FAILED', {
+      code: 'ORDER_AUDIT_DB_UNAVAILABLE',
+      localBackupWritten: localWriteSucceeded,
+    });
+    return false;
+  }
+
+  if (!localWriteSucceeded) {
+    console.error('ORDER_AUDIT_WRITE_FAILED', {
+      code: 'ORDER_AUDIT_LOCAL_WRITE_FAILED',
+      shopId: cleanShopId,
+      subjectType: resolvedSubjectType,
+      subjectIds: targetSubjectIds,
+      action: cleanAction,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+export function readOrderAuditLog(limit = 200): OrderAuditLogRecord[] {
+  const targetFile = testOrderAuditLogFileOverride || ORDER_AUDIT_LOG_FILE;
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(2000, Math.max(1, Math.floor(limit)))
+    : 200;
+  try {
+    const lines = fs
+      .readFileSync(targetFile, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .slice(-safeLimit);
+    return lines
+      .flatMap((line) => {
+        try {
+          const entry = JSON.parse(line) as unknown;
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            return [];
+          }
+          const raw = entry as Record<string, unknown>;
+          return [
+            normalizeOrderAuditLogRecord({
+              id: raw.id ?? `local-${ String(raw.timestamp || '') }`,
+              shop_id: raw.shop_id ?? raw.shopId ?? '',
+              subject_type: raw.subject_type ?? raw.subjectType ?? undefined,
+              subject_id: raw.subject_id ?? raw.subjectId ?? undefined,
+              order_id: raw.order_id ?? raw.orderId ?? null,
+              service_request_id:
+                raw.service_request_id ?? raw.serviceRequestId ?? null,
+              actor_user_id:
+                raw.actor_user_id ?? raw.actor_id ?? raw.actorId ?? 'system',
+              actor_id:
+                raw.actor_user_id ?? raw.actor_id ?? raw.actorId ?? 'system',
+              actor_role: raw.actor_role ?? raw.actorRole ?? null,
+              action: raw.action ?? '',
+              previous_state:
+                raw.previous_state ?? raw.before_state ?? raw.before ?? null,
+              next_state:
+                raw.next_state ?? raw.after_state ?? raw.after ?? null,
+              before_state:
+                raw.previous_state ?? raw.before_state ?? raw.before ?? null,
+              after_state:
+                raw.next_state ?? raw.after_state ?? raw.after ?? null,
+              details: raw.details ?? null,
+              reason: raw.reason ?? null,
+              created_at: raw.created_at ?? raw.timestamp ?? '',
+            }),
+          ];
+        } catch {
+          return [];
+        }
+      })
+      .reverse();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.error('Failed to read order audit log:', error);
+    }
+    return [];
+  }
+}
+
+export async function queryOrderAuditLogs(
+  filter: GetShopOrderAuditLogsFilter
+): Promise<OrderAuditLogRecord[]> {
+  const cleanShopId = (filter.shopId || '').trim();
+  if (!cleanShopId) {
+    throw new Error('SHOP_ID_REQUIRED: Thiếu mã cửa hàng (shopId).');
+  }
+
+  if (isOrderAuditDbConfigured()) {
+    return dbGetShopOrderAuditLogs(filter);
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('ORDER_AUDIT_DB_UNAVAILABLE');
+  }
+
+  const clampedLimit = Math.min(
+    200,
+    Math.max(1, Math.trunc(Number(filter.limit) || 100))
   );
+  const cleanSubjectType = filter.subjectType?.trim() as
+    | OrderAuditSubjectType
+    | undefined;
+  const cleanSubjectId = filter.subjectId?.trim() || null;
+  const cleanOrderId = filter.orderId?.trim() || null;
+  const cleanServiceRequestId = filter.serviceRequestId?.trim() || null;
+  const cleanAction = filter.action?.trim() || null;
+
+  const localRecords = readOrderAuditLog(2000);
+  const seenIds = new Set<string>();
+  const filtered: OrderAuditLogRecord[] = [];
+
+  for (const record of localRecords) {
+    if (record.id && seenIds.has(record.id)) {
+      continue;
+    }
+    if (record.shop_id !== cleanShopId) continue;
+    if (cleanSubjectType && record.subject_type !== cleanSubjectType) continue;
+    if (cleanSubjectId && record.subject_id !== cleanSubjectId) continue;
+    if (cleanOrderId && record.order_id !== cleanOrderId) continue;
+    if (
+      cleanServiceRequestId &&
+      record.service_request_id !== cleanServiceRequestId
+    ) {
+      continue;
+    }
+    if (cleanAction && record.action !== cleanAction) continue;
+    if (record.id) {
+      seenIds.add(record.id);
+    }
+    filtered.push(record);
+    if (filtered.length >= clampedLimit) break;
+  }
+
+  return filtered;
 }

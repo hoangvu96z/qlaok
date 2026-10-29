@@ -16,6 +16,7 @@ import {
 } from '@/lib/auth-credentials';
 import {
   dbGetAllOrders,
+  dbGetOrderById,
   dbUpdateOrderStatus,
   enrichItemsWithInventory,
   getVietnamDateKey,
@@ -44,6 +45,7 @@ import type {
 
 import {
   recordAdminAuditLog,
+  recordOrderAuditLog,
   requireSuperAdmin,
 } from '@/lib/server-auth';
 
@@ -501,7 +503,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({ owner: data });
     }
 
@@ -556,7 +558,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({ owner: created }, { status: 201 });
     }
 
@@ -594,7 +596,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({ ok: true });
     }
 
@@ -617,7 +619,7 @@ export async function POST(req: Request) {
           sbClient: sb,
           skipEnsureSeeded: true,
         });
-        recordSuccessfulAudit();
+        await recordSuccessfulAudit();
         return NextResponse.json({ shop: updatedShop });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -643,7 +645,7 @@ export async function POST(req: Request) {
       }
 
       await dbDeleteShopSlugAliases(shopId, sb);
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({ ok: true });
     }
 
@@ -705,7 +707,7 @@ export async function POST(req: Request) {
           allowUnverifiedAmount: false,
         }
       );
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({ ok: true, result });
     }
 
@@ -776,6 +778,7 @@ export async function POST(req: Request) {
         }
       }
 
+      const existingOrder = await dbGetOrderById(orderId);
       const updated = await dbUpdateOrderStatus(orderId, {
         status,
         payment_method,
@@ -783,7 +786,45 @@ export async function POST(req: Request) {
         refund_reason,
         cancelled_reason,
       });
-      recordSuccessfulAudit();
+      await recordOrderAuditLog({
+        shopId: updated.shop_id,
+        orderId: updated.id,
+        subjectType: 'order',
+        actorId: auth.user.sub,
+        actorRole: 'admin',
+        action: 'admin_update_order_status',
+        before: existingOrder
+          ? {
+              status: existingOrder.status,
+              workflow_step_id: existingOrder.workflow_step_id ?? null,
+              payment_status: existingOrder.payment_status,
+              payment_method: existingOrder.payment_method,
+              total_amount: existingOrder.total_amount,
+              bill_version: existingOrder.bill_version,
+            }
+          : null,
+        after: {
+          status: updated.status,
+          workflow_step_id: updated.workflow_step_id ?? null,
+          payment_status: updated.payment_status,
+          payment_method: updated.payment_method,
+          total_amount: updated.total_amount,
+          bill_version: updated.bill_version,
+          ...(updated.refund_reason
+            ? { refund_reason: updated.refund_reason }
+            : {}),
+          ...(updated.cancelled_reason
+            ? { cancelled_reason: updated.cancelled_reason }
+            : {}),
+        },
+        reason:
+          updated.refund_reason ||
+          updated.cancelled_reason ||
+          (typeof refund_reason === 'string' && refund_reason.trim()) ||
+          (typeof cancelled_reason === 'string' && cancelled_reason.trim()) ||
+          null,
+      });
+      await recordSuccessfulAudit();
       return NextResponse.json({ order: updated });
     }
 
@@ -849,7 +890,7 @@ export async function POST(req: Request) {
         }
       }
 
-      recordSuccessfulAudit();
+      await recordSuccessfulAudit();
       return NextResponse.json({
         ok: true,
         message: 'Đã đồng bộ lại dữ liệu mẫu 3 cửa hàng Demo thành công.',
