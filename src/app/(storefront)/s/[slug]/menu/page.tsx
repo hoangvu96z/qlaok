@@ -1041,7 +1041,7 @@ export default function StorefrontMenuPage() {
                 className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition ${
                   isLightPrimary
                     ? 'bg-black/10 text-slate-950 hover:bg-black/15'
-                    : 'bg-white/15 text-white hover:bg-white/25'
+                    : 'bg-black/25 text-white hover:bg-black/35'
                 }`}
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -1072,7 +1072,7 @@ export default function StorefrontMenuPage() {
                 className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold shadow-2xs transition ${
                   isLightPrimary
                     ? 'bg-white text-rose-700 hover:bg-slate-50 border border-black/10'
-                    : 'bg-white/20 text-white hover:bg-white/30 border border-white/25'
+                    : 'bg-black/25 text-white hover:bg-black/35 border border-white/25'
                 }`}
               >
                 <Gift className={`h-3 w-3 ${isLightPrimary ? 'text-rose-600' : 'text-white'}`} />
