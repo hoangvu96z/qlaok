@@ -150,15 +150,8 @@ export async function verifyHealthEndpoint({
     } catch {
       throw new Error('/api/health returned invalid JSON');
     }
-    if (
-      payload?.status !== 'ok' ||
-      payload?.dataSource !== 'self-hosted-postgres' ||
-      payload?.environment?.postgresTablesReady !== true ||
-      payload?.environment?.garageConfigured !== true
-    ) {
-      throw new Error(
-        '/api/health did not confirm self-hosted PostgreSQL and Garage readiness'
-      );
+    if (payload?.status !== 'ok' || payload?.service !== 'qlaok-backend') {
+      throw new Error('/api/health did not confirm application readiness');
     }
   }, {
     attempts: startupAttempts,
@@ -167,11 +160,19 @@ export async function verifyHealthEndpoint({
   });
 }
 
+export function verifyGarageConfiguration({ env = process.env } = {}) {
+  const required = ['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET_NAME', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_PUBLIC_URL'];
+  if (required.some((name) => !env[name])) {
+    throw new Error('Garage configuration is incomplete');
+  }
+}
+
 export async function verifyDeploymentRealtime(options = {}) {
   await verifyPostgresTriggers(options);
+  verifyGarageConfiguration(options);
   await verifyHealthEndpoint(options);
   await verifySseEndpoint(options);
-  console.log('PostgreSQL, Garage, application health, and order realtime verified.');
+  console.log('PostgreSQL triggers, Garage configuration, application health, and order realtime verified.');
 }
 
 const isDirectExecution =

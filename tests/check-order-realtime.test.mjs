@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   verifyDeploymentRealtime,
   verifyHealthEndpoint,
+  verifyGarageConfiguration,
   verifyPostgresTriggers,
   verifySseEndpoint,
 } from '../scripts/check-order-realtime.mjs';
@@ -85,14 +86,10 @@ test('verifySseEndpoint: retries while PM2 is still starting the Next.js server'
   assert.equal(fetchCalls, 3);
 });
 
-test('verifyHealthEndpoint: requires self-hosted PostgreSQL and Garage readiness', async () => {
+test('verifyHealthEndpoint: validates the public readiness response', async () => {
   const payload = {
     status: 'ok',
-    dataSource: 'self-hosted-postgres',
-    environment: {
-      postgresTablesReady: true,
-      garageConfigured: true,
-    },
+    service: 'qlaok-backend',
   };
 
   await verifyHealthEndpoint({
@@ -109,12 +106,19 @@ test('verifyHealthEndpoint: requires self-hosted PostgreSQL and Garage readiness
         status: 200,
         json: async () => ({
           ...payload,
-          environment: { ...payload.environment, garageConfigured: false },
+          status: 'degraded',
         }),
       }),
     }),
-    /did not confirm self-hosted PostgreSQL and Garage readiness/
+    /did not confirm application readiness/
   );
+});
+
+test('verifyGarageConfiguration: rejects missing server-side settings without exposing values', () => {
+  const env = Object.fromEntries(['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET_NAME', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_PUBLIC_URL'].map((key) => [key, 'configured']));
+  verifyGarageConfiguration({ env });
+  delete env.S3_BUCKET_NAME;
+  assert.throws(() => verifyGarageConfiguration({ env }), /Garage configuration is incomplete/);
 });
 
 test('verifySseEndpoint: rejects when endpoint returns unexpected error or 200 without auth', async () => {
@@ -144,11 +148,7 @@ test('verifyDeploymentRealtime: succeeds end-to-end with mock DB client and fetc
         status: 200,
         json: async () => ({
           status: 'ok',
-          dataSource: 'self-hosted-postgres',
-          environment: {
-            postgresTablesReady: true,
-            garageConfigured: true,
-          },
+          service: 'qlaok-backend',
         }),
       };
     }
@@ -165,8 +165,9 @@ test('verifyDeploymentRealtime: succeeds end-to-end with mock DB client and fetc
       dbClient: mockDbClient,
       baseUrl: 'http://localhost:3005',
       fetchFn: mockFetch,
+      env: Object.fromEntries(['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET_NAME', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_PUBLIC_URL'].map((key) => [key, 'configured'])),
     });
-    assert.match(loggedMessage, /PostgreSQL, Garage, application health, and order realtime verified/);
+    assert.match(loggedMessage, /PostgreSQL triggers, Garage configuration, application health, and order realtime verified/);
   } finally {
     console.log = origLog;
   }
