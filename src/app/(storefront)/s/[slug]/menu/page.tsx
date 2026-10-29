@@ -53,6 +53,7 @@ import {
   type StorefrontTableChoice,
 } from '@/lib/table-helpers';
 import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import { isLightColor } from '@/lib/theme-contrast';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { VerticalRenderer } from '@/components/storefront/VerticalRenderer';
@@ -895,6 +896,7 @@ export default function StorefrontMenuPage() {
   }
 
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const isLightPrimary = isLightColor(primaryColor);
   const bgProps = getStorefrontBackgroundProps(shop);
   const guestLabels = getGuestOrderLabels(locale);
   const serviceReqLabels = getTableServiceRequestLabels(locale);
@@ -1021,21 +1023,42 @@ export default function StorefrontMenuPage() {
       {bgProps.backgroundLayer}
 
       {/* Top Header with Back to Store Info, Theme Toggle & Compact Language Dropdown */}
-      <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 shadow-2xs text-slate-900 dark:text-slate-100">
+      <header
+        style={{ backgroundColor: primaryColor }}
+        className={`sticky top-0 z-30 shadow-xs backdrop-blur-md border-b transition-colors ${
+          isLightPrimary
+            ? 'border-black/10 text-slate-950'
+            : 'border-white/15 text-white'
+        }`}
+      >
         <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-2">
           <div className="flex items-center gap-2 min-w-0">
             <Link
               href={`/s/${shop.slug}?lang=${locale}`}
               className="flex items-center gap-2 min-w-0"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
+              <div
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition ${
+                  isLightPrimary
+                    ? 'bg-black/10 text-slate-950 hover:bg-black/15'
+                    : 'bg-white/15 text-white hover:bg-white/25'
+                }`}
+              >
                 <ArrowLeft className="h-4 w-4" />
               </div>
               <div className="min-w-0">
-                <h1 className="truncate text-sm font-extrabold text-slate-900 dark:text-white leading-tight">
+                <h1
+                  className={`truncate text-sm font-extrabold leading-tight ${
+                    isLightPrimary ? 'text-slate-950' : 'text-white'
+                  }`}
+                >
                   {shop.name}
                 </h1>
-                <p className="truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                <p
+                  className={`truncate text-[11px] font-medium ${
+                    isLightPrimary ? 'text-slate-800/80' : 'text-white/80'
+                  }`}
+                >
                   {labels.backToStore}
                   {shop.wifi_info?.ssid ? ` • 📶 ${shop.wifi_info.ssid}` : ''}
                 </p>
@@ -1046,9 +1069,13 @@ export default function StorefrontMenuPage() {
               <button
                 type="button"
                 onClick={() => setIsPromoPopupOpen(true)}
-                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700 hover:bg-rose-200 dark:bg-rose-500/20 dark:text-rose-300"
+                className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold shadow-2xs transition ${
+                  isLightPrimary
+                    ? 'bg-white text-rose-700 hover:bg-slate-50 border border-black/10'
+                    : 'bg-white/20 text-white hover:bg-white/30 border border-white/25'
+                }`}
               >
-                <Gift className="h-3 w-3 text-rose-600 dark:text-rose-400" />
+                <Gift className={`h-3 w-3 ${isLightPrimary ? 'text-rose-600' : 'text-white'}`} />
                 <span>{labels.promosShort}</span>
               </button>
             )}
@@ -1073,17 +1100,29 @@ export default function StorefrontMenuPage() {
           >
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 min-w-0">
-                <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+                <span
+                  className={`shrink-0 text-[11px] font-bold mr-0.5 ${
+                    isLightPrimary ? 'text-slate-900' : 'text-white/90'
+                  }`}
+                >
                   {labels.tableSelectorLabel}
                 </span>
                 <span
                   data-testid="menu-table-locked-chip"
-                  className="inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950"
+                  className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-bold shadow-2xs ${
+                    isLightPrimary
+                      ? 'border border-slate-950 bg-slate-950 text-white'
+                      : 'border border-white/30 bg-white text-slate-950'
+                  }`}
                 >
                   <Lock className="h-3 w-3" />
                   <span>{lockedTable.name}</span>
                 </span>
-                <span className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                <span
+                  className={`truncate text-[10px] font-medium ${
+                    isLightPrimary ? 'text-slate-800/75' : 'text-white/75'
+                  }`}
+                >
                   {guestLabels.tableLockedHint}
                 </span>
               </div>
@@ -1163,7 +1202,11 @@ export default function StorefrontMenuPage() {
             data-testid="menu-table-selector-bar"
             className="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3.5 pb-2"
           >
-            <span className="shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-0.5">
+            <span
+              className={`shrink-0 text-[11px] font-bold mr-0.5 ${
+                isLightPrimary ? 'text-slate-900' : 'text-white/90'
+              }`}
+            >
               {labels.tableSelectorLabel}
             </span>
             <button
@@ -1177,10 +1220,14 @@ export default function StorefrontMenuPage() {
                   isTakeaway: true,
                 })
               }
-              className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+              className={`shrink-0 inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition shadow-2xs ${
                 tableState.isTakeawaySelected
-                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-2xs dark:border-emerald-500 dark:bg-emerald-500 dark:text-slate-950'
-                  : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+                  ? isLightPrimary
+                    ? 'border-slate-950 bg-slate-950 text-white'
+                    : 'border-white/40 bg-white text-slate-950'
+                  : isLightPrimary
+                    ? 'border-black/15 bg-black/5 text-slate-900 hover:bg-black/10'
+                    : 'border-white/20 bg-white/15 text-white hover:bg-white/25'
               }`}
             >
               <ShoppingBag className="h-3 w-3" />
@@ -1188,7 +1235,9 @@ export default function StorefrontMenuPage() {
             </button>
             <span
               data-testid="menu-rescan-table-qr-hint"
-              className="truncate text-[10px] font-medium text-slate-500 dark:text-slate-400"
+              className={`truncate text-[10px] font-medium ${
+                isLightPrimary ? 'text-slate-800/75' : 'text-white/75'
+              }`}
             >
               {guestLabels.rescanTableQrHint}
             </span>
@@ -1198,7 +1247,7 @@ export default function StorefrontMenuPage() {
         {/* Search Input */}
         <div className="px-3.5 pb-2.5">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <label htmlFor="storefront-menu-search" className="sr-only">
               {labels.searchPlaceholder}
             </label>
@@ -1208,7 +1257,11 @@ export default function StorefrontMenuPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={labels.searchPlaceholder}
-              className="w-full rounded-xl border border-slate-200 bg-slate-100/80 pl-9 pr-8 py-2 text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-100 dark:focus:bg-slate-800"
+              className={`w-full rounded-xl pl-9 pr-8 py-2 text-xs font-medium focus:outline-none transition shadow-2xs ${
+                isLightPrimary
+                  ? 'border border-black/15 bg-white/95 text-slate-900 placeholder:text-slate-500 focus:bg-white focus:ring-2 focus:ring-black/15'
+                  : 'border border-white/20 bg-white/95 text-slate-900 placeholder:text-slate-500 focus:bg-white focus:ring-2 focus:ring-white/30 dark:border-white/20 dark:bg-slate-900/90 dark:text-slate-100 dark:placeholder:text-slate-400 dark:focus:bg-slate-900'
+              }`}
             />
             {searchQuery && (
               <button
@@ -1228,15 +1281,14 @@ export default function StorefrontMenuPage() {
           <button
             type="button"
             onClick={() => setSelectedCategoryId('all')}
-            style={
-              selectedCategoryId === 'all'
-                ? { backgroundColor: primaryColor, color: '#ffffff' }
-                : undefined
-            }
             className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
               selectedCategoryId === 'all'
-                ? 'shadow-xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                ? isLightPrimary
+                  ? 'bg-slate-950 text-white shadow-xs border border-slate-950 font-extrabold'
+                  : 'bg-white text-slate-950 shadow-xs border border-white font-extrabold'
+                : isLightPrimary
+                  ? 'bg-black/10 text-slate-900 hover:bg-black/15 border border-black/10'
+                  : 'bg-white/15 text-white hover:bg-white/25 border border-white/15'
             }`}
           >
             {labels.allCategories}
@@ -1249,15 +1301,14 @@ export default function StorefrontMenuPage() {
                 key={cat.id}
                 type="button"
                 onClick={() => setSelectedCategoryId(cat.id)}
-                style={
-                  active
-                    ? { backgroundColor: primaryColor, color: '#ffffff' }
-                    : undefined
-                }
                 className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
                   active
-                    ? 'shadow-xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                    ? isLightPrimary
+                      ? 'bg-slate-950 text-white shadow-xs border border-slate-950 font-extrabold'
+                      : 'bg-white text-slate-950 shadow-xs border border-white font-extrabold'
+                    : isLightPrimary
+                      ? 'bg-black/10 text-slate-900 hover:bg-black/15 border border-black/10'
+                      : 'bg-white/15 text-white hover:bg-white/25 border border-white/15'
                 }`}
               >
                 {tField(cat.name_i18n, locale)}
@@ -1459,17 +1510,31 @@ export default function StorefrontMenuPage() {
               type="button"
               onClick={() => setIsStaffModalOpen(true)}
               style={{ backgroundColor: primaryColor }}
-              className="flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-white shadow-2xl ring-2 ring-white transition-transform active:scale-98"
+              className={`flex w-full items-center justify-between rounded-2xl px-4 py-3.5 shadow-2xl transition-transform active:scale-98 ${
+                isLightPrimary
+                  ? 'text-slate-950 ring-2 ring-black/15'
+                  : 'text-white ring-2 ring-white'
+              }`}
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-950/25 text-sm font-black">
+                <div
+                  className={`flex h-8 w-8 items-center justify-center rounded-xl text-sm font-black ${
+                    isLightPrimary
+                      ? 'bg-black/15 text-slate-950'
+                      : 'bg-slate-950/25 text-white'
+                  }`}
+                >
                   {totalItemsCount}
                 </div>
                 <div className="text-left">
                   <span className="block text-xs sm:text-sm font-black leading-tight">
                     {bottomCtaText}
                   </span>
-                  <span className="block text-[10px] font-medium text-white/85">
+                  <span
+                    className={`block text-[10px] font-medium ${
+                      isLightPrimary ? 'text-slate-800/85' : 'text-white/85'
+                    }`}
+                  >
                     {promoCalc.discountAmount > 0
                       ? (
                           PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
@@ -1486,7 +1551,11 @@ export default function StorefrontMenuPage() {
 
               <div className="text-right">
                 {promoCalc.discountAmount > 0 && (
-                  <span className="block text-[10px] text-white/75 line-through">
+                  <span
+                    className={`block text-[10px] line-through ${
+                      isLightPrimary ? 'text-slate-700/75' : 'text-white/75'
+                    }`}
+                  >
                     {formatCurrency(subtotalCartAmount, shop.currency)}
                   </span>
                 )}
