@@ -124,9 +124,10 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 20261028000400_orders_pos_idempotency_prefix_unique.sql
 20261029000100_bulk_set_items_availability_atomic.sql
 20261030000100_order_audit_logs_subjects.sql
+20261030000200_reload_postgrest_schema_cache.sql
 ```
 
-`npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy migration PostgreSQL tự host theo thứ tự tên file, kiểm checksum và lưu lịch sử trong `public.schema_migrations`; script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.
+`npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy từng migration PostgreSQL tự host còn thiếu theo thứ tự tên file trong một transaction riêng, kiểm checksum, lưu lịch sử trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất thành công (tránh phát trùng nếu migration cuối đã có sẵn lệnh này); script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.
 
 Migration `20261030000100_order_audit_logs_subjects.sql` mở rộng audit đơn hàng để phân biệt đơn với yêu cầu phục vụ bàn và thêm `admin_audit_logs` append-only. Order audit chỉ đọc theo quyền `reports.view` của shop qua `/api/orders/audit`; nhật ký Super Admin chỉ đọc qua `/api/admin/audit` sau khi xác thực Super Admin. JSONL cục bộ chỉ là bản dự phòng khi ghi DB lỗi, với thư mục/file riêng tư và xoay vòng giới hạn.
 

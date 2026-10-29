@@ -27,6 +27,8 @@ Tài liệu này mô tả cấu hình Qlaok đang chạy trên PostgreSQL 14 t�
   - Tăng lượt xem món nguyên tử và giới hạn index sơ đồ bàn cho đơn còn hiệu lực/chưa thanh toán.
 - **Migration 20261028000300**: [`20261028000300_orders_order_code_unique.sql`](../supabase/migrations/20261028000300_orders_order_code_unique.sql)
   - Thêm unique index cho mã đơn; nếu dữ liệu lịch sử đã trùng, migration dừng và yêu cầu đối soát trước khi áp dụng, không tự đổi mã đơn.
+- **Migration 20261030000200**: [`20261030000200_reload_postgrest_schema_cache.sql`](../supabase/migrations/20261030000200_reload_postgrest_schema_cache.sql)
+  - Phát `NOTIFY pgrst, 'reload schema';` idempotent, không sửa đổi schema hay dữ liệu khách hàng/nghiệp vụ, để làm mới ngay schema cache của PostgREST cho các bảng và hàm RPC đã áp dụng trước đó (như `public.increment_item_view_count`).
 
 ## 2. Trình tự áp dụng trên PostgreSQL 14 tự vận hành
 
@@ -42,11 +44,14 @@ psql -X -v ON_ERROR_STOP=1 -f supabase/self-hosted/000_bootstrap.sql
 
 ### Bước 2 — Áp dụng các migration còn thiếu theo thứ tự tên file
 
-Trên VPS, dùng runner tự host. Runner áp dụng migration còn thiếu, từ chối checksum đã đổi và chỉ ghi nhận migration sau khi SQL chạy thành công:
+Trên VPS, dùng runner tự host (`scripts/migrate-self-hosted.mjs`):
 
 ```bash
 npm run db:migrate
 ```
+
+- **Hợp đồng single-transaction cho từng migration**: Mỗi migration còn thiếu chạy nguyên tử trong một transaction riêng (`psql --single-transaction -f ...`, ngoại trừ một số file lịch sử đã tự khai báo cặp `BEGIN; ... COMMIT;` ở mức cao nhất để bảo toàn checksum bất biến), từ chối file đã áp dụng nhưng bị thay đổi checksum, và chỉ ghi nhận vào `public.schema_migrations` sau khi SQL của file đó hoàn tất thành công.
+- **Tự động làm mới schema cache của PostgREST**: Sau khi toàn bộ lô migration đang chờ (`pending`) đã áp dụng và lưu vào `public.schema_migrations` thành công, runner phát đúng một lệnh `NOTIFY pgrst, 'reload schema'` để các bảng/hàm RPC mới xuất hiện ngay trên REST API. Runner **không** phát `NOTIFY` khi không có migration mới, **không** phát `NOTIFY` nếu SQL hoặc bước ghi `public.schema_migrations` gặp lỗi, và tránh phát trùng lặp nếu migration cuối cùng trong lô đã có sẵn `NOTIFY pgrst, 'reload schema'`.
 
 ### Bước 3 — Ánh xạ định danh Zitadel vào `public.profiles`
 
@@ -76,7 +81,7 @@ WHERE id = '<existing_qlaok_user_uuid>';
 
 ## 4. Trạng thái cắt chuyển và vận hành
 
-1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261028000300_orders_order_code_unique.sql` được chạy bằng `scripts/migrate-self-hosted.mjs`, đối chiếu checksum trong `public.schema_migrations`; migration runner không gọi Supabase Management API.
+1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261030000200_reload_postgrest_schema_cache.sql` được chạy bằng `scripts/migrate-self-hosted.mjs` theo hợp đồng một transaction mỗi file, đối chiếu checksum trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất; migration runner không gọi Supabase Management API.
 2. **JWT/RLS**: backend xác minh phiên Qlaok hoặc Zitadel rồi chỉ cấp PostgREST JWT ngắn hạn `role: 'authenticated'` với UUID `public.profiles.id` đã xác thực. `service_role` chỉ tồn tại trong server config; client không nhận khóa bypass RLS.
 3. **Realtime**: PostgreSQL triggers phát `LISTEN/NOTIFY`; broker web và ứng dụng mobile dùng SSE có xác thực qua API Qlaok. Mobile giữ polling 30 giây làm phương án phục hồi khi SSE gián đoạn.
 4. **Object storage**: upload ứng dụng dùng Garage S3 trên `https://s3.vunph.click`, bucket `qlaok-media`, public media dưới `/media/`. Cloudflare R2 chỉ còn là đường dự phòng nếu được cấu hình; production hiện không cấu hình R2.

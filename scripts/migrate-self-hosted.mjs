@@ -7,9 +7,22 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'supabase', 'migrations');
 const MIGRATION_FILE_PATTERN = /^\d+[A-Za-z]?_[A-Za-z0-9._-]+\.sql$/;
+export const POSTGREST_SCHEMA_RELOAD_SQL = "NOTIFY pgrst, 'reload schema';";
 
 export function checksumSql(sql) {
   return crypto.createHash('sha256').update(sql, 'utf8').digest('hex');
+}
+
+function stripSqlComments(sql) {
+  return String(sql ?? '').replace(
+    /[Ee]'(?:\\.|''|[^'\\])*'|'(?:''|[^'])*'|"(?:""|[^"])*"|--[^\r\n]*|\/\*[\s\S]*?\*\//g,
+    (match) => (match.startsWith('--') || match.startsWith('/*') ? ' ' : match)
+  );
+}
+
+export function startsWithPostgrestSchemaReloadNotification(sql) {
+  const firstStatement = stripSqlComments(sql).trimStart();
+  return /^NOTIFY\s+PGRST\s*,\s*'reload schema'\s*;/i.test(firstStatement);
 }
 
 /**
@@ -142,12 +155,17 @@ function recordMigration(migration) {
   runPsql(['-c', sql]);
 }
 
+export function notifyPostgrestSchemaReload(execPsql = runPsql) {
+  execPsql(['-c', POSTGREST_SCHEMA_RELOAD_SQL]);
+}
+
 export function migrateSelfHosted({
   migrations = readLocalMigrations(),
   history = readMigrationHistory(),
   applyMigration = (migration) =>
     runPsql(buildMigrationPsqlArgs(migration)),
   saveMigration = recordMigration,
+  reloadSchema = () => notifyPostgrestSchemaReload(),
   log = console.log,
 } = {}) {
   const plan = planMigrations(migrations, history);
@@ -157,6 +175,18 @@ export function migrateSelfHosted({
     applyMigration(migration);
     saveMigration(migration);
     log(`Applied ${migration.filename}`);
+  }
+  if (plan.apply.length > 0) {
+    const finalMigration = plan.apply[plan.apply.length - 1];
+    if (startsWithPostgrestSchemaReloadNotification(finalMigration?.sql)) {
+      log(
+        `PostgREST schema cache reload already included in ${finalMigration.filename}.`
+      );
+    } else {
+      log('Reloading PostgREST schema cache...');
+      reloadSchema();
+      log('Reloaded PostgREST schema cache.');
+    }
   }
   log(`Self-hosted migrations complete (${plan.skip.length} already applied, ${plan.apply.length} applied).`);
   return plan;
