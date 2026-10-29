@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseRgb,
+  getHexLuminance,
   isLightColor,
   getContrastTextColor,
 } from '../src/lib/theme-contrast';
@@ -16,6 +17,15 @@ test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() string
   assert.equal(parseRgb('invalid'), null);
   assert.equal(parseRgb(''), null);
   assert.equal(parseRgb(null), null);
+});
+
+test('theme-contrast: chooses the stronger readable foreground for varied shop colors', () => {
+  for (const color of ['#f43f5e', '#ef4444', '#10b981', '#8b5cf6', '#fde047', '#ffffff', '#000000', '#654321', '#777777']) {
+    const bg = getHexLuminance(color);
+    const fg = getHexLuminance(getContrastTextColor(color));
+    const ratio = (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05);
+    assert.ok(ratio >= 4.5, `${color}: contrast ${ratio.toFixed(2)} is below 4.5`);
+  }
 });
 
 test('theme-contrast: distinguishes light vs dark brand swatches accurately', () => {
@@ -43,8 +53,8 @@ test('theme-contrast: distinguishes light vs dark brand swatches accurately', ()
     );
     assert.equal(
       getContrastTextColor(hex),
-      '#0f172a',
-      `Expected ${hex} to require dark text (#0f172a)`
+      '#020617',
+      `Expected ${hex} to require dark text (#020617)`
     );
   }
 
@@ -75,5 +85,5 @@ test('theme-contrast: fallback behavior for invalid or missing colors', () => {
   assert.equal(isLightColor(null), true);
   assert.equal(isLightColor(''), true);
   assert.equal(isLightColor('not-a-color'), true);
-  assert.equal(getContrastTextColor(null), '#0f172a');
+  assert.equal(getContrastTextColor(null), '#020617');
 });

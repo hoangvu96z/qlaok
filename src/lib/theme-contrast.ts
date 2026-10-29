@@ -43,16 +43,17 @@ export function getHexLuminance(color?: string | null): number {
 /**
  * Returns true if a color has high relative luminance (is "light"),
  * meaning dark text/elements provide better contrast than white text.
- * Pick the stronger contrast between slate-950 and white. The crossover
- * between these two colors is approximately 0.19 relative luminance.
+ * Compare actual WCAG contrast ratios for slate-950 and white.
  */
 export function isLightColor(color?: string | null): boolean {
-  return getHexLuminance(color) >= 0.19;
+  const background = getHexLuminance(color);
+  const darkText = getHexLuminance('#020617');
+  return (background + 0.05) / (darkText + 0.05) >= 1.05 / (background + 0.05);
 }
 
 /**
- * Returns high-contrast text color ('#0f172a' or '#ffffff') for a given background color.
+ * Returns high-contrast text color ('#020617' or '#ffffff') for a given background color.
  */
 export function getContrastTextColor(color?: string | null): string {
-  return isLightColor(color) ? '#0f172a' : '#ffffff';
+  return isLightColor(color) ? '#020617' : '#ffffff';
 }

@@ -1056,7 +1056,7 @@ export default function StorefrontMenuPage() {
                 </h1>
                 <p
                   className={`truncate text-[11px] font-medium ${
-                    isLightPrimary ? 'text-slate-800/80' : 'text-white/80'
+                    isLightPrimary ? 'text-slate-950' : 'text-white'
                   }`}
                 >
                   {labels.backToStore}
@@ -1102,7 +1102,7 @@ export default function StorefrontMenuPage() {
               <div className="flex items-center gap-1.5 min-w-0">
                 <span
                   className={`shrink-0 text-[11px] font-bold mr-0.5 ${
-                    isLightPrimary ? 'text-slate-900' : 'text-white/90'
+                    isLightPrimary ? 'text-slate-950' : 'text-white'
                   }`}
                 >
                   {labels.tableSelectorLabel}
@@ -1120,7 +1120,7 @@ export default function StorefrontMenuPage() {
                 </span>
                 <span
                   className={`truncate text-[10px] font-medium ${
-                    isLightPrimary ? 'text-slate-800/75' : 'text-white/75'
+                    isLightPrimary ? 'text-slate-950' : 'text-white'
                   }`}
                 >
                   {guestLabels.tableLockedHint}
@@ -1204,7 +1204,7 @@ export default function StorefrontMenuPage() {
           >
             <span
               className={`shrink-0 text-[11px] font-bold mr-0.5 ${
-                isLightPrimary ? 'text-slate-900' : 'text-white/90'
+                isLightPrimary ? 'text-slate-950' : 'text-white'
               }`}
             >
               {labels.tableSelectorLabel}
@@ -1226,8 +1226,8 @@ export default function StorefrontMenuPage() {
                     ? 'border-slate-950 bg-slate-950 text-white'
                     : 'border-white/40 bg-white text-slate-950'
                   : isLightPrimary
-                    ? 'border-black/15 bg-black/5 text-slate-900 hover:bg-black/10'
-                    : 'border-white/20 bg-white/15 text-white hover:bg-white/25'
+                    ? 'border-black/15 bg-white/90 text-slate-950 hover:bg-white'
+                    : 'border-white/20 bg-black/25 text-white hover:bg-black/35'
               }`}
             >
               <ShoppingBag className="h-3 w-3" />
@@ -1236,7 +1236,7 @@ export default function StorefrontMenuPage() {
             <span
               data-testid="menu-rescan-table-qr-hint"
               className={`truncate text-[10px] font-medium ${
-                isLightPrimary ? 'text-slate-800/75' : 'text-white/75'
+                isLightPrimary ? 'text-slate-950' : 'text-white'
               }`}
             >
               {guestLabels.rescanTableQrHint}
@@ -1287,8 +1287,8 @@ export default function StorefrontMenuPage() {
                   ? 'bg-slate-950 text-white shadow-xs border border-slate-950 font-extrabold'
                   : 'bg-white text-slate-950 shadow-xs border border-white font-extrabold'
                 : isLightPrimary
-                  ? 'bg-black/10 text-slate-900 hover:bg-black/15 border border-black/10'
-                  : 'bg-white/15 text-white hover:bg-white/25 border border-white/15'
+                  ? 'bg-white/90 text-slate-950 hover:bg-white border border-black/10'
+                  : 'bg-black/25 text-white hover:bg-black/35 border border-white/20'
             }`}
           >
             {labels.allCategories}
@@ -1307,8 +1307,8 @@ export default function StorefrontMenuPage() {
                       ? 'bg-slate-950 text-white shadow-xs border border-slate-950 font-extrabold'
                       : 'bg-white text-slate-950 shadow-xs border border-white font-extrabold'
                     : isLightPrimary
-                      ? 'bg-black/10 text-slate-900 hover:bg-black/15 border border-black/10'
-                      : 'bg-white/15 text-white hover:bg-white/25 border border-white/15'
+                      ? 'bg-white/90 text-slate-950 hover:bg-white border border-black/10'
+                      : 'bg-black/25 text-white hover:bg-black/35 border border-white/20'
                 }`}
               >
                 {tField(cat.name_i18n, locale)}
