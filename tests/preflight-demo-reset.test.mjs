@@ -464,10 +464,10 @@ test('isNonNegativeSafeInteger: correctly identifies non-negative safe integers'
   assert.equal(isNonNegativeSafeInteger(Number.MAX_SAFE_INTEGER + 10), false);
 });
 
-test('getExpectedMigrationFilenames: sources exact 30 local migrations including 002z CWD-independently', () => {
+test('getExpectedMigrationFilenames: sources exact 31 local migrations including 002z CWD-independently', () => {
   assert.ok(MIGRATIONS_DIR.endsWith('supabase/migrations'));
   const filenames = getExpectedMigrationFilenames();
-  assert.equal(filenames.length, 30);
+  assert.equal(filenames.length, 31);
   assert.equal(filenames.includes('002z_reconcile_legacy_bank_refs.sql'), true);
   assert.equal(filenames.includes('001_init_qlaok.sql'), true);
   assert.equal(filenames.includes('019_revoke_staff_trigger_execute.sql'), true);
@@ -502,6 +502,10 @@ test('getExpectedMigrationFilenames: sources exact 30 local migrations including
   );
   assert.equal(
     filenames.includes('20261030000100_order_audit_logs_subjects.sql'),
+    true
+  );
+  assert.equal(
+    filenames.includes('20261030000200_reload_postgrest_schema_cache.sql'),
     true
   );
   for (const fn of filenames) {
