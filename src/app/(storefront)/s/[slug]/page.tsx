@@ -247,12 +247,6 @@ export default function StorefrontDoorPage() {
           />
         </div>
 
-        {/* 1-Tap 8-Language Flag Strip */}
-        <LanguageSwitcher
-          currentLocale={locale}
-          supportedLangs={allowedLangs}
-          onChange={setLocale}
-        />
       </div>
 
       {/* Hero Cover Image & Shop Identity */}
