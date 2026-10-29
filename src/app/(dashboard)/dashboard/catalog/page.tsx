@@ -470,7 +470,8 @@ export default function DashboardCatalogPage() {
   };
 
   const upsertItem = async (
-    patch: CatalogItemMutationPatch
+    patch: CatalogItemMutationPatch,
+    rollbackOnError?: CatalogItem
   ): Promise<boolean> => {
     if (!isItemInCurrentShop(patch) || !activeShop) return false;
     const expectedShopId = activeShop.id;
@@ -493,11 +494,16 @@ export default function DashboardCatalogPage() {
       if (activeShopIdRef.current !== expectedShopId) return false;
 
       if (!res.ok) {
+        if (rollbackOnError) {
+          rollbackItem(rollbackOnError);
+        }
         const isStockConflict =
           res.status === 409 ||
           (payload &&
             typeof payload === 'object' &&
-            (payload as { code?: unknown }).code === 'STOCK_CONFLICT');
+            ((payload as { code?: unknown }).code === 'STOCK_CONFLICT' ||
+              (payload as { code?: unknown }).code ===
+                'ZERO_STOCK_CANNOT_MARK_AVAILABLE'));
         setMutationError(toMutationError(payload, fallback));
         if (isStockConflict) {
           void loadCatalog(true);
@@ -524,6 +530,9 @@ export default function DashboardCatalogPage() {
       return true;
     } catch (err) {
       if (activeShopIdRef.current !== expectedShopId) return false;
+      if (rollbackOnError) {
+        rollbackItem(rollbackOnError);
+      }
       setMutationError(toMutationError(err, fallback));
       return false;
     }
@@ -566,12 +575,22 @@ export default function DashboardCatalogPage() {
         const payload = await res.json().catch(() => null);
         if (!isItemInCurrentShop(item)) return false;
         rollbackItem(item);
+        const isConflict =
+          res.status === 409 ||
+          (payload &&
+            typeof payload === 'object' &&
+            ((payload as { code?: unknown }).code === 'STOCK_CONFLICT' ||
+              (payload as { code?: unknown }).code ===
+                'ZERO_STOCK_CANNOT_MARK_AVAILABLE'));
         setMutationError(
           toMutationError(
             payload,
             tx('Không thể lưu thay đổi món', 'Could not save item changes')
           )
         );
+        if (isConflict) {
+          void loadCatalog(true);
+        }
         return false;
       }
 
@@ -665,14 +684,16 @@ export default function DashboardCatalogPage() {
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
-    const ok = await upsertItem({
-      id: item.id,
-      shop_id: item.shop_id,
-      category_id: item.category_id,
-      price: nextPrice,
-    });
+    const ok = await upsertItem(
+      {
+        id: item.id,
+        shop_id: item.shop_id,
+        category_id: item.category_id,
+        price: nextPrice,
+      },
+      item
+    );
     if (!ok) {
-      rollbackItem(item);
       return false;
     }
     notifyRealtime();
@@ -699,16 +720,18 @@ export default function DashboardCatalogPage() {
           : i
       )
     );
-    const ok = await upsertItem({
-      id: item.id,
-      shop_id: item.shop_id,
-      category_id: item.category_id,
-      stock_quantity: nextStock,
-      expected_stock_quantity: prevStock,
-      ...(nextStock !== null ? { is_available: nextAvailable } : {}),
-    });
+    const ok = await upsertItem(
+      {
+        id: item.id,
+        shop_id: item.shop_id,
+        category_id: item.category_id,
+        stock_quantity: nextStock,
+        expected_stock_quantity: prevStock,
+        ...(nextStock !== null ? { is_available: nextAvailable } : {}),
+      },
+      item
+    );
     if (!ok) {
-      rollbackItem(item);
       return false;
     }
     notifyRealtime();
@@ -738,14 +761,16 @@ export default function DashboardCatalogPage() {
         i.id === item.id ? { ...i, is_featured: nextFeatured } : i
       )
     );
-    const ok = await upsertItem({
-      id: item.id,
-      shop_id: item.shop_id,
-      category_id: item.category_id,
-      is_featured: nextFeatured,
-    });
+    const ok = await upsertItem(
+      {
+        id: item.id,
+        shop_id: item.shop_id,
+        category_id: item.category_id,
+        is_featured: nextFeatured,
+      },
+      item
+    );
     if (!ok) {
-      rollbackItem(item);
       return false;
     }
     notifyRealtime();
@@ -762,14 +787,16 @@ export default function DashboardCatalogPage() {
         i.id === item.id ? { ...i, image_url: nextImageUrl } : i
       )
     );
-    const ok = await upsertItem({
-      id: item.id,
-      shop_id: item.shop_id,
-      category_id: item.category_id,
-      image_url: nextImageUrl,
-    });
+    const ok = await upsertItem(
+      {
+        id: item.id,
+        shop_id: item.shop_id,
+        category_id: item.category_id,
+        image_url: nextImageUrl,
+      },
+      item
+    );
     if (!ok) {
-      rollbackItem(item);
       return false;
     }
     notifyRealtime();
@@ -1178,6 +1205,14 @@ export default function DashboardCatalogPage() {
         deletedCount !== targetIds.length ||
         confirmedIds.length !== targetIds.length
       ) {
+        const isConflict =
+          res.status === 409 ||
+          (data &&
+            typeof data === 'object' &&
+            ((data as { code?: unknown }).code ===
+              'BULK_DELETE_COUNT_MISMATCH' ||
+              (data as { code?: unknown }).code === 'STOCK_CONFLICT')) ||
+          deletedCount > 0;
         setMutationError(
           toMutationError(
             data,
@@ -1187,6 +1222,9 @@ export default function DashboardCatalogPage() {
             )
           )
         );
+        if (isConflict) {
+          void loadCatalog(true);
+        }
         return;
       }
 
@@ -1329,9 +1367,22 @@ export default function DashboardCatalogPage() {
       const failedCount = failedResults.length;
 
       if (!res.ok || succeededCount === 0) {
-        if (succeededCount > 0) {
+        const hasStockConflict =
+          res.status === 409 ||
+          (data &&
+            typeof data === 'object' &&
+            (data as { code?: unknown }).code === 'STOCK_CONFLICT') ||
+          rawResults.some(
+            (r) =>
+              r &&
+              typeof r === 'object' &&
+              (r as { code?: unknown }).code === 'STOCK_CONFLICT'
+          );
+        if (succeededCount > 0 || hasStockConflict) {
           await loadCatalog(true);
-          notifyRealtime();
+          if (succeededCount > 0) {
+            notifyRealtime();
+          }
         }
         const firstItemErr = failedResults.find((r) => r.error)?.error;
         setMutationError(
@@ -1436,6 +1487,16 @@ export default function DashboardCatalogPage() {
         data?.success !== true ||
         updatedCount !== targetIds.length
       ) {
+        const isConflict =
+          res.status === 409 ||
+          (data &&
+            typeof data === 'object' &&
+            ((data as { code?: unknown }).code ===
+              'ZERO_STOCK_CANNOT_MARK_AVAILABLE' ||
+              (data as { code?: unknown }).code ===
+                'BULK_AVAILABILITY_COUNT_MISMATCH' ||
+              (data as { code?: unknown }).code === 'STOCK_CONFLICT')) ||
+          updatedCount > 0;
         setMutationError(
           toMutationError(
             data,
@@ -1445,6 +1506,9 @@ export default function DashboardCatalogPage() {
             )
           )
         );
+        if (isConflict) {
+          void loadCatalog(true);
+        }
         return;
       }
 
@@ -1548,6 +1612,14 @@ export default function DashboardCatalogPage() {
         movedCount + unchangedCount !== targetIds.length ||
         (returnedIds !== null && returnedIds.length !== targetIds.length)
       ) {
+        const isConflict =
+          res.status === 409 ||
+          (data &&
+            typeof data === 'object' &&
+            ((data as { code?: unknown }).code ===
+              'BULK_MOVE_COUNT_MISMATCH' ||
+              (data as { code?: unknown }).code === 'STOCK_CONFLICT')) ||
+          (typeof movedCount === 'number' && movedCount > 0);
         setMutationError(
           toMutationError(
             data,
@@ -1557,6 +1629,9 @@ export default function DashboardCatalogPage() {
             )
           )
         );
+        if (isConflict) {
+          void loadCatalog(true);
+        }
         return;
       }
 
@@ -2526,8 +2601,44 @@ export default function DashboardCatalogPage() {
         defaultCategoryId={
           selectedCategoryId !== 'all' ? selectedCategoryId : categories[0]?.id
         }
-        onSaved={() => {
+        onConflict={() => {
           void loadCatalog(true);
+        }}
+        onSaved={(savedItem, meta) => {
+          if (savedItem && savedItem.shop_id === activeShop.id) {
+            setItems((prev) =>
+              prev.some((i) => i.id === savedItem.id)
+                ? prev.map((i) =>
+                    i.id === savedItem.id ? { ...i, ...savedItem } : i
+                  )
+                : [...prev, savedItem]
+            );
+            setEditingItem((prev) =>
+              prev && prev.id === savedItem.id
+                ? { ...prev, ...savedItem }
+                : prev
+            );
+          }
+          void loadCatalog(true);
+          if (
+            savedItem &&
+            typeof meta?.requestedAvailable === 'boolean' &&
+            savedItem.is_available !== meta.requestedAvailable
+          ) {
+            const itemName =
+              (locale === 'en' && savedItem.name_i18n?.en) ||
+              savedItem.name_i18n?.vi ||
+              '';
+            setMutationError({
+              message: tx(
+                'Món "{name}" có tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng. Vui lòng kiểm tra tồn kho.',
+                'Item "{name}" has 0 stock quantity, so the server kept it sold out. Please check inventory.',
+                { name: itemName }
+              ),
+            });
+            return;
+          }
+          setMutationError(null);
           showToast(
             tx(
               'Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!',

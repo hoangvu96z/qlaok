@@ -3785,7 +3785,9 @@ test('POST /api/catalog upsert_item and dbUpsertItem enforce [0, 1_000_000_000] 
     assert.equal(dataStaffPriceAttempt.code, 'INSUFFICIENT_SHOP_PERMISSION');
     assert.equal(itemsStore[0].price, 1_000_000_000);
 
-    const resStaffInventoryUpdate = await POST(
+    // Ambiguous legacy full snapshot carrying stock and toggling is_available without expected_is_available
+    // must be rejected with 409 STOCK_CONFLICT
+    const resStaffAmbiguousSnapshot = await POST(
       new Request('http://localhost:3000/api/catalog', {
         method: 'POST',
         headers: {
@@ -3801,10 +3803,38 @@ test('POST /api/catalog upsert_item and dbUpsertItem enforce [0, 1_000_000_000] 
         }),
       })
     );
+    assert.equal(resStaffAmbiguousSnapshot.status, 409);
+    const dataStaffAmbiguous = await resStaffAmbiguousSnapshot.json();
+    assert.equal(dataStaffAmbiguous.code, 'STOCK_CONFLICT');
+    assert.equal(itemsStore[0].is_available, false);
+    assert.equal(itemsStore[0].price, 1_000_000_000);
+
+    // Legitimate availability toggle with explicit expected_is_available (or narrow update) succeeds and preserves price
+    const resStaffInventoryUpdate = await POST(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemsStore[0].id,
+            shop_id: itemsStore[0].shop_id,
+            category_id: itemsStore[0].category_id,
+            is_available: true,
+            expected_is_available: false,
+          },
+        }),
+      })
+    );
     assert.equal(resStaffInventoryUpdate.status, 200);
     const dataStaffInv = await resStaffInventoryUpdate.json();
     assert.equal(dataStaffInv.item.price, 1_000_000_000);
     assert.equal(dataStaffInv.item.is_available, true);
+    assert.equal(itemsStore[0].price, 1_000_000_000);
+    assert.equal(itemsStore[0].is_available, true);
   } finally {
     setShopMembershipDbClientForTest(null);
     setSupabaseDbClientForTests(null);
@@ -4901,7 +4931,7 @@ test('Catalog stock transitions: null (unlimited), 0 (sold out), positive stock,
   }
 });
 
-test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalog stock race scenarios end-to-end', async (t) => {
+test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalog stock race scenarios end-to-end (dbUpsertItem zero-stock fallback concurrency)', async (t) => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -4915,7 +4945,7 @@ test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalo
   }
 
   const { POST: catalogPost, GET: catalogGet } = await import('@/app/api/catalog/route');
-  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { dbUpsertItem, setSupabaseDbClientForTests } = await import('@/lib/db');
   const { setShopMembershipDbClientForTest } = await import('@/lib/shop-permissions');
   const { setMposDbClientForTests } = await import('@/lib/mpos-store');
   const { issueSessionToken } = await import('@/lib/server-auth');
@@ -6088,7 +6118,9 @@ test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalo
       }
     };
 
-    const resLegacySpreadAvailRace = await catalogPost(
+    // 1) Ambiguous full snapshot without expected_is_available must be rejected early with 409 STOCK_CONFLICT
+    // without firing the database update hook
+    const resNoBaselineLegacyRace = await catalogPost(
       new Request('http://localhost:3000/api/catalog', {
         method: 'POST',
         headers: {
@@ -6100,6 +6132,37 @@ test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalo
           item: {
             ...legacySnap,
             shop_id: shopId,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resNoBaselineLegacyRace.status, 409);
+    assert.equal(
+      (await resNoBaselineLegacyRace.json()).code,
+      'STOCK_CONFLICT'
+    );
+    assert.equal(
+      legacyRaceHookFired,
+      false,
+      'Guard must reject ambiguous snapshot before reaching DB update hook'
+    );
+
+    // 2) Legitimate narrow availability toggle reaches DB update, fires race hook,
+    // and tests dbUpsertItem zero-stock fallback when concurrent order drains stock to 0
+    const resLegacySpreadAvailRace = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemAvailRaceZeroId,
+            shop_id: shopId,
+            category_id: legacySnap.category_id,
             is_available: true,
           },
         }),
@@ -6661,6 +6724,678 @@ test('Isolated PostgreSQL + commit_order_with_inventory RPC: resolves all catalo
     const bodyBulkSetFalseAll = await resBulkSetFalseAll.json();
     assert.equal(bodyBulkSetFalseAll.success, true);
     assert.equal(bodyBulkSetFalseAll.updatedCount, 3);
+
+    // -------------------------------------------------------------------------
+    // 6. Review findings Bugs 1, 2, 3a, 3b (full-item backward compatibility
+    //    without overwriting concurrent stock_quantity / sold_count)
+    // -------------------------------------------------------------------------
+    const itemCompatId = 'item-stock-compat-review-1';
+    await adminClient.query(
+      `INSERT INTO items (id, shop_id, category_id, name_i18n, desc_i18n, price, stock_quantity, sold_count, is_available, is_featured, options_json, view_count, sort_order)
+       VALUES ($1, $2, $3, '{"vi": "Cà Phê Muối Huế", "en": "Salted Coffee"}'::jsonb, '{"vi": "Đậm đà", "en": "Rich"}'::jsonb, 50000, 10, 2, true, false, '[]'::jsonb, 0, 10)`,
+      [itemCompatId, shopId, catId]
+    );
+    const {
+      rows: [initialCompatSnap],
+    } = await adminClient.query(`SELECT * FROM items WHERE id = $1`, [
+      itemCompatId,
+    ]);
+
+    // 6A-1: Concurrent toggle (true -> false) vs stale full-snapshot price edit (incoming.is_available=true):
+    // Route must NOT infer an availability toggle from the stale snapshot and overwrite newer is_available=false;
+    // it must return 409 STOCK_CONFLICT and preserve is_available=false and price=50000.
+    await adminClient.query(
+      `UPDATE items SET is_available = false WHERE id = $1`,
+      [itemCompatId]
+    );
+    const resAmbiguousTrueOverFalse = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...initialCompatSnap, // stale is_available: true
+            shop_id: shopId,
+            price: 60000,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resAmbiguousTrueOverFalse.status,
+      409,
+      'Stale full snapshot with is_available=true editing price after concurrent toggle to false must return 409 STOCK_CONFLICT'
+    );
+    const bodyAmbiguousTrueOverFalse = await resAmbiguousTrueOverFalse.json();
+    assert.equal(bodyAmbiguousTrueOverFalse.code, 'STOCK_CONFLICT');
+    const {
+      rows: [afterAmbiguousTrueRow],
+    } = await adminClient.query(
+      `SELECT price, is_available, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemCompatId]
+    );
+    assert.equal(
+      afterAmbiguousTrueRow.is_available,
+      false,
+      'Concurrent is_available=false must not be overwritten by stale full snapshot price edit'
+    );
+    assert.equal(Number(afterAmbiguousTrueRow.price), 50000);
+
+    // 6A-2: Reverse concurrent toggle (false -> true) vs stale full-snapshot price edit (incoming.is_available=false):
+    // Route must NOT infer an availability toggle to false and overwrite newer is_available=true;
+    // it must return 409 STOCK_CONFLICT and preserve is_available=true and price=50000.
+    const {
+      rows: [staleFalseCompatSnap],
+    } = await adminClient.query(`SELECT * FROM items WHERE id = $1`, [
+      itemCompatId,
+    ]);
+    await adminClient.query(
+      `UPDATE items SET is_available = true WHERE id = $1`,
+      [itemCompatId]
+    );
+    const resAmbiguousFalseOverTrue = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleFalseCompatSnap, // stale is_available: false
+            shop_id: shopId,
+            price: 60000,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resAmbiguousFalseOverTrue.status,
+      409,
+      'Stale full snapshot with is_available=false editing price after concurrent toggle to true must return 409 STOCK_CONFLICT'
+    );
+    const bodyAmbiguousFalseOverTrue = await resAmbiguousFalseOverTrue.json();
+    assert.equal(bodyAmbiguousFalseOverTrue.code, 'STOCK_CONFLICT');
+    const {
+      rows: [afterAmbiguousFalseRow],
+    } = await adminClient.query(
+      `SELECT price, is_available, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemCompatId]
+    );
+    assert.equal(
+      afterAmbiguousFalseRow.is_available,
+      true,
+      'Concurrent is_available=true must not be overwritten by stale full snapshot price edit'
+    );
+    assert.equal(Number(afterAmbiguousFalseRow.price), 50000);
+
+    // 6A-3: Explicit expected_is_available baseline CAS on full-item combined edits:
+    // Mismatched expected_is_available fails closed with 409 STOCK_CONFLICT;
+    // matched expected_is_available applies both price and is_available without silent loss.
+    const resMismatchedExpectedAvail = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...initialCompatSnap,
+            shop_id: shopId,
+            price: 60000,
+            is_available: false,
+            expected_is_available: false, // DB currently has is_available = true
+          },
+        }),
+      })
+    );
+    assert.equal(resMismatchedExpectedAvail.status, 409);
+    const bodyMismatchedExpectedAvail = await resMismatchedExpectedAvail.json();
+    assert.equal(bodyMismatchedExpectedAvail.code, 'STOCK_CONFLICT');
+
+    const resBug1SameStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...initialCompatSnap,
+            shop_id: shopId,
+            price: 60000,
+            is_available: false,
+            expected_is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resBug1SameStock.status, 200);
+    const bodyBug1SameStock = await resBug1SameStock.json();
+    assert.equal(bodyBug1SameStock.item.price, 60000);
+    assert.equal(
+      bodyBug1SameStock.item.is_available,
+      false,
+      'Explicit is_available=false with matching expected_is_available=true alongside price edit must be applied'
+    );
+    assert.equal(bodyBug1SameStock.item.stock_quantity, 10);
+    assert.equal(bodyBug1SameStock.item.sold_count, 2);
+
+    // Concurrent order commits 3 units (stock 10 -> 7, sold_count 2 -> 5) while client holds snapshot (stock=10, sold=2, expected_is_available=false).
+    await adminClient.query(
+      `UPDATE items SET is_available = true WHERE id = $1`,
+      [itemCompatId]
+    );
+    await orderRpcClient.query(
+      `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+      [
+        JSON.stringify({
+          id: 'ord-pg-compat-1',
+          order_code: 'ORD-PG-COMPAT-1',
+          shop_id: shopId,
+          table_id: tableId,
+          table_label: 'Bàn 01',
+          idempotency_key: 'idemp-pg-compat-1',
+          total_amount: 180000,
+          subtotal_amount: 180000,
+          payment_status: 'unpaid',
+          status: 'new',
+          items: [
+            {
+              item_id: itemCompatId,
+              quantity: 3,
+              unit_price: 60000,
+              extra_price: 0,
+              name_vi: 'Cà Phê Muối Huế',
+            },
+          ],
+        }),
+        JSON.stringify([{ item_id: itemCompatId, delta: 3 }]),
+      ]
+    );
+    await adminClient.query(
+      `UPDATE items SET is_available = false WHERE id = $1`,
+      [itemCompatId]
+    );
+
+    const resBug1AfterOrder = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...initialCompatSnap,
+            shop_id: shopId,
+            price: 65000,
+            is_available: true,
+            expected_is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resBug1AfterOrder.status, 200);
+    const bodyBug1AfterOrder = await resBug1AfterOrder.json();
+    assert.equal(bodyBug1AfterOrder.item.price, 65000);
+    assert.equal(
+      bodyBug1AfterOrder.item.is_available,
+      true,
+      'Explicit is_available=true with matching expected_is_available=false alongside price edit after concurrent order must be applied'
+    );
+    assert.equal(
+      bodyBug1AfterOrder.item.stock_quantity,
+      7,
+      'Must preserve live stock_quantity=7 after concurrent order'
+    );
+    assert.equal(
+      bodyBug1AfterOrder.item.sold_count,
+      5,
+      'Must preserve live sold_count=5 after concurrent order'
+    );
+
+    // 6B (Bug 2): No-op full-item saves without expected_stock_quantity succeed (200 OK) for both catalog.manage and inventory.adjust
+    const {
+      rows: [currentCompatSnap],
+    } = await adminClient.query(`SELECT * FROM items WHERE id = $1`, [
+      itemCompatId,
+    ]);
+    for (const token of [catCashierToken, invStaffToken]) {
+      const resNoOp = await catalogPost(
+        new Request('http://localhost:3000/api/catalog', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            action: 'upsert_item',
+            item: {
+              ...currentCompatSnap,
+              shop_id: shopId,
+            },
+          }),
+        })
+      );
+      assert.equal(
+        resNoOp.status,
+        200,
+        'Bug 2 regression: no-op full-item save with unchanged stock must not return 409 STOCK_CONFLICT'
+      );
+      const bodyNoOp = await resNoOp.json();
+      assert.equal(bodyNoOp.item.stock_quantity, 7);
+      assert.equal(bodyNoOp.item.sold_count, 5);
+      assert.equal(bodyNoOp.item.is_available, true);
+    }
+
+    // 6C (Bug 3b): Legacy full-item availability toggle after concurrent order (stock 7 -> 5, sold 5 -> 7)
+    await orderRpcClient.query(
+      `SELECT commit_order_with_inventory($1::jsonb, $2::jsonb)`,
+      [
+        JSON.stringify({
+          id: 'ord-pg-compat-2',
+          order_code: 'ORD-PG-COMPAT-2',
+          shop_id: shopId,
+          table_id: tableId,
+          table_label: 'Bàn 01',
+          idempotency_key: 'idemp-pg-compat-2',
+          total_amount: 130000,
+          subtotal_amount: 130000,
+          payment_status: 'unpaid',
+          status: 'new',
+          items: [
+            {
+              item_id: itemCompatId,
+              quantity: 2,
+              unit_price: 65000,
+              extra_price: 0,
+              name_vi: 'Cà Phê Muối Huế',
+            },
+          ],
+        }),
+        JSON.stringify([{ item_id: itemCompatId, delta: 2 }]),
+      ]
+    );
+
+    // Stale/no-baseline full snapshot carrying stock and toggling is_available without expected_is_available
+    // must be rejected with 409 STOCK_CONFLICT in both catalog.manage and inventory.adjust paths
+    const resNoBaselineCatToggle = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stale stock_quantity: 7, sold_count: 5
+            shop_id: shopId,
+            is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resNoBaselineCatToggle.status, 409);
+    assert.equal(
+      (await resNoBaselineCatToggle.json()).code,
+      'STOCK_CONFLICT'
+    );
+
+    const resNoBaselineInvToggle = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stale stock_quantity: 7, sold_count: 5
+            shop_id: shopId,
+            is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resNoBaselineInvToggle.status, 409);
+    assert.equal(
+      (await resNoBaselineInvToggle.json()).code,
+      'STOCK_CONFLICT'
+    );
+
+    // Legitimate toggle with explicit expected_is_available baseline (or narrow toggle) succeeds
+    // and preserves live stock/sold counts
+    const resBug3bCatToggle = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stale stock_quantity: 7, sold_count: 5
+            shop_id: shopId,
+            is_available: false,
+            expected_is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resBug3bCatToggle.status,
+      200,
+      'Legitimate full-item availability toggle with expected_is_available by catalog.manage after order must succeed'
+    );
+    const bodyBug3bCatToggle = await resBug3bCatToggle.json();
+    assert.equal(bodyBug3bCatToggle.item.is_available, false);
+    assert.equal(bodyBug3bCatToggle.item.stock_quantity, 5);
+    assert.equal(bodyBug3bCatToggle.item.sold_count, 7);
+
+    const resBug3bInvToggle = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stale stock_quantity: 7, sold_count: 5
+            shop_id: shopId,
+            is_available: true,
+            expected_is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resBug3bInvToggle.status,
+      200,
+      'Legitimate full-item availability toggle with expected_is_available by inventory.adjust after order must succeed'
+    );
+    const bodyBug3bInvToggle = await resBug3bInvToggle.json();
+    assert.equal(bodyBug3bInvToggle.item.is_available, true);
+    assert.equal(bodyBug3bInvToggle.item.stock_quantity, 5);
+    assert.equal(bodyBug3bInvToggle.item.sold_count, 7);
+
+    // 6D (Bug 3a): Legacy full-item price edit after order cancellation restock (conserved stock_quantity + sold_count)
+    // vs. ambiguous manual stock adjustment (non-conserved sum -> must fail closed with 409 STOCK_CONFLICT).
+    await adminClient.query(
+      `UPDATE items SET stock_quantity = 8, sold_count = 4 WHERE id = $1`,
+      [itemCompatId]
+    );
+    const resBug3aRestockPriceEdit = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stale stock_quantity: 7, sold_count: 5 (sum = 12 === 8 + 4)
+            shop_id: shopId,
+            price: 70000,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resBug3aRestockPriceEdit.status,
+      200,
+      'Bug 3a regression: legacy full-item price edit after order cancellation restock (conserved stock+sold) must succeed'
+    );
+    const bodyBug3aRestockPriceEdit = await resBug3aRestockPriceEdit.json();
+    assert.equal(bodyBug3aRestockPriceEdit.item.price, 70000);
+    assert.equal(bodyBug3aRestockPriceEdit.item.stock_quantity, 8);
+    assert.equal(bodyBug3aRestockPriceEdit.item.sold_count, 4);
+
+    // Manual stock adjustment by another staff member (stock_quantity = 25, sold_count = 4; sum = 29 !== 12)
+    await adminClient.query(
+      `UPDATE items SET stock_quantity = 25, sold_count = 4 WHERE id = $1`,
+      [itemCompatId]
+    );
+    const resBug3aAmbiguousManualStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...currentCompatSnap, // stock_quantity: 7, sold_count: 5
+            shop_id: shopId,
+            price: 75000,
+          },
+        }),
+      })
+    );
+    assert.equal(
+      resBug3aAmbiguousManualStock.status,
+      409,
+      'Ambiguous full-item payload with non-conserved stock_quantity without expected_stock_quantity must fail closed with 409 STOCK_CONFLICT'
+    );
+    const bodyBug3aAmbiguous = await resBug3aAmbiguousManualStock.json();
+    assert.equal(bodyBug3aAmbiguous.code, 'STOCK_CONFLICT');
+    const {
+      rows: [afterAmbiguousRow],
+    } = await adminClient.query(
+      `SELECT price, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemCompatId]
+    );
+    assert.equal(
+      afterAmbiguousRow.stock_quantity,
+      25,
+      'Live stock_quantity=25 must not be overwritten by ambiguous stale snapshot'
+    );
+    assert.equal(afterAmbiguousRow.sold_count, 4);
+    assert.equal(Number(afterAmbiguousRow.price), 70000);
+
+    // -------------------------------------------------------------------------
+    // 6E: dbUpsertItem zero-stock fallback with expected_is_available CAS:
+    // Concurrent is_available change after currentRow read and before fallback update.
+    // Verifies:
+    // 1. Conditional update fails with STOCK_CONFLICT.
+    // 2. Neither price nor availability is overwritten by the stale update.
+    // 3. Matching baseline still behaves as intended (succeeds, sets is_available=false, updates price).
+    // -------------------------------------------------------------------------
+    const concurrentActorClient = await createPgClient();
+    const itemZeroFallbackId = 'item-pg-zero-fallback-race-001';
+
+    await adminClient.query(
+      `INSERT INTO items (
+        id, shop_id, category_id, name_i18n, desc_i18n, price,
+        stock_quantity, sold_count, is_available, is_featured, options_json,
+        view_count, sort_order, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, '{"vi": "Trà Sữa Zero Stock"}'::jsonb, '{"vi": "Mô tả"}'::jsonb, 52000,
+        1, 15, true, false, '[]'::jsonb,
+        0, 1, NOW(), NOW()
+      )`,
+      [itemZeroFallbackId, shopId, catId]
+    );
+
+    let orderDrainedStockHookFired = false;
+    let concurrentAvailChangeHookFired = false;
+    beforeUpdateHook = async (tableName, updatePayload, filters, orClauses) => {
+      if (tableName !== 'items') return;
+      if (!filters.some((f) => f.col === 'id' && f.val === itemZeroFallbackId)) return;
+
+      // Step 1: When initial non-zero update executes, simulate concurrent order draining stock 1 -> 0
+      if (
+        !orderDrainedStockHookFired &&
+        orClauses.includes('stock_quantity.is.null,stock_quantity.gt.0')
+      ) {
+        orderDrainedStockHookFired = true;
+        await concurrentActorClient.query(
+          `UPDATE items SET stock_quantity = 0 WHERE id = $1`,
+          [itemZeroFallbackId]
+        );
+        return;
+      }
+
+      // Step 2: Intercept the zero-stock fallback update (after currentRow was read with stock=0, is_available=true).
+      // Simulate concurrent actor changing is_available (true -> false) right before fallback update.
+      const isZeroStockFallback =
+        filters.some((f) => f.col === 'stock_quantity' && f.val === 0) &&
+        updatePayload.is_available === false;
+
+      if (isZeroStockFallback && !concurrentAvailChangeHookFired) {
+        concurrentAvailChangeHookFired = true;
+        await concurrentActorClient.query(
+          `UPDATE items SET is_available = false WHERE id = $1`,
+          [itemZeroFallbackId]
+        );
+      }
+    };
+
+    // 1. Direct dbUpsertItem:
+    // Client attempts to update price (52000 -> 68000) while sending expected_is_available = true.
+    // The zero-stock fallback conditional update MUST fail with STOCK_CONFLICT because the concurrent
+    // actor changed is_available to false after currentRow was read.
+    await assert.rejects(
+      async () => {
+        await dbUpsertItem({
+          id: itemZeroFallbackId,
+          shop_id: shopId,
+          category_id: catId,
+          price: 68000,
+          is_available: true,
+          expected_is_available: true,
+        });
+      },
+      (err: Error) => {
+        assert.match(
+          err.message,
+          /STOCK_CONFLICT/,
+          'Expected error to indicate STOCK_CONFLICT'
+        );
+        return true;
+      },
+      'dbUpsertItem zero-stock fallback must fail with STOCK_CONFLICT when concurrent is_available change invalidates expected_is_available'
+    );
+
+    assert.equal(
+      orderDrainedStockHookFired,
+      true,
+      'Order drain hook must fire on initial non-zero stock predicate'
+    );
+    assert.equal(
+      concurrentAvailChangeHookFired,
+      true,
+      'Interleaving hook must fire before zero-stock fallback update'
+    );
+
+    // Verify PostgreSQL state via second connection: price was NOT overwritten, is_available was NOT overwritten
+    const {
+      rows: [rowAfterDirectRace],
+    } = await concurrentActorClient.query(
+      `SELECT price, is_available, stock_quantity, sold_count FROM items WHERE id = $1`,
+      [itemZeroFallbackId]
+    );
+    assert.equal(
+      Number(rowAfterDirectRace.price),
+      52000,
+      'Item price must NOT be overwritten when zero-stock fallback CAS fails'
+    );
+    assert.equal(
+      rowAfterDirectRace.is_available,
+      false,
+      'Concurrent is_available=false must NOT be overwritten by stale fallback update'
+    );
+    assert.equal(rowAfterDirectRace.stock_quantity, 0);
+    assert.equal(rowAfterDirectRace.sold_count, 15);
+
+    // 2. Matching baseline:
+    // Reset item to stock_quantity: 1, is_available: true, price: 52000.
+    // Order drains stock 1 -> 0 during initial update, triggering zero-stock fallback.
+    // BUT NO concurrent availability change occurs (hook leaves is_available untouched).
+    // Zero-stock fallback should succeed, updating price to 58000 and setting is_available: false (since stock is 0).
+    await concurrentActorClient.query(
+      `UPDATE items SET is_available = true, price = 52000, stock_quantity = 1 WHERE id = $1`,
+      [itemZeroFallbackId]
+    );
+    orderDrainedStockHookFired = false;
+    concurrentAvailChangeHookFired = false;
+    beforeUpdateHook = async (tableName, _updatePayload, filters, orClauses) => {
+      if (tableName !== 'items') return;
+      if (!filters.some((f) => f.col === 'id' && f.val === itemZeroFallbackId)) return;
+      if (
+        !orderDrainedStockHookFired &&
+        orClauses.includes('stock_quantity.is.null,stock_quantity.gt.0')
+      ) {
+        orderDrainedStockHookFired = true;
+        // Concurrent order drains stock to 0, forcing entry into zero-stock fallback
+        await concurrentActorClient.query(
+          `UPDATE items SET stock_quantity = 0 WHERE id = $1`,
+          [itemZeroFallbackId]
+        );
+      }
+      // No concurrent availability change -> baseline proceeds with matching availability
+    };
+
+    const baselineResult = await dbUpsertItem({
+      id: itemZeroFallbackId,
+      shop_id: shopId,
+      category_id: catId,
+      price: 58000,
+      is_available: true,
+      expected_is_available: true,
+    });
+
+    assert.equal(
+      baselineResult.price,
+      58000,
+      'Matching baseline must update price to 58000'
+    );
+    assert.equal(
+      baselineResult.is_available,
+      false,
+      'Zero-stock fallback must set is_available to false when stock is 0'
+    );
+    assert.equal(
+      baselineResult.stock_quantity,
+      0,
+      'Stock quantity must remain 0'
+    );
+
+    const {
+      rows: [rowAfterBaseline],
+    } = await concurrentActorClient.query(
+      `SELECT price, is_available, stock_quantity FROM items WHERE id = $1`,
+      [itemZeroFallbackId]
+    );
+    assert.equal(
+      Number(rowAfterBaseline.price),
+      58000,
+      'Database price must reflect baseline update'
+    );
+    assert.equal(
+      rowAfterBaseline.is_available,
+      false,
+      'Database is_available must be false after zero-stock fallback'
+    );
+    assert.equal(rowAfterBaseline.stock_quantity, 0);
+    beforeUpdateHook = null;
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);
@@ -7016,6 +7751,614 @@ test('dbUpsertItem zeroStock fallback and bulk_update_availability never report 
       1,
       'Must NOT issue a second compensating update(is_available: false) that could overwrite concurrent changes'
     );
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+    setMposDbClientForTests(null, false);
+  }
+});
+
+test('upsert_item legacy full snapshot concurrency ambiguity vs expected_is_available CAS, narrow modern updates, and inventory-only permissions', async () => {
+  const { POST: catalogPost } = await import('@/app/api/catalog/route');
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+  const { setMposDbClientForTests } = await import('@/lib/mpos-store');
+  const { issueSessionToken } = await import('@/lib/server-auth');
+
+  const shopId = 'shop-fnb-001';
+  const catId = 'cat-fnb-1';
+  const itemId = 'item-snap-concurrency-001';
+
+  const ownerId = '00000000-0000-4000-8000-000000000961';
+  const cashierCatId = '00000000-0000-4000-8000-000000000962';
+  const invOnlyStaffId = '00000000-0000-4000-8000-000000000963';
+
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: 'owner-snap-concurrency@isolated.local',
+    role: 'owner',
+  });
+  const catCashierToken = issueSessionToken({
+    id: cashierCatId,
+    email: 'cashier-snap-concurrency@isolated.local',
+    role: 'cashier',
+  });
+  const invOnlyStaffToken = issueSessionToken({
+    id: invOnlyStaffId,
+    email: 'inv-snap-concurrency@isolated.local',
+    role: 'staff',
+  });
+
+  type StoredItemRow = {
+    id: string;
+    shop_id: string;
+    category_id: string;
+    name_i18n: Record<string, string>;
+    desc_i18n: Record<string, string>;
+    price: number;
+    compare_at_price: number | null;
+    duration_mins: number | null;
+    image_url: string | null;
+    stock_quantity: number | null;
+    sold_count: number;
+    view_count: number;
+    is_available: boolean;
+    is_featured: boolean;
+    options_json: unknown[];
+    sort_order: number;
+    created_at: string;
+    updated_at: string;
+  };
+
+  let liveRow: StoredItemRow = {
+    id: itemId,
+    shop_id: shopId,
+    category_id: catId,
+    name_i18n: { vi: 'Phở Bò Tái Lăn', en: 'Stir-fried Beef Pho' },
+    desc_i18n: { vi: 'Nước dùng đậm đà', en: 'Rich broth' },
+    price: 50000,
+    compare_at_price: null,
+    duration_mins: null,
+    image_url: null,
+    stock_quantity: 10,
+    sold_count: 2,
+    view_count: 5,
+    is_available: true,
+    is_featured: false,
+    options_json: [],
+    sort_order: 1,
+    created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-01T00:00:00.000Z',
+  };
+
+  const membershipsByUser: Record<
+    string,
+    {
+      id: string;
+      shop_id: string;
+      user_id: string;
+      role: string;
+      permissions: string[];
+      is_active: boolean;
+    }
+  > = {
+    [ownerId]: {
+      id: 'mem-owner',
+      shop_id: shopId,
+      user_id: ownerId,
+      role: 'owner',
+      permissions: ['catalog.view', 'catalog.manage', 'inventory.adjust'],
+      is_active: true,
+    },
+    [cashierCatId]: {
+      id: 'mem-cashier-cat',
+      shop_id: shopId,
+      user_id: cashierCatId,
+      role: 'cashier',
+      permissions: ['catalog.view', 'catalog.manage'],
+      is_active: true,
+    },
+    [invOnlyStaffId]: {
+      id: 'mem-staff-inv',
+      shop_id: shopId,
+      user_id: invOnlyStaffId,
+      role: 'staff',
+      permissions: ['catalog.view', 'inventory.adjust'],
+      is_active: true,
+    },
+  };
+
+  const mockDb = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select() {
+            const chain = {
+              eq() {
+                return chain;
+              },
+              limit: async () => ({
+                data: [{ id: shopId, owner_id: ownerId, slug: 'pho-ngon' }],
+                error: null,
+              }),
+              maybeSingle: async () => ({
+                data: { id: shopId, owner_id: ownerId, slug: 'pho-ngon' },
+                error: null,
+              }),
+            };
+            return chain;
+          },
+        };
+      }
+      if (table === 'shop_memberships') {
+        return {
+          select() {
+            const filters: Record<string, unknown> = {};
+            const resolveRows = () => {
+              const allRows = Object.values(membershipsByUser);
+              return allRows.filter((row) =>
+                Object.entries(filters).every(
+                  ([k, v]) => (row as Record<string, unknown>)[k] === v
+                )
+              );
+            };
+            const chain = {
+              eq(col: string, val: unknown) {
+                filters[col] = val;
+                return chain;
+              },
+              order() {
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data: resolveRows()[0] ?? null,
+                error: null,
+              }),
+              then(
+                onFulfilled: (v: {
+                  data: Array<(typeof membershipsByUser)[string]>;
+                  error: null;
+                }) => unknown,
+                onRejected?: (e: unknown) => unknown
+              ) {
+                return Promise.resolve({
+                  data: resolveRows(),
+                  error: null,
+                }).then(onFulfilled, onRejected);
+              },
+            };
+            return chain;
+          },
+        };
+      }
+      if (table === 'categories') {
+        return {
+          select() {
+            const filters: Record<string, unknown> = {};
+            const chain = {
+              eq(col: string, val: unknown) {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data:
+                  filters.id === catId ? { id: catId, shop_id: shopId } : null,
+                error: null,
+              }),
+            };
+            return chain;
+          },
+        };
+      }
+      if (table === 'items') {
+        return {
+          select() {
+            const filters: Record<string, unknown> = {};
+            const chain = {
+              eq(col: string, val: unknown) {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data:
+                  filters.id === liveRow.id &&
+                  (filters.shop_id === undefined ||
+                    filters.shop_id === liveRow.shop_id)
+                    ? structuredClone(liveRow)
+                    : null,
+                error: null,
+              }),
+            };
+            return chain;
+          },
+          update(patch: Record<string, unknown>) {
+            const eqFilters: Record<string, unknown> = {};
+            const isFilters: Record<string, unknown> = {};
+            let requireNonZeroStock = false;
+            const chain = {
+              eq(col: string, val: unknown) {
+                eqFilters[col] = val;
+                return chain;
+              },
+              is(col: string, val: unknown) {
+                isFilters[col] = val;
+                return chain;
+              },
+              or(expr: string) {
+                if (expr.includes('stock_quantity.gt.0')) {
+                  requireNonZeroStock = true;
+                }
+                return chain;
+              },
+              select() {
+                return {
+                  single: async () => {
+                    for (const [col, val] of Object.entries(eqFilters)) {
+                      if (
+                        (liveRow as unknown as Record<string, unknown>)[col] !==
+                        val
+                      ) {
+                        return {
+                          data: null,
+                          error: { code: 'PGRST116', message: '0 rows' },
+                        };
+                      }
+                    }
+                    for (const [col, val] of Object.entries(isFilters)) {
+                      if (
+                        (liveRow as unknown as Record<string, unknown>)[col] !==
+                        val
+                      ) {
+                        return {
+                          data: null,
+                          error: { code: 'PGRST116', message: '0 rows' },
+                        };
+                      }
+                    }
+                    if (requireNonZeroStock && liveRow.stock_quantity === 0) {
+                      return {
+                        data: null,
+                        error: { code: 'PGRST116', message: '0 rows' },
+                      };
+                    }
+                    liveRow = {
+                      ...liveRow,
+                      ...(patch as Partial<StoredItemRow>),
+                    };
+                    return { data: structuredClone(liveRow), error: null };
+                  },
+                };
+              },
+            };
+            return chain;
+          },
+        };
+      }
+      throw new Error(`Unexpected table in mockDb: ${table}`);
+    },
+  };
+
+  try {
+    setSupabaseDbClientForTests(mockDb);
+    setShopMembershipDbClientForTest(
+      mockDb as unknown as Parameters<typeof setShopMembershipDbClientForTest>[0]
+    );
+
+    // 1. Client A holds stale snapshot with is_available = true while Actor B sets is_available = false.
+    //    Client A edits price (50000 -> 60000) using stale full snapshot -> MUST return 409 STOCK_CONFLICT
+    //    and MUST NOT overwrite newer is_available = false back to true.
+    const staleTrueSnapshot = structuredClone(liveRow);
+    liveRow.is_available = false; // Actor B toggled availability off
+
+    const resStaleTruePriceEdit = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleTrueSnapshot,
+            price: 60000,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaleTruePriceEdit.status, 409);
+    const bodyStaleTruePriceEdit = await resStaleTruePriceEdit.json();
+    assert.equal(bodyStaleTruePriceEdit.code, 'STOCK_CONFLICT');
+    assert.equal(
+      liveRow.is_available,
+      false,
+      'Must preserve newer is_available=false instead of treating stale snapshot as toggle'
+    );
+    assert.equal(liveRow.price, 50000);
+
+    // 2. Reverse case: Client A holds stale snapshot with is_available = false while Actor B sets is_available = true.
+    //    Client A edits price (50000 -> 62000) using stale full snapshot -> MUST return 409 STOCK_CONFLICT
+    //    and MUST NOT overwrite newer is_available = true back to false.
+    const staleFalseSnapshot = structuredClone(liveRow); // is_available = false
+    liveRow.is_available = true; // Actor B toggled availability on
+
+    const resStaleFalsePriceEdit = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleFalseSnapshot,
+            price: 62000,
+          },
+        }),
+      })
+    );
+    assert.equal(resStaleFalsePriceEdit.status, 409);
+    const bodyStaleFalsePriceEdit = await resStaleFalsePriceEdit.json();
+    assert.equal(bodyStaleFalsePriceEdit.code, 'STOCK_CONFLICT');
+    assert.equal(
+      liveRow.is_available,
+      true,
+      'Must preserve newer is_available=true instead of treating stale snapshot as toggle'
+    );
+    assert.equal(liveRow.price, 50000);
+
+    // 3. Explicit expected_is_available baseline compare-and-set:
+    //    - Non-boolean expected_is_available -> 400 INVALID_EXPECTED_AVAILABILITY
+    //    - Mismatched expected_is_available -> 409 STOCK_CONFLICT
+    //    - Matched expected_is_available with combined price + availability edit -> 200 OK (no silent loss of requested change)
+    //    - Matched expected_is_available with unchanged is_available + price edit -> 200 OK
+    const resInvalidExpectedAvail = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleTrueSnapshot,
+            price: 60000,
+            expected_is_available: 'invalid',
+          },
+        }),
+      })
+    );
+    assert.equal(resInvalidExpectedAvail.status, 400);
+    const bodyInvalidExpectedAvail = await resInvalidExpectedAvail.json();
+    assert.equal(
+      bodyInvalidExpectedAvail.code,
+      'INVALID_EXPECTED_AVAILABILITY'
+    );
+
+    const resMismatchBaseline = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleTrueSnapshot,
+            price: 60000,
+            is_available: false,
+            expected_is_available: false, // liveRow.is_available is true
+          },
+        }),
+      })
+    );
+    assert.equal(resMismatchBaseline.status, 409);
+    assert.equal((await resMismatchBaseline.json()).code, 'STOCK_CONFLICT');
+    assert.equal(liveRow.price, 50000);
+    assert.equal(liveRow.is_available, true);
+
+    // Concurrent order changes stock 10 -> 7 and sold 2 -> 5 while liveRow.is_available remains true
+    liveRow.stock_quantity = 7;
+    liveRow.sold_count = 5;
+
+    const resMatchedCombinedEdit = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...staleTrueSnapshot, // stale stock=10, sold=2
+            price: 60000,
+            is_available: false,
+            expected_is_available: true, // matches liveRow.is_available=true
+          },
+        }),
+      })
+    );
+    assert.equal(resMatchedCombinedEdit.status, 200);
+    const bodyMatchedCombinedEdit = await resMatchedCombinedEdit.json();
+    assert.equal(bodyMatchedCombinedEdit.item.price, 60000);
+    assert.equal(bodyMatchedCombinedEdit.item.is_available, false);
+    assert.equal(bodyMatchedCombinedEdit.item.stock_quantity, 7);
+    assert.equal(bodyMatchedCombinedEdit.item.sold_count, 5);
+
+    // 4. Narrow modern price edit preserves concurrent availability state in both directions:
+    const resNarrowPriceWhenFalse = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemId,
+            shop_id: shopId,
+            category_id: catId,
+            price: 64000,
+          },
+        }),
+      })
+    );
+    assert.equal(resNarrowPriceWhenFalse.status, 200);
+    assert.equal(liveRow.price, 64000);
+    assert.equal(liveRow.is_available, false);
+
+    // 5. Legitimate availability toggle behavior (including inventory.adjust-only staff on both narrow and legacy full snapshots, and permission preservation):
+    const snapBeforeInvToggle = structuredClone(liveRow); // stock=7, sold=5, is_available=false, price=64000
+    liveRow.stock_quantity = 5;
+    liveRow.sold_count = 7; // concurrent order committed 2 units
+
+    // Ambiguous legacy full snapshot carrying stock and toggling is_available without expected_is_available
+    // must be rejected with 409 STOCK_CONFLICT (tested for both inventory-only staff and owner)
+    const resInvFullToggleNoBaseline = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...snapBeforeInvToggle,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resInvFullToggleNoBaseline.status, 409);
+    assert.equal(
+      (await resInvFullToggleNoBaseline.json()).code,
+      'STOCK_CONFLICT'
+    );
+    assert.equal(liveRow.is_available, false);
+    assert.equal(liveRow.stock_quantity, 5);
+    assert.equal(liveRow.sold_count, 7);
+
+    const resOwnerFullToggleNoBaseline = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...snapBeforeInvToggle,
+            is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resOwnerFullToggleNoBaseline.status, 409);
+    assert.equal(
+      (await resOwnerFullToggleNoBaseline.json()).code,
+      'STOCK_CONFLICT'
+    );
+    assert.equal(liveRow.is_available, false);
+    assert.equal(liveRow.stock_quantity, 5);
+    assert.equal(liveRow.sold_count, 7);
+
+    // Legitimate toggle on full snapshot with explicit expected_is_available baseline succeeds and preserves concurrent stock/sold
+    const resInvFullToggleOn = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...snapBeforeInvToggle,
+            is_available: true,
+            expected_is_available: false,
+          },
+        }),
+      })
+    );
+    assert.equal(resInvFullToggleOn.status, 200);
+    assert.equal(liveRow.is_available, true);
+    assert.equal(liveRow.stock_quantity, 5);
+    assert.equal(liveRow.sold_count, 7);
+
+    const resInvNarrowToggleOff = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemId,
+            shop_id: shopId,
+            category_id: catId,
+            is_available: false,
+            expected_is_available: true,
+          },
+        }),
+      })
+    );
+    assert.equal(resInvNarrowToggleOff.status, 200);
+    assert.equal(liveRow.is_available, false);
+
+    // inventory.adjust-only staff attempting a price edit is rejected with 403 INSUFFICIENT_SHOP_PERMISSION
+    const resInvForbiddenPriceEdit = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            ...structuredClone(liveRow),
+            price: 99000,
+          },
+        }),
+      })
+    );
+    assert.equal(resInvForbiddenPriceEdit.status, 403);
+    assert.equal(liveRow.price, 64000);
+
+    // 6. Stock CAS (expected_stock_quantity) preserved for inventory.adjust-only staff and owner:
+    const resInvStockCasSuccess = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert_item',
+          item: {
+            id: itemId,
+            shop_id: shopId,
+            category_id: catId,
+            stock_quantity: 12,
+            expected_stock_quantity: 5,
+          },
+        }),
+      })
+    );
+    assert.equal(resInvStockCasSuccess.status, 200);
+    assert.equal(liveRow.stock_quantity, 12);
+    assert.equal(liveRow.is_available, true);
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

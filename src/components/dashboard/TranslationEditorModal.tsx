@@ -2,7 +2,7 @@
 
 import { appLanguageName } from '@/lib/app-i18n';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Sparkles,
@@ -53,7 +53,11 @@ interface TranslationEditorModalProps {
   categories: Category[];
   editingItem: CatalogItem | null;
   defaultCategoryId?: string;
-  onSaved: () => void;
+  onSaved: (
+    savedItem?: CatalogItem,
+    meta?: { requestedAvailable?: boolean }
+  ) => void;
+  onConflict?: () => void;
 }
 
 export function TranslationEditorModal({
@@ -65,6 +69,7 @@ export function TranslationEditorModal({
   editingItem,
   defaultCategoryId,
   onSaved,
+  onConflict,
 }: TranslationEditorModalProps) {
   const { locale, t, tx } = useAppI18n();
   const [categoryId, setCategoryId] = useState('');
@@ -104,10 +109,30 @@ export function TranslationEditorModal({
   const [uploadingImage, setUploadingImage] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const initializedKeyRef = useRef<string | null>(null);
+  const baselineAvailableRef = useRef<boolean>(true);
 
   useEffect(() => {
+    if (!isOpen) {
+      initializedKeyRef.current = null;
+      return;
+    }
+
+    const nextSessionKey = `${shopId}:${editingItem?.id ?? '__new__'}`;
+    if (initializedKeyRef.current === nextSessionKey) {
+      if (!editingItem && !categoryId) {
+        const fallbackCategoryId = defaultCategoryId || categories[0]?.id || '';
+        if (fallbackCategoryId) {
+          setCategoryId(fallbackCategoryId);
+        }
+      }
+      return;
+    }
+
+    initializedKeyRef.current = nextSessionKey;
     setErrorMsg('');
     if (editingItem) {
+      baselineAvailableRef.current = editingItem.is_available;
       setCategoryId(editingItem.category_id);
       setPrice(String(editingItem.price));
       setCompareAtPrice(
@@ -145,6 +170,7 @@ export function TranslationEditorModal({
           : []
       );
     } else {
+      baselineAvailableRef.current = true;
       setCategoryId(defaultCategoryId || categories[0]?.id || '');
       setPrice('45000');
       setCompareAtPrice('');
@@ -175,7 +201,15 @@ export function TranslationEditorModal({
       setOptionGroups([]);
     }
     setActiveTab('vi');
-  }, [editingItem, defaultCategoryId, categories, vertical, isOpen]);
+  }, [
+    editingItem,
+    defaultCategoryId,
+    categories,
+    vertical,
+    isOpen,
+    shopId,
+    categoryId,
+  ]);
 
   if (!isOpen) return null;
 
@@ -342,6 +376,11 @@ export function TranslationEditorModal({
     setErrorMsg('');
     try {
       const normalizedOptions = normalizeAndTranslateOptionGroups(optionGroups);
+      const requestedAvailable = isAvailable;
+      const shouldIncludeAvailability =
+        !editingItem ||
+        isAvailable !== editingItem.is_available ||
+        isAvailable !== baselineAvailableRef.current;
 
       const payload = {
         action: 'upsert_item',
@@ -355,8 +394,13 @@ export function TranslationEditorModal({
             : null,
           duration_mins: durationMins ? Number(durationMins) : null,
           image_url: imageUrl.trim() || null,
-          ...(!editingItem || isAvailable !== editingItem.is_available
-            ? { is_available: isAvailable }
+          ...(shouldIncludeAvailability
+            ? {
+                is_available: requestedAvailable,
+                ...(editingItem
+                  ? { expected_is_available: baselineAvailableRef.current }
+                  : {}),
+              }
             : {}),
           is_featured: isFeatured,
           name_i18n: nameI18n,
@@ -370,11 +414,40 @@ export function TranslationEditorModal({
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
+        const isConflict =
+          res.status === 409 ||
+          (data &&
+            typeof data === 'object' &&
+            ((data as { code?: unknown }).code === 'STOCK_CONFLICT' ||
+              (data as { code?: unknown }).code ===
+                'ZERO_STOCK_CANNOT_MARK_AVAILABLE'));
+        if (isConflict) {
+          onConflict?.();
+        }
         throw new Error(
-          data.error || tx('Không thể lưu món', 'Could not save item')
+          data?.error || tx('Không thể lưu món', 'Could not save item')
         );
+      }
+
+      const rawServerItem =
+        data && typeof data === 'object'
+          ? (data as { item?: unknown }).item
+          : null;
+      const serverItem: CatalogItem | null =
+        rawServerItem &&
+        typeof rawServerItem === 'object' &&
+        typeof (rawServerItem as { id?: unknown }).id === 'string' &&
+        typeof (rawServerItem as { is_available?: unknown }).is_available ===
+          'boolean'
+          ? (rawServerItem as CatalogItem)
+          : null;
+
+      if (serverItem) {
+        setIsAvailable(serverItem.is_available);
+        setIsFeatured(Boolean(serverItem.is_featured));
+        baselineAvailableRef.current = serverItem.is_available;
       }
 
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -383,7 +456,27 @@ export function TranslationEditorModal({
         bc.close();
       }
 
-      onSaved();
+      onSaved(serverItem ?? undefined, { requestedAvailable });
+
+      if (
+        shouldIncludeAvailability &&
+        serverItem &&
+        serverItem.is_available !== requestedAvailable
+      ) {
+        const itemName =
+          (locale === 'en' && (serverItem.name_i18n?.en || nameI18n.en)) ||
+          serverItem.name_i18n?.vi ||
+          nameI18n.vi;
+        setErrorMsg(
+          tx(
+            'Món "{name}" có tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng. Vui lòng kiểm tra tồn kho.',
+            'Item "{name}" has 0 stock quantity, so the server kept it sold out. Please check inventory.',
+            { name: itemName }
+          )
+        );
+        return;
+      }
+
       onClose();
     } catch (err) {
       setErrorMsg(

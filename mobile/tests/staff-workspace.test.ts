@@ -1192,3 +1192,795 @@ test('End-to-end staff order submission: sends Bearer token + counter_pos payloa
   );
   assert.equal(await loadStaffSession(storage), null);
 });
+
+test('Bug 6 regression: Mobile CatalogTab refreshes canonical server stock on 409 conflict without losing Quick Add drafts, and App.tsx reloads CatalogTab silently without unmounting or wiping Settings/Promotions drafts', async () => {
+  type VNode = {
+    type: unknown;
+    props: Record<string, unknown>;
+  };
+
+  const states: unknown[] = [];
+  let cursor = 0;
+
+  const statefulReact = {
+    memo: (fn: unknown) => fn,
+    useRef<T>(initial: T): { current: T } {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] = { current: initial };
+      }
+      return states[idx] as { current: T };
+    },
+    useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] =
+          typeof initial === 'function' ? (initial as () => T)() : initial;
+      }
+      const setState = (next: T | ((prev: T) => T)) => {
+        const prev = states[idx] as T;
+        states[idx] =
+          typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
+      };
+      return [states[idx] as T, setState];
+    },
+    createElement(
+      type: unknown,
+      props: Record<string, unknown> | null,
+      ...children: unknown[]
+    ): VNode {
+      const flat = children.flat();
+      return {
+        type,
+        props: {
+          ...(props || {}),
+          children:
+            flat.length === 0 ? undefined : flat.length === 1 ? flat[0] : flat,
+        },
+      };
+    },
+  };
+
+  function findNodes(
+    node: unknown,
+    predicate: (vnode: VNode) => boolean,
+    acc: VNode[] = []
+  ): VNode[] {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      for (const c of node) findNodes(c, predicate, acc);
+      return acc;
+    }
+    const vnode = node as VNode;
+    if ('type' in vnode && 'props' in vnode && vnode.props) {
+      if (predicate(vnode)) acc.push(vnode);
+      if (vnode.props.children) findNodes(vnode.props.children, predicate, acc);
+    }
+    return acc;
+  }
+
+  function extractText(node: unknown): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (typeof node === 'object' && 'props' in (node as VNode)) {
+      return extractText((node as VNode).props?.children);
+    }
+    return '';
+  }
+
+  const alerts: Array<{ title: string; message?: string }> = [];
+  const postBodies: Array<Record<string, unknown>> = [];
+  let catalogGetCalls = 0;
+  let shouldConflictOnPost = true;
+  let serverStock = 8;
+
+  const { CatalogTab } = loadMobileTsxExports<{
+    CatalogTab: (props: Record<string, unknown>) => VNode;
+  }>('src/components/tabs/CatalogTab.tsx', {
+    react: statefulReact,
+    'react-native': {
+      Alert: {
+        alert: (title: string, message?: string) => {
+          alerts.push({ title, message });
+        },
+      },
+      ScrollView: 'ScrollView',
+      Switch: 'Switch',
+      Text: 'Text',
+      TextInput: 'TextInput',
+      TouchableOpacity: 'TouchableOpacity',
+      View: 'View',
+    },
+    '../../lib/supabase': {
+      formatVnd: (n: number) => `${n}đ`,
+      fetchApi: async (endpoint: string, init?: RequestInit) => {
+        if (!init?.method || init.method === 'GET') {
+          catalogGetCalls++;
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: 'item-1',
+                  shop_id: 'shop-1',
+                  category_id: 'cat-1',
+                  name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+                  price: 50000,
+                  stock_quantity: serverStock,
+                  is_available: true,
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const parsed = init.body ? JSON.parse(String(init.body)) : {};
+        postBodies.push(parsed);
+        if (shouldConflictOnPost) {
+          throw new Error(
+            'Tồn kho của món đã thay đổi bởi thao tác khác. Vui lòng tải lại danh mục và thử lại.'
+          );
+        }
+        const nextStock = parsed.item.stock_quantity;
+        serverStock = nextStock;
+        return new Response(
+          JSON.stringify({
+            item: {
+              id: 'item-1',
+              shop_id: 'shop-1',
+              category_id: 'cat-1',
+              name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+              price: 50000,
+              stock_quantity: nextStock,
+              is_available: true,
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    },
+    '../../styles/mobileStyles': {
+      styles: new Proxy({}, { get: () => ({}) }),
+    },
+    '../MobileI18nProvider': {
+      useMobileI18n: () => ({
+        locale: 'vi',
+        t: (k: string) => k,
+        tb: (vi: string) => vi,
+      }),
+    },
+  });
+
+  let parentItems = [
+    {
+      id: 'item-1',
+      shop_id: 'shop-1',
+      category_id: 'cat-1',
+      name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+      price: 50000,
+      stock_quantity: 10,
+      is_available: true,
+    },
+  ];
+  const setParentItems = (
+    updater:
+      | typeof parentItems
+      | ((prev: typeof parentItems) => typeof parentItems)
+  ) => {
+    parentItems =
+      typeof updater === 'function' ? updater(parentItems) : updater;
+  };
+  const reloadShopCalls: Array<string | undefined> = [];
+
+  const renderCatalogTab = () => {
+    cursor = 0;
+    return CatalogTab({
+      activeShop: { id: 'shop-1', name: 'Quán Phở 1' },
+      categories: [
+        {
+          id: 'cat-1',
+          shop_id: 'shop-1',
+          name_i18n: { vi: 'Món chính', en: 'Main' },
+          sort_order: 1,
+          is_active: true,
+        },
+      ],
+      items: parentItems,
+      setItems: setParentItems,
+      onReloadShopData: (shopId?: string) => {
+        reloadShopCalls.push(shopId);
+      },
+      canManageCatalog: true,
+      canAdjustInventory: true,
+      theme: {
+        bg: '#fff',
+        card: '#fff',
+        text: '#000',
+        subtext: '#666',
+        border: '#eee',
+        inputBg: '#f9f9f9',
+      },
+    });
+  };
+
+  let tree = renderCatalogTab();
+
+  // User types Quick Add drafts (name, price, stock) and selects category 'cat-1'
+  const textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(textInputs.length, 3, 'CatalogTab must render 3 Quick Add TextInputs');
+  (textInputs[0].props.onChangeText as (v: string) => void)('Trà Chanh Giã Tay');
+  (textInputs[1].props.onChangeText as (v: string) => void)('25000');
+  (textInputs[2].props.onChangeText as (v: string) => void)('20');
+
+  const categoryChip = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).includes('Món chính')
+  )[0];
+  assert.ok(categoryChip, 'Category filter chip must exist');
+  (categoryChip.props.onPress as () => void)();
+
+  tree = renderCatalogTab();
+
+  // Attempt 1: User taps '+5' stock button while holding stale stock_quantity=10 (server has stock_quantity=8)
+  const plus5Btn = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5'
+  )[0];
+  assert.ok(plus5Btn, '+5 stock adjustment button must exist');
+  await (plus5Btn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(postBodies.length, 1);
+  assert.equal(
+    (postBodies[0].item as { expected_stock_quantity?: number })
+      .expected_stock_quantity,
+    10
+  );
+  assert.equal(
+    (postBodies[0].item as { stock_quantity?: number }).stock_quantity,
+    15
+  );
+  assert.equal(alerts.length, 1, 'Conflict must show Alert');
+  assert.equal(
+    reloadShopCalls.length,
+    0,
+    'Authoritative scoped reload must not trigger concurrent parent shop reload on success'
+  );
+  assert.equal(
+    catalogGetCalls,
+    1,
+    'CatalogTab must fetch fresh catalog items on conflict'
+  );
+  assert.equal(
+    parentItems[0].stock_quantity,
+    8,
+    'Bug 6 regression: items[0].stock_quantity must update to canonical server stock (8) after 409 conflict'
+  );
+
+  // Re-render and verify Quick Add drafts are preserved and second '+5' tap uses expected_stock_quantity=8 -> 13!
+  tree = renderCatalogTab();
+  const inputsAfterConflict = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(
+    inputsAfterConflict[0].props.value,
+    'Trà Chanh Giã Tay',
+    'Quick Add item name draft must be preserved after conflict reload'
+  );
+  assert.equal(
+    inputsAfterConflict[1].props.value,
+    '25000',
+    'Quick Add price draft must be preserved after conflict reload'
+  );
+  assert.equal(
+    inputsAfterConflict[2].props.value,
+    '20',
+    'Quick Add stock draft must be preserved after conflict reload'
+  );
+
+  shouldConflictOnPost = false;
+  const plus5BtnRetry = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5'
+  )[0];
+  await (plus5BtnRetry.props.onPress as () => Promise<void>)();
+
+  assert.equal(postBodies.length, 2);
+  assert.equal(
+    (postBodies[1].item as { expected_stock_quantity?: number })
+      .expected_stock_quantity,
+    8,
+    'Second +5 tap after conflict reload must send updated expected_stock_quantity=8'
+  );
+  assert.equal(
+    (postBodies[1].item as { stock_quantity?: number }).stock_quantity,
+    13,
+    'Second +5 tap after conflict reload must request stock_quantity=13'
+  );
+  assert.equal(parentItems[0].stock_quantity, 13);
+
+  // Verify App.tsx passes silent + preserveDrafts reload handler to CatalogTab so it never unmounts CatalogTab or wipes Settings/Promotions drafts
+  const appSource = fs.readFileSync(path.join(MOBILE_ROOT, 'App.tsx'), 'utf8');
+  assert.ok(
+    appSource.includes('onReloadShopData={handleReloadCatalogShopData}') &&
+      appSource.includes('silent: true') &&
+      appSource.includes('preserveDrafts: true') &&
+      appSource.includes('if (!isSilent) {\n        setLoading(true);'),
+    'mobile/App.tsx must reload CatalogTab with { silent: true, preserveDrafts: true } so CatalogTab is not unmounted and drafts are preserved'
+  );
+});
+
+test('Catalog mobile reload race: delayed response followed by shop switch and competing reload drops stale responses and protects active state', async () => {
+  type VNode = {
+    type: unknown;
+    props: Record<string, unknown>;
+  };
+
+  const states: unknown[] = [];
+  let cursor = 0;
+
+  const statefulReact = {
+    memo: (fn: unknown) => fn,
+    useRef<T>(initial: T): { current: T } {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] = { current: initial };
+      }
+      return states[idx] as { current: T };
+    },
+    useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] =
+          typeof initial === 'function' ? (initial as () => T)() : initial;
+      }
+      const setState = (next: T | ((prev: T) => T)) => {
+        const prev = states[idx] as T;
+        states[idx] =
+          typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
+      };
+      return [states[idx] as T, setState];
+    },
+    createElement(
+      type: unknown,
+      props: Record<string, unknown> | null,
+      ...children: unknown[]
+    ): VNode {
+      const flat = children.flat();
+      return {
+        type,
+        props: {
+          ...(props || {}),
+          children:
+            flat.length === 0 ? undefined : flat.length === 1 ? flat[0] : flat,
+        },
+      };
+    },
+  };
+
+  function findNodes(
+    node: unknown,
+    predicate: (vnode: VNode) => boolean,
+    acc: VNode[] = []
+  ): VNode[] {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      for (const c of node) findNodes(c, predicate, acc);
+      return acc;
+    }
+    const vnode = node as VNode;
+    if ('type' in vnode && 'props' in vnode && vnode.props) {
+      if (predicate(vnode)) acc.push(vnode);
+      if (vnode.props.children) findNodes(vnode.props.children, predicate, acc);
+    }
+    return acc;
+  }
+
+  function extractText(node: unknown): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (typeof node === 'object' && 'props' in (node as VNode)) {
+      return extractText((node as VNode).props?.children);
+    }
+    return '';
+  }
+
+  const resolvers: {
+    shop1?: (res: Response) => void;
+    shop2?: (res: Response) => void;
+  } = {};
+  const reloadShopCalls: Array<string | undefined> = [];
+  const alerts: Array<{ title: string; message?: string }> = [];
+
+  const { CatalogTab } = loadMobileTsxExports<{
+    CatalogTab: (props: Record<string, unknown>) => VNode;
+  }>('src/components/tabs/CatalogTab.tsx', {
+    react: statefulReact,
+    'react-native': {
+      Alert: {
+        alert: (title: string, message?: string) => {
+          alerts.push({ title, message });
+        },
+      },
+      ScrollView: 'ScrollView',
+      Switch: 'Switch',
+      Text: 'Text',
+      TextInput: 'TextInput',
+      TouchableOpacity: 'TouchableOpacity',
+      View: 'View',
+    },
+    '../../lib/supabase': {
+      formatVnd: (n: number) => `${n}đ`,
+      fetchApi: async (endpoint: string, init?: RequestInit) => {
+        if (!init?.method || init.method === 'GET') {
+          if (endpoint.includes('shopId=shop-1')) {
+            return new Promise<Response>((resolve) => {
+              resolvers.shop1 = resolve;
+            });
+          }
+          if (endpoint.includes('shopId=shop-2')) {
+            return new Promise<Response>((resolve) => {
+              resolvers.shop2 = resolve;
+            });
+          }
+        }
+        // POST to /api/catalog simulates 409 conflict
+        throw new Error('409 STOCK_CONFLICT');
+      },
+    },
+    '../../styles/mobileStyles': { styles: {} },
+    '../MobileI18nProvider': {
+      useMobileI18n: () => ({
+        t: (k: string) => k,
+        tb: (vi: string, en: string) => vi || en,
+      }),
+    },
+  });
+
+  let currentShop = { id: 'shop-1', name: 'Shop 1' };
+  let currentItems = [
+    {
+      id: 'item-1',
+      shop_id: 'shop-1',
+      category_id: 'cat-1',
+      name_i18n: { vi: 'Món Shop 1', en: 'Item 1' },
+      price: 50000,
+      stock_quantity: 10,
+      is_available: true,
+    },
+  ];
+
+  const renderTab = () => {
+    cursor = 0;
+    return CatalogTab({
+      activeShop: currentShop,
+      categories: [
+        {
+          id: 'cat-1',
+          shop_id: currentShop.id,
+          name_i18n: { vi: 'Món chính', en: 'Main' },
+          sort_order: 1,
+          is_active: true,
+        },
+      ],
+      items: currentItems,
+      setItems: (updater: any) => {
+        currentItems =
+          typeof updater === 'function' ? updater(currentItems) : updater;
+      },
+      onReloadShopData: (shopId?: string) => {
+        reloadShopCalls.push(shopId);
+      },
+      canManageCatalog: true,
+      canAdjustInventory: true,
+      theme: {
+        bg: '#fff',
+        card: '#fff',
+        text: '#000',
+        subtext: '#666',
+        border: '#eee',
+        inputBg: '#f9f9f9',
+      },
+    });
+  };
+
+  let tree = renderTab();
+
+  // 1. Enter Quick Add draft in Shop 1
+  const nameInput = findNodes(tree, (n) => n.type === 'TextInput')[0];
+  (nameInput.props.onChangeText as (v: string) => void)('Bản nháp món mới');
+
+  // 2. Trigger conflict on Shop 1 -> initiates reloadCatalogItemsSilently('shop-1')
+  // The fetch for /api/catalog?shopId=shop-1 is delayed (delayedShop1Resolve holds the resolver)
+  const plus5BtnShop1 = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5'
+  )[0];
+  await (plus5BtnShop1.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.ok(
+    typeof resolvers.shop1 === 'function',
+    'Reload request for shop-1 must be pending'
+  );
+  assert.equal(alerts.length, 1, 'Conflict alert must be shown');
+  assert.equal(
+    reloadShopCalls.length,
+    0,
+    'Authoritative scoped reload must not invoke parent onReloadShopData concurrently'
+  );
+
+  // 3. User switches to Shop 2 while shop-1 reload is still in flight!
+  currentShop = { id: 'shop-2', name: 'Shop 2' };
+  currentItems = [
+    {
+      id: 'item-2',
+      shop_id: 'shop-2',
+      category_id: 'cat-2',
+      name_i18n: { vi: 'Món Shop 2', en: 'Item 2' },
+      price: 80000,
+      stock_quantity: 20,
+      is_available: true,
+    },
+  ];
+  tree = renderTab();
+
+  // Quick Add draft in CatalogTab should be preserved
+  const nameInputAfterSwitch = findNodes(tree, (n) => n.type === 'TextInput')[0];
+  assert.equal(
+    nameInputAfterSwitch.props.value,
+    'Bản nháp món mới',
+    'CatalogTab internal state/drafts must be preserved across shop switches'
+  );
+
+  // 4. In Shop 2, a competing reload is triggered (e.g. stock conflict in Shop 2)
+  const plus5BtnShop2 = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5'
+  )[0];
+  const shop2Action = (plus5BtnShop2.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.ok(
+    typeof resolvers.shop2 === 'function',
+    'Reload request for shop-2 must be pending'
+  );
+
+  // Shop 2 reload resolves fast with fresh Shop 2 data
+  const shop2Resolve = resolvers.shop2;
+  assert.ok(shop2Resolve);
+  shop2Resolve(
+    new Response(
+      JSON.stringify({
+        items: [
+          {
+            id: 'item-2',
+            shop_id: 'shop-2',
+            category_id: 'cat-2',
+            name_i18n: { vi: 'Món Shop 2 Mới', en: 'Item 2 Fresh' },
+            price: 85000,
+            stock_quantity: 35,
+            is_available: true,
+          },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+  await shop2Action;
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Current items must be updated to Shop 2 fresh data
+  assert.equal(currentItems.length, 1);
+  assert.equal(currentItems[0].id, 'item-2');
+  assert.equal(currentItems[0].stock_quantity, 35);
+  assert.equal(currentItems[0].price, 85000);
+
+  // 5. Now, the delayed stale response from Shop 1 finally returns!
+  const shop1Resolve = resolvers.shop1;
+  assert.ok(shop1Resolve);
+  shop1Resolve(
+    new Response(
+      JSON.stringify({
+        items: [
+          {
+            id: 'item-1-stale-overwrite-attempt',
+            shop_id: 'shop-1',
+            category_id: 'cat-1',
+            name_i18n: { vi: 'Stale Shop 1', en: 'Stale' },
+            price: 1000,
+            stock_quantity: 1,
+            is_available: true,
+          },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+  await new Promise((r) => setTimeout(r, 20));
+
+  // 6. Verification: Stale response from Shop 1 MUST NOT overwrite Shop 2 state!
+  assert.equal(
+    currentItems.length,
+    1,
+    'Stale response from Shop 1 must not insert items into Shop 2'
+  );
+  assert.equal(
+    currentItems[0].id,
+    'item-2',
+    'CatalogTab items must remain the active Shop 2 items'
+  );
+  assert.equal(
+    currentItems[0].stock_quantity,
+    35,
+    'CatalogTab stock must remain Shop 2 fresh stock (35)'
+  );
+  assert.equal(
+    currentItems[0].price,
+    85000,
+    'CatalogTab price must remain Shop 2 fresh price (85000)'
+  );
+  assert.equal(
+    reloadShopCalls.length,
+    0,
+    'Successful scoped reloads must never trigger concurrent parent reload'
+  );
+});
+
+test('Catalog mobile reload fallback: falls back to parent onReloadShopData if scoped silent reload fails', async () => {
+  type VNode = {
+    type: unknown;
+    props: Record<string, unknown>;
+  };
+
+  const states: unknown[] = [];
+  let cursor = 0;
+
+  const statefulReact = {
+    memo: (fn: unknown) => fn,
+    useRef<T>(initial: T): { current: T } {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] = { current: initial };
+      }
+      return states[idx] as { current: T };
+    },
+    useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] =
+          typeof initial === 'function' ? (initial as () => T)() : initial;
+      }
+      const setState = (next: T | ((prev: T) => T)) => {
+        const prev = states[idx] as T;
+        states[idx] =
+          typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
+      };
+      return [states[idx] as T, setState];
+    },
+    createElement(
+      type: unknown,
+      props: Record<string, unknown> | null,
+      ...children: unknown[]
+    ): VNode {
+      const flat = children.flat();
+      return {
+        type,
+        props: {
+          ...(props || {}),
+          children:
+            flat.length === 0 ? undefined : flat.length === 1 ? flat[0] : flat,
+        },
+      };
+    },
+  };
+
+  function findNodes(
+    node: unknown,
+    predicate: (vnode: VNode) => boolean,
+    acc: VNode[] = []
+  ): VNode[] {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      for (const c of node) findNodes(c, predicate, acc);
+      return acc;
+    }
+    const vnode = node as VNode;
+    if ('type' in vnode && 'props' in vnode && vnode.props) {
+      if (predicate(vnode)) acc.push(vnode);
+      if (vnode.props.children) findNodes(vnode.props.children, predicate, acc);
+    }
+    return acc;
+  }
+
+  function extractText(node: unknown): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (typeof node === 'object' && 'props' in (node as VNode)) {
+      return extractText((node as VNode).props?.children);
+    }
+    return '';
+  }
+
+  const reloadShopCalls: Array<string | undefined> = [];
+
+  const { CatalogTab } = loadMobileTsxExports<{
+    CatalogTab: (props: Record<string, unknown>) => VNode;
+  }>('src/components/tabs/CatalogTab.tsx', {
+    react: statefulReact,
+    'react-native': {
+      Alert: { alert: () => {} },
+      ScrollView: 'ScrollView',
+      Switch: 'Switch',
+      Text: 'Text',
+      TextInput: 'TextInput',
+      TouchableOpacity: 'TouchableOpacity',
+      View: 'View',
+    },
+    '../../lib/supabase': {
+      formatVnd: (n: number) => `${n}đ`,
+      fetchApi: async (endpoint: string, init?: RequestInit) => {
+        // Both GET /api/catalog and POST fail with network errors
+        throw new Error('Network error');
+      },
+    },
+    '../../styles/mobileStyles': { styles: {} },
+    '../MobileI18nProvider': {
+      useMobileI18n: () => ({
+        t: (k: string) => k,
+        tb: (vi: string, en: string) => vi || en,
+      }),
+    },
+  });
+
+  let items = [
+    {
+      id: 'item-1',
+      shop_id: 'shop-1',
+      category_id: 'cat-1',
+      name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+      price: 50000,
+      stock_quantity: 10,
+      is_available: true,
+    },
+  ];
+
+  cursor = 0;
+  const tree = CatalogTab({
+    activeShop: { id: 'shop-1', name: 'Quán Phở 1' },
+    categories: [
+      {
+        id: 'cat-1',
+        shop_id: 'shop-1',
+        name_i18n: { vi: 'Món chính', en: 'Main' },
+        sort_order: 1,
+        is_active: true,
+      },
+    ],
+    items,
+    setItems: (updater: any) => {
+      items = typeof updater === 'function' ? updater(items) : updater;
+    },
+    onReloadShopData: (shopId?: string) => {
+      reloadShopCalls.push(shopId);
+    },
+    canManageCatalog: true,
+    canAdjustInventory: true,
+    theme: { bg: '#fff', card: '#fff', text: '#000', subtext: '#666', border: '#eee', inputBg: '#f9f9f9' },
+  });
+
+  const plus5Btn = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5'
+  )[0];
+  await (plus5Btn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Since scoped reload failed with Network error, it must fall back to parent onReloadShopData
+  assert.equal(
+    reloadShopCalls.length,
+    1,
+    'Parent onReloadShopData must be called as fallback when scoped reload fails'
+  );
+  assert.equal(reloadShopCalls[0], 'shop-1');
+});

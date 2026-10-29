@@ -185,6 +185,8 @@ const ITEM_IGNORED_DIFF_FIELDS = [
   'view_count',
   'expected_stock_quantity',
   'expectedStockQuantity',
+  'expected_is_available',
+  'expectedIsAvailable',
 ] as const;
 
 function stableStringify(value: unknown): string {
@@ -302,6 +304,23 @@ export function buildInventoryOnlyItemPatch(
         'INVALID_EXPECTED_STOCK_QUANTITY: Tồn kho đối chiếu không hợp lệ.'
       );
     }
+  }
+  const hasExpectedAvailSnake =
+    Object.prototype.hasOwnProperty.call(incoming, 'expected_is_available') &&
+    incoming.expected_is_available !== undefined;
+  const hasExpectedAvailCamel =
+    Object.prototype.hasOwnProperty.call(incoming, 'expectedIsAvailable') &&
+    incoming.expectedIsAvailable !== undefined;
+  const rawExpectedAvail = hasExpectedAvailSnake
+    ? incoming.expected_is_available
+    : incoming.expectedIsAvailable;
+  if (hasExpectedAvailSnake || hasExpectedAvailCamel) {
+    if (typeof rawExpectedAvail !== 'boolean') {
+      throw new Error(
+        'INVALID_EXPECTED_AVAILABILITY: Trạng thái còn hàng đối chiếu (expected_is_available) phải là boolean.'
+      );
+    }
+    patch.expected_is_available = rawExpectedAvail;
   }
   return patch;
 }

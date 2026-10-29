@@ -23,6 +23,29 @@ import {
 const MAX_BULK_CATALOG_ITEMS = 2000;
 const BULK_SELECT_CHUNK_SIZE = 1000;
 
+function isEchoedCatalogItemStockSnapshot(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  incomingStockNormalized: number | null,
+  existingStockNormalized: number | null
+): boolean {
+  if (incomingStockNormalized === existingStockNormalized) {
+    return true;
+  }
+  return (
+    typeof incomingStockNormalized === 'number' &&
+    typeof existingStockNormalized === 'number' &&
+    typeof incoming.sold_count === 'number' &&
+    Number.isInteger(incoming.sold_count) &&
+    incoming.sold_count >= 0 &&
+    typeof existing.sold_count === 'number' &&
+    Number.isInteger(existing.sold_count) &&
+    existing.sold_count >= 0 &&
+    incomingStockNormalized + incoming.sold_count ===
+      existingStockNormalized + existing.sold_count
+  );
+}
+
 function validateBulkCatalogItemIds(
   rawItemIds: unknown
 ):
@@ -294,6 +317,57 @@ export async function POST(req: Request) {
         ) &&
           incoming.expectedStockQuantity !== undefined);
 
+      const hasExpectedAvailability =
+        (Object.prototype.hasOwnProperty.call(
+          incoming,
+          'expected_is_available'
+        ) &&
+          incoming.expected_is_available !== undefined) ||
+        (Object.prototype.hasOwnProperty.call(
+          incoming,
+          'expectedIsAvailable'
+        ) &&
+          incoming.expectedIsAvailable !== undefined);
+      const rawExpectedAvailability =
+        Object.prototype.hasOwnProperty.call(
+          incoming,
+          'expected_is_available'
+        ) && incoming.expected_is_available !== undefined
+          ? incoming.expected_is_available
+          : incoming.expectedIsAvailable;
+      if (
+        hasExpectedAvailability &&
+        typeof rawExpectedAvailability !== 'boolean'
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'INVALID_EXPECTED_AVAILABILITY',
+            error:
+              'Trạng thái còn hàng đối chiếu (expected_is_available) phải là boolean.',
+          },
+          { status: 400 }
+        );
+      }
+      const expectedAvailability = hasExpectedAvailability
+        ? (rawExpectedAvailability as boolean)
+        : undefined;
+      if (
+        existing &&
+        hasExpectedAvailability &&
+        expectedAvailability !== Boolean(existing.is_available)
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: 'STOCK_CONFLICT',
+            error:
+              'Trạng thái còn hàng của món đã thay đổi bởi thao tác khác. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật.',
+          },
+          { status: 409 }
+        );
+      }
+
       const hasNonInventoryCatalogChanges =
         Boolean(existing) && !permissionOptions.includes('inventory.adjust');
 
@@ -331,6 +405,10 @@ export async function POST(req: Request) {
           payload.stock_quantity = parsedStock.stock;
         }
 
+        if (hasExpectedAvailability) {
+          payload.expected_is_available = expectedAvailability;
+        }
+
         if (hasExpectedStock) {
           const rawExpected = Object.prototype.hasOwnProperty.call(
             incoming,
@@ -358,31 +436,72 @@ export async function POST(req: Request) {
             existing.stock_quantity === undefined
               ? null
               : (existing.stock_quantity as number | null);
-          const isEchoedSnapshotStock =
-            incomingStockNormalized === existingStockNormalized ||
-            (typeof incomingStockNormalized === 'number' &&
-              typeof existingStockNormalized === 'number' &&
-              typeof incoming.sold_count === 'number' &&
-              Number.isInteger(incoming.sold_count) &&
-              incoming.sold_count >= 0 &&
-              typeof existing.sold_count === 'number' &&
-              Number.isInteger(existing.sold_count) &&
-              incoming.sold_count <= existing.sold_count &&
-              incomingStockNormalized + incoming.sold_count ===
-                existingStockNormalized + existing.sold_count);
+          const isUnchangedStock =
+            incomingStockNormalized === existingStockNormalized;
+          const isEchoedSnapshotStock = isEchoedCatalogItemStockSnapshot(
+            incoming,
+            existing,
+            incomingStockNormalized,
+            existingStockNormalized
+          );
           const hasAvailabilityToggle =
             typeof incoming.is_available === 'boolean' &&
             incoming.is_available !== Boolean(existing.is_available);
+          const isStalePreExhaustionAvailable =
+            existingStockNormalized === 0 &&
+            incomingStockNormalized !== 0 &&
+            incoming.is_available === true;
+          const hasExplicitAvailabilityChange =
+            hasAvailabilityToggle && !isStalePreExhaustionAvailable;
 
           if (hasNonInventoryCatalogChanges && isEchoedSnapshotStock) {
+            if (hasExpectedAvailability) {
+              delete payload.stock_quantity;
+              delete payload.sold_count;
+              payload.expected_is_available = expectedAvailability;
+              if (
+                typeof incoming.is_available === 'boolean' &&
+                incoming.is_available !== expectedAvailability
+              ) {
+                payload.is_available = incoming.is_available;
+              } else {
+                delete payload.is_available;
+              }
+            } else if (!hasAvailabilityToggle || isStalePreExhaustionAvailable) {
+              delete payload.stock_quantity;
+              delete payload.sold_count;
+              delete payload.is_available;
+            } else {
+              return NextResponse.json(
+                {
+                  success: false,
+                  code: 'STOCK_CONFLICT',
+                  error:
+                    'Trạng thái còn hàng (is_available) trong bản chụp món không khớp với dữ liệu hiện tại hoặc thiếu expected_is_available khi cập nhật đồng thời. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật.',
+                },
+                { status: 409 }
+              );
+            }
+          } else if (
+            !hasNonInventoryCatalogChanges &&
+            hasExplicitAvailabilityChange &&
+            isEchoedSnapshotStock
+          ) {
+            if (!hasExpectedAvailability) {
+              return NextResponse.json(
+                { success: false, code: 'STOCK_CONFLICT', error: 'Thiếu trạng thái bán đối chiếu (expected_is_available). Vui lòng tải lại và thử lại.' },
+                { status: 409 }
+              );
+            }
             delete payload.stock_quantity;
-            delete payload.is_available;
             delete payload.sold_count;
           } else if (
-            hasAvailabilityToggle &&
-            incomingStockNormalized === existingStockNormalized
+            !hasNonInventoryCatalogChanges &&
+            !hasAvailabilityToggle &&
+            isUnchangedStock
           ) {
             delete payload.stock_quantity;
+            delete payload.is_available;
             delete payload.sold_count;
           } else {
             return NextResponse.json(
@@ -390,11 +509,44 @@ export async function POST(req: Request) {
                 success: false,
                 code: 'STOCK_CONFLICT',
                 error:
-                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
+                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity) hoặc tồn kho đã thay đổi. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
               },
               { status: 409 }
             );
           }
+        }
+
+        const hasSnapshotMetadataFields =
+          incoming.sold_count !== undefined ||
+          incoming.view_count !== undefined ||
+          incoming.created_at !== undefined ||
+          incoming.updated_at !== undefined;
+        if (
+          existing &&
+          hasNonInventoryCatalogChanges &&
+          hasSnapshotMetadataFields &&
+          !hasExpectedAvailability &&
+          typeof payload.is_available === 'boolean' &&
+          payload.is_available !== Boolean(existing.is_available)
+        ) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'STOCK_CONFLICT',
+              error:
+                'Trạng thái còn hàng (is_available) trong bản chụp món không khớp với dữ liệu hiện tại hoặc thiếu expected_is_available khi cập nhật đồng thời. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật.',
+            },
+            { status: 409 }
+          );
+        }
+        if (
+          existing &&
+          hasExpectedAvailability &&
+          hasNonInventoryCatalogChanges &&
+          typeof incoming.is_available === 'boolean' &&
+          incoming.is_available === expectedAvailability
+        ) {
+          delete payload.is_available;
         }
       } else {
         payload = buildInventoryOnlyItemPatch(incoming, existing);
@@ -410,21 +562,41 @@ export async function POST(req: Request) {
             existing.stock_quantity === undefined
               ? null
               : (existing.stock_quantity as number | null);
+          const isUnchangedStock =
+            incomingStockNormalized === existingStockNormalized;
+          const isEchoedSnapshotStock = isEchoedCatalogItemStockSnapshot(
+            incoming,
+            existing,
+            incomingStockNormalized,
+            existingStockNormalized
+          );
           const hasAvailabilityToggle =
             typeof incoming.is_available === 'boolean' &&
             incoming.is_available !== Boolean(existing.is_available);
-          if (
-            hasAvailabilityToggle &&
-            incomingStockNormalized === existingStockNormalized
-          ) {
+          const isStalePreExhaustionAvailable =
+            existingStockNormalized === 0 &&
+            incomingStockNormalized !== 0 &&
+            incoming.is_available === true;
+          const hasExplicitAvailabilityChange =
+            hasAvailabilityToggle && !isStalePreExhaustionAvailable;
+          if (hasExplicitAvailabilityChange && isEchoedSnapshotStock) {
+            if (!hasExpectedAvailability) {
+              return NextResponse.json(
+                { success: false, code: 'STOCK_CONFLICT', error: 'Thiếu trạng thái bán đối chiếu (expected_is_available). Vui lòng tải lại và thử lại.' },
+                { status: 409 }
+              );
+            }
             delete payload.stock_quantity;
+          } else if (!hasAvailabilityToggle && isUnchangedStock) {
+            delete payload.stock_quantity;
+            delete payload.is_available;
           } else {
             return NextResponse.json(
               {
                 success: false,
                 code: 'STOCK_CONFLICT',
                 error:
-                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
+                  'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity) hoặc tồn kho đã thay đổi. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
               },
               { status: 409 }
             );
@@ -684,17 +856,6 @@ export async function POST(req: Request) {
           continue;
         }
 
-        if (nextStock !== undefined && !hasExpectedStock) {
-          results.push({
-            id: itemId,
-            success: false,
-            code: 'STOCK_CONFLICT',
-            error:
-              'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
-          });
-          continue;
-        }
-
         const currentStockNormalized =
           existing.stock_quantity === undefined ? null : existing.stock_quantity;
         const stockWillChange =
@@ -702,11 +863,26 @@ export async function POST(req: Request) {
           (nextStock !== currentStockNormalized ||
             (hasExpectedStock &&
               expectedStockNormalized !== currentStockNormalized));
-        if (stockWillChange && !canManageCatalog && !canAdjustInventory) {
+        if (
+          (stockWillChange || nextStock !== undefined) &&
+          !canManageCatalog &&
+          !canAdjustInventory
+        ) {
           results.push({
             id: itemId,
             success: false,
             error: `Tài khoản (${auth.membership.role}) không có quyền sửa tồn kho (cần quyền: inventory.adjust hoặc catalog.manage).`,
+          });
+          continue;
+        }
+
+        if (nextStock !== undefined && !hasExpectedStock) {
+          results.push({
+            id: itemId,
+            success: false,
+            code: 'STOCK_CONFLICT',
+            error:
+              'Thiếu thông tin tồn kho đối chiếu (expected_stock_quantity). Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật tồn kho.',
           });
           continue;
         }
@@ -1458,6 +1634,16 @@ export async function POST(req: Request) {
           success: false,
           code: 'INVALID_EXPECTED_STOCK_QUANTITY',
           error: message.replace(/^INVALID_EXPECTED_STOCK_QUANTITY:\s*/, ''),
+        },
+        { status: 400 }
+      );
+    }
+    if (message.startsWith('INVALID_EXPECTED_AVAILABILITY:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'INVALID_EXPECTED_AVAILABILITY',
+          error: message.replace(/^INVALID_EXPECTED_AVAILABILITY:\s*/, ''),
         },
         { status: 400 }
       );

@@ -712,21 +712,34 @@ function Workspace({ userId }: { userId: string }) {
   const loadShopsAndData = useCallback(
     async (
       targetShopId?: string,
-      options?: { fromNotificationTap?: boolean }
+      options?: {
+        fromNotificationTap?: boolean;
+        silent?: boolean;
+        preserveDrafts?: boolean;
+      }
     ) => {
       const generation = ++loadGeneration.current;
       const isNotificationTap = Boolean(options?.fromNotificationTap);
+      const isSilent = Boolean(options?.silent);
+      const preserveDrafts = Boolean(options?.preserveDrafts);
+      const previousShopId = scopeRef.current;
       const requestedShopId = targetShopId || scopeRef.current;
       if (!isNotificationTap) {
         scopeRef.current = requestedShopId;
         if (targetShopId) setActiveShopId(targetShopId);
       }
-      setLoading(true);
-      setPrintingOrder(null);
-      if (!isNotificationTap) {
-        setOrderFilter('active');
+      if (!isSilent) {
+        setLoading(true);
+        setPrintingOrder(null);
+        if (!isNotificationTap) {
+          setOrderFilter('active');
+        }
+        setCategories([]);
+        setItems([]);
+        setEvents([]);
+        setOrders([]);
+        setOrderStats(null);
       }
-      setCategories([]); setItems([]); setEvents([]); setOrders([]); setOrderStats(null);
       try {
         let loadedShops: MobileShop[] = [];
         let loadedMemberships: Record<string, MobileShopMembership> = {};
@@ -809,13 +822,18 @@ function Workspace({ userId }: { userId: string }) {
         }
 
         if (currentShop) {
+          const isSameActiveShop =
+            Boolean(previousShopId) && currentShop.id === previousShopId;
+          const shouldHydrateDrafts = !(preserveDrafts && isSameActiveShop);
           scopeRef.current = currentShop.id;
           setActiveShopId(currentShop.id);
-          setEditShopName(currentShop.name);
-          setEditCity(currentShop.city || '');
-          setEditPhone(currentShop.phone_contact || '');
-          setEditWifiSsid(currentShop.wifi_info?.ssid || '');
-          setEditWifiPass(currentShop.wifi_info?.password || '');
+          if (shouldHydrateDrafts) {
+            setEditShopName(currentShop.name);
+            setEditCity(currentShop.city || '');
+            setEditPhone(currentShop.phone_contact || '');
+            setEditWifiSsid(currentShop.wifi_info?.ssid || '');
+            setEditWifiPass(currentShop.wifi_info?.password || '');
+          }
 
           const shopMembership = mergedMemberships[currentShop.id];
           const canReadAnalytics = shopMembership
@@ -898,7 +916,9 @@ function Workspace({ userId }: { userId: string }) {
           setCategories(loadedCategories);
           setItems(loadedItems);
           setEvents(loadedEvents);
-          hydrateThemeAndPromoState(currentShop, loadedItems);
+          if (shouldHydrateDrafts) {
+            hydrateThemeAndPromoState(currentShop, loadedItems);
+          }
 
           await fetchOrdersFromApi(currentShop.id, true);
         }
@@ -1194,6 +1214,16 @@ function Workspace({ userId }: { userId: string }) {
     setRefreshing(true);
     loadShopsAndData(activeShop?.id);
   }, [loadShopsAndData, activeShop?.id]);
+
+  const handleReloadCatalogShopData = useCallback(
+    (shopId?: string) => {
+      void loadShopsAndData(shopId || activeShop?.id, {
+        silent: true,
+        preserveDrafts: true,
+      });
+    },
+    [loadShopsAndData, activeShop?.id]
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
@@ -1678,7 +1708,7 @@ function Workspace({ userId }: { userId: string }) {
                 categories={categories}
                 items={items}
                 setItems={setItems}
-                onReloadShopData={loadShopsAndData}
+                onReloadShopData={handleReloadCatalogShopData}
                 canManageCatalog={canManageCatalog}
                 canAdjustInventory={canAdjustInventory}
                 theme={theme}

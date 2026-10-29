@@ -1471,6 +1471,8 @@ export async function dbUpsertItem(
     category_id: string;
     expected_stock_quantity?: number | null;
     expectedStockQuantity?: number | null;
+    expected_is_available?: boolean;
+    expectedIsAvailable?: boolean;
   }
 ): Promise<CatalogItem> {
   let validatedPrice: number | undefined = undefined;
@@ -1490,12 +1492,16 @@ export async function dbUpsertItem(
     updated_at: _ignoredUpdatedAt,
     expected_stock_quantity: rawExpectedStockSnake,
     expectedStockQuantity: rawExpectedStockCamel,
+    expected_is_available: rawExpectedAvailSnake,
+    expectedIsAvailable: rawExpectedAvailCamel,
     ...dbSafeItem
   } = item as Partial<CatalogItem> & {
     shop_id: string;
     category_id: string;
     expected_stock_quantity?: unknown;
     expectedStockQuantity?: unknown;
+    expected_is_available?: unknown;
+    expectedIsAvailable?: unknown;
     updated_at?: unknown;
   };
 
@@ -1528,6 +1534,27 @@ export async function dbUpsertItem(
       );
     }
     validatedExpectedStock = parsedExpected.stock;
+  }
+
+  const hasExpectedAvail =
+    (Object.prototype.hasOwnProperty.call(item, 'expected_is_available') &&
+      rawExpectedAvailSnake !== undefined) ||
+    (Object.prototype.hasOwnProperty.call(item, 'expectedIsAvailable') &&
+      rawExpectedAvailCamel !== undefined);
+  const rawExpectedAvail =
+    Object.prototype.hasOwnProperty.call(item, 'expected_is_available') &&
+    rawExpectedAvailSnake !== undefined
+      ? rawExpectedAvailSnake
+      : rawExpectedAvailCamel;
+
+  let validatedExpectedAvail: boolean | undefined = undefined;
+  if (hasExpectedAvail) {
+    if (typeof rawExpectedAvail !== 'boolean') {
+      throw new Error(
+        'INVALID_EXPECTED_AVAILABILITY: Trạng thái còn hàng đối chiếu (expected_is_available) phải là boolean.'
+      );
+    }
+    validatedExpectedAvail = rawExpectedAvail;
   }
 
   await ensureSupabaseReadyAndSeeded();
@@ -1607,6 +1634,15 @@ export async function dbUpsertItem(
         }
       }
 
+      if (
+        hasExpectedAvail &&
+        Boolean(existing.is_available) !== validatedExpectedAvail
+      ) {
+        throw new Error(
+          'STOCK_CONFLICT: Trạng thái còn hàng của món đã thay đổi bởi thao tác khác. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật.'
+        );
+      }
+
       let updateQuery = sb
         .from('items')
         .update(updatePatch)
@@ -1622,6 +1658,13 @@ export async function dbUpsertItem(
           );
         } else if (nextAvailable === true) {
           updateQuery = applyNonZeroStockFilter(updateQuery);
+        }
+        if (hasExpectedAvail) {
+          updateQuery = applyItemFilter(
+            updateQuery,
+            'is_available',
+            validatedExpectedAvail!
+          );
         }
       }
 
@@ -1687,6 +1730,13 @@ export async function dbUpsertItem(
               'stock_quantity',
               0
             );
+            if (hasExpectedAvail) {
+              zeroStockQuery = applyItemFilter(
+                zeroStockQuery,
+                'is_available',
+                validatedExpectedAvail!
+              );
+            }
           }
           const { data: zeroStockData, error: zeroStockError } =
             await zeroStockQuery.select('*').single();
@@ -1713,6 +1763,12 @@ export async function dbUpsertItem(
             'STOCK_CONFLICT: Tồn kho đã thay đổi. Vui lòng tải lại và thử lại.'
           );
         }
+      }
+
+      if (hasExpectedAvail && isNoRowMatchError && (!data || error)) {
+        throw new Error(
+          'STOCK_CONFLICT: Trạng thái còn hàng của món đã thay đổi bởi thao tác khác. Vui lòng tải lại dữ liệu mới nhất trước khi cập nhật.'
+        );
       }
 
       if (error) throw new Error(error.message);

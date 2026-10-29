@@ -1,4 +1,4 @@
-import React, { memo, useState } from 'react';
+import React, { memo, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -24,7 +24,7 @@ interface CatalogTabProps {
   categories: MobileCategory[];
   items: MobileCatalogItem[];
   setItems: React.Dispatch<React.SetStateAction<MobileCatalogItem[]>>;
-  onReloadShopData: (shopId?: string) => void;
+  onReloadShopData?: (shopId?: string) => void;
   canManageCatalog?: boolean;
   canAdjustInventory?: boolean;
   theme: MobileThemePalette;
@@ -48,10 +48,63 @@ export const CatalogTab = memo(function CatalogTab({
   const [isAddingItem, setIsAddingItem] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
 
+  const reloadSeqRef = useRef(0);
+  const activeShopRef = useRef(activeShop?.id);
+  if (activeShopRef.current !== activeShop?.id) {
+    activeShopRef.current = activeShop?.id;
+    reloadSeqRef.current++;
+  }
+
   const visibleItems =
     selectedCategoryId === 'all'
       ? items
       : items.filter((i) => i.category_id === selectedCategoryId);
+
+  const reloadCatalogItemsSilently = async (shopId?: string) => {
+    const targetShopId = shopId || activeShop?.id;
+    if (!targetShopId || targetShopId !== activeShopRef.current) return;
+    const seq = ++reloadSeqRef.current;
+    try {
+      const catalogRes = await fetchApi(
+        `/api/catalog?shopId=${encodeURIComponent(targetShopId)}`
+      );
+      if (
+        seq !== reloadSeqRef.current ||
+        activeShopRef.current !== targetShopId
+      ) {
+        return;
+      }
+      const catalogPayload = (await catalogRes.json().catch(() => null)) as
+        | { items?: MobileCatalogItem[] }
+        | null;
+      if (
+        seq !== reloadSeqRef.current ||
+        activeShopRef.current !== targetShopId
+      ) {
+        return;
+      }
+      if (catalogPayload && Array.isArray(catalogPayload.items)) {
+        const refreshedItems = catalogPayload.items.map(
+          (i: MobileCatalogItem) => ({
+            ...i,
+            price: Number(i.price),
+          })
+        );
+        setItems(refreshedItems);
+        return;
+      }
+      throw new Error('Invalid catalog payload');
+    } catch {
+      // Fall back to parent onReloadShopData only if scoped silent reload fails
+      // and this shop is still the active shop and latest reload generation
+      if (
+        seq === reloadSeqRef.current &&
+        activeShopRef.current === targetShopId
+      ) {
+        onReloadShopData?.(targetShopId);
+      }
+    }
+  };
 
   const handleToggleItemAvailability = async (item: MobileCatalogItem) => {
     if (!canManageCatalog && !canAdjustInventory) return;
@@ -96,7 +149,7 @@ export const CatalogTab = memo(function CatalogTab({
             'Invalid response from server.'
           )
         );
-        onReloadShopData(activeShop?.id);
+        void reloadCatalogItemsSilently(activeShop?.id ?? item.shop_id);
         return;
       }
 
@@ -129,7 +182,7 @@ export const CatalogTab = memo(function CatalogTab({
         t('catalog.errUpdateTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')
       );
-      onReloadShopData(activeShop?.id);
+      void reloadCatalogItemsSilently(activeShop?.id ?? item.shop_id);
     }
   };
 
@@ -178,7 +231,7 @@ export const CatalogTab = memo(function CatalogTab({
         t('catalog.errPriceTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')
       );
-      onReloadShopData(activeShop?.id);
+      void reloadCatalogItemsSilently(activeShop?.id ?? item.shop_id);
     }
   };
 
@@ -237,7 +290,7 @@ export const CatalogTab = memo(function CatalogTab({
         t('catalog.errStockTitle'),
         error instanceof Error ? error.message : t('common.tryAgain')
       );
-      onReloadShopData(activeShop?.id);
+      void reloadCatalogItemsSilently(activeShop?.id ?? item.shop_id);
     }
   };
 

@@ -621,7 +621,683 @@ test('Web and Mobile catalog UI callers send narrow item patches, attach expecte
     'Mobile CatalogTab must not spread full stale item objects on price or availability edits'
   );
   assert.ok(
-    mobileCatalogSource.includes('onReloadShopData(activeShop?.id)'),
+    mobileCatalogSource.includes('onReloadShopData(activeShop?.id)') ||
+      mobileCatalogSource.includes('reloadCatalogItemsSilently(activeShop?.id'),
     'Mobile CatalogTab must reload shop data when a stock update conflicts or fails'
   );
+});
+
+test('Bug 4 & Bug 5 regression: TranslationEditorModal and DashboardCatalogPage reflect server zero-stock normalization, refresh on 409 conflicts, and preserve user drafts', async () => {
+  const { readFileSync } = await import('node:fs');
+  const path = await import('node:path');
+  const ts = (await import('typescript')).default;
+
+  type VNode = {
+    type: unknown;
+    props: Record<string, unknown>;
+  };
+
+  function createStatefulHarness() {
+    const states: unknown[] = [];
+    const refs: Array<{ current: unknown }> = [];
+    const effects: Array<{ deps?: unknown[]; fn: () => void | (() => void) }> =
+      [];
+    const callbacks: Array<{ deps?: unknown[]; fn: unknown }> = [];
+    let cursor = 0;
+    let refCursor = 0;
+    let effectCursor = 0;
+    let callbackCursor = 0;
+
+    let stateMutated = false;
+    const pendingEffects: Array<() => void | (() => void)> = [];
+
+    const reactMock = {
+      useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+        const idx = cursor++;
+        if (!(idx in states)) {
+          states[idx] =
+            typeof initial === 'function' ? (initial as () => T)() : initial;
+        }
+        const setState = (next: T | ((prev: T) => T)) => {
+          const prev = states[idx] as T;
+          const resolved =
+            typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
+          if (!Object.is(prev, resolved)) {
+            stateMutated = true;
+          }
+          states[idx] = resolved;
+        };
+        return [states[idx] as T, setState];
+      },
+      useRef<T>(initial: T): { current: T } {
+        const idx = refCursor++;
+        if (!refs[idx]) {
+          refs[idx] = { current: initial };
+        }
+        return refs[idx] as { current: T };
+      },
+      useCallback<T extends (...args: never[]) => unknown>(
+        fn: T,
+        deps?: unknown[]
+      ): T {
+        const idx = callbackCursor++;
+        const prev = callbacks[idx];
+        const changed =
+          !prev ||
+          !deps ||
+          !prev.deps ||
+          deps.length !== prev.deps.length ||
+          deps.some((d, i) => !Object.is(d, prev.deps![i]));
+        if (changed) {
+          callbacks[idx] = { deps, fn };
+        }
+        return callbacks[idx].fn as T;
+      },
+      useMemo<T>(fn: () => T): T {
+        return fn();
+      },
+      useEffect(fn: () => void | (() => void), deps?: unknown[]) {
+        const idx = effectCursor++;
+        const prev = effects[idx];
+        const changed =
+          !prev ||
+          !deps ||
+          !prev.deps ||
+          deps.length !== prev.deps.length ||
+          deps.some((d, i) => !Object.is(d, prev.deps![i]));
+        effects[idx] = { deps, fn };
+        if (changed) {
+          pendingEffects.push(fn);
+        }
+      },
+      createElement(
+        type: unknown,
+        props: Record<string, unknown> | null,
+        ...children: unknown[]
+      ): VNode {
+        const flatChildren = children.flat(Infinity);
+        return {
+          type,
+          props: {
+            ...(props || {}),
+            children:
+              flatChildren.length === 0
+                ? undefined
+                : flatChildren.length === 1
+                  ? flatChildren[0]
+                  : flatChildren,
+          },
+        };
+      },
+      Fragment: 'Fragment',
+    };
+
+    function render<P>(Component: (props: P) => VNode | null, props: P): VNode | null {
+      let out: VNode | null = null;
+      for (let pass = 0; pass < 4; pass++) {
+        cursor = 0;
+        refCursor = 0;
+        effectCursor = 0;
+        callbackCursor = 0;
+        stateMutated = false;
+        pendingEffects.length = 0;
+        out = Component(props);
+        if (pendingEffects.length === 0) break;
+        const toRun = pendingEffects.splice(0, pendingEffects.length);
+        for (const eff of toRun) {
+          eff();
+        }
+        if (!stateMutated) break;
+      }
+      return out;
+    }
+
+    return { reactMock, render };
+  }
+
+  function findNodes(
+    node: unknown,
+    predicate: (vnode: VNode) => boolean,
+    acc: VNode[] = []
+  ): VNode[] {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      for (const child of node) findNodes(child, predicate, acc);
+      return acc;
+    }
+    const vnode = node as VNode;
+    if ('type' in vnode && 'props' in vnode && vnode.props) {
+      if (predicate(vnode)) acc.push(vnode);
+      if (vnode.props.children) {
+        findNodes(vnode.props.children, predicate, acc);
+      }
+    }
+    return acc;
+  }
+
+  function loadComponentModule<T>(
+    relPath: string,
+    reactMock: Record<string, unknown>,
+    customStubs: Record<string, unknown>
+  ): T {
+    const fullPath = path.join(process.cwd(), relPath);
+    const source = readFileSync(fullPath, 'utf8');
+    const transpiled = ts.transpileModule(source, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+        jsx: ts.JsxEmit.React,
+        esModuleInterop: true,
+      },
+      fileName: fullPath,
+    });
+    const exportsObj: Record<string, unknown> = {};
+    const moduleObj = { exports: exportsObj };
+    const req = (id: string): unknown => {
+      if (id === 'react') return { ...reactMock, default: reactMock };
+      if (id in customStubs) return customStubs[id];
+      throw new Error(`Unstubbed import in test harness: ${id}`);
+    };
+    const fn = new Function('exports', 'require', 'module', transpiled.outputText);
+    fn(exportsObj, req, moduleObj);
+    return moduleObj.exports as T;
+  }
+
+  const i18nStub = {
+    useAppI18n: () => ({
+      locale: 'vi',
+      t: (k: string) => k,
+      tx: (vi: string, _en: string, vars?: Record<string, unknown>) => {
+        let out = vi;
+        if (vars) {
+          for (const [k, v] of Object.entries(vars)) {
+            out = out.replace(`{${k}}`, String(v));
+          }
+        }
+        return out;
+      },
+    }),
+  };
+
+  const lucideStub = new Proxy(
+    {},
+    {
+      get: (_target, prop) => String(prop),
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Part A: TranslationEditorModal (Bug 4 + draft preservation on conflict/reload)
+  // ---------------------------------------------------------------------------
+  const modalHarness = createStatefulHarness();
+  const modalFetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let nextModalResponse: { status: number; body: Record<string, unknown> } = {
+    status: 409,
+    body: {
+      error: 'Tồn kho của món đã thay đổi bởi thao tác khác.',
+      code: 'STOCK_CONFLICT',
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      modalFetchCalls.push({ url, body });
+      return new Response(JSON.stringify(nextModalResponse.body), {
+        status: nextModalResponse.status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const { TranslationEditorModal } = loadComponentModule<{
+      TranslationEditorModal: (props: Record<string, unknown>) => VNode | null;
+    }>('src/components/dashboard/TranslationEditorModal.tsx', modalHarness.reactMock, {
+      '@/lib/app-i18n': { appLanguageName: (l: string) => l },
+      'lucide-react': lucideStub,
+      '@/lib/i18n-helper': {
+        ALL_LOCALES: ['vi', 'en'],
+        LOCALE_META: {
+          vi: { label: 'Tiếng Việt' },
+          en: { label: 'English' },
+        },
+        formatCurrency: (n: number) => `${n}đ`,
+      },
+      '@/components/ui/FlagIcon': { FlagIcon: 'FlagIcon' },
+      '@/lib/upload-helper': { uploadCompressedImage: async () => '' },
+      '@/lib/item-options-presets': {
+        ITEM_OPTION_GROUP_PRESETS: [],
+        normalizeAndTranslateOptionGroups: (g: unknown) => g,
+      },
+      '@/components/ui/AppI18nProvider': i18nStub,
+      'next/link': { default: 'Link' },
+      '@/lib/auth-session': { getAuthHeaders: (h?: Record<string, string>) => h || {} },
+      '@/lib/plan-limits': { formatPlanLimitError: () => null },
+    });
+
+    const zeroStockItem: CatalogItem = {
+      ...sampleItem,
+      id: 'item-zero-modal',
+      price: 35000,
+      stock_quantity: 0,
+      is_available: false,
+    };
+
+    let closeCalls = 0;
+    let conflictCalls = 0;
+    const savedCalls: Array<{
+      item?: CatalogItem;
+      meta?: { requestedAvailable?: boolean };
+    }> = [];
+
+    const renderModal = (categoriesOverride: Category[] = [sampleCategory]) =>
+      modalHarness.render(TranslationEditorModal, {
+        isOpen: true,
+        onClose: () => {
+          closeCalls++;
+        },
+        shopId: 'shop-test',
+        vertical: 'fnb',
+        categories: categoriesOverride,
+        editingItem: zeroStockItem,
+        defaultCategoryId: 'cat-1',
+        onConflict: () => {
+          conflictCalls++;
+        },
+        onSaved: (
+          savedItem?: CatalogItem,
+          meta?: { requestedAvailable?: boolean }
+        ) => {
+          savedCalls.push({ item: savedItem, meta });
+        },
+      });
+
+    let tree = renderModal();
+    assert.ok(tree, 'TranslationEditorModal must render when isOpen=true');
+
+    // User edits price to 55000 and checks the "isAvailable" checkbox
+    const inputs = findNodes(tree, (n) => n.type === 'input');
+    const priceInput = inputs.find((n) => n.props.value === '35000');
+    const checkboxes = inputs.filter((n) => n.props.type === 'checkbox');
+    const availableCheckbox = checkboxes[1];
+    assert.ok(priceInput, 'Price input must be present');
+    assert.ok(availableCheckbox, 'Availability checkbox must be present');
+    assert.equal(availableCheckbox.props.checked, false);
+
+    (priceInput.props.onChange as (e: unknown) => void)({
+      target: { value: '55000' },
+    });
+    (availableCheckbox.props.onChange as (e: unknown) => void)({
+      target: { checked: true },
+    });
+
+    // Background catalog refresh passes a brand new categories array reference while modal is open:
+    // user draft (price='55000', isAvailable=true) MUST be preserved!
+    tree = renderModal([{ ...sampleCategory }]);
+    const inputsAfterRefresh = findNodes(tree, (n) => n.type === 'input');
+    assert.ok(
+      inputsAfterRefresh.some((n) => n.props.value === '55000'),
+      'Open TranslationEditorModal must preserve unsaved price draft across background catalog refreshes'
+    );
+    assert.equal(
+      inputsAfterRefresh.filter((n) => n.props.type === 'checkbox')[1].props
+        .checked,
+      true,
+      'Open TranslationEditorModal must preserve unsaved isAvailable draft across background catalog refreshes'
+    );
+
+    // Case 1: Server returns 409 STOCK_CONFLICT -> onConflict() called, modal stays open, draft preserved
+    const formNode = findNodes(tree, (n) => n.type === 'form')[0];
+    await (formNode.props.onSubmit as (e: unknown) => Promise<void>)({
+      preventDefault: () => {},
+    });
+    assert.equal(
+      conflictCalls,
+      1,
+      'TranslationEditorModal must invoke onConflict when server returns 409 STOCK_CONFLICT'
+    );
+    assert.equal(closeCalls, 0, 'Modal must stay open on 409 conflict');
+    assert.equal(savedCalls.length, 0);
+
+    // Case 2 (Bug 4): Server returns 200 OK with price=55000, but normalizes is_available=false because stock_quantity=0
+    nextModalResponse = {
+      status: 200,
+      body: {
+        item: {
+          ...zeroStockItem,
+          price: 55000,
+          stock_quantity: 0,
+          is_available: false,
+        },
+      },
+    };
+    tree = renderModal();
+    const formNode2 = findNodes(tree, (n) => n.type === 'form')[0];
+    await (formNode2.props.onSubmit as (e: unknown) => Promise<void>)({
+      preventDefault: () => {},
+    });
+
+    assert.equal(
+      savedCalls.length,
+      1,
+      'onSaved must be called with the canonical server item'
+    );
+    assert.equal(savedCalls[0].item?.price, 55000);
+    assert.equal(savedCalls[0].item?.is_available, false);
+    assert.equal(savedCalls[0].meta?.requestedAvailable, true);
+    assert.equal(
+      closeCalls,
+      0,
+      'Bug 4 regression: modal must NOT close silently when requested is_available=true was normalized to false by the server'
+    );
+
+    tree = renderModal();
+    const updatedAvailCheckbox = findNodes(
+      tree,
+      (n) => n.type === 'input' && n.props.type === 'checkbox'
+    )[1];
+    assert.equal(
+      updatedAvailCheckbox.props.checked,
+      false,
+      'Bug 4 regression: modal checkbox must reflect server-returned is_available=false'
+    );
+    const treeText = JSON.stringify(tree);
+    assert.ok(
+      treeText.includes('tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng'),
+      'Bug 4 regression: modal must display inline explanation that the server kept the item sold out due to 0 stock'
+    );
+
+    // -------------------------------------------------------------------------
+    // Part B: DashboardCatalogPage (Bug 4 onSaved handling + Bug 5 409 refresh
+    //         on handleToggleAvailable / handleBulkSetAvailability / handleUpdateStock
+    //         while preserving drafts)
+    // -------------------------------------------------------------------------
+    const pageHarness = createStatefulHarness();
+    let serverItemsState: CatalogItem[] = [
+      {
+        ...sampleItem,
+        id: 'item-1',
+        price: 35000,
+        stock_quantity: 5,
+        is_available: false,
+      },
+      {
+        ...sampleItem,
+        id: 'item-2',
+        name_i18n: { vi: 'Bạc xỉu', en: 'White Coffee' },
+        price: 40000,
+        stock_quantity: 5,
+        is_available: true,
+      },
+    ];
+    let catalogGetCount = 0;
+    const postPayloads: Array<Record<string, unknown>> = [];
+    let nextPostResponse: { status: number; body: Record<string, unknown> } = {
+      status: 409,
+      body: {
+        error: 'Món đang có tồn kho bằng 0 nên không thể bật còn hàng.',
+        code: 'ZERO_STOCK_CANNOT_MARK_AVAILABLE',
+      },
+    };
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method || init.method === 'GET') {
+        catalogGetCount++;
+        return new Response(
+          JSON.stringify({
+            categories: [sampleCategory],
+            items: serverItemsState,
+            ownerPlan: 'premium',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      const body = init.body ? JSON.parse(String(init.body)) : {};
+      postPayloads.push(body);
+      return new Response(JSON.stringify(nextPostResponse.body), {
+        status: nextPostResponse.status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const QuickItemRowSymbol = 'QuickItemRow';
+    const TranslationEditorModalSymbol = 'TranslationEditorModal';
+    const dashboardCatalogReal = await import('@/lib/dashboard-catalog');
+    const catalogPaginationReal = await import('@/lib/catalog-pagination');
+    const catalogExcelReal = await import('@/lib/catalog-excel');
+    const planLimitsReal = await import('@/lib/plan-limits');
+
+    const activeShopStub = {
+      id: 'shop-test',
+      name: 'Test Shop',
+      vertical: 'fnb',
+    };
+    const activeMembershipStub = {
+      id: 'mem-1',
+      shop_id: 'shop-test',
+      user_id: 'user-1',
+      role: 'owner',
+      is_active: true,
+      permissions: ['catalog.manage', 'inventory.adjust', 'inventory.view'],
+    };
+    const profileStub = { id: 'user-1', plan: 'premium' };
+    const getAuthHeadersStub = (h?: Record<string, string>) => h || {};
+
+    const { default: CatalogPage } = loadComponentModule<{
+      default: () => VNode | null;
+    }>('src/app/(dashboard)/dashboard/catalog/page.tsx', pageHarness.reactMock, {
+      'next/link': { default: 'Link' },
+      'lucide-react': lucideStub,
+      '@/lib/auth-session': { getAuthHeaders: getAuthHeadersStub },
+      '@/lib/dashboard-context': {
+        useDashboard: () => ({
+          activeShop: activeShopStub,
+          activeMembership: activeMembershipStub,
+          profile: profileStub,
+        }),
+      },
+      '@/lib/dashboard-nav': { membershipHasPermission: () => true },
+      '@/lib/plan-limits': planLimitsReal,
+      '@/components/dashboard/QuickItemRow': { QuickItemRow: QuickItemRowSymbol },
+      '@/components/dashboard/TranslationEditorModal': {
+        TranslationEditorModal: TranslationEditorModalSymbol,
+      },
+      '@/components/ui/AppI18nProvider': i18nStub,
+      '@/components/ui/ConfirmDialog': {
+        useConfirmDialog: () => ({
+          confirm: async () => true,
+          confirmDialog: null,
+        }),
+      },
+      '@/lib/catalog-pagination': catalogPaginationReal,
+      '@/lib/catalog-excel': catalogExcelReal,
+      '@/components/dashboard/CatalogExcelImportModal': {
+        CatalogExcelImportModal: 'CatalogExcelImportModal',
+      },
+      '@/lib/dashboard-catalog': dashboardCatalogReal,
+    });
+
+    // Initial render triggers loadCatalog()
+    let pageTree = pageHarness.render(CatalogPage, {});
+    await new Promise((r) => setTimeout(r, 10));
+    pageTree = pageHarness.render(CatalogPage, {});
+    assert.equal(catalogGetCount, 1, 'Initial mount must load catalog once');
+
+    // User enters a category name draft and selects both items + enters a bulk price draft
+    const catDraftInput = findNodes(
+      pageTree,
+      (n) =>
+        n.type === 'input' &&
+        typeof n.props.placeholder === 'string' &&
+        n.props.placeholder.includes('danh mục mới')
+    )[0];
+    assert.ok(catDraftInput, 'Category creation draft input must exist');
+    (catDraftInput.props.onChange as (e: unknown) => void)({
+      target: { value: 'Món tráng miệng' },
+    });
+
+    let rowNodes = findNodes(pageTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(rowNodes.length, 2, 'Both catalog items must render');
+    (
+      rowNodes[0].props.onToggleSelect as (id: string, next: boolean) => void
+    )('item-1', true);
+    (
+      rowNodes[1].props.onToggleSelect as (id: string, next: boolean) => void
+    )('item-2', true);
+
+    pageTree = pageHarness.render(CatalogPage, {});
+    const bulkPriceInput = findNodes(
+      pageTree,
+      (n) => n.props['data-testid'] === 'catalog-bulk-price-input'
+    )[0];
+    assert.ok(bulkPriceInput, 'Bulk price input must render when items are selected');
+    (bulkPriceInput.props.onChange as (e: unknown) => void)({
+      target: { value: '49000' },
+    });
+
+    // 1. Bug 5a: Single-row handleToggleAvailable on item-1 fails with 409 ZERO_STOCK_CANNOT_MARK_AVAILABLE
+    //    because server stock became 0 -> must reload catalog from server and preserve drafts!
+    serverItemsState = [
+      { ...serverItemsState[0], stock_quantity: 0, is_available: false },
+      serverItemsState[1],
+    ];
+    rowNodes = findNodes(pageTree, (n) => n.type === QuickItemRowSymbol);
+    const toggleOk = await (
+      rowNodes[0].props.onToggleAvailable as (
+        item: CatalogItem,
+        next: boolean
+      ) => Promise<boolean>
+    )(rowNodes[0].props.item as CatalogItem, true);
+    assert.equal(toggleOk, false);
+    await new Promise((r) => setTimeout(r, 10));
+    pageTree = pageHarness.render(CatalogPage, {});
+
+    assert.equal(
+      catalogGetCount,
+      2,
+      'Bug 5 regression: handleToggleAvailable must call loadCatalog(true) on HTTP 409'
+    );
+    rowNodes = findNodes(pageTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(
+      (rowNodes[0].props.item as CatalogItem).stock_quantity,
+      0,
+      'Refreshed item-1 must show canonical server stock_quantity=0'
+    );
+
+    // 2. Bug 5b: Bulk handleBulkSetAvailability fails with 409 ZERO_STOCK_CANNOT_MARK_AVAILABLE
+    //    while item-2 was concurrently updated on the server to stock_quantity=1 -> must reload catalog and preserve bulk drafts!
+    serverItemsState = [
+      serverItemsState[0],
+      { ...serverItemsState[1], stock_quantity: 1, price: 42000 },
+    ];
+    const bulkAvailBtn = findNodes(
+      pageTree,
+      (n) => n.props['data-testid'] === 'catalog-bulk-available-btn'
+    )[0];
+    assert.ok(bulkAvailBtn, 'Bulk mark-available button must exist');
+    await (bulkAvailBtn.props.onClick as () => Promise<void>)();
+    await new Promise((r) => setTimeout(r, 10));
+    pageTree = pageHarness.render(CatalogPage, {});
+
+    assert.equal(
+      catalogGetCount,
+      3,
+      'Bug 5 regression: handleBulkSetAvailability must call loadCatalog(true) on HTTP 409'
+    );
+    rowNodes = findNodes(pageTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(
+      (rowNodes[1].props.item as CatalogItem).stock_quantity,
+      1,
+      'Refreshed item-2 must show canonical server stock_quantity=1 after bulk 409 reload'
+    );
+
+    // Verify all user drafts (category draft, bulk selection, bulk price input) are still intact!
+    const catDraftAfterBulk409 = findNodes(
+      pageTree,
+      (n) =>
+        n.type === 'input' &&
+        typeof n.props.placeholder === 'string' &&
+        n.props.placeholder.includes('danh mục mới')
+    )[0];
+    assert.equal(
+      catDraftAfterBulk409.props.value,
+      'Món tráng miệng',
+      'Category draft must be preserved across 409 conflict reloads'
+    );
+    const bulkPriceAfterBulk409 = findNodes(
+      pageTree,
+      (n) => n.props['data-testid'] === 'catalog-bulk-price-input'
+    )[0];
+    assert.equal(
+      bulkPriceAfterBulk409.props.value,
+      '49000',
+      'Bulk price draft and item selection must be preserved across 409 conflict reloads'
+    );
+
+    // 3. Bug 5c: handleUpdateStock on 409 STOCK_CONFLICT must rollback BEFORE loadCatalog(true)
+    //    so fresh server stock_quantity=3 is NOT clobbered by rollbackItem!
+    nextPostResponse = {
+      status: 409,
+      body: {
+        error: 'Tồn kho của món đã thay đổi bởi thao tác khác.',
+        code: 'STOCK_CONFLICT',
+      },
+    };
+    serverItemsState = [
+      serverItemsState[0],
+      { ...serverItemsState[1], stock_quantity: 3, is_available: true },
+    ];
+    const stockOk = await (
+      rowNodes[1].props.onUpdateStock as (
+        item: CatalogItem,
+        nextStock: number | null
+      ) => Promise<boolean>
+    )(rowNodes[1].props.item as CatalogItem, 15);
+    assert.equal(stockOk, false);
+    await new Promise((r) => setTimeout(r, 10));
+    pageTree = pageHarness.render(CatalogPage, {});
+
+    assert.equal(catalogGetCount, 4);
+    rowNodes = findNodes(pageTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(
+      (rowNodes[1].props.item as CatalogItem).stock_quantity,
+      3,
+      'After 409 STOCK_CONFLICT on handleUpdateStock, item must reflect fresh server stock_quantity=3 rather than stale rollback value'
+    );
+
+    // 4. Bug 4 on DashboardCatalogPage: TranslationEditorModal onSaved with requestedAvailable=true
+    //    and savedItem.is_available=false must set mutationError and NOT show false-positive success toast
+    const modalNode = findNodes(
+      pageTree,
+      (n) => n.type === TranslationEditorModalSymbol
+    )[0];
+    assert.ok(modalNode, 'TranslationEditorModal node must exist on page');
+    (
+      modalNode.props.onSaved as (
+        savedItem?: CatalogItem,
+        meta?: { requestedAvailable?: boolean }
+      ) => void
+    )(
+      {
+        ...serverItemsState[0],
+        price: 55000,
+        stock_quantity: 0,
+        is_available: false,
+      },
+      { requestedAvailable: true }
+    );
+    pageTree = pageHarness.render(CatalogPage, {});
+    const pageJson = JSON.stringify(pageTree);
+    assert.ok(
+      pageJson.includes('tồn kho bằng 0 nên máy chủ tiếp tục giữ trạng thái hết hàng'),
+      'DashboardCatalogPage must show mutation error banner when modal save kept item sold out due to 0 stock'
+    );
+    assert.ok(
+      !pageJson.includes('Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!'),
+      'DashboardCatalogPage must NOT show green success toast when requested availability was rejected by 0 stock'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
