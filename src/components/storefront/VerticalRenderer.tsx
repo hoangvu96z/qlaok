@@ -13,6 +13,7 @@ import {
   getAccessibleAccentTextColor,
   getContrastTextColor,
 } from '@/lib/theme-contrast';
+import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
 
 interface VerticalRendererProps {
   vertical: BusinessVertical;
@@ -203,17 +204,13 @@ export function VerticalRenderer({
                       </div>
 
                       <div className="relative h-20 w-20 shrink-0">
-                        {item.image_url ? (
-                          <img
-                            src={item.image_url}
-                            alt={tField(item.name_i18n, locale)}
-                            className="h-20 w-20 rounded-xl object-cover bg-slate-100 border border-slate-100"
-                          />
-                        ) : (
-                          <div className="flex h-20 w-20 items-center justify-center rounded-xl bg-slate-100 text-xl">
-                            🍜
-                          </div>
-                        )}
+                        <StorefrontProductImage
+                          src={item.image_url}
+                          alt={tField(item.name_i18n, locale)}
+                          vertical={vertical}
+                          className="h-20 w-20 rounded-xl object-cover bg-slate-100 border border-slate-100"
+                          emojiClassName="flex h-20 w-20 items-center justify-center rounded-xl bg-slate-100 text-xl"
+                        />
                       </div>
                       </button>
                       {!unavailable && (
@@ -361,17 +358,13 @@ export function VerticalRenderer({
                       }`}
                     >
                       <div className="relative aspect-square w-full bg-slate-100 overflow-hidden">
-                        {item.image_url ? (
-                          <img
-                            src={item.image_url}
-                            alt={tField(item.name_i18n, locale)}
-                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-3xl">
-                            {vertical === 'fnb' ? '🍜' : vertical === 'service' ? '💆‍♀️' : '🛍️'}
-                          </div>
-                        )}
+                        <StorefrontProductImage
+                          src={item.image_url}
+                          alt={tField(item.name_i18n, locale)}
+                          vertical={vertical}
+                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          emojiClassName="flex h-full w-full items-center justify-center text-3xl"
+                        />
                         {item.is_featured && (
                           <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white shadow-xs">
                             {labels.bestSeller}

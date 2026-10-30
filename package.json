@@ -20,7 +20,7 @@
     "test:unit": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/unit.test.ts tests/supabase-readiness-cache.test.ts tests/check-order-realtime.test.mjs tests/e2e-safety.test.mjs tests/e2e-supabase-rest-proxy.test.mjs",
     "test:e2e": "node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/e2e.test.mjs",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:review": "node --experimental-strip-types --import ./tests/register-ts.mjs --import ./tests/tsx-review-loader.mjs --test --test-concurrency=1 tests/*review.test.ts tests/shop-permissions-and-rls.test.ts",
+    "test:review": "node --experimental-strip-types --import ./tests/register-ts.mjs --import ./tests/tsx-review-loader.mjs --test --test-concurrency=1 tests/*review.test.ts tests/shop-permissions-and-rls.test.ts tests/storefront-image-fallback.test.mjs",
     "test:sql": "node --test tests/sql-review.test.mjs tests/base64-cleanup-review.test.mjs tests/self-hosted-migration-runner.test.mjs"
   },
   "dependencies": {

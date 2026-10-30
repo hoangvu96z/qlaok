@@ -20,6 +20,7 @@ import {
   getAccessibleAccentTextColor,
   getContrastTextColor,
 } from '@/lib/theme-contrast';
+import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
 
 interface ItemDetailDrawerProps {
   item: CatalogItem | null;
@@ -142,10 +143,12 @@ export function ItemDetailDrawer({
             {/* Header / Image */}
             {item.image_url ? (
               <div className="relative h-52 w-full shrink-0 bg-slate-100">
-                <img
+                <StorefrontProductImage
                   src={item.image_url}
                   alt={tField(item.name_i18n, locale)}
+                  vertical={vertical}
                   className="h-full w-full object-cover"
+                  emojiClassName="flex h-full w-full items-center justify-center text-5xl bg-slate-100"
                 />
                 <button
                   type="button"
