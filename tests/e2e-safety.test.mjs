@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import { canRunMutatingE2e, resolveE2eBaseUrl } from './e2e-safety.mjs';
 
@@ -40,4 +41,13 @@ test('mutating E2E tests require both explicit disposable-DB flags', () => {
     }),
     true
   );
+});
+
+test('production deploy does not copy ignored local database data through /tmp', () => {
+  const workflow = fs.readFileSync(
+    new URL('../.github/workflows/deploy.yml', import.meta.url),
+    'utf8'
+  );
+
+  assert.doesNotMatch(workflow, /\.local-db|qlaok_local_db_backup/);
 });
