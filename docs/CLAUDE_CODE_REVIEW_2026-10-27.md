@@ -412,6 +412,7 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 - **Vị trí:** `src/app/api/health/route.ts:57-65`
 - **Bằng chứng:** trả `aiProvider` gồm baseUrl gateway, tên model text/vision; `counts` của 6 bảng.
 - **Tác động:** trinh sát hạ tầng miễn phí; counts cho biết quy mô dữ liệu thật.
+- **Trạng thái:** đã sửa trong source; response public chỉ còn status/service/timestamp, diagnostics được giữ sau `requireSuperAdmin`. Production follow-up và regression coverage ở mục 50.
 - **Hướng sửa:** tách `/api/health` (chỉ `{status}`) khỏi `/api/health/detail` (yêu cầu `requireSuperAdmin`).
 
 #### P2-9. `tests/e2e.test.mjs` chứa URL + publishable key Supabase cloud và assert lỗi thời; CI không chạy e2e
@@ -1065,3 +1066,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - AGY Argon Low run `2026-10-30T06-45-42-006Z-033f5c80` cập nhật route, helper và hai test; AGY chạy targeted suites 19/19 và typecheck. Codex chạy lại độc lập: targeted suites 19/19, `npm run typecheck`, ESLint trên bốn file source/test, `npm run build` (41 trang) và `git diff --check` đều đạt. Build có các cảnh báo `<img>`/hook sẵn có ngoài các file sửa.
 - CodeGraph trước/sau sửa: `src/app/api/tables/floor-plan/route.ts MAX_RECORDS getShopOrders filter statuses`; `computeTableFloorPlanSummaries TableFloorPlanOrderInput tests/floor-plan-api-review.test.ts pagination range MAX_RECORDS_EXCEEDED`; sau sửa `createTableFloorPlanSummaryAccumulator computeTableFloorPlanSummaries processOrderPagesWithPagination floor-plan-api-review.test.ts table-floor-plan.test.ts`. Khu vực ảnh hưởng chỉ gồm floor-plan API, helper aggregation và hai test tương ứng.
 - Claude CLI được gọi trực tiếp ở chế độ plan theo cấu hình DeepSeek; gateway báo `unrecognized_model deepseek` và không trả review sau khoảng 30 giây. Không tính đây là review pass. Chưa chạy full `test:review`/SQL suite hoặc production verification; chưa commit/push.
+
+## 50. P2-8: khóa diagnostics của health endpoint và kiểm chứng response public (2026-10-30)
+
+- Source hiện tại gọi `requireSuperAdmin`; khách/owner vẫn nhận health status công khai nhưng không nhận `dataSource`, cấu hình environment/AI hay counts. Diagnostics cho Super Admin vẫn hoạt động. Codex xác minh production `GET /api/health` trả HTTP 200 với đúng `status`, `service`, `timestamp`; không đọc hoặc ghi dữ liệu production.
+- Thêm `tests/health-review.test.ts`: guest và owner chỉ nhận ba field công khai; Super Admin vẫn nhận đủ diagnostics và sáu count keys. Targeted test 2/2, `npm run typecheck` đạt, ESLint file test đạt.
+- CodeGraph: `src/app/api/health/route.ts GET health aiProvider counts requireSuperAdmin health review tests`; `health` search; `ensureSupabaseReadyAndSeeded setSupabaseDbClientForTests getSupabaseDbClient test route health readiness`; `codegraph status` (297 files, up-to-date); `codegraph node tests/health-review.test.ts`. Khu vực ảnh hưởng: health route contract và regression test; không đổi route/source behavior.
+- Follow-up P2-7: commit `bc92f03098a38c532c3f5b9cc8d46315e1f517ce` push main; workflow `41016611048` trên đúng SHA kết thúc `success` cho verify và deploy. Sau deploy, `/api/health` và menu shop QA đều HTTP 200.
+- P2-8 tests/docs hiện là nhóm kế tiếp chưa commit; full CI cho nhóm này chưa chạy.
