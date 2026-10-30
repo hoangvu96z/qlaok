@@ -108,15 +108,6 @@ import {
   requiresSlugChangeConfirmation,
 } from '@/lib/shop-setup-checklist';
 import {
-  buildPasswordRecoveryRedirectUrl,
-  completeMobilePasswordRecoveryWithCode,
-  completePasswordRecoverySession,
-  formatGenericPasswordRecoveryNotice,
-  parseRecoveryUrlSignals,
-  requestMobilePasswordRecovery,
-  resolveLoginAuthMode,
-} from '../mobile/src/lib/auth-recovery';
-import {
   buildPasswordRecoveryRedirectUrl as buildWebPasswordRecoveryRedirectUrl,
   completePasswordRecoverySession as completeWebPasswordRecoverySession,
   formatGenericPasswordRecoveryNotice as formatWebGenericPasswordRecoveryNotice,
@@ -3393,19 +3384,15 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     assert.deepEqual(menuPayload.posts, []);
   });
 
-  test('R.2 password recovery routes to /login?mode=reset, handles Supabase recovery sessions + updateUser, preserves mobile OTP recovery, and rejects demo/admin/custom-credential accounts', async () => {
+  test('R.2 password recovery routes to /login?mode=reset, handles Supabase recovery sessions + updateUser, and rejects demo/admin/custom-credential accounts', async () => {
     // 0. Redirect URL and URL mode/session signal resolution
-    assert.equal(
-      buildPasswordRecoveryRedirectUrl('https://qlaok.vunph.click/'),
-      'https://qlaok.vunph.click/login?mode=reset'
-    );
     assert.equal(
       buildWebPasswordRecoveryRedirectUrl('https://qlaok.com'),
       'https://qlaok.com/login?mode=reset'
     );
 
     assert.equal(
-      resolveLoginAuthMode({
+      resolveWebLoginAuthMode({
         searchParams: new URLSearchParams('mode=reset'),
       }),
       'reset'
@@ -3437,7 +3424,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     assert.equal(hashRecoverySignals.hasRecoveryCallbackSignal, true);
     assert.equal(hashRecoverySignals.accessToken, 'sb-rec-tok');
 
-    const tokenHashSignals = parseRecoveryUrlSignals({
+    const tokenHashSignals = parseWebRecoveryUrlSignals({
       searchParams: new URLSearchParams('token_hash=th_abc123&type=recovery'),
     });
     assert.equal(tokenHashSignals.isResetMode, true);
@@ -3461,36 +3448,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       'Email link is invalid or has expired'
     );
 
-    // 1. Invalid email rejected before network call
-    let called = false;
-    const invalidRes = await requestMobilePasswordRecovery({
-      email: 'not-an-email',
-      authClient: {
-        resetPasswordForEmail: async () => {
-          called = true;
-          return { data: {}, error: null };
-        },
-      },
-    });
-    assert.equal(invalidRes.ok, false);
-    if (!invalidRes.ok) {
-      assert.equal(invalidRes.reason, 'invalid_email');
-    }
-    assert.equal(called, false);
-
-    // 2. Demo & system accounts report unsupported_account
-    const demoRes = await requestMobilePasswordRecovery({
-      email: '  CHUQUAN@qlaok.vn ',
-      authClient: {
-        resetPasswordForEmail: async () => ({ data: {}, error: null }),
-      },
-    });
-    assert.equal(demoRes.ok, false);
-    if (!demoRes.ok) {
-      assert.equal(demoRes.reason, 'unsupported_account');
-    }
-
-    // 2b. Public /api/auth check_recovery cannot be used to enumerate email addresses
+    // 1. Public /api/auth check_recovery rejects demo/admin accounts and preserves privacy
     const customEmail = 'custom-cred-owner@example.com';
     const unknownEmail = 'unknown-nonexistent-owner@example.com';
     const demoCheckRes = await authPost(
@@ -3540,71 +3498,14 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     assert.doesNotMatch(customCheck.body.notice, /^Đã gửi/i);
 
     // Client helper also returns generic guidance without claiming delivery.
-    const viGeneric = formatGenericPasswordRecoveryNotice(null, 'vi');
+    const viGeneric = formatWebGenericPasswordRecoveryNotice(null, 'vi');
     const enGeneric = formatWebGenericPasswordRecoveryNotice(null, 'en');
     assert.match(viGeneric, /^Nếu email thuộc tài khoản/);
     assert.doesNotMatch(viGeneric, /^Đã gửi/i);
     assert.match(enGeneric, /^If the email belongs to an account/);
     assert.doesNotMatch(enGeneric, /^Reset instructions sent/i);
 
-    // 3. Missing authClient reports unsupported_provider
-    const noProviderRes = await requestMobilePasswordRecovery({
-      email: 'owner@example.com',
-      authClient: null,
-    });
-    assert.equal(noProviderRes.ok, false);
-    if (!noProviderRes.ok) {
-      assert.equal(noProviderRes.reason, 'unsupported_provider');
-    }
-
-    // 4. Rate-limited error classified as rate_limited
-    const rateLimitedRes = await requestMobilePasswordRecovery({
-      email: 'owner@example.com',
-      authClient: {
-        resetPasswordForEmail: async () => ({
-          data: null,
-          error: {
-            message:
-              'For security purposes, you can only request this once every 60 seconds',
-            status: 429,
-          },
-        }),
-      },
-    });
-    assert.equal(rateLimitedRes.ok, false);
-    if (!rateLimitedRes.ok) {
-      assert.equal(rateLimitedRes.reason, 'rate_limited');
-    }
-
-    // 5. Valid recovery request passes normalized email and redirectTo pointing to /login?mode=reset
-    let capturedEmail = '';
-    let capturedRedirect = '';
-    const redirectUrl = buildPasswordRecoveryRedirectUrl(
-      'https://qlaok.vunph.click'
-    );
-    const okRes = await requestMobilePasswordRecovery({
-      email: '  Owner.Cafe@Example.com ',
-      redirectTo: redirectUrl,
-      authClient: {
-        resetPasswordForEmail: async (email, options) => {
-          capturedEmail = email;
-          capturedRedirect = options?.redirectTo || '';
-          return { data: {}, error: null };
-        },
-      },
-    });
-    assert.equal(okRes.ok, true);
-    if (okRes.ok) {
-      assert.equal(okRes.email, 'owner.cafe@example.com');
-      assert.equal(okRes.redirectTo, 'https://qlaok.vunph.click/login?mode=reset');
-    }
-    assert.equal(capturedEmail, 'owner.cafe@example.com');
-    assert.equal(
-      capturedRedirect,
-      'https://qlaok.vunph.click/login?mode=reset'
-    );
-
-    // 6. Completing recovery from an active Supabase PASSWORD_RECOVERY session validates inputs and calls updateUser
+    // 2. Completing recovery from an active Supabase PASSWORD_RECOVERY session validates inputs and calls updateUser
     const mismatchSessionRes = await completeWebPasswordRecoverySession({
       email: 'owner.cafe@example.com',
       newPassword: 'newpassword123',
@@ -3619,7 +3520,7 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
     }
 
     let sessionUpdatedPassword = '';
-    const sessionCompletedRes = await completePasswordRecoverySession({
+    const sessionCompletedRes = await completeWebPasswordRecoverySession({
       newPassword: 'updatedViaSessionLink!',
       confirmPassword: 'updatedViaSessionLink!',
       authClient: {
@@ -3637,52 +3538,6 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       assert.equal(sessionCompletedRes.email, 'owner.cafe@example.com');
     }
     assert.equal(sessionUpdatedPassword, 'updatedViaSessionLink!');
-
-    // 7. Completing recovery with OTP code + new password validates inputs and updates password
-    const shortCodeRes = await completeMobilePasswordRecoveryWithCode({
-      email: 'owner.cafe@example.com',
-      code: '123',
-      newPassword: 'newpassword123',
-      authClient: {},
-    });
-    assert.equal(shortCodeRes.ok, false);
-    if (!shortCodeRes.ok) {
-      assert.equal(shortCodeRes.reason, 'invalid_code');
-    }
-
-    const weakPassRes = await completeMobilePasswordRecoveryWithCode({
-      email: 'owner.cafe@example.com',
-      code: '123456',
-      newPassword: '123',
-      authClient: {},
-    });
-    assert.equal(weakPassRes.ok, false);
-    if (!weakPassRes.ok) {
-      assert.equal(weakPassRes.reason, 'weak_password');
-    }
-
-    let verifiedOtpToken = '';
-    let updatedPassword = '';
-    const completedRes = await completeMobilePasswordRecoveryWithCode({
-      email: 'Owner.Cafe@Example.com',
-      code: ' 654321 ',
-      newPassword: 'strongNewPassword!',
-      confirmPassword: 'strongNewPassword!',
-      authClient: {
-        verifyOtp: async (params) => {
-          assert.equal(params.type, 'recovery');
-          verifiedOtpToken = 'token' in params ? params.token : '';
-          return { data: { session: { access_token: 'tok-1' } }, error: null };
-        },
-        updateUser: async ({ password }) => {
-          updatedPassword = password;
-          return { data: {}, error: null };
-        },
-      },
-    });
-    assert.equal(completedRes.ok, true);
-    assert.equal(verifiedOtpToken, '654321');
-    assert.equal(updatedPassword, 'strongNewPassword!');
   });
 
   test('R.3 evaluateShopSetupChecklist derives 6/6 completion purely from persisted store, opening_hours_confirmed, payment, catalog, table, and publish state', () => {

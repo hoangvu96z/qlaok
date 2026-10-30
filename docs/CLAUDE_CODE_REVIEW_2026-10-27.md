@@ -707,7 +707,7 @@ Sắp theo **rủi ro mất dữ liệu/sai tiền/phơi bí mật trước**, t
 - **P2 migration runner (3.5):** runner tự host giờ dùng `--single-transaction` cho migration thường; hai migration lịch sử tự mở transaction được nhận diện và giữ nguyên byte/checksum. Bộ test runner xác nhận cả SQL thường, transaction tường minh và `DO` block.
 - **P3-1–P3-25, P3-28:** đã xử lý các mục cấu hình, repo hygiene, fallback shop, unique mã đơn (migration mới có preflight và retry khi collision), giới hạn OCR, log lỗi an toàn, store write, QR secret, lỗi auth, tài liệu, quyền in, locale/email, push/OIDC state và phản hồi catalog mobile.
 - **P3-7:** giữ dưới dạng khuyến nghị kiến trúc; các route mutation đã được rà guard, chưa có lỗi route cụ thể để sửa bằng middleware toàn cục.
-- **P3-26:** file mobile không được app runtime import, nhưng `tests/unit.test.ts` còn import các helper của nó. Giữ file để không xóa API đang được test.
+- **P3-26:** file mobile không được app runtime import (mobile dùng luồng Zitadel tùy chỉnh qua `mobile/src/components/AuthScreen.tsx`); file dead helper đã được xóa hoàn toàn trong mục 73 và các test chuyển sang dùng `src/lib/auth-recovery.ts` của web.
 - **P3-27:** chưa thể bật push thật vì `mobile/app.json` không có `extra.eas.projectId` và repo/CLI hiện không cung cấp ID để điền. Không tự tạo hoặc đoán ID.
 - **P3-29:** kết luận “khách EN thấy tiêu đề tiếng Việt” không khớp renderer hiện tại. Storefront derive title/subtitle theo locale khác `vi`; mobile preview cũng đã có bản dịch cho 8 locale. Lượt rà 30/10 trích resolver ra helper và thêm regression tests cho đường render này; không đổi nội dung giao diện.
 
@@ -734,7 +734,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 
 **Claude CLI:** đã gọi trực tiếp theo yêu cầu, không liệt kê model. CLI hiện cấu hình backend DeepSeek; dù có in cảnh báo `unrecognized_model`, nó vẫn tiếp tục chạy và tạo nhiều tool event/thay đổi. Đã dừng sau 361 lượt khi tiếp tục quét và khởi chạy lại kiểm tra mà không kết thúc; không có bản tổng kết cuối từ CLI. Các thay đổi còn lại được Codex đọc lại, sửa lỗi regression tìm thấy và xác minh độc lập bằng các lệnh trên; không xem lời khẳng định chưa kiểm chứng của CLI là bằng chứng.
 
-**Còn cần thao tác ngoài source:** rotate key gateway AI đã từng nằm trong git history; cài systemd backup timer trên VPS; cung cấp EAS project ID thật để bật push. Lúc chạy các check local chưa migrate/deploy production; kết quả lần push sau được ghi ở mục 12. `P3-7` vẫn là khuyến nghị kiến trúc; `P3-26` được giữ vì test còn import helper; `P3-29` là kết luận không đúng với renderer storefront hiện tại, như đã giải thích ở trên.
+**Còn cần thao tác ngoài source:** rotate key gateway AI đã từng nằm trong git history; cài systemd backup timer trên VPS; cung cấp EAS project ID thật để bật push. Lúc chạy các check local chưa migrate/deploy production; kết quả lần push sau được ghi ở mục 12. `P3-7` vẫn là khuyến nghị kiến trúc; `P3-26` đã đóng bằng cách xóa helper mobile chết và cập nhật test/docs; `P3-29` là kết luận không đúng với renderer storefront hiện tại, như đã giải thích ở trên.
 
 ## 11. Follow-up QA danh mục (2026-10-28)
 
@@ -1273,4 +1273,28 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Regression harness mô phỏng chuyển shop khi hộp xóa đang mở (không gửi POST) và khi request availability đang bay; xác nhận response cũ không đổi `is_available` của món shop mới và không hiện success toast (`tests/catalog-dashboard-review.test.ts:1349-1538`). Predicate mới `isCurrentCatalogShop` có test cho ID khớp, khác, rỗng và unset (`src/lib/dashboard-catalog.ts:33-42`; `tests/catalog-dashboard-review.test.ts:69-112`).
 - CodeGraph thực tế: `codegraph status`; `codegraph explore "POST /api/auth demo_login owner session production gate explicit flag legacy login"`; `codegraph explore "catalog page shop switch activeShopIdRef requestSeq stale response mutation submit shop_id"`; `codegraph node src/app/api/auth/route.ts --offset 620 --limit 250`; `codegraph node tests/zitadel-oidc-auth-review.test.ts --offset 1950 --limit 90`; `codegraph node 'src/app/(dashboard)/dashboard/catalog/page.tsx' --offset 210 --limit 220`; `codegraph node 'src/app/(dashboard)/dashboard/catalog/page.tsx' --offset 430 --limit 370`; `codegraph node 'src/app/(dashboard)/dashboard/catalog/page.tsx' --offset 1117 --limit 360`; `codegraph node 'src/app/(dashboard)/dashboard/catalog/page.tsx' --offset 1451 --limit 300`; `codegraph node src/app/api/catalog/route.ts --offset 495 --limit 260`; `codegraph node tests/catalog-dashboard-review.test.ts --offset 1 --limit 260`; `codegraph callers isCurrentCatalogShop`; `codegraph affected 'src/app/(dashboard)/dashboard/catalog/page.tsx' src/lib/dashboard-catalog.ts tests/catalog-dashboard-review.test.ts`; `codegraph sync`. Index up-to-date; engine warning remains.
 - AGY Flash Low implementation run `2026-10-30T15-07-39-981Z-046cfc54`; Codex independently reviewed diff and strengthened the stale-response assertion. Checks: catalog dashboard test **12/12 PASS**, catalog API/Excel test **37/37 PASS**, full `npm run test:review` **385/385 PASS**, `npm run typecheck` PASS, ESLint on the three changed code files PASS, `git diff --check` PASS.
-- Production and live-browser behavior were not re-tested for these findings. The regression harness covers the confirmation and in-flight response cases; it does not simulate a real browser/network scheduler. No database writes or production calls were made in this review.
+- **Follow-up live-browser attempt (2026-10-30) — inconclusive:** the synthetic shop B catalog GET did not match the Playwright route handler, reached the actual catalog API, and returned `404`; the browser scheduler race was therefore not exercised. The QA login's auth POSTs were allowed, but no catalog POST/PATCH/DELETE or database writes occurred. Production mutation behavior remains unverified; P1-7 is currently supported by source and regression-harness tests only. The browser harness needs its catalog route interception corrected before this live-browser check can close.
+
+## 73. Đóng dứt điểm P3-26: xóa helper mobile dead code và cập nhật recovery test (2026-10-30)
+
+- **Nguyên nhân và thực trạng:** `mobile/src/lib/auth-recovery.ts` vốn là dead code (466 dòng, 0 importer trong ứng dụng mobile runtime). Ứng dụng mobile sử dụng luồng Zitadel tùy chỉnh qua `mobile/src/components/AuthScreen.tsx` (`defaultOwnerResetRequest` gọi endpoint `/api/auth/login-ui`). Module này trước đó được giữ lại chỉ vì `tests/unit.test.ts` (test R.2) còn import và assert các helper OTP/request của nó.
+- **Thay đổi thực hiện:**
+  - Xóa hoàn toàn file dead code `mobile/src/lib/auth-recovery.ts`.
+  - Cập nhật `tests/unit.test.ts`: gỡ bỏ import từ module mobile; loại bỏ các assertion/call chỉ phục vụ helper mobile cũ (phân giải URL mobile, `requestMobilePasswordRecovery`, `completeMobilePasswordRecoveryWithCode`); giữ nguyên toàn bộ assertion helper của web (`src/lib/auth-recovery.ts`) và các test bảo vệ quyền riêng tư/chống enumeration email của API `POST /api/auth` action `check_recovery`; chuyển assertion thông báo generic tiếng Việt sang gọi web helper `formatWebGenericPasswordRecoveryNotice`.
+  - Cập nhật tiêu đề test R.2 phản ánh chính xác phạm vi test web và API hiện tại: không còn tuyên bố kiểm thử luồng mobile OTP recovery.
+  - Cập nhật mục 2 tại `docs/APP_REVIEW.md` và các ghi chú tóm tắt P3-26 trong `docs/CLAUDE_CODE_REVIEW_2026-10-27.md`.
+- **CodeGraph thực tế:**
+  - `codegraph status`
+  - `codegraph explore "mobile AuthScreen defaultOwnerResetRequest Zitadel auth-recovery imports"`
+  - `codegraph node mobile/src/lib/auth-recovery.ts`
+  - `codegraph node src/lib/auth-recovery.ts`
+  - `codegraph callers PASSWORD_RECOVERY_LOGIN_MODE`
+  - `codegraph callers completeMobilePasswordRecoveryWithCode`
+  - `codegraph callers requestMobilePasswordRecovery`
+  - `codegraph callers parseRecoveryUrlSignals`
+  - `codegraph callers formatGenericPasswordRecoveryNotice`
+  - `codegraph affected mobile/src/lib/auth-recovery.ts tests/unit.test.ts`
+  - `codegraph sync`
+- **Vùng ảnh hưởng:** `mobile/src/lib/auth-recovery.ts` (xóa), `tests/unit.test.ts` (test R.2), tài liệu đánh giá và review (`docs/APP_REVIEW.md`, `docs/CLAUDE_CODE_REVIEW_2026-10-27.md`).
+- **Checks Codex chạy độc lập:** `npm run test:unit` **140/140 PASS**; `npm run test:review` **385/385 PASS**; `npm --prefix mobile test` **118/118 PASS**; `npm run typecheck` PASS; `npm --prefix mobile run typecheck` PASS; `npm run build` PASS; `npx eslint tests/unit.test.ts` PASS; `git diff --check` PASS. Build chỉ còn các warning lint ảnh/React hook hiện có ở file khác.
+- **Unverified items:** Không chạy app mobile trên thiết bị và không gọi production auth; runtime auth không đổi. P1-7 live-browser scheduler race vẫn riêng lẻ chưa xác minh, như đã ghi ở mục 72.
