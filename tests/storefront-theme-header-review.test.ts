@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   parseRgb,
   getHexLuminance,
@@ -8,6 +9,11 @@ import {
   getAccessibleAccentTextColor,
   getContrastRatio,
 } from '../src/lib/theme-contrast';
+
+const storefrontDoorPageSource = readFileSync(
+  new URL('../src/app/(storefront)/s/[slug]/page.tsx', import.meta.url),
+  'utf8'
+);
 
 test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() strings', () => {
   assert.deepEqual(parseRgb('#fff'), [255, 255, 255]);
@@ -102,4 +108,19 @@ test('theme-contrast: fallback behavior for invalid or missing colors', () => {
   assert.equal(isLightColor(''), true);
   assert.equal(isLightColor('not-a-color'), true);
   assert.equal(getContrastTextColor(null), '#020617');
+});
+
+test('storefront door primary-color surfaces use a computed readable foreground', () => {
+  assert.match(storefrontDoorPageSource, /getContrastTextColor\(primaryColor\)/);
+  assert.equal(
+    (storefrontDoorPageSource.match(
+      /backgroundColor: primaryColor, color: primaryTextColor/g
+    ) || []).length,
+    4,
+    'logo badges and both menu CTAs must use the foreground computed for the selected shop color'
+  );
+  assert.doesNotMatch(
+    storefrontDoorPageSource,
+    /text-white(?:\/\d+)?[^\n]*\n\s*style=\{\{ backgroundColor: primaryColor/
+  );
 });

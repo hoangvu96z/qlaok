@@ -26,6 +26,7 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import { getContrastTextColor } from '@/lib/theme-contrast';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { WifiBadge } from '@/components/storefront/WifiBadge';
 import {
@@ -185,6 +186,7 @@ export default function StorefrontDoorPage() {
   }
 
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const primaryTextColor = getContrastTextColor(primaryColor);
   const openStatus = checkShopOpenStatus(shop.opening_hours);
   const bgProps = getStorefrontBackgroundProps(shop);
   const hasActivePopup = Boolean(
@@ -219,8 +221,8 @@ export default function StorefrontDoorPage() {
               className="flex items-center gap-1.5 text-xs font-extrabold tracking-tight text-slate-900"
             >
               <span
-                className="flex h-6 w-6 items-center justify-center rounded-lg text-white text-[11px] font-black"
-                style={{ backgroundColor: primaryColor }}
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-[11px] font-black"
+                style={{ backgroundColor: primaryColor, color: primaryTextColor }}
               >
                 Q
               </span>
@@ -301,8 +303,8 @@ export default function StorefrontDoorPage() {
             />
           ) : (
             <div
-              className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border-2 border-white text-2xl font-black text-white shadow-lg"
-              style={{ backgroundColor: primaryColor }}
+              className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border-2 border-white text-2xl font-black shadow-lg"
+              style={{ backgroundColor: primaryColor, color: primaryTextColor }}
             >
               {shop.name.slice(0, 1)}
             </div>
@@ -339,8 +341,8 @@ export default function StorefrontDoorPage() {
         {/* Primary CTA to Menu / Price List */}
         <Link
           href={`/s/${shop.slug}/menu?src=door&lang=${locale}`}
-          style={{ backgroundColor: primaryColor }}
-          className="flex items-center justify-between rounded-2xl p-4 text-white shadow-lg transition-transform active:scale-98"
+          style={{ backgroundColor: primaryColor, color: primaryTextColor }}
+          className="flex items-center justify-between rounded-2xl p-4 shadow-lg transition-transform active:scale-98"
         >
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/20 backdrop-blur-xs">
@@ -350,7 +352,7 @@ export default function StorefrontDoorPage() {
               <span className="block text-base font-black tracking-tight">
                 {mainCtaLabel}
               </span>
-                <span className="block text-xs text-white/85">
+                <span className="block text-xs">
                   {allowedLangs
                     .map((lang) =>
                       ({
@@ -500,8 +502,8 @@ export default function StorefrontDoorPage() {
         <div className="w-full max-w-md pointer-events-auto">
           <Link
             href={`/s/${shop.slug}/menu?src=door&lang=${locale}`}
-            style={{ backgroundColor: primaryColor }}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 px-5 text-sm font-black text-white shadow-xl ring-2 ring-white"
+            style={{ backgroundColor: primaryColor, color: primaryTextColor }}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 px-5 text-sm font-black shadow-xl ring-2 ring-white"
           >
             <Sparkles className="h-4 w-4" />
             <span>{mainCtaLabel}</span>
