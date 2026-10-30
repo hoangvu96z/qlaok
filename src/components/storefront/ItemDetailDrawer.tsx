@@ -231,12 +231,17 @@ export function ItemDetailDrawer({
                       ? tField(group.desc_i18n, locale)
                       : '';
                     return (
-                      <div
+                      <fieldset
                         key={group.id}
+                        aria-describedby={
+                          groupDesc
+                            ? `storefront-option-description-${item.id}-${group.id}`
+                            : undefined
+                        }
                         className="rounded-2xl border border-slate-200 bg-slate-50/40 p-3.5 space-y-2.5"
                       >
-                        <div className="space-y-0.5">
-                          <div className="flex items-center justify-between gap-2">
+                        <legend className="w-full">
+                          <span className="flex items-center justify-between gap-2">
                             <span className="text-xs font-extrabold uppercase tracking-wide text-slate-800">
                               {tField(group.name_i18n, locale)}
                             </span>
@@ -249,13 +254,16 @@ export function ItemDetailDrawer({
                                 {labels.optionalBadge}
                               </span>
                             )}
-                          </div>
-                          {groupDesc && (
-                            <p className="text-[11px] text-slate-500">
-                              {groupDesc}
-                            </p>
-                          )}
-                        </div>
+                          </span>
+                        </legend>
+                        {groupDesc && (
+                          <p
+                            id={`storefront-option-description-${item.id}-${group.id}`}
+                            className="text-[11px] text-slate-500"
+                          >
+                            {groupDesc}
+                          </p>
+                        )}
 
                         <div className="grid grid-cols-1 gap-2">
                           {group.choices.map((choice) => {
@@ -265,65 +273,80 @@ export function ItemDetailDrawer({
                             const choiceDesc = choice.desc_i18n
                               ? tField(choice.desc_i18n, locale)
                               : '';
+                            const inputId = `storefront-option-${item.id}-${group.id}-${choice.id}`;
                             return (
-                              <button
-                                key={choice.id}
-                                type="button"
-                                onClick={() =>
-                                  toggleChoice(group.id, choice, group.required)
-                                }
-                                className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-all ${
-                                  isSelected
-                                    ? 'border-emerald-600 bg-emerald-50 text-slate-900 font-semibold shadow-2xs'
-                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                                }`}
-                              >
-                                <div className="flex items-start gap-2.5 min-w-0">
-                                  <div
-                                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${
-                                      group.required
-                                        ? 'rounded-full'
-                                        : 'rounded-md'
-                                    } border ${
-                                      isSelected
-                                        ? 'border-emerald-600 bg-emerald-600 text-white'
-                                        : 'border-slate-300 bg-white'
-                                    }`}
-                                  >
-                                    {isSelected && (
-                                      <Check className="h-2.5 w-2.5" />
-                                    )}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <span className="block text-xs font-bold text-slate-900">
-                                      {tField(choice.label_i18n, locale)}
+                              <div key={choice.id}>
+                                <input
+                                  id={inputId}
+                                  type={group.required ? 'radio' : 'checkbox'}
+                                  name={
+                                    group.required
+                                      ? `storefront-option-${item.id}-${group.id}`
+                                      : undefined
+                                  }
+                                  checked={isSelected}
+                                  required={group.required}
+                                  onChange={() =>
+                                    toggleChoice(group.id, choice, group.required)
+                                  }
+                                  className="peer sr-only"
+                                />
+                                <label
+                                  htmlFor={inputId}
+                                  className={`flex cursor-pointer items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-all peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-600 peer-focus-visible:ring-offset-2 ${
+                                    isSelected
+                                      ? 'border-emerald-600 bg-emerald-50 text-slate-900 font-semibold shadow-2xs'
+                                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <span className="flex items-start gap-2.5 min-w-0">
+                                    <span
+                                      aria-hidden="true"
+                                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${
+                                        group.required
+                                          ? 'rounded-full'
+                                          : 'rounded-md'
+                                      } border ${
+                                        isSelected
+                                          ? 'border-emerald-600 bg-emerald-600 text-white'
+                                          : 'border-slate-300 bg-white'
+                                      }`}
+                                    >
+                                      {isSelected && (
+                                        <Check className="h-2.5 w-2.5" />
+                                      )}
                                     </span>
-                                    {locale !== 'vi' && choice.label_i18n.vi && (
-                                      <span className="block text-[10px] text-slate-400">
-                                        🇻🇳 {choice.label_i18n.vi}
+                                    <span className="min-w-0">
+                                      <span className="block text-xs font-bold text-slate-900">
+                                        {tField(choice.label_i18n, locale)}
                                       </span>
-                                    )}
-                                    {choiceDesc && (
-                                      <span className="mt-0.5 block text-[11px] font-normal text-slate-500 leading-snug">
-                                        {choiceDesc}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                                {choice.extra_price > 0 ? (
-                                  <span className="shrink-0 rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-900">
-                                    +{formatCurrency(choice.extra_price, currency)}
+                                      {locale !== 'vi' && choice.label_i18n.vi && (
+                                        <span className="block text-[10px] text-slate-400">
+                                          🇻🇳 {choice.label_i18n.vi}
+                                        </span>
+                                      )}
+                                      {choiceDesc && (
+                                        <span className="mt-0.5 block text-[11px] font-normal text-slate-500 leading-snug">
+                                          {choiceDesc}
+                                        </span>
+                                      )}
+                                    </span>
                                   </span>
-                                ) : (
-                                  <span className="shrink-0 text-[10px] font-semibold text-slate-400">
-                                    +0đ
-                                  </span>
-                                )}
-                              </button>
+                                  {choice.extra_price > 0 ? (
+                                    <span className="shrink-0 rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-900">
+                                      +{formatCurrency(choice.extra_price, currency)}
+                                    </span>
+                                  ) : (
+                                    <span className="shrink-0 text-[10px] font-semibold text-slate-400">
+                                      +0đ
+                                    </span>
+                                  )}
+                                </label>
+                              </div>
                             );
                           })}
                         </div>
-                      </div>
+                      </fieldset>
                     );
                   })}
                 </div>
