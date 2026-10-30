@@ -8,6 +8,7 @@ import {
 } from '../src/components/storefront/StorefrontProductImage.tsx';
 import { ItemDetailDrawer } from '../src/components/storefront/ItemDetailDrawer.tsx';
 import { VerticalRenderer } from '../src/components/storefront/VerticalRenderer.tsx';
+import { StorefrontFlashSaleSection } from '../src/components/storefront/StorefrontCustomDecor.tsx';
 
 describe('Storefront Image Presentation Resilience', () => {
   it('maps business vertical to the correct fallback emoji', () => {
@@ -274,5 +275,49 @@ describe('Storefront Image Presentation Resilience', () => {
     // F&B list view contains img for item-1 and fnb emoji 🍜 for item-2
     assert.ok(fnbHtml.includes('src="https://example.com/product.jpg"'));
     assert.ok(fnbHtml.includes('🍜'));
+  });
+
+  it('StorefrontFlashSaleSection uses the shared image fallback for sale items', () => {
+    const flashSaleShop = {
+      id: 'shop-test',
+      vertical: 'fnb',
+      currency: 'VND',
+      theme_config: {
+        flashSale: {
+          enabled: true,
+          title: 'Ưu đãi',
+          discountType: 'percent',
+          discountValue: 25,
+          itemIds: ['sale-item'],
+        },
+      },
+    };
+    const saleItem = {
+      id: 'sale-item',
+      shop_id: 'shop-test',
+      category_id: 'cat-1',
+      sort_order: 1,
+      name_i18n: { vi: 'Món khuyến mãi' },
+      desc_i18n: { vi: '' },
+      options_json: [],
+      view_count: 0,
+      price: 100000,
+      compare_at_price: null,
+      image_url: 'https://example.com/sale-item.jpg',
+      is_available: true,
+      is_featured: false,
+    };
+    const html = renderToStaticMarkup(
+      React.createElement(StorefrontFlashSaleSection, {
+        shop: flashSaleShop,
+        items: [saleItem],
+        locale: 'vi',
+      })
+    );
+
+    assert.ok(html.includes('src="https://example.com/sale-item.jpg"'));
+    assert.ok(html.includes('data-testid="storefront-product-image"'));
+    assert.ok(html.includes('Món khuyến mãi'));
+    assert.ok(html.includes('-25%'));
   });
 });

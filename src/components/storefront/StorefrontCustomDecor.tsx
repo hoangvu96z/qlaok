@@ -31,6 +31,7 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
+import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
 
 export const BANNER_GRADIENT_MAP: Record<
   NonNullable<ShopPromoBannerConfig['bgGradient']>,
@@ -876,17 +877,13 @@ export function StorefrontFlashSaleSection({
             >
               <div>
                 <div className="relative h-24 w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 mb-2">
-                  {item.image_url ? (
-                    <img
-                      src={item.image_url}
-                      alt={itemName}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-2xl">
-                      🍲
-                    </div>
-                  )}
+                  <StorefrontProductImage
+                    src={item.image_url}
+                    alt={itemName}
+                    vertical={shop.vertical}
+                    className="h-full w-full object-cover"
+                    emojiClassName="flex h-full w-full items-center justify-center text-2xl"
+                  />
                   <span className="absolute top-1.5 left-1.5 rounded-lg bg-rose-600 px-2 py-0.5 text-[10px] font-black text-white shadow-xs">
                     {eff.discountBadge || badgeLabel}
                   </span>
