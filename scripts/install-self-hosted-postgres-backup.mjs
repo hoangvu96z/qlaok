@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_APP_ROOT = '/var/www/qlaok.vunph.click';
+// Keep this aligned with scripts/migrate-self-hosted.mjs's database fallback.
+const DEFAULT_DATABASE_NAME = 'qlaok';
 const DEFAULT_BACKUP_DIR = '/var/backups/qlaok/postgres';
 const DEFAULT_CONFIG_DIR = '/etc/qlaok';
 const DEFAULT_SYSTEMD_DIR = '/etc/systemd/system';
@@ -131,6 +133,7 @@ function readRuntimeDatabaseName(envFile, fsImpl) {
     fsImpl.closeSync(descriptor);
   }
 
+  if (occurrences === 0) return DEFAULT_DATABASE_NAME;
   if (occurrences !== 1 || !DATABASE_NAME_PATTERN.test(databaseName || '')) {
     throw new Error('Runtime config must contain a valid QLAOK_DB_NAME.');
   }

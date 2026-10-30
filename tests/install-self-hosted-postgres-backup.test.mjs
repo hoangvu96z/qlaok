@@ -244,11 +244,11 @@ test('failed initial backup leaves no verified marker, and deploy runs installer
   assert.ok(installerCall >= 0 && migrationsCall > installerCall);
 });
 
-test('installer rejects missing, duplicate, invalid database names and non-root execution', () => {
+test('installer rejects duplicate and invalid database names and non-root execution', () => {
   for (const envContent of [
-    'OTHER=value\n',
     'QLAOK_DB_NAME=qlaok\nQLAOK_DB_NAME=other\n',
     'QLAOK_DB_NAME=qlaok;drop\n',
+    'QLAOK_DB_NAME=\n',
   ]) {
     withFixture(({ paths }) => {
       fs.writeFileSync(path.join(paths.appRoot, '.env.local'), envContent);
@@ -276,6 +276,29 @@ test('installer rejects missing, duplicate, invalid database names and non-root 
     assert.throws(
       () => installSelfHostedPostgresBackup({ ...paths, isRoot: false }),
       /must run as root/
+    );
+  });
+});
+
+test('installer uses the same qlaok fallback as self-hosted migrations when the env key is absent', () => {
+  withFixture(({ paths }) => {
+    fs.writeFileSync(path.join(paths.appRoot, '.env.local'), 'OTHER_SETTING=value\n');
+    const runner = createCommandRunner();
+
+    install(paths, runner.spawnImpl);
+
+    const config = fs.readFileSync(
+      path.join(paths.configDir, 'postgres-backup.env'),
+      'utf8'
+    );
+    assert.match(config, /^QLAOK_DB_NAME=qlaok$/m);
+    assert.ok(
+      runner.calls.some(
+        (call) =>
+          call.command === 'systemctl' &&
+          call.args[0] === 'start' &&
+          call.args[1] === 'qlaok-postgres-backup.service'
+      )
     );
   });
 });
