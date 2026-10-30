@@ -496,8 +496,30 @@ test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Anal
   assert.equal(catBefore.status, 200);
   const targetItem = catBefore.data.items.find((i) => i.id === "item-fnb-1");
   assert.ok(targetItem, "Should find item-fnb-1");
-  const initialStock = targetItem.stock_quantity;
-  assert.equal(typeof initialStock, "number");
+  const originalStock =
+    typeof targetItem.stock_quantity === "number"
+      ? targetItem.stock_quantity
+      : null;
+  const initialStock = originalStock !== null && originalStock >= 2
+    ? originalStock
+    : 20;
+  if (initialStock !== originalStock) {
+    const stockSetup = await fetchJson("/api/catalog", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "upsert_item",
+        item: {
+          id: targetItem.id,
+          shop_id: shopId,
+          category_id: targetItem.category_id,
+          stock_quantity: initialStock,
+          expected_stock_quantity: originalStock,
+        },
+      }),
+    });
+    assert.equal(stockSetup.status, 200, "Should seed finite stock in the disposable database");
+    assert.equal(stockSetup.data.item.stock_quantity, initialStock);
+  }
 
   // 13.2 Guest submits a table order for 2x item-fnb-1
   const createOrderRes = await fetchJson("/api/orders", {
