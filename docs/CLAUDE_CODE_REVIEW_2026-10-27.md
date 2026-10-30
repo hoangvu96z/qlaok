@@ -892,6 +892,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
   - AGY Claude Sonnet 5.5 High triển khai theo task hẹp; quota snapshot trước run: Gemini 5% tuần, Claude/GPT 95% tuần. Codex rà diff độc lập; lượt review đầu bắt gặp assertion POS cũ còn kỳ vọng JSONL sau DB success và đã sửa assertion trước khi xác nhận suite cuối.
   - CodeGraph: `status`; `explore` cho service-request/order/admin replay và audit; `node` cho `recordOrderAuditLog`, `dbUpdateOrderStatus`, các PATCH route, helper replay và test audit/POS. Vùng ảnh hưởng: ba route PATCH, writer audit dùng chung, hai bộ test audit/POS; không đổi schema, quyền, subject/FK hoặc RPC.
   - Codex chạy: `npm run test:review` **391/391**; `npm run test:unit` **142/142**; `npm run test:sql` **13/13**; `npm run typecheck` đạt; `npm run lint` 0 lỗi, 41 cảnh báo sẵn có; ESLint các file thay đổi 0 lỗi; `npm run build` đạt, 41 route; `git diff --check` đạt. Production permission-only fix: `admin-audit.log.jsonl` đổi từ `0644` sang `0600`, giữ nguyên nội dung; sau deploy xác nhận lại `0600`.
+  - Push/deploy follow-up: commit `67ea6bfdf88b6cbbd8ab483d83b67a74f40a6b04`; GitHub Actions run `41136965855` hoàn tất `success` cho verify và deploy. Workflow reset VPS đúng SHA, build/restart PM2 và xác nhận PostgreSQL triggers, Garage, health, order realtime; smoke bên ngoài xác nhận `/` và `/api/health` đều HTTP 200.
 
 ## 27. Storefront QA: tương phản theo màu theme (2026-10-29)
 
