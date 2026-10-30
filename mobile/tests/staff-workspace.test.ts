@@ -31,6 +31,7 @@ import {
   type StaffTable,
 } from '../src/lib/staff-ordering.ts';
 import * as pushNotificationsModule from '../src/lib/push-notifications.ts';
+import * as ownerSessionModule from '../src/lib/owner-session.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOBILE_ROOT = path.resolve(__dirname, '..');
@@ -136,6 +137,12 @@ function loadMobileTsxExports<T>(
       id.endsWith('/push-notifications.ts')
     ) {
       return pushNotificationsModule;
+    }
+    if (
+      id.endsWith('/owner-session') ||
+      id.endsWith('/owner-session.ts')
+    ) {
+      return ownerSessionModule;
     }
     if (id.endsWith('/MobileI18nProvider')) {
       return {
@@ -275,6 +282,21 @@ interface AppModuleExports {
     staffCleared: boolean;
     ownerCleaned: boolean;
   }>;
+  filterMembershipsForShops: (
+    memberships: Record<string, unknown> | null | undefined,
+    shops: ReadonlyArray<{ id: string }>
+  ) => Record<string, unknown>;
+  processIncomingCallbackUrl: (
+    url: string | null | undefined,
+    options: {
+      lastHandledUrlRef: { current: string | null };
+      onExchangeStart?: () => void;
+      onExchangeSuccess: (session: unknown) => void;
+      onExchangeError: (err: unknown) => void;
+      onExchangeFinally?: () => void;
+      completeCallback?: (url: string) => Promise<unknown>;
+    }
+  ) => Promise<boolean>;
 }
 
 function makeStaffSessionFixture(
@@ -606,6 +628,222 @@ test('App session routing: waits for both owner and staff boot, separates StaffW
     'ownerPushApi:DELETE:/api/push-tokens',
     'supabase.auth.signOut',
   ]);
+});
+
+test('P3-23 regression: membership snapshot removes revoked shops while preserving active shops', () => {
+  const { filterMembershipsForShops } =
+    loadMobileTsxExports<AppModuleExports>('App.tsx');
+
+  const initialMemberships = {
+    'shop-active-1': { id: 'mem-1', shop_id: 'shop-active-1', role: 'owner' },
+    'shop-revoked-2': { id: 'mem-2', shop_id: 'shop-revoked-2', role: 'staff' },
+    'shop-active-3': { id: 'mem-3', shop_id: 'shop-active-3', role: 'cashier' },
+  };
+
+  // 1. When returned shops omit shop-revoked-2, it is pruned from the snapshot
+  const returnedShops = [
+    { id: 'shop-active-1', name: 'Shop 1' },
+    { id: 'shop-active-3', name: 'Shop 3' },
+  ];
+
+  const filtered = filterMembershipsForShops(initialMemberships, returnedShops);
+
+  assert.deepEqual(filtered, {
+    'shop-active-1': { id: 'mem-1', shop_id: 'shop-active-1', role: 'owner' },
+    'shop-active-3': { id: 'mem-3', shop_id: 'shop-active-3', role: 'cashier' },
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(filtered, 'shop-revoked-2'),
+    false,
+    'Revoked shop must be removed from snapshot'
+  );
+
+  // 2. Empty shops list removes all memberships
+  assert.deepEqual(filterMembershipsForShops(initialMemberships, []), {});
+
+  // 3. Null/undefined memberships handled safely without throwing
+  assert.deepEqual(filterMembershipsForShops(null, returnedShops), {});
+  assert.deepEqual(filterMembershipsForShops(undefined, returnedShops), {});
+});
+
+test('P3-24 regression: failed OIDC callback can retry the same callback URL and deduplicates successful/in-flight callbacks', async () => {
+  const { processIncomingCallbackUrl } =
+    loadMobileTsxExports<AppModuleExports>('App.tsx');
+
+  const validCallbackUrl = 'qlaok://auth/callback?code=mock-auth-code&state=mock-state';
+  const invalidCallbackUrl = 'https://malicious.example.com/callback?code=bad';
+
+  const lastHandledRef: { current: string | null } = { current: null };
+  const mockOwnerSession = {
+    version: 1,
+    accessToken: 'test-token',
+    user: { id: 'owner-uuid-1' },
+  };
+
+  // 1. Invalid or non-OIDC URL is ignored without triggering exchange
+  let startCount = 0;
+  let successCount = 0;
+  let errorCount = 0;
+  let finallyCount = 0;
+
+  const resetCounters = () => {
+    startCount = 0;
+    successCount = 0;
+    errorCount = 0;
+    finallyCount = 0;
+  };
+
+  const ignoredResult = await processIncomingCallbackUrl(invalidCallbackUrl, {
+    lastHandledUrlRef: lastHandledRef,
+    onExchangeStart: () => {
+      startCount += 1;
+    },
+    onExchangeSuccess: () => {
+      successCount += 1;
+    },
+    onExchangeError: () => {
+      errorCount += 1;
+    },
+    onExchangeFinally: () => {
+      finallyCount += 1;
+    },
+  });
+
+  assert.equal(ignoredResult, false);
+  assert.equal(startCount, 0);
+  assert.equal(lastHandledRef.current, null);
+
+  // 2. First attempt with a failing exchange releases the guard for retry
+  let exchangeAttempts = 0;
+  resetCounters();
+
+  const failResult = await processIncomingCallbackUrl(validCallbackUrl, {
+    lastHandledUrlRef: lastHandledRef,
+    onExchangeStart: () => {
+      startCount += 1;
+    },
+    onExchangeSuccess: () => {
+      successCount += 1;
+    },
+    onExchangeError: (err) => {
+      errorCount += 1;
+      assert.equal((err as Error).message, 'Network timeout');
+    },
+    onExchangeFinally: () => {
+      finallyCount += 1;
+    },
+    completeCallback: async () => {
+      exchangeAttempts += 1;
+      throw new Error('Network timeout');
+    },
+  });
+
+  assert.equal(failResult, false);
+  assert.equal(exchangeAttempts, 1);
+  assert.equal(startCount, 1);
+  assert.equal(errorCount, 1);
+  assert.equal(finallyCount, 1);
+  assert.equal(
+    lastHandledRef.current,
+    null,
+    'Failed exchange must release lastHandledUrlRef so retry is possible'
+  );
+
+  // 3. Retry with the EXACT SAME callback URL succeeds
+  resetCounters();
+  const retryResult = await processIncomingCallbackUrl(validCallbackUrl, {
+    lastHandledUrlRef: lastHandledRef,
+    onExchangeStart: () => {
+      startCount += 1;
+    },
+    onExchangeSuccess: (s) => {
+      successCount += 1;
+      assert.deepEqual(s, mockOwnerSession);
+    },
+    onExchangeError: () => {
+      errorCount += 1;
+    },
+    onExchangeFinally: () => {
+      finallyCount += 1;
+    },
+    completeCallback: async () => {
+      exchangeAttempts += 1;
+      return mockOwnerSession;
+    },
+  });
+
+  assert.equal(retryResult, true);
+  assert.equal(exchangeAttempts, 2);
+  assert.equal(startCount, 1);
+  assert.equal(successCount, 1);
+  assert.equal(errorCount, 0);
+  assert.equal(finallyCount, 1);
+  assert.equal(
+    lastHandledRef.current,
+    validCallbackUrl,
+    'Successful callback remains deduplicated'
+  );
+
+  // 3a. A duplicate notification arriving before exchange resolution is also blocked.
+  const inFlightRef: { current: string | null } = { current: null };
+  let inFlightAttempts = 0;
+  let finishInFlight: ((session: unknown) => void) | undefined;
+  const inFlight = processIncomingCallbackUrl(validCallbackUrl, {
+    lastHandledUrlRef: inFlightRef,
+    onExchangeSuccess: () => {},
+    onExchangeError: () => {},
+    completeCallback: () => {
+      inFlightAttempts += 1;
+      return new Promise((resolve) => {
+        finishInFlight = resolve;
+      });
+    },
+  });
+  const duplicateInFlight = await processIncomingCallbackUrl(validCallbackUrl, {
+    lastHandledUrlRef: inFlightRef,
+    onExchangeSuccess: () => {},
+    onExchangeError: () => {},
+    completeCallback: async () => {
+      inFlightAttempts += 1;
+      return mockOwnerSession;
+    },
+  });
+
+  assert.equal(duplicateInFlight, false);
+  assert.equal(inFlightAttempts, 1, 'In-flight duplicate must not exchange twice');
+  assert.equal(inFlightRef.current, validCallbackUrl);
+  finishInFlight?.(mockOwnerSession);
+  assert.equal(await inFlight, true);
+
+  // 4. Repeated invocation with the same URL is deduplicated and blocked
+  resetCounters();
+  const duplicateResult = await processIncomingCallbackUrl(validCallbackUrl, {
+    lastHandledUrlRef: lastHandledRef,
+    onExchangeStart: () => {
+      startCount += 1;
+    },
+    onExchangeSuccess: () => {
+      successCount += 1;
+    },
+    onExchangeError: () => {
+      errorCount += 1;
+    },
+    onExchangeFinally: () => {
+      finallyCount += 1;
+    },
+    completeCallback: async () => {
+      exchangeAttempts += 1;
+      return mockOwnerSession;
+    },
+  });
+
+  assert.equal(duplicateResult, false);
+  assert.equal(exchangeAttempts, 2, 'Must not call completeCallback for duplicate URL');
+  assert.equal(startCount, 0);
+  assert.equal(successCount, 0);
+  assert.equal(errorCount, 0);
+  assert.equal(finallyCount, 0);
+  assert.equal(lastHandledRef.current, validCallbackUrl);
 });
 
 test('StaffWorkspace permission guard: requires active membership and orders.create, and does NOT require orders.view', () => {

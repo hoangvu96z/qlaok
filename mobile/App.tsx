@@ -189,6 +189,62 @@ export async function executeStaffSignOutCleanup(options?: {
   };
 }
 
+/**
+ * Pure snapshot filter: retains only membership records that match the returned shop list,
+ * pruning records for shops where membership has been revoked or removed.
+ */
+export function filterMembershipsForShops(
+  memberships: Record<string, MobileShopMembership> | null | undefined,
+  shops: ReadonlyArray<{ id: string }>
+): Record<string, MobileShopMembership> {
+  if (!memberships || typeof memberships !== 'object') return {};
+  const allowedShopIds = new Set(shops.map((shop) => shop.id));
+  return Object.fromEntries(
+    Object.entries(memberships).filter(([shopId]) => allowedShopIds.has(shopId))
+  );
+}
+
+/**
+ * Deduplicates and processes incoming OIDC callback URLs.
+ * Deduplicates repeated invocations of the same URL while in-flight or successfully completed,
+ * but clears the deduplication guard if exchange fails so the user or deep link handler can retry.
+ */
+export async function processIncomingCallbackUrl(
+  url: string | null | undefined,
+  options: {
+    lastHandledUrlRef: { current: string | null };
+    onExchangeStart?: () => void;
+    onExchangeSuccess: (session: MobileOwnerSession) => void;
+    onExchangeError: (err: unknown) => void;
+    onExchangeFinally?: () => void;
+    completeCallback?: (url: string) => Promise<MobileOwnerSession>;
+  }
+): Promise<boolean> {
+  if (!url || !isOwnerOidcCallbackUrl(url)) return false;
+  if (options.lastHandledUrlRef.current === url) return false;
+  options.lastHandledUrlRef.current = url;
+
+  options.onExchangeStart?.();
+  try {
+    const completeFn =
+      options.completeCallback ??
+      ((targetUrl: string) =>
+        completeOwnerOidcCallback(targetUrl, { baseUrl: API_BASE_URL }));
+    const nextOwnerSession = await completeFn(url);
+    options.lastHandledUrlRef.current = url;
+    options.onExchangeSuccess(nextOwnerSession);
+    return true;
+  } catch (err) {
+    if (options.lastHandledUrlRef.current === url) {
+      options.lastHandledUrlRef.current = null;
+    }
+    options.onExchangeError(err);
+    return false;
+  } finally {
+    options.onExchangeFinally?.();
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState<MobileOwnerSession | null>(null);
   const [staffSession, setStaffSession] = useState<MobileStaffSession | null>(
@@ -204,33 +260,29 @@ export default function App() {
   const lastHandledCallbackUrlRef = useRef<string | null>(null);
 
   const handleIncomingCallbackUrl = useCallback(async (url: string | null) => {
-    if (!url || !isOwnerOidcCallbackUrl(url)) return;
-    if (lastHandledCallbackUrlRef.current === url) return;
-    lastHandledCallbackUrlRef.current = url;
-
-    setOwnerOidcExchanging(true);
-    setOwnerAuthError('');
-    try {
-      const nextOwnerSession = await completeOwnerOidcCallback(url, {
-        baseUrl: API_BASE_URL,
-      });
-      lastHandledCallbackUrlRef.current = url;
-      setSession(nextOwnerSession);
-      setOwnerSessionExpired(false);
-      setStaffSessionExpired(false);
-    } catch (err) {
-      if (lastHandledCallbackUrlRef.current === url) {
-        lastHandledCallbackUrlRef.current = null;
-      }
-      setOwnerAuthError(
-        err instanceof Error && err.message
-          ? err.message
-          : 'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.'
-      );
-    } finally {
-      setOwnerOidcExchanging(false);
-      setOwnerReady(true);
-    }
+    await processIncomingCallbackUrl(url, {
+      lastHandledUrlRef: lastHandledCallbackUrlRef,
+      onExchangeStart: () => {
+        setOwnerOidcExchanging(true);
+        setOwnerAuthError('');
+      },
+      onExchangeSuccess: (nextOwnerSession) => {
+        setSession(nextOwnerSession);
+        setOwnerSessionExpired(false);
+        setStaffSessionExpired(false);
+      },
+      onExchangeError: (err) => {
+        setOwnerAuthError(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Không thể hoàn tất đăng nhập. Vui lòng thử lại hoặc liên hệ hỗ trợ Qlaok.'
+        );
+      },
+      onExchangeFinally: () => {
+        setOwnerOidcExchanging(false);
+        setOwnerReady(true);
+      },
+    });
   }, []);
 
   useEffect(() => {
@@ -773,11 +825,9 @@ function Workspace({ userId }: { userId: string }) {
 
         if (generation !== loadGeneration.current) return;
         setShops(loadedShops);
-        const allowedShopIds = new Set(loadedShops.map((shop) => shop.id));
-        const refreshedMemberships = Object.fromEntries(
-          Object.entries(loadedMemberships).filter(([shopId]) =>
-            allowedShopIds.has(shopId)
-          )
+        const refreshedMemberships = filterMembershipsForShops(
+          loadedMemberships,
+          loadedShops
         );
         setMemberships(refreshedMemberships);
         const mergedMemberships = refreshedMemberships;
