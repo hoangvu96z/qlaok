@@ -20,8 +20,24 @@ export function isCurrentCatalogRequest(params: {
   currentRequestId: number;
 }): boolean {
   return (
+    Boolean(params.requestShopId) &&
     params.requestShopId === params.currentShopId &&
     params.requestId === params.currentRequestId
+  );
+}
+
+/**
+ * Validates whether an action initiated for a specific shop context is still the active shop.
+ * Used before dispatching requests after user confirmation, and before applying UI mutations/toasts/draft resets.
+ */
+export function isCurrentCatalogShop(params: {
+  actionShopId: string | null | undefined;
+  currentShopId: string | null | undefined;
+}): boolean {
+  return (
+    typeof params.actionShopId === 'string' &&
+    params.actionShopId.trim().length > 0 &&
+    params.actionShopId === params.currentShopId
   );
 }
 

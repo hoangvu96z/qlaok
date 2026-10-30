@@ -11,6 +11,8 @@ The bulk bar supports:
 - **Move category**: uses `bulk_move_items`. The result distinguishes moved items from items that already belonged to the destination category.
 - **Delete**: requires an explicit confirmation with the selected count and uses `bulk_delete_items`. The UI removes items only after the server confirms the full requested batch.
 
+Bulk operations stay bound to the shop shown when the action starts. Bulk delete checks the shop again after its confirmation dialog, so confirming after switching shops does not send the old selection. If a request was already sent before switching, the server may finish it for the originating shop; the old response is ignored by the newly selected shop's UI, and returning to the originating shop reloads its catalog.
+
 ## Permission and shop boundaries
 
 The API is authoritative. Price changes, category moves, and deletes require active membership with `catalog.manage`. Availability changes require active membership with `catalog.manage` or `inventory.adjust`. Every catalog price write path (`POST /api/catalog` `upsert_item`, `bulk_import`, `bulk_update_price_stock`, and `dbUpsertItem` / `dbBulkImportCatalog`) enforces the shared integer-VND boundary (`0 <= price <= 1,000,000,000` via `parseCatalogPriceValue`) before writing; `bulk_import` validates all imported item prices before the first category or item write.

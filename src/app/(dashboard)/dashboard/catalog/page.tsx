@@ -49,6 +49,7 @@ import {
   buildCategoryNameI18n,
   getCategoryRenameAction,
   isCurrentCatalogRequest,
+  isCurrentCatalogShop,
   parseCatalogApiResponse,
   resolveNextCatalogData,
   shouldShowCatalogEmptyState,
@@ -287,6 +288,12 @@ export default function DashboardCatalogPage() {
     activeShopIdRef.current = activeShop?.id ?? null;
   }, [activeShop?.id]);
 
+  const isCurrentShopActive = (expectedShopId: string | null | undefined): boolean =>
+    isCurrentCatalogShop({
+      actionShopId: expectedShopId,
+      currentShopId: activeShopIdRef.current,
+    });
+
   const isItemInCurrentShop = (item: Pick<CatalogItem, 'shop_id'>) =>
     Boolean(
       activeShop?.id &&
@@ -362,6 +369,7 @@ export default function DashboardCatalogPage() {
     setEditingCategoryId(null);
     setEditingCategoryName('');
     setSavingCategoryId(null);
+    setBulkActionPending(null);
     clearBulkSelectionAndDrafts();
     void loadCatalog(false);
     return () => {
@@ -1154,6 +1162,7 @@ export default function DashboardCatalogPage() {
     ) {
       return;
     }
+    const expectedShopId = activeShop.id;
     const targetIds = [...selectedIds];
     const count = targetIds.length;
     const confirmBulkDelete = confirm;
@@ -1172,6 +1181,7 @@ export default function DashboardCatalogPage() {
       confirmLabel: tx('Xóa {count} món', 'Delete {count} item(s)', { count }),
     });
     if (!confirmed) return;
+    if (!isCurrentShopActive(expectedShopId)) return;
 
     setBulkActionPending('delete');
     setMutationError(null);
@@ -1182,11 +1192,13 @@ export default function DashboardCatalogPage() {
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_delete_items',
-          shopId: activeShop.id,
+          shopId: expectedShopId,
           itemIds: targetIds,
         }),
       });
       const data = await res.json().catch(() => null);
+      if (!isCurrentShopActive(expectedShopId)) return;
+
       const confirmedIds: string[] = Array.isArray(data?.itemIds)
         ? data.itemIds.filter(
             (id: unknown): id is string => typeof id === 'string'
@@ -1232,6 +1244,7 @@ export default function DashboardCatalogPage() {
       setItems((prev) => prev.filter((item) => !deletedSet.has(item.id)));
       clearBulkSelectionAndDrafts();
       await loadCatalog(true);
+      if (!isCurrentShopActive(expectedShopId)) return;
       notifyRealtime();
       const successMsg = tx(
         'Đã xóa {count} món khỏi thực đơn',
@@ -1241,6 +1254,7 @@ export default function DashboardCatalogPage() {
       setBulkResultBanner({ status: 'success', message: successMsg });
       showToast(successMsg);
     } catch (err) {
+      if (!isCurrentShopActive(expectedShopId)) return;
       setMutationError(
         toMutationError(
           err,
@@ -1248,7 +1262,9 @@ export default function DashboardCatalogPage() {
         )
       );
     } finally {
-      setBulkActionPending(null);
+      if (isCurrentShopActive(expectedShopId)) {
+        setBulkActionPending(null);
+      }
     }
   };
 
@@ -1263,6 +1279,7 @@ export default function DashboardCatalogPage() {
       return;
     }
 
+    const expectedShopId = activeShop.id;
     const parsedPrice = parseCatalogPriceValue(bulkPriceInput);
     if (!parsedPrice.valid) {
       setBulkPriceError(parsedPrice.error);
@@ -1286,11 +1303,13 @@ export default function DashboardCatalogPage() {
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_update_price_stock',
-          shopId: activeShop.id,
+          shopId: expectedShopId,
           items: targetIds.map((id) => ({ id, price: nextPrice })),
         }),
       });
       const data = await res.json().catch(() => null);
+      if (!isCurrentShopActive(expectedShopId)) return;
+
       const rawResults: unknown[] = Array.isArray(data?.results)
         ? data.results
         : [];
@@ -1380,6 +1399,7 @@ export default function DashboardCatalogPage() {
           );
         if (succeededCount > 0 || hasStockConflict) {
           await loadCatalog(true);
+          if (!isCurrentShopActive(expectedShopId)) return;
           if (succeededCount > 0) {
             notifyRealtime();
           }
@@ -1398,6 +1418,7 @@ export default function DashboardCatalogPage() {
       }
 
       await loadCatalog(true);
+      if (!isCurrentShopActive(expectedShopId)) return;
       notifyRealtime();
       clearBulkSelectionAndDrafts();
 
@@ -1434,6 +1455,7 @@ export default function DashboardCatalogPage() {
         });
       }
     } catch (err) {
+      if (!isCurrentShopActive(expectedShopId)) return;
       setMutationError(
         toMutationError(
           err,
@@ -1444,7 +1466,9 @@ export default function DashboardCatalogPage() {
         )
       );
     } finally {
-      setBulkActionPending(null);
+      if (isCurrentShopActive(expectedShopId)) {
+        setBulkActionPending(null);
+      }
     }
   };
 
@@ -1457,6 +1481,7 @@ export default function DashboardCatalogPage() {
     ) {
       return;
     }
+    const expectedShopId = activeShop.id;
     const targetIds = [...selectedIds];
     setBulkActionPending(nextAvailable ? 'available' : 'sold_out');
     setMutationError(null);
@@ -1468,13 +1493,15 @@ export default function DashboardCatalogPage() {
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_update_availability',
-          shopId: activeShop.id,
+          shopId: expectedShopId,
           itemIds: targetIds,
           is_available: nextAvailable,
           isAvailable: nextAvailable,
         }),
       });
       const data = await res.json().catch(() => null);
+      if (!isCurrentShopActive(expectedShopId)) return;
+
       const updatedCount =
         typeof data?.updatedCount === 'number'
           ? data.updatedCount
@@ -1522,6 +1549,7 @@ export default function DashboardCatalogPage() {
       );
       clearBulkSelectionAndDrafts();
       await loadCatalog(true);
+      if (!isCurrentShopActive(expectedShopId)) return;
       notifyRealtime();
       const successMsg = nextAvailable
         ? tx(
@@ -1537,6 +1565,7 @@ export default function DashboardCatalogPage() {
       setBulkResultBanner({ status: 'success', message: successMsg });
       showToast(successMsg);
     } catch (err) {
+      if (!isCurrentShopActive(expectedShopId)) return;
       setMutationError(
         toMutationError(
           err,
@@ -1547,7 +1576,9 @@ export default function DashboardCatalogPage() {
         )
       );
     } finally {
-      setBulkActionPending(null);
+      if (isCurrentShopActive(expectedShopId)) {
+        setBulkActionPending(null);
+      }
     }
   };
 
@@ -1572,6 +1603,7 @@ export default function DashboardCatalogPage() {
       return;
     }
 
+    const expectedShopId = activeShop.id;
     const targetCategory = categories.find((c) => c.id === targetCategoryId);
     const targetIds = [...selectedIds];
 
@@ -1585,12 +1617,13 @@ export default function DashboardCatalogPage() {
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'bulk_move_items',
-          shopId: activeShop.id,
+          shopId: expectedShopId,
           itemIds: targetIds,
           categoryId: targetCategoryId,
         }),
       });
       const data = await res.json().catch(() => null);
+      if (!isCurrentShopActive(expectedShopId)) return;
 
       const movedCount =
         typeof data?.movedCount === 'number'
@@ -1645,6 +1678,7 @@ export default function DashboardCatalogPage() {
       );
       clearBulkSelectionAndDrafts();
       await loadCatalog(true);
+      if (!isCurrentShopActive(expectedShopId)) return;
       notifyRealtime();
 
       const categoryLabel =
@@ -1682,6 +1716,7 @@ export default function DashboardCatalogPage() {
       setBulkResultBanner({ status: 'success', message: successMsg });
       showToast(successMsg);
     } catch (err) {
+      if (!isCurrentShopActive(expectedShopId)) return;
       setMutationError(
         toMutationError(
           err,
@@ -1692,7 +1727,9 @@ export default function DashboardCatalogPage() {
         )
       );
     } finally {
-      setBulkActionPending(null);
+      if (isCurrentShopActive(expectedShopId)) {
+        setBulkActionPending(null);
+      }
     }
   };
 

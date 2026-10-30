@@ -4,6 +4,7 @@ import {
   buildCategoryNameI18n,
   getCategoryRenameAction,
   isCurrentCatalogRequest,
+  isCurrentCatalogShop,
   parseCatalogApiResponse,
   resolveNextCatalogData,
   shouldShowCatalogEmptyState,
@@ -63,6 +64,53 @@ test('isCurrentCatalogRequest ignores stale responses from an earlier request or
       currentRequestId: 2,
     }),
     true
+  );
+});
+
+test('isCurrentCatalogShop guards actions, confirmation, and responses against shop-switch races', () => {
+  // Reject when active shop has changed
+  assert.equal(
+    isCurrentCatalogShop({
+      actionShopId: 'shop-a',
+      currentShopId: 'shop-b',
+    }),
+    false,
+    'Operations initiated for shop-a must be rejected after switching to shop-b'
+  );
+
+  // Reject when current shop is unset or blank
+  assert.equal(
+    isCurrentCatalogShop({
+      actionShopId: 'shop-a',
+      currentShopId: null,
+    }),
+    false,
+    'Operations must be rejected when active shop becomes null'
+  );
+  assert.equal(
+    isCurrentCatalogShop({
+      actionShopId: 'shop-a',
+      currentShopId: undefined,
+    }),
+    false
+  );
+  assert.equal(
+    isCurrentCatalogShop({
+      actionShopId: '',
+      currentShopId: '',
+    }),
+    false,
+    'Empty shop id cannot match'
+  );
+
+  // Accept when action shop id matches current active shop
+  assert.equal(
+    isCurrentCatalogShop({
+      actionShopId: 'shop-a',
+      currentShopId: 'shop-a',
+    }),
+    true,
+    'Operations must proceed when shop context matches the current active shop'
   );
 });
 
@@ -1296,6 +1344,196 @@ test('Bug 4 & Bug 5 regression: TranslationEditorModal and DashboardCatalogPage 
     assert.ok(
       !pageJson.includes('Đã lưu món và cập nhật bản dịch 8 ngôn ngữ!'),
       'DashboardCatalogPage must NOT show green success toast when requested availability was rejected by 0 stock'
+    );
+
+    // 5. Shop-switch race regression: bulk operations confirmed or arriving after a shop switch
+    //    must not mutate the newly active shop's state or display toast/banner for the old shop.
+    let switchShopActiveId = 'shop-test';
+    let confirmResolver: ((val: boolean) => void) | null = null;
+    let fetchResolver: ((res: Response) => void) | null = null;
+    let fetchCallCount = 0;
+    const fetchShopIdsDispatched: string[] = [];
+
+    const raceActiveShop = {
+      get id() {
+        return switchShopActiveId;
+      },
+      name: 'Active Shop',
+      vertical: 'fnb',
+    };
+
+    const raceHarness = createStatefulHarness();
+    const { default: RaceCatalogPage } = loadComponentModule<{
+      default: () => VNode | null;
+    }>('src/app/(dashboard)/dashboard/catalog/page.tsx', raceHarness.reactMock, {
+      'next/link': { default: 'Link' },
+      'lucide-react': lucideStub,
+      '@/lib/auth-session': { getAuthHeaders: getAuthHeadersStub },
+      '@/lib/dashboard-context': {
+        useDashboard: () => ({
+          activeShop: raceActiveShop,
+          activeMembership: activeMembershipStub,
+          profile: profileStub,
+        }),
+      },
+      '@/lib/dashboard-nav': { membershipHasPermission: () => true },
+      '@/lib/plan-limits': planLimitsReal,
+      '@/components/dashboard/QuickItemRow': { QuickItemRow: QuickItemRowSymbol },
+      '@/components/dashboard/TranslationEditorModal': {
+        TranslationEditorModal: TranslationEditorModalSymbol,
+      },
+      '@/components/ui/AppI18nProvider': i18nStub,
+      '@/components/ui/ConfirmDialog': {
+        useConfirmDialog: () => ({
+          confirm: () =>
+            new Promise<boolean>((resolve) => {
+              confirmResolver = resolve;
+            }),
+          confirmDialog: null,
+        }),
+      },
+      '@/lib/catalog-pagination': catalogPaginationReal,
+      '@/lib/catalog-excel': catalogExcelReal,
+      '@/components/dashboard/CatalogExcelImportModal': {
+        CatalogExcelImportModal: 'CatalogExcelImportModal',
+      },
+      '@/lib/dashboard-catalog': dashboardCatalogReal,
+    });
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method || init.method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            categories: [sampleCategory],
+            items: [
+              {
+                ...sampleItem,
+                id: 'item-1',
+                shop_id: switchShopActiveId,
+                is_available: false,
+              },
+              {
+                ...sampleItem,
+                id: 'item-2',
+                shop_id: switchShopActiveId,
+                is_available: false,
+              },
+            ],
+            ownerPlan: 'premium',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      fetchCallCount++;
+      const body = init.body ? JSON.parse(String(init.body)) : {};
+      if (body.shopId) {
+        fetchShopIdsDispatched.push(body.shopId);
+      }
+      return new Promise<Response>((resolve) => {
+        fetchResolver = resolve;
+      });
+    }) as typeof fetch;
+
+    let raceTree = raceHarness.render(RaceCatalogPage, {});
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      raceTree = raceHarness.render(RaceCatalogPage, {});
+      if (findNodes(raceTree, (n) => n.type === QuickItemRowSymbol).length === 2) {
+        break;
+      }
+    }
+
+    // Select item-1 for bulk deletion
+    let raceRows = findNodes(raceTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(raceRows.length, 2, 'Two rows must be loaded before selecting');
+    (raceRows[0].props.onToggleSelect as (id: string, next: boolean) => void)(
+      'item-1',
+      true
+    );
+    raceTree = raceHarness.render(RaceCatalogPage, {});
+
+    const deleteBtn = findNodes(
+      raceTree,
+      (n) => n.props['data-testid'] === 'catalog-bulk-delete-btn'
+    )[0];
+    assert.ok(deleteBtn, 'Bulk delete button must be present when items selected');
+
+    // Trigger bulk delete -> enters confirmation dialog
+    const deletePromise = (deleteBtn.props.onClick as () => Promise<void>)();
+
+    // While confirmation dialog is pending, switch active shop to 'shop-other'!
+    switchShopActiveId = 'shop-other';
+    raceTree = raceHarness.render(RaceCatalogPage, {});
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      raceTree = raceHarness.render(RaceCatalogPage, {});
+    }
+
+    // Now user confirms delete in dialog
+    assert.ok(confirmResolver !== null, 'Confirmation resolver must be waiting');
+    confirmResolver!(true);
+    await deletePromise;
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(
+      fetchCallCount,
+      0,
+      'When shop switches while confirm dialog is open, POST /api/catalog bulk delete must NOT be dispatched for the stale shop'
+    );
+    assert.equal(fetchShopIdsDispatched.length, 0);
+
+    // Test in-flight race: start bulk availability on shop-other, then switch shop while fetch is in-flight
+    raceRows = findNodes(raceTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(raceRows.length, 2, 'Two rows must be loaded for shop-other');
+    (raceRows[0].props.onToggleSelect as (id: string, next: boolean) => void)(
+      'item-1',
+      true
+    );
+    raceTree = raceHarness.render(RaceCatalogPage, {});
+    const bulkAvailBtn2 = findNodes(
+      raceTree,
+      (n) => n.props['data-testid'] === 'catalog-bulk-available-btn'
+    )[0];
+    assert.ok(bulkAvailBtn2, 'Bulk available button must exist');
+
+    const availPromise = (bulkAvailBtn2.props.onClick as () => Promise<void>)();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(
+      fetchCallCount,
+      1,
+      'POST /api/catalog bulk availability should be in-flight'
+    );
+    assert.equal(fetchShopIdsDispatched[0], 'shop-other');
+
+    // Merchant switches back to 'shop-test' before server response returns
+    switchShopActiveId = 'shop-test';
+    raceTree = raceHarness.render(RaceCatalogPage, {});
+
+    // Resolve in-flight response from shop-other
+    assert.ok(fetchResolver !== null, 'Fetch resolver must be active');
+    fetchResolver!(
+      new Response(
+        JSON.stringify({
+          success: true,
+          updatedCount: 1,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    await availPromise;
+    await new Promise((r) => setTimeout(r, 10));
+
+    raceTree = raceHarness.render(RaceCatalogPage, {});
+    const raceJson = JSON.stringify(raceTree);
+    raceRows = findNodes(raceTree, (n) => n.type === QuickItemRowSymbol);
+    assert.equal(
+      raceRows[0]?.props.item.is_available,
+      false,
+      'Stale availability response must not update the newly active shop item'
+    );
+    assert.ok(
+      !raceJson.includes('Đã bật còn hàng cho 1 món'),
+      'Stale in-flight bulk response from shop-other must NOT display success message in shop-test'
     );
   } finally {
     globalThis.fetch = originalFetch;
