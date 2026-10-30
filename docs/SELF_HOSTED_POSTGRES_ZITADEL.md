@@ -29,6 +29,8 @@ Tài liệu này mô tả cấu hình Qlaok đang chạy trên PostgreSQL 14 t�
   - Thêm unique index cho mã đơn; nếu dữ liệu lịch sử đã trùng, migration dừng và yêu cầu đối soát trước khi áp dụng, không tự đổi mã đơn.
 - **Migration 20261030000200**: [`20261030000200_reload_postgrest_schema_cache.sql`](../supabase/migrations/20261030000200_reload_postgrest_schema_cache.sql)
   - Phát `NOTIFY pgrst, 'reload schema';` idempotent, không sửa đổi schema hay dữ liệu khách hàng/nghiệp vụ, để làm mới ngay schema cache của PostgREST cho các bảng và hàm RPC đã áp dụng trước đó (như `public.increment_item_view_count`).
+- **Migration 20261030000300**: [`20261030000300_admin_owner_invitation_claims.sql`](../supabase/migrations/20261030000300_admin_owner_invitation_claims.sql)
+  - Đánh dấu hồ sơ chủ quán do Super Admin tạo là lời mời một lần; trigger chặn client tự tạo hoặc sửa cờ `owner_invite_pending`, còn backend đáng tin cậy có thể cập nhật cờ này.
 
 ## 2. Trình tự áp dụng trên PostgreSQL 14 tự vận hành
 
@@ -81,7 +83,7 @@ WHERE id = '<existing_qlaok_user_uuid>';
 
 ## 4. Trạng thái cắt chuyển và vận hành
 
-1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261030000200_reload_postgrest_schema_cache.sql` được chạy bằng `scripts/migrate-self-hosted.mjs` theo hợp đồng một transaction mỗi file, đối chiếu checksum trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất; migration runner không gọi Supabase Management API.
+1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261030000300_admin_owner_invitation_claims.sql` được chạy bằng `scripts/migrate-self-hosted.mjs` theo hợp đồng một transaction mỗi file, đối chiếu checksum trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất; migration runner không gọi Supabase Management API.
 2. **JWT/RLS**: backend xác minh phiên Qlaok hoặc Zitadel rồi chỉ cấp PostgREST JWT ngắn hạn `role: 'authenticated'` với UUID `public.profiles.id` đã xác thực. `service_role` chỉ tồn tại trong server config; client không nhận khóa bypass RLS.
 3. **Realtime**: PostgreSQL triggers phát `LISTEN/NOTIFY`; broker web và ứng dụng mobile dùng SSE có xác thực qua API Qlaok. Mobile giữ polling 30 giây làm phương án phục hồi khi SSE gián đoạn.
 4. **Object storage**: upload ứng dụng dùng Garage S3 trên `https://s3.vunph.click`, bucket `qlaok-media`, public media dưới `/media/`. Cloudflare R2 chỉ còn là đường dự phòng nếu được cấu hình; production hiện không cấu hình R2.

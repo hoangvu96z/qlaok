@@ -260,11 +260,13 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 
 #### P1-1. Khoá gateway AI hardcode làm fallback trong mã nguồn
 
+- **Cập nhật 2026-10-31:** `getAiConfig()` hiện chỉ dùng `AI_API_KEY` và trả `null` khi biến thiếu; fallback credential đã bị bỏ khỏi source. Giá trị từng xuất hiện trong repository công khai và vẫn nằm trong lịch sử Git. Cần rotate tại gateway; lượt này chưa có quyền quản trị gateway để xác nhận rotation. Giá trị trong báo cáo hiện được che.
+
 - **Vị trí:** `src/lib/gemini.ts:14-15`
 - **Bằng chứng:**
   ```ts
   const apiKey =
-    process.env.AI_API_KEY || 'sk-07c9f002b12e445e-luaxyd-d0592739';
+    process.env.AI_API_KEY || '[REDACTED]';
   ```
 - **Điều kiện:** biến `AI_API_KEY` không được đặt. Xảy ra khi deploy thiếu env, hoặc khi build/CI thiếu env.
 - **Tác động:** key sống trong git history (`git show HEAD:src/lib/gemini.ts` xác nhận **đã commit**, không chỉ ở working tree). Bất kỳ ai có repo đều gọi được gateway bằng credit của dự án. Đây là secrets-in-source, không phải "default dev".
@@ -1336,3 +1338,9 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `codegraph status`; `codegraph node src/app/api/catalog/route.ts --offset 160 --limit 100`; `codegraph node dbGetShopCatalog`; `codegraph node src/app/api/shops/route.ts --offset 68 --limit 100`. Phạm vi: public shop lookup, projection `/api/catalog`, publish gate và xử lý shop không tồn tại.
 - **Checks:** AGY Flash Low production QA **PASS**; Codex GET-only read-back **PASS**; `git diff --check` chạy trước commit. Không chạy test/build vì lượt này chỉ cập nhật tài liệu.
 - **Chưa xác minh:** không probe trực tiếp shop chưa publish; quyền chặn caller ẩn danh được xác nhận từ source, chưa có fixture phù hợp để kiểm tra runtime.
+
+## 78. P3-12: đồng bộ danh sách migration hiện hành trong tài liệu (2026-10-31)
+
+- README đã liệt kê đến `20261030000200` nhưng còn thiếu `20261030000300_admin_owner_invitation_claims.sql`. Cùng migration mới cũng được thêm vào danh sách và phạm vi trạng thái trong `ARCHITECTURE.md` và `docs/SELF_HOSTED_POSTGRES_ZITADEL.md`.
+- Migration bổ sung `profiles.owner_invite_pending`, đánh dấu các hồ sơ owner invitation cũ phù hợp và dùng trigger để chặn client tự tạo hoặc sửa cờ lời mời. Không sửa SQL hay trạng thái database.
+- **Checks:** đối chiếu thứ tự với danh sách migration thực tế; `git diff --check`. Không chạy test/build vì chỉ sửa tài liệu.

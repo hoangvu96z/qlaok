@@ -125,6 +125,7 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 20261029000100_bulk_set_items_availability_atomic.sql
 20261030000100_order_audit_logs_subjects.sql
 20261030000200_reload_postgrest_schema_cache.sql
+20261030000300_admin_owner_invitation_claims.sql
 ```
 
 `npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy từng migration PostgreSQL tự host còn thiếu theo thứ tự tên file trong một transaction riêng, kiểm checksum, lưu lịch sử trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất thành công (tránh phát trùng nếu migration cuối đã có sẵn lệnh này); script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.
