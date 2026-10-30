@@ -131,9 +131,9 @@ export function formatStaffLoginError(
     }
     if (err.status === 401 || err.code === 'INVALID_STAFF_CREDENTIALS') {
       if (isEn) {
-        return 'The store name, username, or password is incorrect.';
+        return 'The store slug/ID, username, or password is incorrect.';
       }
-      return 'Tên cửa hàng, tên đăng nhập hoặc mật khẩu không đúng.';
+      return 'Mã cửa hàng (slug/ID), tên đăng nhập hoặc mật khẩu không đúng.';
     }
     if (err.code === 'NETWORK_ERROR') {
       return isEn
@@ -651,8 +651,8 @@ export const AuthScreen = memo(function AuthScreen({
           <Text style={styles.authSubtitle}>
             {accountMode === 'staff'
               ? tb(
-                  'Đăng nhập bằng tên cửa hàng và tài khoản nhân viên để hỗ trợ gọi món tại bàn',
-                  'Sign in with your store name and staff account to help with table orders'
+                  'Đăng nhập bằng mã cửa hàng hoặc liên kết và tài khoản nhân viên để hỗ trợ gọi món tại bàn',
+                  'Sign in with your store slug, ID, or link and staff account to help with table orders'
                 )
               : ownerFlowStep === 'verify_email'
                 ? t('auth.verifySubtitle', {
@@ -785,17 +785,17 @@ export const AuthScreen = memo(function AuthScreen({
             <>
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>
-                  {tb('Tên cửa hàng hoặc liên kết', 'Store name or link')}
+                  {tb('Mã cửa hàng (slug/ID) hoặc liên kết', 'Store slug, ID, or link')}
                 </Text>
                 <TextInput
                   testID="staff-shop-identifier-input"
                   accessibilityLabel={tb(
-                    'Tên cửa hàng hoặc liên kết',
-                    'Store name or link'
+                    'Mã cửa hàng (slug/ID) hoặc liên kết',
+                    'Store slug, ID, or link'
                   )}
                   placeholder={tb(
-                    'VD: Phở Hội An',
-                    'e.g. Pho Hoi An'
+                    'VD: pho-hoi-an',
+                    'e.g. pho-hoi-an'
                   )}
                   placeholderTextColor="#64748b"
                   style={styles.authInput}

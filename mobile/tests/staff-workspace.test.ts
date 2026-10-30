@@ -338,6 +338,11 @@ test('AuthScreen dual-login mode: exposes owner/staff switch, isolates staff fie
   assert.match(authScreenSource, /testID="staff-username-input"/);
   assert.match(authScreenSource, /testID="staff-password-input"/);
   assert.match(authScreenSource, /testID="staff-login-submit-btn"/);
+  assert.match(authScreenSource, /Mã cửa hàng \(slug\/ID\) hoặc liên kết/);
+  assert.match(authScreenSource, /Store slug, ID, or link/);
+  assert.match(authScreenSource, /VD: pho-hoi-an/);
+  assert.match(authScreenSource, /e\.g\. pho-hoi-an/);
+  assert.doesNotMatch(authScreenSource, /Store name or link|e\.g\. Pho Hoi An/);
 
   // 3. Uses loginStaff and passes stored session to typed onStaffLoginSuccess
   assert.match(authScreenSource, /loginStaff/);
@@ -386,7 +391,7 @@ test('AuthScreen dual-login mode: exposes owner/staff switch, isolates staff fie
   assert.match(formatStaffLoginError(generic401Err, 'vi'), /không đúng/);
   assert.equal(
     formatStaffLoginError(generic401Err, 'en'),
-    'The store name, username, or password is incorrect.'
+    'The store slug/ID, username, or password is incorrect.'
   );
 
   // Unknown errors use safe, user-facing copy instead of exposing details
