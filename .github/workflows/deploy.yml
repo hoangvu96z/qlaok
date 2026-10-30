@@ -43,6 +43,7 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 40m
           script: |
             set -eu
             cd /var/www/qlaok.vunph.click

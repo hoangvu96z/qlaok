@@ -235,6 +235,7 @@ test('failed initial backup leaves no verified marker, and deploy runs installer
 
   const workflowPath = new URL('../.github/workflows/deploy.yml', import.meta.url);
   const workflow = fs.readFileSync(workflowPath, 'utf8');
+  assert.match(workflow, /^\s+command_timeout: 40m$/m);
   const deployScript = workflow.slice(workflow.indexOf('script: |'));
   const installerCall = deployScript.indexOf(
     'sudo -n /usr/bin/node /var/www/qlaok.vunph.click/scripts/install-self-hosted-postgres-backup.mjs'
