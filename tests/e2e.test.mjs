@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { canRunMutatingE2e, resolveE2eBaseUrl } from "./e2e-safety.mjs";
 
-const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:3000";
+const BASE_URL = resolveE2eBaseUrl(process.env.TEST_BASE_URL);
+const MUTATING_E2E_SKIP_REASON = canRunMutatingE2e()
+  ? false
+  : "Set E2E_ALLOW_MUTATIONS=1 and E2E_DISPOSABLE_DATABASE=1 only for a disposable isolated database.";
 const LOCALES = ["vi", "en", "ko", "ja", "zh"];
 
 // Optional Super Admin session (minted through Zitadel on the test server).
@@ -160,7 +164,7 @@ test("4. AI Menu OCR Vision API (/api/ai/ocr-menu)", async () => {
   }
 });
 
-test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/catalog)", async () => {
+test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/catalog)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   // Ensure profile plan is premium so item creation is unrestricted
   await fetchJson("/api/webhooks/payment", {
     method: "POST",
@@ -253,7 +257,7 @@ test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/
   assert.equal(delCat.data.deleted, true);
 });
 
-test("6. Plan Limit Enforcement - Free Tier Max 5 Items Rule", async () => {
+test("6. Plan Limit Enforcement - Free Tier Max 5 Items Rule", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   // Switch to free plan
   await fetchJson("/api/webhooks/payment", {
     method: "POST",
@@ -283,7 +287,7 @@ test("6. Plan Limit Enforcement - Free Tier Max 5 Items Rule", async () => {
   });
 });
 
-test("7. Posts CRUD API (/api/posts)", async () => {
+test("7. Posts CRUD API (/api/posts)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   const shopId = "shop-fnb-001";
   const created = await fetchJson("/api/posts", {
     method: "POST",
@@ -326,7 +330,7 @@ test("7. Posts CRUD API (/api/posts)", async () => {
   assert.equal(deleted.data.deleted, true);
 });
 
-test("8. QR Scan Analytics Tracking & Aggregation (/api/analytics/track)", async () => {
+test("8. QR Scan Analytics Tracking & Aggregation (/api/analytics/track)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   const shopId = "shop-fnb-001";
   const before = await fetchJson(`/api/analytics/track?shopId=${shopId}`);
   assert.equal(before.status, 200);
@@ -349,7 +353,7 @@ test("8. QR Scan Analytics Tracking & Aggregation (/api/analytics/track)", async
   assert.equal(after.data.scanTableCount, prevTableScans + 1);
 });
 
-test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment)", async () => {
+test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   // Create pending order
   const orderRes = await fetchJson("/api/webhooks/payment", {
     method: "POST",
@@ -447,7 +451,7 @@ test("12. Mobile owner app reads shops and catalog through Qlaok APIs", async ()
   assert.ok(Array.isArray(catalog.data.items));
 });
 
-test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Analytics (/api/orders)", async () => {
+test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Analytics (/api/orders)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   const shopId = "shop-fnb-001";
 
   // 13.1 Check initial stock of item-fnb-1

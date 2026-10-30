@@ -415,12 +415,13 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 - **Trạng thái:** đã sửa trong source; response public chỉ còn status/service/timestamp, diagnostics được giữ sau `requireSuperAdmin`. Production follow-up và regression coverage ở mục 50.
 - **Hướng sửa:** tách `/api/health` (chỉ `{status}`) khỏi `/api/health/detail` (yêu cầu `requireSuperAdmin`).
 
-#### P2-9. `tests/e2e.test.mjs` chứa URL + publishable key Supabase cloud và assert lỗi thời; CI không chạy e2e
+#### P2-9. E2E chưa chạy trong CI và các test ghi dữ liệu chưa có DB fixture riêng
 
-- **Vị trí:** `tests/e2e.test.mjs:43` (`assert.equal(data.dataSource, "supabase")`), `:406-408` (`https://kftmrjmmympztzztunxf.supabase.co` + `sb_publishable_...`)
-- **Bằng chứng:** test #12 dựng client Supabase cloud trực tiếp; test #1 assert `dataSource === 'supabase'` trong khi runtime trả `'self-hosted-postgres'`; token lấy từ `demo_login` (`:5-17`).
-- **Tác động:** bộ e2e **không thể xanh** trong kiến trúc hiện tại; và nó vẫn trỏ vào hạ tầng Supabase cloud mà dự án đã rời bỏ. Vì `.github/workflows/{verify-pr,deploy}.yml` chỉ chạy `typecheck / test:unit / test:review / test:sql / test:db-reset / mobile test / build` — **không chạy `npm run test:e2e`** — nên drift này vô hình trong CI.
-- **Hướng sửa:** chuyển e2e sang PostgREST tự host (hoặc base URL qua env), bỏ assert `'supabase'`, bỏ key hardcode, và thêm e2e vào một job có server test.
+- **Vị trí:** `tests/e2e.test.mjs` dùng `TEST_BASE_URL`; các nhóm test 5, 6, 7, 8, 9 và 13 ghi catalog, gói, bài viết, analytics, giao dịch và đơn vào shop demo cố định. `.github/workflows/{verify-pr,deploy}.yml` không chạy `npm run test:e2e`.
+- **Bằng chứng cập nhật:** các vấn đề cũ về URL/key Supabase Cloud và assert public `dataSource === "supabase"` không còn trong source hiện tại; test mobile đọc shop/catalog qua API Qlaok. Tuy vậy, E2E chưa có máy chủ và database disposable do CI quản lý, nên chưa thể chạy nguyên suite an toàn.
+- **Tác động:** CI không có coverage HTTP E2E; chạy nhóm mutation với server nối production có thể sửa dữ liệu thật.
+- **Trạng thái:** base URL bị giới hạn về HTTP loopback; các nhóm mutation được skip trừ khi người chạy đặt đồng thời `E2E_ALLOW_MUTATIONS=1` và `E2E_DISPOSABLE_DATABASE=1`. Unit coverage cho guard chạy trong `test:unit`. P2-9 vẫn mở cho đến khi có job CI dựng server/database fixture disposable và chạy E2E trên fixture đó.
+- **Hướng xử lý tiếp:** thêm job E2E có PostgreSQL/test data độc lập; chỉ khi fixture được tạo, dọn và xác nhận trong cùng job mới bật các cờ mutation.
 
 #### P2-10. Deploy script "backup" `.local-db` qua `/tmp` làm **lùi dữ liệu** ở deploy thứ hai trở đi
 
@@ -702,7 +703,7 @@ Sắp theo **rủi ro mất dữ liệu/sai tiền/phơi bí mật trước**, t
 
 - **P1-1:** bỏ literal gateway key khỏi source. Key đã lộ trong lịch sử cần được chủ tài khoản rotate riêng.
 - **P1-2–P1-7:** đã xử lý các đường demo/credential, giảm giá POS, trạng thái thanh toán admin, hủy/hoàn tiền và race chuyển shop catalog; đã bổ sung regression coverage cho các đường logic tương ứng.
-- **P2-1–P2-21:** đã siết public catalog/posts/analytics/health, session secret và SePay replay, lỗi ghi local, truy vấn floor plan, e2e không còn cố định Supabase Cloud, deploy không backup nhầm `.local-db`, audit, credential chết, quyền Settings/catalog/POS/in, URL mobile, locale login, thông báo lỗi bàn, banner ngôn ngữ và email enumeration. Backup PostgreSQL tự host có script + systemd service/timer và runbook; timer chưa được cài trên VPS.
+- **P2-1–P2-21:** đã siết public catalog/posts/analytics/health, session secret và SePay replay, lỗi ghi local, truy vấn floor plan, e2e bỏ Supabase Cloud hardcode và có guard mutation (job CI với DB fixture vẫn mở; xem mục 51), deploy không backup nhầm `.local-db`, audit, credential chết, quyền Settings/catalog/POS/in, URL mobile, locale login, thông báo lỗi bàn, banner ngôn ngữ và email enumeration. Backup PostgreSQL tự host có script + systemd service/timer và runbook; timer chưa được cài trên VPS.
 - **P2 migration runner (3.5):** runner tự host giờ dùng `--single-transaction` cho migration thường; hai migration lịch sử tự mở transaction được nhận diện và giữ nguyên byte/checksum. Bộ test runner xác nhận cả SQL thường, transaction tường minh và `DO` block.
 - **P3-1–P3-25, P3-28:** đã xử lý các mục cấu hình, repo hygiene, fallback shop, unique mã đơn (migration mới có preflight và retry khi collision), giới hạn OCR, log lỗi an toàn, store write, QR secret, lỗi auth, tài liệu, quyền in, locale/email, push/OIDC state và phản hồi catalog mobile.
 - **P3-7:** giữ dưới dạng khuyến nghị kiến trúc; các route mutation đã được rà guard, chưa có lỗi route cụ thể để sửa bằng middleware toàn cục.
@@ -1073,4 +1074,14 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Thêm `tests/health-review.test.ts`: guest và owner chỉ nhận ba field công khai; Super Admin vẫn nhận đủ diagnostics và sáu count keys. Targeted test 2/2, `npm run typecheck` đạt, ESLint file test đạt.
 - CodeGraph: `src/app/api/health/route.ts GET health aiProvider counts requireSuperAdmin health review tests`; `health` search; `ensureSupabaseReadyAndSeeded setSupabaseDbClientForTests getSupabaseDbClient test route health readiness`; `codegraph status` (297 files, up-to-date); `codegraph node tests/health-review.test.ts`. Khu vực ảnh hưởng: health route contract và regression test; không đổi route/source behavior.
 - Follow-up P2-7: commit `bc92f03098a38c532c3f5b9cc8d46315e1f517ce` push main; workflow `41016611048` trên đúng SHA kết thúc `success` cho verify và deploy. Sau deploy, `/api/health` và menu shop QA đều HTTP 200.
-- P2-8 tests/docs hiện là nhóm kế tiếp chưa commit; full CI cho nhóm này chưa chạy.
+- P2-8 regression test/docs đã được push trong commit `2c3f1356ac6255aedd4acee8794907a6dfd29649`; Actions run `41017395395` trên đúng SHA kết thúc `success` cho verify và deploy. Production health và menu đều HTTP 200.
+
+## 51. P2-9: chặn E2E hướng ra host ngoài và yêu cầu xác nhận DB disposable cho test ghi (2026-10-30)
+
+- Source hiện tại đã bỏ URL/key Supabase Cloud và assert health lỗi thời từ lần sửa trước. Lượt này thêm `tests/e2e-safety.mjs`: `TEST_BASE_URL` chỉ chấp nhận HTTP origin trên `localhost`, `127.0.0.1` hoặc `::1`, không credentials/path/query/fragment. Host production, Supabase và IP private khác đều bị từ chối trước request đầu tiên.
+- Sáu nhóm có mutation (#5, #6, #7, #8, #9, #13) chỉ chạy nếu đồng thời có `E2E_ALLOW_MUTATIONS=1` và `E2E_DISPOSABLE_DATABASE=1`; mặc định chúng hiện skip với lý do rõ ràng. Các test URL/flag được thêm vào `test:unit`, nên CI hiện có chạy regression coverage cho guard.
+- `npm run test:e2e` **không chạy**: CI hiện chưa provision server/database disposable; không kết nối localhost, production, Supabase, không tạo/sửa/xóa dữ liệu và không gọi API nghiệp vụ.
+- Kiểm tra Codex: `node --test tests/e2e-safety.test.mjs` 3/3; `npm run test:unit` 137/137; `node --check` cho ba file `.mjs`, ESLint ba file và `git diff --check` đều đạt. Lần chạy unit đầu tiên bắt được annotation TypeScript còn sót trong file `.mjs`; đã bỏ annotation và chạy lại, toàn bộ 137 test thành công.
+- CodeGraph: `codegraph status` (299 file, index up-to-date); `codegraph node tests/e2e.test.mjs --offset 1 --limit 130`, các dải 125–269, 256–405, 400–533; `codegraph node tests/e2e-safety.mjs`; `codegraph node tests/e2e.test.mjs --offset 1 --limit 18`; `codegraph node tests/e2e-safety.test.mjs`. Vùng ảnh hưởng: URL target của test harness, sáu test group có side effect, `test:unit`; không sửa route, schema, migration hay workflow.
+- AGY Argon Medium run `2026-10-30T07-09-56-904Z-d67f4ac1` đọc README/ARCHITECTURE và chạy các truy vấn CodeGraph nhưng bị dừng sau các khoảng im lặng dài trước khi chỉnh file; không tính là `SUCCESS` hay implementation. Claude CLI được gọi trực tiếp với yêu cầu hẹp; gateway báo `unrecognized_model deepseek`, chạm giới hạn 2 lượt và không trả review dùng được. Codex tự thực hiện và xác minh patch.
+- **Còn mở:** dựng job CI với server và database fixture disposable rồi chạy E2E; không bật suite ghi dữ liệu trước bước đó.
