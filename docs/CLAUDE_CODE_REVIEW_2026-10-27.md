@@ -1344,3 +1344,18 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - README đã liệt kê đến `20261030000200` nhưng còn thiếu `20261030000300_admin_owner_invitation_claims.sql`. Cùng migration mới cũng được thêm vào danh sách và phạm vi trạng thái trong `ARCHITECTURE.md` và `docs/SELF_HOSTED_POSTGRES_ZITADEL.md`.
 - Migration bổ sung `profiles.owner_invite_pending`, đánh dấu các hồ sơ owner invitation cũ phù hợp và dùng trigger để chặn client tự tạo hoặc sửa cờ lời mời. Không sửa SQL hay trạng thái database.
 - **Checks:** đối chiếu thứ tự với danh sách migration thực tế; `git diff --check`. Không chạy test/build vì chỉ sửa tài liệu.
+
+## 79. Storefront theme contrast: sửa kết luận QA sai và đo lại trên production (2026-10-31)
+
+- Bản QA đầu ghi 4.23:1 nhưng dùng ngưỡng luminance tự đặt `0.45`, không đo màu chữ thực tế đã render. Kết quả đó bị hủy, không dùng để kết luận giao diện lỗi.
+- AGY Flash Low run `2026-10-30T18-18-00-534Z-c07abde0` đo DOM bằng Playwright CLI trên storefront production của tài khoản QA. CTA trang thông tin quán, tiêu đề và phụ đề sticky header của menu đều đạt **4.76:1** (WCAG AA normal text: 4.5:1). Màu nền render khớp màu theme đã chọn.
+- Network: 60 GET trả HTTP 200; một POST analytics được mock thành HTTP 204; không có mutation nghiệp vụ, request external hoặc lỗi console/page. Report đã lược thông tin nhận dạng và màu hex nằm trong thư mục AGY local.
+- CodeGraph: `codegraph status`; `codegraph explore "getAccessibleAccentTextColor getContrastTextColor storefront menu header primaryTextColor"`; `codegraph node src/lib/theme-contrast.ts`; `codegraph node 'src/app/(storefront)/s/[slug]/page.tsx' --offset 180 --limit 230`; `codegraph node 'src/app/(storefront)/s/[slug]/menu/page.tsx' --offset 780 --limit 160`; `codegraph node 'src/app/(storefront)/s/[slug]/menu/page.tsx' --offset 1025 --limit 70`. Codex đối chiếu `getContrastTextColor`/`isLightColor` và caller storefront; `tests/storefront-theme-header-review.test.ts` **6/6 PASS** với các nhóm màu khác nhau. Codex chưa chạy lại browser production độc lập; tỷ lệ live là bằng chứng từ lượt AGY.
+- Phạm vi: `src/lib/theme-contrast.ts`, storefront door CTA và menu sticky header; source không đổi. Chỉ cập nhật QA record.
+
+## 80. P2-1: regression test chặn catalog của shop chưa publish
+
+- Bổ sung test route với shop/category/item/owner sentinel tổng hợp và request anonymous. `GET /api/catalog` phải trả đúng `404 SHOP_NOT_FOUND`, không có trường `shop`, `categories`, `items`, `ownerPlan` và không lộ sentinel.
+- CodeGraph: `codegraph status`; `codegraph explore "GET /api/catalog is_published false unpublished shop owner_id projection shopId"`; `codegraph explore "catalog route publish gate tests GET SHOP_NOT_FOUND"`; `codegraph node src/app/api/catalog/route.ts --offset 160 --limit 200`; `codegraph node requireShopPermission`; `codegraph node requireAuthenticatedUser`; `codegraph callers createMockSupabaseForGetShopCatalog`; `codegraph node tests/unit.test.ts --offset 6588 --limit 160`; `codegraph node tests/unit.test.ts --offset 6740 --limit 230`. Ảnh hưởng chỉ gồm mock/test ở `tests/unit.test.ts`; route và behavior production không đổi.
+- Checks Codex: test mới qua **1/1**; `npm run test:unit` **141/141 PASS**; `npm run typecheck` PASS; `git diff --check` PASS.
+- Chưa gọi route bằng một shop unpublished thật trên production. Test xác nhận regression bằng DB mock cô lập; không tạo fixture hoặc ghi dữ liệu production.

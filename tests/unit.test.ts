@@ -6594,7 +6594,15 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
   });
 
   interface MockDbGetShopCatalogOptions {
-    shops?: Record<string, { id: string; owner_id?: string | null; name?: string }>;
+    shops?: Record<
+      string,
+      {
+        id: string;
+        owner_id?: string | null;
+        name?: string;
+        is_published?: boolean;
+      }
+    >;
     profiles?: Record<string, { id?: string; plan?: unknown } | null>;
     firstProfile?: {
       id?: string;
@@ -6947,6 +6955,77 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       );
       assert.equal(blankApiRes.status, 400);
       assert.equal((await blankApiRes.json()).code, 'SHOP_ID_REQUIRED');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('25.8b public GET /api/catalog hides unpublished shops without leaking catalog or owner data', async () => {
+    const shopId = 'shop-unpublished-review';
+    const ownerId = 'owner-unpublished-review';
+    const privateValues = {
+      shopName: 'PRIVATE_DRAFT_SHOP_SENTINEL',
+      categoryName: 'PRIVATE_DRAFT_CATEGORY_SENTINEL',
+      itemName: 'PRIVATE_DRAFT_ITEM_SENTINEL',
+      ownerEmail: 'private-draft-owner@example.test',
+      ownerPhone: '+84909999123',
+    };
+    const mockDb = createMockSupabaseForGetShopCatalog({
+      shops: {
+        [shopId]: {
+          id: shopId,
+          owner_id: ownerId,
+          name: privateValues.shopName,
+          is_published: false,
+        },
+      },
+      profiles: {
+        [ownerId]: { id: ownerId, plan: 'premium' },
+      },
+      firstProfile: {
+        id: ownerId,
+        plan: 'premium',
+        email: privateValues.ownerEmail,
+        phone: privateValues.ownerPhone,
+      },
+      categories: {
+        [shopId]: [
+          {
+            id: 'category-unpublished-review',
+            shop_id: shopId,
+            name_i18n: { vi: privateValues.categoryName },
+          } as unknown as Category,
+        ],
+      },
+      items: {
+        [shopId]: [
+          {
+            id: 'item-unpublished-review',
+            shop_id: shopId,
+            name_i18n: { vi: privateValues.itemName },
+            price: 990_000,
+          },
+        ],
+      },
+    });
+
+    try {
+      setSupabaseDbClientForTests(mockDb);
+
+      const response = await catalogGet(
+        new Request(
+          `http://localhost:3000/api/catalog?shopId=${encodeURIComponent(shopId)}`
+        )
+      );
+      assert.equal(response.status, 404);
+      const responseText = await response.clone().text();
+      assert.deepEqual(await response.json(), {
+        error: 'Không tìm thấy cửa hàng.',
+        code: 'SHOP_NOT_FOUND',
+      });
+      for (const value of Object.values(privateValues)) {
+        assert.equal(responseText.includes(value), false);
+      }
     } finally {
       setSupabaseDbClientForTests(null);
     }
