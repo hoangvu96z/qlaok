@@ -3752,6 +3752,8 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       role: 'owner',
     });
     const staffUserId = 'staff-hours-patch-test';
+    const settingsOnlyUserId = 'staff-settings-only-patch-test';
+    const bankOnlyUserId = 'staff-bank-only-patch-test';
     const strangerToken = issueSessionToken({
       id: 'stranger-hours-patch-test',
       email: 'stranger@qlaok.vn',
@@ -3765,9 +3767,33 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       full_name: 'Nhân viên Order',
       role: 'staff',
     });
+    await dbUpsertShopMembership({
+      shop_id: shopId,
+      user_id: settingsOnlyUserId,
+      email: 'settings.only@qlaok.vn',
+      role: 'staff',
+      permissions: ['settings.manage'],
+    });
+    await dbUpsertShopMembership({
+      shop_id: shopId,
+      user_id: bankOnlyUserId,
+      email: 'bank.only@qlaok.vn',
+      role: 'staff',
+      permissions: ['settings.bank'],
+    });
     const staffToken = issueSessionToken({
       id: staffUserId,
       email: 'staff.hours@qlaok.vn',
+      role: 'owner',
+    });
+    const settingsOnlyToken = issueSessionToken({
+      id: settingsOnlyUserId,
+      email: 'settings.only@qlaok.vn',
+      role: 'owner',
+    });
+    const bankOnlyToken = issueSessionToken({
+      id: bankOnlyUserId,
+      email: 'bank.only@qlaok.vn',
       role: 'owner',
     });
 
@@ -3776,6 +3802,18 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       id: shopId,
       opening_hours_confirmed: false,
       is_published: false,
+      theme_config: {
+        ...SEED_SHOPS[0].theme_config,
+        fontStyle: 'sans',
+        paymentConfig: {
+          mode: 'vietqr_auto',
+          bankId: 'MB',
+          bankName: 'MB Bank',
+          accountNumber: '123456789',
+          accountName: 'TEST ACCOUNT',
+          transferPrefix: 'QLAOK',
+        },
+      },
     };
     const recordedUpdates: Array<Record<string, unknown>> = [];
 
@@ -3991,9 +4029,132 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
         false,
         'Narrow publish patch must not overwrite opening_hours_confirmed'
       );
+
+      // 8. A settings-only member can save general settings while resending an
+      // unchanged bank block; the bank permission is only required if it changes.
+      const unchangedPaymentConfig = {
+        ...storedShop.theme_config?.paymentConfig,
+      };
+      const settingsOnlyRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${settingsOnlyToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            name: 'Tên quán đã cập nhật',
+            theme_config: { paymentConfig: unchangedPaymentConfig },
+          }),
+        })
+      );
+      assert.equal(settingsOnlyRes.status, 200);
+      assert.equal(storedShop.name, 'Tên quán đã cập nhật');
+      assert.deepEqual(
+        storedShop.theme_config?.paymentConfig,
+        unchangedPaymentConfig,
+        'Saving general settings must preserve the existing bank configuration'
+      );
+
+      // 8b. A settings-only member can re-save only theme_config when both
+      // the general theme and bank blocks are unchanged.
+      const unchangedThemeOnlyRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${settingsOnlyToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            theme_config: {
+              fontStyle: 'sans',
+              paymentConfig: unchangedPaymentConfig,
+            },
+          }),
+        })
+      );
+      assert.equal(unchangedThemeOnlyRes.status, 200);
+
+      // 9. A settings-only member cannot change bank details.
+      const updatesBeforeDeniedBankChange = recordedUpdates.length;
+      const deniedBankChangeRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${settingsOnlyToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            theme_config: {
+              paymentConfig: {
+                ...unchangedPaymentConfig,
+                accountNumber: '987654321',
+              },
+            },
+          }),
+        })
+      );
+      assert.equal(deniedBankChangeRes.status, 403);
+      assert.equal(recordedUpdates.length, updatesBeforeDeniedBankChange);
+      assert.equal(
+        storedShop.theme_config?.paymentConfig?.accountNumber,
+        '123456789'
+      );
+
+      // 10. A bank-only member can update bank details without settings.manage.
+      const bankOnlyRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bankOnlyToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            theme_config: {
+              paymentConfig: {
+                ...unchangedPaymentConfig,
+                accountNumber: '987654321',
+              },
+            },
+          }),
+        })
+      );
+      assert.equal(bankOnlyRes.status, 200);
+      assert.equal(
+        storedShop.theme_config?.paymentConfig?.accountNumber,
+        '987654321'
+      );
+
+      // 11. Bank-only members cannot update general shop settings.
+      const updatesBeforeDeniedGeneralChange = recordedUpdates.length;
+      const deniedGeneralChangeRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bankOnlyToken}`,
+          },
+          body: JSON.stringify({
+            id: shopId,
+            name: 'Không được phép đổi tên',
+            theme_config: {
+              paymentConfig: { ...storedShop.theme_config?.paymentConfig },
+            },
+          }),
+        })
+      );
+      assert.equal(deniedGeneralChangeRes.status, 403);
+      assert.equal(recordedUpdates.length, updatesBeforeDeniedGeneralChange);
+      assert.equal(storedShop.name, 'Tên quán đã cập nhật');
     } finally {
       setSupabaseDbClientForTests(null);
       await dbDeleteShopMembership(shopId, staffUserId);
+      await dbDeleteShopMembership(shopId, settingsOnlyUserId);
+      await dbDeleteShopMembership(shopId, bankOnlyUserId);
     }
   });
 
