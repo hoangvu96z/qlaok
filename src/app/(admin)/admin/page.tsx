@@ -52,6 +52,7 @@ import {
   type TableColumn,
 } from '@/components/ui/AppDataTable';
 import { formatCurrency } from '@/lib/i18n-helper';
+import { buildAdminOrderCancellationPayload } from '@/lib/admin-order-actions';
 import type {
   AnalyticsEvent,
   CatalogItem,
@@ -1028,6 +1029,48 @@ export default function SuperAdminPortalPage() {
     },
   ];
 
+  const submitAdminOrderCancellation = (
+    order: EnrichedOrder,
+    cancelledReason: string,
+    refundReason?: string
+  ) => {
+    const result = buildAdminOrderCancellationPayload({
+      orderId: order.id,
+      paymentStatus: order.payment_status,
+      cancelledReason,
+      refundReason,
+    });
+    if (!result.ok) {
+      const message =
+        result.code === 'CANCEL_REASON_REQUIRED'
+          ? tx('Vui lòng nhập lý do hủy đơn.', 'Enter a cancellation reason.')
+          : result.code === 'REFUND_REASON_REQUIRED'
+            ? tx('Vui lòng nhập lý do hoàn tiền.', 'Enter a refund reason.')
+            : result.code === 'REASON_TOO_LONG'
+              ? tx(
+                  'Mỗi lý do không được vượt quá 500 ký tự.',
+                  'Each reason must be 500 characters or fewer.'
+                )
+              : tx('Không tìm thấy mã đơn.', 'Order ID is missing.');
+      showToastMessage('error', message);
+      return;
+    }
+
+    const successMessage =
+      order.payment_status === 'paid'
+        ? tx(
+            'Đã ghi nhận hoàn tiền và hủy đơn #{code}',
+            'Refund recorded and order #{code} cancelled',
+            { code: order.order_code }
+          )
+        : tx(
+            'Đã hủy đơn #{code} và hoàn tồn kho',
+            'Cancelled order #{code} and restored stock',
+            { code: order.order_code }
+          );
+    runAdminAction(result.payload, successMessage);
+  };
+
   const orderColumns: TableColumn<EnrichedOrder>[] = [
     {
       id: 'order_code',
@@ -1181,23 +1224,58 @@ export default function SuperAdminPortalPage() {
                   tx('Nhập lý do hủy đơn', 'Enter a reason for cancelling this order')
                 )?.trim();
                 if (!cancelledReason) return;
-                runAdminAction(
-                  {
-                    action: 'update_order_status',
-                    orderId: order.id,
-                    status: 'cancelled',
-                    cancelled_reason: cancelledReason,
-                  },
-                  tx(
-                    'Đã hủy đơn #{code} và hoàn tồn kho',
-                    'Cancelled order #{code} and restored stock',
-                    { code: order.order_code }
-                  )
-                );
+                submitAdminOrderCancellation(order, cancelledReason);
               }}
               className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-500/20"
             >
               {t('common.cancel')}
+            </button>
+          )}
+          {order.status !== 'cancelled' && order.payment_status === 'paid' && (
+            <button
+              type="button"
+              disabled={actionBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                const refundReason = window.prompt(
+                  tx(
+                    'Nhập lý do hoàn tiền đã thực hiện cho khách',
+                    'Enter the reason for the refund already issued to the customer'
+                  )
+                )?.trim();
+                if (!refundReason) return;
+
+                const cancelledReason = window.prompt(
+                  tx(
+                    'Nhập lý do hủy đơn',
+                    'Enter a reason for cancelling this order'
+                  )
+                )?.trim();
+                if (!cancelledReason) return;
+
+                const amount = formatCurrency(
+                  order.total_amount,
+                  'VND',
+                  locale
+                );
+                const confirmed = window.confirm(
+                  tx(
+                    'Xác nhận đã hoàn {amount} cho đơn #{code} và hủy đơn? Thao tác này chỉ ghi nhận trong Qlaok, không chuyển tiền. Chỉ tiếp tục sau khi bạn đã hoàn tiền cho khách.',
+                    'Confirm that {amount} has already been refunded for order #{code} and cancel it? This only records the refund in Qlaok and does not transfer money. Continue only after the customer has been refunded.',
+                    { amount, code: order.order_code }
+                  )
+                );
+                if (!confirmed) return;
+
+                submitAdminOrderCancellation(
+                  order,
+                  cancelledReason,
+                  refundReason
+                );
+              }}
+              className="rounded-lg border border-rose-600/40 bg-rose-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-rose-700"
+            >
+              {tx('Ghi nhận hoàn & hủy', 'Record refund & cancel')}
             </button>
           )}
         </div>
