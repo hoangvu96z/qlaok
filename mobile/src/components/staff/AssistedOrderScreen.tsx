@@ -489,16 +489,18 @@ export const AssistedOrderScreen = memo(function AssistedOrderScreen({
             const requiredOptionsCount = (item.options_json || []).filter((g) => g.required).length;
 
             return (
-              <TouchableOpacity
+              <View
                 style={[
                   compStyles.itemCard,
                   { backgroundColor: theme.card, borderColor: theme.border },
                 ]}
-                onPress={() => handleOpenItemConfig(item)}
-                accessibilityRole="button"
-                accessibilityLabel={`${itemName}, ${formatVndPreview(item.price)}`}
               >
-                <View style={compStyles.itemInfoCol}>
+                <TouchableOpacity
+                  style={compStyles.itemInfoCol}
+                  onPress={() => handleOpenItemConfig(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${itemName}, ${formatVndPreview(item.price)}`}
+                >
                   <View style={compStyles.itemNameRow}>
                     <Text style={[compStyles.itemNameText, { color: theme.text }]}>
                       {itemName}
@@ -521,7 +523,7 @@ export const AssistedOrderScreen = memo(function AssistedOrderScreen({
                   ) : null}
 
                   <Text style={compStyles.itemPriceText}>{formatVndPreview(item.price)}</Text>
-                </View>
+                </TouchableOpacity>
 
                 <TouchableOpacity
                   style={compStyles.itemAddBtn}
@@ -532,7 +534,7 @@ export const AssistedOrderScreen = memo(function AssistedOrderScreen({
                   <Ionicons name="add" size={18} color="#ffffff" />
                   <Text style={compStyles.itemAddBtnText}>{tb('Chọn', 'Add')}</Text>
                 </TouchableOpacity>
-              </TouchableOpacity>
+              </View>
             );
           }}
         />

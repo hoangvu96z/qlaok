@@ -640,4 +640,8 @@ test('AssistedOrderScreen source inspection: adheres to UI requirements, error h
   assert.match(componentSource, /validateItemRequiredOptions/);
   assert.match(componentSource, /getDefaultOptionChoices/);
   assert.match(componentSource, /toggleOptionChoice/);
+
+  // 8. Catalog item card does not nest interactive TouchableOpacity buttons
+  assert.match(componentSource, /<View[^>]*compStyles\.itemCard/);
+  assert.doesNotMatch(componentSource, /<TouchableOpacity[^>]*compStyles\.itemCard/);
 });
