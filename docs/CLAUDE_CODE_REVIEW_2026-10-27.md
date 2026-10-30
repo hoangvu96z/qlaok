@@ -1214,3 +1214,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Analytics storefront được mock `POST /api/analytics/track` thành HTTP 204; không phát sinh analytics production. Không gọi API đơn hàng, thanh toán, bàn hay dịch vụ; không sửa bài có trước.
 - Codex xác minh độc lập bằng GET production, không dùng bearer: `GET /api/posts` trả HTTP 400 `SHOP_ID_REQUIRED`; `GET /api/shops?slug=test-shop-1` và `GET /api/posts?shopId=…` đều HTTP 200; danh sách cuối rỗng (`postsCount=0`). Không ghi shop ID vào log.
 - Evidence đã lược tại `.agy-runs/qa/storefront-post-lifecycle-p2-2-2026-10-30.md` (mode `0600`). Không thay đổi source hoặc test; `git diff --check` đạt. QA chưa bao phủ shop có bài đăng tồn tại trước đó hoặc các thao tác khác trên dashboard bài viết.
+
+## 66. CI E2E PostgreSQL readiness race (2026-10-30)
+
+- Commit tài liệu `8b675e8d2c0631f1c4905ca1a2116881650dc037` được đẩy lên `main`; GitHub Actions run `41061624182` chạy đúng SHA. Cài đặt, typecheck, unit/review/SQL/DB-reset và mobile tests đều pass. E2E fail trước bước migration với `psql` không kết nối được Unix socket; build và deploy bị skip.
+- CodeGraph: `codegraph status`; `codegraph explore "scripts/run-e2e-ci.sh postgres Docker disposable database psql socket connection startup readiness"`. Script `.sh` không được index nên được đọc trực tiếp theo ngoại lệ file chưa index. Vùng ảnh hưởng: chỉ readiness loop của disposable PostgreSQL dùng bởi E2E CI.
+- Nguyên nhân: `pg_isready` không truyền host dò Unix socket. Official Postgres Docker entrypoint dùng server tạm chỉ nghe socket trong giai đoạn init, nên probe có thể báo sẵn sàng trước server TCP cuối cùng; log xác nhận `psql` lỗi ngay sau lúc container image được tải. Xem [entrypoint của official image](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh).
+- Đã đổi probe thành `pg_isready -h 127.0.0.1 -U postgres -d "$db_name"` để đợi server TCP chính trước bootstrap SQL. AGY Flash Low review run `2026-10-30T13-18-06-715Z-46490cfc` xác nhận thay đổi tối thiểu. `bash -n scripts/run-e2e-ci.sh` và `git diff --check` đạt.
+- E2E chưa chạy lại tại máy local vì Docker CLI không cài đặt. Cần xác nhận E2E, build và deploy trên workflow mới; production chưa cập nhật bản sửa tại thời điểm ghi mục này.

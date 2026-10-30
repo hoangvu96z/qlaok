@@ -41,7 +41,7 @@ docker run -d \
   postgres:14 -c wal_level=logical >/dev/null
 
 for attempt in $(seq 1 60); do
-  if docker exec "$db_container" pg_isready -U postgres -d "$db_name" >/dev/null 2>&1; then
+  if docker exec "$db_container" pg_isready -h 127.0.0.1 -U postgres -d "$db_name" >/dev/null 2>&1; then
     break
   fi
   if [[ "$attempt" == 60 ]]; then
