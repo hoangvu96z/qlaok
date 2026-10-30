@@ -110,10 +110,12 @@ export function VerticalRenderer({
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
                   return (
-                    <div
-                      key={item.id}
-                      onClick={() => !unavailable && onSelectItem(item)}
-                      className={`group relative flex items-center justify-between gap-3.5 rounded-2xl border bg-white p-3.5 shadow-xs transition-all ${
+                    <div key={item.id} className="relative">
+                      <button
+                        type="button"
+                        disabled={unavailable}
+                        onClick={() => onSelectItem(item)}
+                        className={`group relative flex w-full items-center justify-between gap-3.5 rounded-2xl border bg-white p-3.5 text-left shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${
                         unavailable
                           ? 'border-slate-200 opacity-55 cursor-not-allowed'
                           : 'border-slate-200/90 hover:border-slate-300 hover:shadow-md cursor-pointer active:scale-[0.99]'
@@ -212,18 +214,19 @@ export function VerticalRenderer({
                             🍜
                           </div>
                         )}
-                        {!unavailable && (
-                          <button
-                            type="button"
-                            onClick={(e) => onQuickAdd(item, e)}
-                            className="absolute -bottom-1.5 -right-1.5 flex h-8 w-8 items-center justify-center rounded-full shadow-md ring-2 ring-white transition-transform active:scale-90"
-                            style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
-                            aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
-                          >
-                            <Plus className="h-4 w-4" />
-                          </button>
-                        )}
                       </div>
+                      </button>
+                      {!unavailable && (
+                        <button
+                          type="button"
+                          onClick={(e) => onQuickAdd(item, e)}
+                          className="absolute bottom-2 right-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-md ring-2 ring-white transition-transform active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                          style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
+                          aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -236,10 +239,12 @@ export function VerticalRenderer({
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
                   return (
-                    <div
-                      key={item.id}
-                      onClick={() => !unavailable && onSelectItem(item)}
-                      className={`p-4 transition-colors ${
+                    <div key={item.id} className="relative">
+                      <button
+                        type="button"
+                        disabled={unavailable}
+                        onClick={() => onSelectItem(item)}
+                        className={`w-full p-4 pr-12 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500 ${
                         unavailable
                           ? 'opacity-50 cursor-not-allowed bg-slate-50'
                           : 'hover:bg-slate-50/80 cursor-pointer'
@@ -285,17 +290,6 @@ export function VerticalRenderer({
                           >
                             {formatCurrency(item.price, currency)}
                           </span>
-                          {!unavailable && (
-                            <button
-                              type="button"
-                              onClick={(e) => onQuickAdd(item, e)}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg shadow-xs active:scale-90"
-                              style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
-                              aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
-                            >
-                              <Plus className="h-3.5 w-3.5" />
-                            </button>
-                          )}
                         </div>
                       </div>
 
@@ -331,6 +325,18 @@ export function VerticalRenderer({
                           ))}
                         </div>
                       )}
+                      </button>
+                      {!unavailable && (
+                        <button
+                          type="button"
+                          onClick={(e) => onQuickAdd(item, e)}
+                          className="absolute right-4 top-4 z-10 flex h-7 w-7 items-center justify-center rounded-lg shadow-xs active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                          style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
+                          aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -343,10 +349,12 @@ export function VerticalRenderer({
                 {catItems.map((item) => {
                   const unavailable = !item.is_available;
                   return (
-                    <div
-                      key={item.id}
-                      onClick={() => !unavailable && onSelectItem(item)}
-                      className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-xs transition-all ${
+                    <div key={item.id} className="relative">
+                      <button
+                        type="button"
+                        disabled={unavailable}
+                        onClick={() => onSelectItem(item)}
+                        className={`group flex w-full flex-col overflow-hidden rounded-2xl border bg-white text-left shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${
                         unavailable
                           ? 'border-slate-200 opacity-55 cursor-not-allowed'
                           : 'border-slate-200 hover:shadow-md cursor-pointer active:scale-[0.99]'
@@ -420,7 +428,7 @@ export function VerticalRenderer({
                           )}
                         </div>
 
-                        <div className="flex items-center justify-between pt-1">
+                        <div className="flex items-center justify-between pt-1 pr-10">
                           <div>
                             <div
                               className="text-sm font-extrabold"
@@ -436,19 +444,20 @@ export function VerticalRenderer({
                               )}
                           </div>
 
-                          {!unavailable && (
-                            <button
-                              type="button"
-                              onClick={(e) => onQuickAdd(item, e)}
-                              className="flex h-7 w-7 items-center justify-center rounded-full shadow-xs active:scale-90"
-                              style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
-                              aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
-                            >
-                              <ShoppingBag className="h-3.5 w-3.5" />
-                            </button>
-                          )}
                         </div>
                       </div>
+                      </button>
+                      {!unavailable && (
+                        <button
+                          type="button"
+                          onClick={(e) => onQuickAdd(item, e)}
+                          className="absolute bottom-3 right-3 z-10 flex h-7 w-7 items-center justify-center rounded-full shadow-xs active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                          style={{ backgroundColor: primaryColor, color: accentOnPrimaryColor }}
+                          aria-label={`${labels.addToOrder}: ${tField(item.name_i18n, locale)}`}
+                        >
+                          <ShoppingBag className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
