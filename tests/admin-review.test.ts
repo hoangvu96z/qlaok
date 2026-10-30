@@ -1553,3 +1553,61 @@ test('POST /api/admin approve_transaction validates payment amount and maps RPC/
     }
   }
 });
+
+test('POST /api/admin update_order_status rejects marking fulfillment completed as paid before loading the order', async () => {
+  const readinessCalls: string[] = [];
+  const mockDb = {
+    from(table: string) {
+      readinessCalls.push(`from:${table}`);
+      return {
+        select(columns: string) {
+          readinessCalls.push(`select:${columns}`);
+          return {
+            limit(count: number) {
+              readinessCalls.push(`limit:${count}`);
+              return Promise.resolve({ data: [{ id: 'ready-shop' }], error: null });
+            },
+          };
+        },
+      };
+    },
+  };
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+
+  setSupabaseDbClientForTests(mockDb as never);
+  try {
+    const response = await adminPost(
+      new Request('http://localhost/api/admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({
+          action: 'update_order_status',
+          orderId: 'order-fixture-001',
+          status: 'completed',
+          payment_status: 'paid',
+        }),
+      })
+    );
+
+    assert.equal(response.status, 400);
+    assert.equal(
+      (await response.json()).code,
+      'PAYMENT_STATUS_REQUIRES_VERIFIED_TRANSACTION'
+    );
+    assert.deepEqual(readinessCalls, [
+      'from:shops',
+      'select:id',
+      'limit:1',
+    ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
