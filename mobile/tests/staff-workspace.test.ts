@@ -1989,3 +1989,395 @@ test('Catalog mobile reload fallback: falls back to parent onReloadShopData if s
   );
   assert.equal(reloadShopCalls[0], 'shop-1');
 });
+
+test('P3-25 regression: CatalogTab keeps canonical server price authoritative and preserves Quick Add drafts on malformed or non-2xx responses', async () => {
+  type VNode = {
+    type: unknown;
+    props: Record<string, unknown>;
+  };
+
+  const states: unknown[] = [];
+  let cursor = 0;
+
+  const statefulReact = {
+    memo: (fn: unknown) => fn,
+    useRef<T>(initial: T): { current: T } {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] = { current: initial };
+      }
+      return states[idx] as { current: T };
+    },
+    useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+      const idx = cursor++;
+      if (!(idx in states)) {
+        states[idx] =
+          typeof initial === 'function' ? (initial as () => T)() : initial;
+      }
+      const setState = (next: T | ((prev: T) => T)) => {
+        const prev = states[idx] as T;
+        states[idx] =
+          typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
+      };
+      return [states[idx] as T, setState];
+    },
+    createElement(
+      type: unknown,
+      props: Record<string, unknown> | null,
+      ...children: unknown[]
+    ): VNode {
+      const flat = children.flat();
+      return {
+        type,
+        props: {
+          ...(props || {}),
+          children:
+            flat.length === 0 ? undefined : flat.length === 1 ? flat[0] : flat,
+        },
+      };
+    },
+  };
+
+  function findNodes(
+    node: unknown,
+    predicate: (vnode: VNode) => boolean,
+    acc: VNode[] = []
+  ): VNode[] {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      for (const c of node) findNodes(c, predicate, acc);
+      return acc;
+    }
+    const vnode = node as VNode;
+    if ('type' in vnode && 'props' in vnode && vnode.props) {
+      if (predicate(vnode)) acc.push(vnode);
+      if (vnode.props.children) findNodes(vnode.props.children, predicate, acc);
+    }
+    return acc;
+  }
+
+  function extractText(node: unknown): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (typeof node === 'object' && 'props' in (node as VNode)) {
+      return extractText((node as VNode).props?.children);
+    }
+    return '';
+  }
+
+  const alerts: Array<{ title: string; message?: string }> = [];
+  let postHandler: (body: {
+    action?: string;
+    item: { price?: number; [key: string]: unknown };
+    [key: string]: unknown;
+  }) => Promise<Response> = async () =>
+    new Response(JSON.stringify({}), { status: 200 });
+
+  const { CatalogTab } = loadMobileTsxExports<{
+    CatalogTab: (props: Record<string, unknown>) => VNode;
+  }>('src/components/tabs/CatalogTab.tsx', {
+    react: statefulReact,
+    'react-native': {
+      Alert: {
+        alert: (title: string, message?: string) => {
+          alerts.push({ title, message });
+        },
+      },
+      ScrollView: 'ScrollView',
+      Switch: 'Switch',
+      Text: 'Text',
+      TextInput: 'TextInput',
+      TouchableOpacity: 'TouchableOpacity',
+      View: 'View',
+    },
+    '../../lib/supabase': {
+      formatVnd: (n: number) => `${n}đ`,
+      fetchApi: async (endpoint: string, init?: RequestInit) => {
+        if (!init?.method || init.method === 'GET') {
+          return new Response(
+            JSON.stringify({ items: parentItems }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const parsed = init.body ? JSON.parse(String(init.body)) : {};
+        return postHandler(parsed);
+      },
+    },
+    '../../styles/mobileStyles': {
+      styles: new Proxy({}, { get: () => ({}) }),
+    },
+    '../MobileI18nProvider': {
+      useMobileI18n: () => ({
+        locale: 'vi',
+        t: (k: string) => k,
+        tb: (vi: string, en?: string) => vi || en || '',
+      }),
+    },
+  });
+
+  let parentItems = [
+    {
+      id: 'item-1',
+      shop_id: 'shop-1',
+      category_id: 'cat-1',
+      name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+      price: 50000,
+      stock_quantity: 10,
+      is_available: true,
+    },
+  ];
+
+  const setParentItems = (
+    updater:
+      | typeof parentItems
+      | ((prev: typeof parentItems) => typeof parentItems)
+  ) => {
+    parentItems =
+      typeof updater === 'function' ? updater(parentItems) : updater;
+  };
+
+  const renderCatalogTab = () => {
+    cursor = 0;
+    return CatalogTab({
+      activeShop: { id: 'shop-1', name: 'Quán Phở 1' },
+      categories: [
+        {
+          id: 'cat-1',
+          shop_id: 'shop-1',
+          name_i18n: { vi: 'Món chính', en: 'Main' },
+          sort_order: 1,
+          is_active: true,
+        },
+      ],
+      items: parentItems,
+      setItems: setParentItems,
+      canManageCatalog: true,
+      canAdjustInventory: true,
+      theme: {
+        bg: '#fff',
+        card: '#fff',
+        subCard: '#f4f4f4',
+        text: '#000',
+        subText: '#666',
+        border: '#eee',
+      },
+    });
+  };
+
+  let tree = renderCatalogTab();
+
+  // 1. Authoritative price response: optimistic delta +5000 -> 55000, but server returns canonical 58000
+  postHandler = async (body) => {
+    assert.equal(body.action, 'upsert_item');
+    assert.equal(body.item.price, 55000);
+    return new Response(
+      JSON.stringify({
+        item: {
+          id: 'item-1',
+          shop_id: 'shop-1',
+          category_id: 'cat-1',
+          name_i18n: { vi: 'Phở Bò', en: 'Beef Pho' },
+          price: 58000, // Canonical server price differs from optimistic value
+          stock_quantity: 10,
+          is_available: true,
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  const plus5kBtn = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5k'
+  )[0];
+  assert.ok(plus5kBtn, '+5k price adjustment button must exist');
+  await (plus5kBtn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(
+    parentItems[0].price,
+    58000,
+    'Item price must reflect canonical server price (58000) rather than optimistic price (55000)'
+  );
+  assert.equal(alerts.length, 0, 'No alert should be shown on successful price update');
+
+  // Re-render so tree reflects the updated parentItems (price: 58000)
+  tree = renderCatalogTab();
+  const plus5kBtn2 = findNodes(
+    tree,
+    (n) => n.type === 'TouchableOpacity' && extractText(n).trim() === '+5k'
+  )[0];
+
+  // 2. Price update non-success/malformed: rolls back to previous price and shows safe generic error
+  postHandler = async () =>
+    new Response(
+      JSON.stringify({ error: 'SQL_ERROR: raw database error payload' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+
+  await (plus5kBtn2.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(
+    parentItems[0].price,
+    58000,
+    'Price must roll back to authoritative price on failure'
+  );
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].title, 'catalog.errPriceTitle');
+  assert.equal(alerts[0].message, 'common.tryAgain');
+  assert.ok(
+    !alerts[0].message?.includes('SQL_ERROR'),
+    'Never show raw server payloads on price failure'
+  );
+
+  // 3. Quick Add: enter drafts (name, price, stock)
+  tree = renderCatalogTab();
+  let textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(textInputs.length, 3, 'Must render name, price, and stock text inputs');
+  (textInputs[0].props.onChangeText as (v: string) => void)('Bún Chả Hà Nội');
+  (textInputs[1].props.onChangeText as (v: string) => void)('45000');
+  (textInputs[2].props.onChangeText as (v: string) => void)('20');
+
+  tree = renderCatalogTab();
+  textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(textInputs[0].props.value, 'Bún Chả Hà Nội');
+  assert.equal(textInputs[1].props.value, '45000');
+  assert.equal(textInputs[2].props.value, '20');
+
+  const addBtn = findNodes(
+    tree,
+    (n) =>
+      n.type === 'TouchableOpacity' &&
+      extractText(n).includes('catalog.addBtn')
+  )[0];
+  assert.ok(addBtn, 'Quick Add button must exist');
+
+  // 4. Quick Add: HTTP 200 with malformed payload (missing valid item)
+  // Must preserve drafts, NOT append invalid item, and show alert
+  postHandler = async () =>
+    new Response(JSON.stringify({ ok: true, item: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  await (addBtn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  tree = renderCatalogTab();
+  assert.equal(parentItems.length, 1, 'Malformed 200 must not append invalid item');
+  assert.equal(alerts.length, 2);
+  assert.equal(alerts[1].title, 'catalog.errAddItemTitle');
+  assert.equal(alerts[1].message, 'common.tryAgain');
+
+  textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(
+    textInputs[0].props.value,
+    'Bún Chả Hà Nội',
+    'Draft name must be preserved on malformed 200 Quick Add'
+  );
+  assert.equal(
+    textInputs[1].props.value,
+    '45000',
+    'Draft price must be preserved on malformed 200 Quick Add'
+  );
+  assert.equal(
+    textInputs[2].props.value,
+    '20',
+    'Draft stock must be preserved on malformed 200 Quick Add'
+  );
+
+  // 5. Quick Add: non-2xx response (HTTP 500 with raw server error message)
+  // Must preserve drafts, show generic alert, and never display raw server text
+  postHandler = async () =>
+    new Response(
+      JSON.stringify({ error: 'DB_DUPLICATE_KEY: item already exists in shop_id' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+
+  await (addBtn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  tree = renderCatalogTab();
+  assert.equal(parentItems.length, 1, 'Non-2xx must not append item');
+  assert.equal(alerts.length, 3);
+  assert.equal(alerts[2].title, 'catalog.errAddItemTitle');
+  assert.equal(alerts[2].message, 'common.tryAgain');
+  assert.ok(
+    !alerts[2].message?.includes('DB_DUPLICATE_KEY'),
+    'Do not display raw server error text'
+  );
+
+  textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(
+    textInputs[0].props.value,
+    'Bún Chả Hà Nội',
+    'Draft name must be preserved on non-2xx Quick Add'
+  );
+  assert.equal(
+    textInputs[1].props.value,
+    '45000',
+    'Draft price must be preserved on non-2xx Quick Add'
+  );
+  assert.equal(
+    textInputs[2].props.value,
+    '20',
+    'Draft stock must be preserved on non-2xx Quick Add'
+  );
+
+  // 6. Quick Add: fetchApi throwing network error
+  postHandler = async () => {
+    throw new Error('ECONNRESET: low-level socket failure');
+  };
+
+  await (addBtn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  tree = renderCatalogTab();
+  assert.equal(parentItems.length, 1, 'Network error must not append item');
+  assert.equal(alerts.length, 4);
+  assert.equal(alerts[3].title, 'catalog.errAddItemTitle');
+  assert.equal(alerts[3].message, 'common.tryAgain');
+  assert.ok(
+    !alerts[3].message?.includes('ECONNRESET'),
+    'Do not display raw network error message'
+  );
+
+  textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(
+    textInputs[0].props.value,
+    'Bún Chả Hà Nội',
+    'Draft name must be preserved on network error'
+  );
+
+  // 7. Quick Add: successful 200 with valid item clears drafts and appends item
+  postHandler = async () =>
+    new Response(
+      JSON.stringify({
+        item: {
+          id: 'item-2',
+          shop_id: 'shop-1',
+          category_id: 'cat-1',
+          name_i18n: { vi: 'Bún Chả Hà Nội', en: 'Bún Chả Hà Nội' },
+          price: 45000,
+          stock_quantity: 20,
+          is_available: true,
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+
+  await (addBtn.props.onPress as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 10));
+
+  tree = renderCatalogTab();
+  assert.equal(parentItems.length, 2, 'Successful Quick Add must append item');
+  assert.equal(parentItems[1].id, 'item-2');
+  assert.equal(parentItems[1].price, 45000);
+
+  textInputs = findNodes(tree, (n) => n.type === 'TextInput');
+  assert.equal(textInputs[0].props.value, '', 'Draft name must be cleared on success');
+  assert.equal(textInputs[1].props.value, '', 'Draft price must be cleared on success');
+  assert.equal(textInputs[2].props.value, '', 'Draft stock must be cleared on success');
+});

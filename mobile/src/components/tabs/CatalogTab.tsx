@@ -210,6 +210,9 @@ export const CatalogTab = memo(function CatalogTab({
           },
         }),
       });
+      if (!response.ok) {
+        throw new Error();
+      }
       const payload = (await response.json().catch(() => null)) as
         | { item?: MobileCatalogItem }
         | null;
@@ -218,18 +221,20 @@ export const CatalogTab = memo(function CatalogTab({
         payload.item.id !== item.id ||
         !Number.isFinite(Number(payload.item.price))
       ) {
-        throw new Error(t('common.tryAgain'));
+        throw new Error();
       }
       setItems((prev) =>
         prev.map((current) =>
-          current.id === item.id ? { ...current, ...payload.item! } : current
+          current.id === item.id
+            ? { ...current, ...payload.item!, price: Number(payload.item!.price) }
+            : current
         )
       );
-    } catch (error) {
+    } catch {
       setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)));
       Alert.alert(
         t('catalog.errPriceTitle'),
-        error instanceof Error ? error.message : t('common.tryAgain')
+        t('common.tryAgain')
       );
       void reloadCatalogItemsSilently(activeShop?.id ?? item.shop_id);
     }
@@ -348,20 +353,23 @@ export const CatalogTab = memo(function CatalogTab({
         }),
       });
       if (res.ok) {
-        const data = await res.json();
-        if (!data.item || typeof data.item.id !== 'string') {
-          throw new Error(t('common.tryAgain'));
+        const data = (await res.json().catch(() => null)) as
+          | { item?: MobileCatalogItem }
+          | null;
+        if (!data?.item || typeof data.item.id !== 'string') {
+          throw new Error();
         }
-        setItems((prev) => [...prev, data.item]);
+        setItems((prev) => [...prev, data.item!]);
         setNewItemName('');
         setNewItemPrice('');
         setNewItemStock('');
         return;
       }
-    } catch (error) {
+      throw new Error();
+    } catch {
       Alert.alert(
         t('catalog.errAddItemTitle'),
-        error instanceof Error ? error.message : t('common.tryAgain')
+        t('common.tryAgain')
       );
     } finally {
       setIsAddingItem(false);
