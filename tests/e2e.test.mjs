@@ -573,6 +573,7 @@ test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Anal
       shop_id: shopId,
       order_id: createdOrder.id,
       status: "cancelled",
+      cancelled_reason: "E2E disposable inventory restoration check",
     }),
   });
   assert.equal(cancelRes.status, 200);
