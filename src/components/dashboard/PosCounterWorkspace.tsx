@@ -196,6 +196,16 @@ function hydratePosLinesFromOrder(
   });
 }
 
+export type PosNumpadMode = 'qty' | 'disc' | 'price';
+
+/** Percent discount and custom price both require `canApplyDiscount`. */
+export function isNumpadModeAllowed(
+  mode: PosNumpadMode,
+  canApplyDiscount: boolean
+): boolean {
+  return mode === 'qty' || canApplyDiscount;
+}
+
 export function PosCounterWorkspace({
   shop,
   accountId,
@@ -334,7 +344,13 @@ export function PosCounterWorkspace({
   }, [editingOrder?.id]);
 
   // Numpad State ('qty' | 'disc' | 'price')
-  const [numpadMode, setNumpadMode] = useState<'qty' | 'disc' | 'price'>('qty');
+  const [numpadMode, setNumpadMode] = useState<PosNumpadMode>('qty');
+
+  useEffect(() => {
+    if (!isNumpadModeAllowed(numpadMode, canApplyDiscount)) {
+      setNumpadMode('qty');
+    }
+  }, [canApplyDiscount, numpadMode]);
   const [numpadBuffer, setNumpadBuffer] = useState<string>('');
 
   // Option & Topping Modal State (when adding a dish with options or editing an existing line's options)
@@ -766,7 +782,7 @@ export function PosCounterWorkspace({
   // Handle POS Numpad Key Press
   const handleNumpadKey = (key: string) => {
     if (!selectedLine) return;
-    if (numpadMode === 'disc' && !canApplyDiscount) return;
+    if (!isNumpadModeAllowed(numpadMode, canApplyDiscount)) return;
 
     if (key === 'BACKSPACE') {
       const nextBuf = numpadBuffer.slice(0, -1);
@@ -1816,17 +1832,19 @@ export function PosCounterWorkspace({
                   {digit}
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={() => setNumpadMode('price')}
-                className={`py-2.5 text-xs font-black transition ${
-                  numpadMode === 'price'
-                    ? 'bg-sky-600 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                }`}
-              >
-                {tx('Giá', 'Price')}
-              </button>
+              {canApplyDiscount && (
+                <button
+                  type="button"
+                  onClick={() => setNumpadMode('price')}
+                  className={`py-2.5 text-xs font-black transition ${
+                    numpadMode === 'price'
+                      ? 'bg-sky-600 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  {tx('Giá', 'Price')}
+                </button>
+              )}
 
               <button
                 type="button"

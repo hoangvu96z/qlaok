@@ -181,7 +181,7 @@ export function QuickItemRow({
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
-    if (!file || !onUpdateImage || uploadingPhotoRef.current) {
+    if (!file || !canManageCatalog || !onUpdateImage || uploadingPhotoRef.current) {
       e.target.value = '';
       return;
     }
@@ -267,61 +267,83 @@ export function QuickItemRow({
             />
           </label>
 
-          {/* Clickable Image Thumbnail with 1-Tap Upload Overlay */}
-          <label
-            title={tx(
-              'Bấm để tải lên hoặc đổi ảnh món',
-              'Click to upload or change item photo'
-            )}
-            aria-busy={uploadingPhoto}
-            aria-disabled={uploadingPhoto}
-            className={`group relative h-11 w-11 sm:h-12 sm:w-12 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 ${
-              uploadingPhoto ? 'cursor-wait pointer-events-none' : 'cursor-pointer'
-            }`}
-          >
-            {hasValidImage ? (
-              <img
-                src={item.image_url!}
-                alt={item.name_i18n.vi}
-                onError={() => setImgBroken(true)}
-                className="h-full w-full object-cover transition group-hover:scale-105"
-              />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center text-slate-400">
-                <Camera className="h-4 w-4 text-emerald-600" />
-              </div>
-            )}
-
-            <span className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-slate-900/70 py-0.5 text-[8px] font-bold text-white opacity-0 group-hover:opacity-100 transition-opacity">
-              {uploadingPhoto ? (
-                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+          {!canManageCatalog && (
+            <div
+              data-testid="item-thumbnail-preview"
+              className="relative h-11 w-11 sm:h-12 sm:w-12 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+            >
+              {hasValidImage ? (
+                <img
+                  src={item.image_url!}
+                  alt={item.name_i18n.vi}
+                  onError={() => setImgBroken(true)}
+                  className="h-full w-full object-cover"
+                />
               ) : (
-                <Camera className="h-2.5 w-2.5 text-emerald-400" />
+                <div className="flex h-full w-full flex-col items-center justify-center text-slate-400">
+                  <Package className="h-4 w-4" />
+                </div>
               )}
-            </span>
+            </div>
+          )}
 
-            {uploadingPhoto && (
-              <span
-                role="status"
-                aria-live="polite"
-                aria-label={tx('Đang tải ảnh món lên', 'Uploading item photo')}
-                className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 bg-slate-950/75 text-white"
-              >
-                <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
-                <span className="text-[7px] font-bold leading-none">
-                  {tx('Đang tải', 'Uploading')}
-                </span>
+          {/* Clickable Image Thumbnail with 1-Tap Upload Overlay */}
+          {canManageCatalog && (
+            <label
+              title={tx(
+                'Bấm để tải lên hoặc đổi ảnh món',
+                'Click to upload or change item photo'
+              )}
+              aria-busy={uploadingPhoto}
+              aria-disabled={uploadingPhoto}
+              className={`group relative h-11 w-11 sm:h-12 sm:w-12 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 ${
+                uploadingPhoto ? 'cursor-wait pointer-events-none' : 'cursor-pointer'
+              }`}
+            >
+              {hasValidImage ? (
+                <img
+                  src={item.image_url!}
+                  alt={item.name_i18n.vi}
+                  onError={() => setImgBroken(true)}
+                  className="h-full w-full object-cover transition group-hover:scale-105"
+                />
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center text-slate-400">
+                  <Camera className="h-4 w-4 text-emerald-600" />
+                </div>
+              )}
+
+              <span className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-slate-900/70 py-0.5 text-[8px] font-bold text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                {uploadingPhoto ? (
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                ) : (
+                  <Camera className="h-2.5 w-2.5 text-emerald-400" />
+                )}
               </span>
-            )}
 
-            <input
-              type="file"
-              accept="image/*"
-              disabled={uploadingPhoto}
-              className="hidden"
-              onChange={handleDirectPhotoSelect}
-            />
-          </label>
+              {uploadingPhoto && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  aria-label={tx('Đang tải ảnh món lên', 'Uploading item photo')}
+                  className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-0.5 bg-slate-950/75 text-white"
+                >
+                  <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+                  <span className="text-[7px] font-bold leading-none">
+                    {tx('Đang tải', 'Uploading')}
+                  </span>
+                </span>
+              )}
+
+              <input
+                type="file"
+                accept="image/*"
+                disabled={uploadingPhoto}
+                className="hidden"
+                onChange={handleDirectPhotoSelect}
+              />
+            </label>
+          )}
 
           {/* Item Details */}
           <div className="min-w-0 flex-1">
