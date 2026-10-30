@@ -64,6 +64,18 @@ function runCommand(command, args, spawnImpl, { timeout = 60 * 1000 } = {}) {
   }
 }
 
+function checkCommand(command, args, spawnImpl, { timeout = 60 * 1000 } = {}) {
+  const result = spawnImpl(command, args, {
+    encoding: 'utf8',
+    stdio: 'ignore',
+    timeout,
+  });
+  if (result.error) {
+    throw new Error(`Required system command failed: ${command}.`);
+  }
+  return result.status === 0;
+}
+
 function setOwnerAndMode(filePath, owner, mode, fsImpl, spawnImpl) {
   runCommand('chown', ['--', owner, filePath], spawnImpl);
   fsImpl.chmodSync(filePath, mode);
@@ -219,8 +231,10 @@ function installUnit(sourcePath, destinationPath, fsImpl, spawnImpl) {
   if (!sourceStats.isFile() || sourceStats.isSymbolicLink()) {
     throw new Error('A systemd unit source is not a regular file.');
   }
+  const content = fsImpl.readFileSync(sourcePath);
+  let destinationStats;
   try {
-    const destinationStats = fsImpl.lstatSync(destinationPath);
+    destinationStats = fsImpl.lstatSync(destinationPath);
     if (!destinationStats.isFile() || destinationStats.isSymbolicLink()) {
       throw new Error('An installed systemd unit is not a regular file.');
     }
@@ -228,8 +242,18 @@ function installUnit(sourcePath, destinationPath, fsImpl, spawnImpl) {
     if (error?.code !== 'ENOENT') throw error;
   }
 
+  if (destinationStats && fsImpl.readFileSync(destinationPath).equals(content)) {
+    if (
+      destinationStats.uid !== 0 ||
+      destinationStats.gid !== 0 ||
+      (destinationStats.mode & 0o777) !== 0o644
+    ) {
+      setOwnerAndMode(destinationPath, 'root:root', 0o644, fsImpl, spawnImpl);
+    }
+    return { changed: false };
+  }
+
   const temporaryPath = `${destinationPath}.qlaok-tmp-${process.pid}`;
-  const content = fsImpl.readFileSync(sourcePath);
   let descriptor;
   try {
     descriptor = fsImpl.openSync(temporaryPath, 'wx', 0o600);
@@ -239,6 +263,7 @@ function installUnit(sourcePath, destinationPath, fsImpl, spawnImpl) {
     descriptor = undefined;
     setOwnerAndMode(temporaryPath, 'root:root', 0o644, fsImpl, spawnImpl);
     fsImpl.renameSync(temporaryPath, destinationPath);
+    return { changed: true };
   } catch (error) {
     if (descriptor !== undefined) fsImpl.closeSync(descriptor);
     try {
@@ -323,20 +348,22 @@ export function installSelfHostedPostgresBackup({
   assertRealDirectoryChain(systemdDir, fsImpl, { createMissing: false });
   ensureDirectory(stateDir, 'root:root', 0o750, fsImpl, spawnImpl);
 
-  installUnit(
+  const { changed: serviceUnitChanged } = installUnit(
     path.join(appRoot, 'ops/systemd', SERVICE_NAME),
     path.join(systemdDir, SERVICE_NAME),
     fsImpl,
     spawnImpl
   );
-  installUnit(
+  const { changed: timerUnitChanged } = installUnit(
     path.join(appRoot, 'ops/systemd', TIMER_NAME),
     path.join(systemdDir, TIMER_NAME),
     fsImpl,
     spawnImpl
   );
 
-  runCommand('systemctl', ['daemon-reload'], spawnImpl);
+  if (serviceUnitChanged || timerUnitChanged) {
+    runCommand('systemctl', ['daemon-reload'], spawnImpl);
+  }
   const initialBackupAlreadyVerified = hasVerifiedInitialBackup(
     markerPath,
     fsImpl,
@@ -352,11 +379,32 @@ export function installSelfHostedPostgresBackup({
     }
     markInitialBackupVerified(markerPath, fsImpl, spawnImpl);
   }
-  runCommand('systemctl', ['enable', '--now', TIMER_NAME], spawnImpl);
-  runCommand('systemctl', ['is-enabled', '--quiet', TIMER_NAME], spawnImpl);
-  runCommand('systemctl', ['is-active', '--quiet', TIMER_NAME], spawnImpl);
 
-  return { initialBackupCreated: !initialBackupAlreadyVerified };
+  const timerEnabled = checkCommand(
+    'systemctl',
+    ['is-enabled', '--quiet', TIMER_NAME],
+    spawnImpl
+  );
+  const timerActive = checkCommand(
+    'systemctl',
+    ['is-active', '--quiet', TIMER_NAME],
+    spawnImpl
+  );
+  if (!timerEnabled || !timerActive) {
+    runCommand('systemctl', ['enable', '--now', TIMER_NAME], spawnImpl);
+    runCommand('systemctl', ['is-enabled', '--quiet', TIMER_NAME], spawnImpl);
+    runCommand('systemctl', ['is-active', '--quiet', TIMER_NAME], spawnImpl);
+  } else if (timerUnitChanged) {
+    runCommand('systemctl', ['restart', TIMER_NAME], spawnImpl);
+    runCommand('systemctl', ['is-enabled', '--quiet', TIMER_NAME], spawnImpl);
+    runCommand('systemctl', ['is-active', '--quiet', TIMER_NAME], spawnImpl);
+  }
+
+  return {
+    initialBackupCreated: !initialBackupAlreadyVerified,
+    serviceUnitChanged,
+    timerUnitChanged,
+  };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

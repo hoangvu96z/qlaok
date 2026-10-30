@@ -49,10 +49,20 @@ function withFixture(run) {
   }
 }
 
-function createCommandRunner({ failInitialBackup = false } = {}) {
+function createCommandRunner({
+  failInitialBackup = false,
+  timerEnabled = false,
+  timerActive = false,
+} = {}) {
   const calls = [];
+  let isEnabled = timerEnabled;
+  let isActive = timerActive;
   return {
     calls,
+    setTimerState({ enabled = isEnabled, active = isActive } = {}) {
+      isEnabled = enabled;
+      isActive = active;
+    },
     spawnImpl(command, args, options) {
       calls.push({ command, args, options });
       if (
@@ -63,12 +73,36 @@ function createCommandRunner({ failInitialBackup = false } = {}) {
       ) {
         return { status: 1, stdout: '', stderr: 'private diagnostic must not escape' };
       }
+      if (command === 'systemctl' && args[1] === '--quiet' && args[2] === 'qlaok-postgres-backup.timer') {
+        if (args[0] === 'is-enabled') {
+          return { status: isEnabled ? 0 : 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'is-active') {
+          return { status: isActive ? 0 : 1, stdout: '', stderr: '' };
+        }
+      }
+      if (
+        command === 'systemctl' &&
+        args[0] === 'enable' &&
+        args[1] === '--now' &&
+        args[2] === 'qlaok-postgres-backup.timer'
+      ) {
+        isEnabled = true;
+        isActive = true;
+      }
+      if (
+        command === 'systemctl' &&
+        args[0] === 'restart' &&
+        args[1] === 'qlaok-postgres-backup.timer'
+      ) {
+        isActive = true;
+      }
       return { status: 0, stdout: '', stderr: '' };
     },
   };
 }
 
-function createFilesystemSpy() {
+function createFilesystemSpy({ rootOwnedPaths = new Set() } = {}) {
   const calls = [];
   const fsImpl = new Proxy(fs, {
     get(target, property) {
@@ -76,7 +110,12 @@ function createFilesystemSpy() {
       if (typeof value !== 'function') return value;
       return (...args) => {
         calls.push({ method: property, firstArgument: args[0] });
-        return Reflect.apply(value, target, args);
+        const result = Reflect.apply(value, target, args);
+        if (property === 'lstatSync' && rootOwnedPaths.has(args[0])) {
+          result.uid = 0;
+          result.gid = 0;
+        }
+        return result;
       };
     },
   });
@@ -101,8 +140,16 @@ test('installer creates a private config, enables the timer, and takes only one 
       .filter((call) => call.command === 'systemctl')
       .map((call) => call.args);
 
-    assert.deepEqual(first, { initialBackupCreated: true });
-    assert.deepEqual(second, { initialBackupCreated: false });
+    assert.deepEqual(first, {
+      initialBackupCreated: true,
+      serviceUnitChanged: true,
+      timerUnitChanged: true,
+    });
+    assert.deepEqual(second, {
+      initialBackupCreated: false,
+      serviceUnitChanged: false,
+      timerUnitChanged: false,
+    });
     assert.equal(
       fs.readFileSync(configPath, 'utf8'),
       `QLAOK_DB_NAME=qlaok\nQLAOK_DB_BACKUP_DIR=${paths.backupDir}\nQLAOK_DB_BACKUP_RETENTION_DAYS=14\n`
@@ -118,11 +165,11 @@ test('installer creates a private config, enables the timer, and takes only one 
       [
         ['daemon-reload'],
         ['start', 'qlaok-postgres-backup.service'],
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
         ['enable', '--now', 'qlaok-postgres-backup.timer'],
         ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
         ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
-        ['daemon-reload'],
-        ['enable', '--now', 'qlaok-postgres-backup.timer'],
         ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
         ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
       ]
@@ -164,6 +211,186 @@ test('installer creates a private config, enables the timer, and takes only one 
       runner.calls.some((call) => JSON.stringify(call).includes('must-not-be-logged')),
       false
     );
+  });
+});
+
+test('repeat installs handle unchanged units, service-only edits, timer edits, and disabled/inactive timer recovery safely', () => {
+  withFixture(({ paths }) => {
+    const serviceSourcePath = path.join(
+      paths.appRoot,
+      'ops/systemd/qlaok-postgres-backup.service'
+    );
+    const timerSourcePath = path.join(
+      paths.appRoot,
+      'ops/systemd/qlaok-postgres-backup.timer'
+    );
+    const serviceInstalledPath = path.join(
+      paths.systemdDir,
+      'qlaok-postgres-backup.service'
+    );
+    const timerInstalledPath = path.join(
+      paths.systemdDir,
+      'qlaok-postgres-backup.timer'
+    );
+    const runner = createCommandRunner();
+    const filesystem = createFilesystemSpy({
+      rootOwnedPaths: new Set([serviceInstalledPath, timerInstalledPath]),
+    });
+
+    install(paths, runner.spawnImpl, filesystem.fsImpl);
+    const initialServiceInode = fs.statSync(serviceInstalledPath).ino;
+    const initialTimerInode = fs.statSync(timerInstalledPath).ino;
+
+    // 1. Unchanged repeat install with valid metadata: units untouched, no unit chown/chmod, read-only checks only
+    runner.calls.length = 0;
+    filesystem.calls.length = 0;
+    const unchangedResult = install(paths, runner.spawnImpl, filesystem.fsImpl);
+    assert.deepEqual(unchangedResult, {
+      initialBackupCreated: false,
+      serviceUnitChanged: false,
+      timerUnitChanged: false,
+    });
+    assert.equal(fs.statSync(serviceInstalledPath).ino, initialServiceInode);
+    assert.equal(fs.statSync(timerInstalledPath).ino, initialTimerInode);
+    assert.equal(
+      filesystem.calls.some(
+        (call) =>
+          call.method === 'renameSync' &&
+          (call.firstArgument?.includes(serviceInstalledPath) ||
+            call.firstArgument?.includes(timerInstalledPath))
+      ),
+      false
+    );
+    assert.equal(
+      runner.calls.some(
+        (call) =>
+          call.command === 'chown' &&
+          (call.args.at(-1) === serviceInstalledPath ||
+            call.args.at(-1) === timerInstalledPath)
+      ),
+      false
+    );
+    assert.deepEqual(
+      runner.calls.filter((call) => call.command === 'systemctl').map((call) => call.args),
+      [
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+      ]
+    );
+
+    // 2. Identical unit with altered mode: restores root:root / 0644 in place without rename or systemd reload/restart
+    const expectedServiceContent = fs.readFileSync(serviceInstalledPath, 'utf8');
+    fs.chmodSync(serviceInstalledPath, 0o600);
+    runner.calls.length = 0;
+    filesystem.calls.length = 0;
+    const metadataRepairResult = install(paths, runner.spawnImpl, filesystem.fsImpl);
+    assert.deepEqual(metadataRepairResult, {
+      initialBackupCreated: false,
+      serviceUnitChanged: false,
+      timerUnitChanged: false,
+    });
+    assert.equal(fs.statSync(serviceInstalledPath).mode & 0o777, 0o644);
+    assert.equal(fs.statSync(serviceInstalledPath).ino, initialServiceInode);
+    assert.equal(fs.readFileSync(serviceInstalledPath, 'utf8'), expectedServiceContent);
+    assert.ok(
+      runner.calls.some(
+        (call) =>
+          call.command === 'chown' &&
+          call.args[1] === 'root:root' &&
+          call.args.at(-1) === serviceInstalledPath
+      )
+    );
+    assert.equal(
+      runner.calls.some(
+        (call) =>
+          call.command === 'chown' && call.args.at(-1) === timerInstalledPath
+      ),
+      false
+    );
+    assert.equal(
+      filesystem.calls.some(
+        (call) =>
+          call.method === 'renameSync' &&
+          (call.firstArgument?.includes(serviceInstalledPath) ||
+            call.firstArgument?.includes(timerInstalledPath))
+      ),
+      false
+    );
+    assert.deepEqual(
+      runner.calls.filter((call) => call.command === 'systemctl').map((call) => call.args),
+      [
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+      ]
+    );
+
+    // 3. Changed service-only unit: reloads systemd, does not restart or re-enable active timer
+    runner.calls.length = 0;
+    fs.writeFileSync(serviceSourcePath, '[Service]\nUser=postgres\nNice=10\n');
+    const serviceOnlyResult = install(paths, runner.spawnImpl, filesystem.fsImpl);
+    assert.deepEqual(serviceOnlyResult, {
+      initialBackupCreated: false,
+      serviceUnitChanged: true,
+      timerUnitChanged: false,
+    });
+    assert.equal(fs.statSync(timerInstalledPath).ino, initialTimerInode);
+    assert.deepEqual(
+      runner.calls.filter((call) => call.command === 'systemctl').map((call) => call.args),
+      [
+        ['daemon-reload'],
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+      ]
+    );
+
+    // 3. Changed timer unit while enabled+active: reloads systemd and restarts timer safely
+    runner.calls.length = 0;
+    fs.writeFileSync(
+      timerSourcePath,
+      '[Timer]\nOnCalendar=*-*-* 03:15:00\nPersistent=true\n'
+    );
+    const timerChangedResult = install(paths, runner.spawnImpl, filesystem.fsImpl);
+    assert.deepEqual(timerChangedResult, {
+      initialBackupCreated: false,
+      serviceUnitChanged: false,
+      timerUnitChanged: true,
+    });
+    assert.deepEqual(
+      runner.calls.filter((call) => call.command === 'systemctl').map((call) => call.args),
+      [
+        ['daemon-reload'],
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['restart', 'qlaok-postgres-backup.timer'],
+        ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+        ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+      ]
+    );
+
+    // 4. Disabled or inactive timer with unchanged units: repairs with enable --now without daemon-reload
+    for (const state of [
+      { enabled: false, active: true },
+      { enabled: true, active: false },
+    ]) {
+      runner.calls.length = 0;
+      runner.setTimerState(state);
+      const repairResult = install(paths, runner.spawnImpl, filesystem.fsImpl);
+      assert.deepEqual(repairResult, {
+        initialBackupCreated: false,
+        serviceUnitChanged: false,
+        timerUnitChanged: false,
+      });
+      assert.deepEqual(
+        runner.calls.filter((call) => call.command === 'systemctl').map((call) => call.args),
+        [
+          ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+          ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+          ['enable', '--now', 'qlaok-postgres-backup.timer'],
+          ['is-enabled', '--quiet', 'qlaok-postgres-backup.timer'],
+          ['is-active', '--quiet', 'qlaok-postgres-backup.timer'],
+        ]
+      );
+    }
   });
 });
 
