@@ -15,6 +15,12 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await db.exec('CREATE PUBLICATION supabase_realtime');
     const migrations = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();
     for (const file of migrations) {
+      if (file === '20261030000300_admin_owner_invitation_claims.sql') {
+        await db.exec(`INSERT INTO profiles (id, email, zitadel_sub) VALUES
+          ('owner-00000000-0000-4000-8000-000000000001', 'legacy-owner@example.test', NULL),
+          ('owner-demo-001', 'demo-owner@example.test', NULL),
+          ('owner-not-uuid', 'invalid-owner@example.test', NULL);`);
+      }
       if (file === '002z_reconcile_legacy_bank_refs.sql') {
         await db.exec(`INSERT INTO profiles (id) VALUES ('legacy-payer');
           INSERT INTO payment_transactions (id,user_id,order_code,target_plan,amount,status,bank_ref_id,created_at)
@@ -24,6 +30,20 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       }
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
+    const pendingOwnerInvitations = (
+      await db.query(
+        "SELECT id, owner_invite_pending FROM profiles WHERE id IN ('owner-00000000-0000-4000-8000-000000000001', 'owner-demo-001', 'owner-not-uuid') ORDER BY id"
+      )
+    ).rows;
+    assert.deepEqual(
+      pendingOwnerInvitations,
+      [
+        { id: 'owner-00000000-0000-4000-8000-000000000001', owner_invite_pending: true },
+        { id: 'owner-demo-001', owner_invite_pending: false },
+        { id: 'owner-not-uuid', owner_invite_pending: false },
+      ],
+      'only the legacy admin owner-UUID format is backfilled as an invitation'
+    );
     const repaired = (await db.query("SELECT id,amount,status,bank_ref_id FROM payment_transactions ORDER BY id")).rows;
     await db.exec(fs.readFileSync('supabase/migrations/006_orders_realtime_publication.sql', 'utf8'));
     assert.equal((await db.query("SELECT * FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='orders'")).rows.length, 1, 'orders publication membership is idempotent');
@@ -60,6 +80,16 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
         ('staff', 'sql-shop', '${staff}', 'staff', '["orders.view","orders.fulfill","members.manage","settings.manage"]'),
         ('cashier', 'sql-shop', '${cashier}', 'cashier', '["orders.view","payment.collect"]');
       INSERT INTO orders (id, order_code, shop_id, total_amount) VALUES ('sql-order', 'SQL-1', 'sql-shop', 100000);`);
+    await db.exec('SET ROLE service_role');
+    const serverCreatedInvitation = await db.query(
+      "INSERT INTO profiles (id, email, owner_invite_pending) VALUES ('server-created-invitation', 'server@example.test', TRUE) RETURNING owner_invite_pending"
+    );
+    assert.equal(
+      serverCreatedInvitation.rows[0]?.owner_invite_pending,
+      true,
+      'trusted service_role must be able to create invitations'
+    );
+    await db.exec('RESET ROLE');
     for (const user of [staff, cashier]) {
       await db.exec(`SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub', '${user}', false);
         SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${user}"}', false);`);
@@ -69,6 +99,8 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       for (const mutation of [
         "UPDATE orders SET total_amount=1 WHERE id='sql-order' RETURNING id",
         "UPDATE orders SET payment_status='paid' WHERE id='sql-order' RETURNING id",
+        "UPDATE profiles SET owner_invite_pending=TRUE WHERE id='owner-00000000-0000-4000-8000-000000000001' RETURNING id",
+        "INSERT INTO profiles (id, email, owner_invite_pending) VALUES ('client-created-invitation', 'client@example.test', TRUE) RETURNING id",
         "UPDATE shops SET theme_config='{\"paymentConfig\":{\"accountNumber\":\"hijack\"}}' WHERE id='sql-shop' RETURNING id",
         "UPDATE shop_memberships SET role='owner' WHERE user_id=auth.uid()::text RETURNING id",
         "INSERT INTO shop_tables (id, shop_id, table_code, name) VALUES ('hijack-tbl', 'sql-shop', 'T99', 'Bàn 99') RETURNING id",

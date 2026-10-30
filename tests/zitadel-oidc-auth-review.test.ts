@@ -6,6 +6,12 @@ import { GET as authCallbackGet } from '@/app/api/auth/callback/route';
 import { setSupabaseDbClientForTests } from '@/lib/db';
 import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
 import {
+  buildAdminOwnerInvitationProfile,
+  canClaimAdminOwnerInvitation,
+  escapePostgrestIlikePattern,
+  isPendingAdminOwnerInvitation,
+} from '@/lib/owner-invitations';
+import {
   issuePostgrestAuthenticatedJwt,
   issueSessionToken,
   requireAuthenticatedUser,
@@ -167,20 +173,60 @@ function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, i
             return { data: payload, error: null };
           },
           update(patch: Record<string, unknown>) {
-            return {
-              async eq(col: string, val: unknown) {
-                profileWrites.push({ op: 'update', payload: { ...patch } });
-                for (let i = 0; i < profiles.length; i++) {
-                  if (
-                    String(profiles[i][col] ?? '').toLowerCase() ===
-                    String(val ?? '').toLowerCase()
-                  ) {
-                    profiles[i] = { ...profiles[i], ...patch };
-                  }
-                }
-                return { data: null, error: null };
-              },
+            const filters: Array<{
+              col: string;
+              val: unknown;
+              op: 'eq' | 'is';
+            }> = [];
+            type UpdateResult = {
+              data: Record<string, unknown> | null;
+              error: null;
             };
+            type UpdateBuilder = {
+              eq: (col: string, val: unknown) => UpdateBuilder;
+              is: (col: string, val: unknown) => UpdateBuilder;
+              select: () => UpdateBuilder;
+              maybeSingle: () => Promise<UpdateResult>;
+              then: Promise<UpdateResult>['then'];
+            };
+            const builder = {} as UpdateBuilder;
+            builder.eq = (col: string, val: unknown) => {
+              filters.push({ col, val, op: 'eq' });
+              return builder;
+            };
+            builder.is = (col: string, val: unknown) => {
+              filters.push({ col, val, op: 'is' });
+              return builder;
+            };
+            builder.select = () => builder;
+            builder.maybeSingle = async () => {
+              profileWrites.push({ op: 'update', payload: { ...patch } });
+              const index = profiles.findIndex((profile) =>
+                filters.every(({ col, val, op }) => {
+                  if (op === 'is') {
+                    return val === null
+                      ? profile[col] == null
+                      : profile[col] === val;
+                  }
+                  if (col === 'zitadel_sub' || col === 'owner_invite_pending') {
+                    return profile[col] === val;
+                  }
+                  return (
+                    String(profile[col] ?? '').toLowerCase() ===
+                    String(val ?? '').toLowerCase()
+                  );
+                })
+              );
+              if (index < 0) return { data: null, error: null };
+              profiles[index] = { ...profiles[index], ...patch };
+              return {
+                data: { ...profiles[index] },
+                error: null,
+              };
+            };
+            builder.then = (resolve, reject) =>
+              builder.maybeSingle().then(resolve, reject);
+            return builder;
           },
         };
       }
@@ -2048,5 +2094,123 @@ test('POST /api/auth demo_login requires non-production AND ENABLE_DEMO_LOGIN=tr
     else mutableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = prevPubKey;
     if (prevServiceKey === undefined) delete mutableEnv.SUPABASE_SERVICE_ROLE_KEY;
     else mutableEnv.SUPABASE_SERVICE_ROLE_KEY = prevServiceKey;
+  }
+});
+
+test('admin owner invitations require the exact verified email, claim once, and retain the selected profile plan', async () => {
+  assert.equal(
+    escapePostgrestIlikePattern('owner_%\\name@example.test'),
+    'owner\\_\\%\\\\name@example.test'
+  );
+
+  const invitation = buildAdminOwnerInvitationProfile({
+    id: 'owner-invitation-fixture',
+    email: '  Invited.Owner@qlaok.test ',
+    fullName: 'Invited Owner',
+    phone: '0900000000',
+    plan: 'premium',
+    planExpiresAt: '2030-01-01T00:00:00.000Z',
+  });
+  assert.equal(invitation.email, 'invited.owner@qlaok.test');
+  assert.equal(invitation.owner_invite_pending, true);
+  assert.equal(invitation.zitadel_sub, null);
+  assert.equal('password' in invitation, false);
+  assert.equal(
+    isPendingAdminOwnerInvitation(invitation, 'INVITED.OWNER@QLAOK.TEST'),
+    true
+  );
+  assert.equal(
+    canClaimAdminOwnerInvitation(invitation, 'invited.owner@qlaok.test', true),
+    true
+  );
+  assert.equal(
+    canClaimAdminOwnerInvitation(invitation, 'invited.owner@qlaok.test', false),
+    false
+  );
+  assert.equal(
+    canClaimAdminOwnerInvitation(invitation, 'someone-else@qlaok.test', true),
+    false
+  );
+  assert.equal(
+    isPendingAdminOwnerInvitation(
+      { ...invitation, owner_invite_pending: false },
+      invitation.email
+    ),
+    false,
+    'a claimed invitation cannot be reused'
+  );
+
+  const { client, profiles, profileWrites } = createInMemoryOidcDb(
+    [invitation],
+    []
+  );
+  setSupabaseDbClientForTests(client as never);
+  try {
+    await assert.rejects(
+      () =>
+        resolveAndSyncZitadelOwnerProfile({
+          sub: 'zitadel-unverified-invitee',
+          email: invitation.email,
+          emailVerified: false,
+          allowInsert: true,
+        }),
+      (error: unknown) =>
+        error instanceof ZitadelOidcError &&
+        error.code === 'OIDC_EMAIL_NOT_VERIFIED'
+    );
+    assert.equal(profiles[0].zitadel_sub, null);
+    assert.equal(profiles[0].owner_invite_pending, true);
+    assert.equal(profileWrites.length, 0);
+
+    const wrongEmailLogin = await resolveAndSyncZitadelOwnerProfile({
+      sub: 'zitadel-wrong-email',
+      email: 'different.person@qlaok.test',
+      emailVerified: true,
+      allowInsert: true,
+    });
+    assert.equal(wrongEmailLogin.createdNewProfile, true);
+    assert.notEqual(wrongEmailLogin.user.id, invitation.id);
+    assert.equal(profiles[0].zitadel_sub, null);
+    assert.equal(profiles[0].owner_invite_pending, true);
+    assert.equal(profiles[0].plan, 'premium');
+
+    const claimed = await resolveAndSyncZitadelOwnerProfile({
+      sub: 'zitadel-correct-invitee',
+      email: 'INVITED.OWNER@QLAOK.TEST',
+      emailVerified: true,
+      allowInsert: true,
+    });
+    assert.equal(claimed.createdNewProfile, false);
+    assert.equal(claimed.user.id, invitation.id);
+    assert.equal(claimed.user.email, invitation.email);
+    assert.equal(claimed.user.plan, 'premium');
+    assert.equal(claimed.user.plan_expires_at, invitation.plan_expires_at);
+    assert.equal(profiles[0].zitadel_sub, 'zitadel-correct-invitee');
+    assert.equal(profiles[0].owner_invite_pending, false);
+    assert.equal(profiles[0].phone, invitation.phone);
+    assert.equal(
+      profileWrites.filter(
+        (write) =>
+          write.op === 'update' && write.payload.owner_invite_pending === false
+      ).length,
+      1
+    );
+
+    await assert.rejects(
+      () =>
+        resolveAndSyncZitadelOwnerProfile({
+          sub: 'zitadel-second-invitee',
+          email: invitation.email,
+          emailVerified: true,
+          allowInsert: true,
+        }),
+      (error: unknown) =>
+        error instanceof ZitadelOidcError &&
+        error.code === 'OIDC_PROFILE_ID_CONFLICT'
+    );
+    assert.equal(profiles[0].zitadel_sub, 'zitadel-correct-invitee');
+    assert.equal(profiles[0].plan, 'premium');
+  } finally {
+    setSupabaseDbClientForTests(null);
   }
 });

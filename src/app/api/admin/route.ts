@@ -15,6 +15,10 @@ import {
   ensureSuperAdminSeeded,
 } from '@/lib/auth-credentials';
 import {
+  buildAdminOwnerInvitationProfile,
+  escapePostgrestIlikePattern,
+} from '@/lib/owner-invitations';
+import {
   dbGetAllOrders,
   dbGetOrderById,
   dbUpdateOrderStatus,
@@ -528,6 +532,33 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+      if (plan !== 'free' && plan !== 'basic' && plan !== 'premium') {
+        return NextResponse.json(
+          { error: 'Gói chủ quán không hợp lệ.', code: 'INVALID_OWNER_PLAN' },
+          { status: 400 }
+        );
+      }
+
+      const { data: matchingProfiles, error: profileLookupError } = await sb
+        .from('profiles')
+        .select('id')
+        .ilike('email', escapePostgrestIlikePattern(normalizedEmail))
+        .limit(1);
+      if (profileLookupError) {
+        return NextResponse.json(
+          { error: 'Không thể kiểm tra email chủ quán.' },
+          { status: 500 }
+        );
+      }
+      if (matchingProfiles?.length) {
+        return NextResponse.json(
+          {
+            error: 'Email này đã có hồ sơ chủ quán.',
+            code: 'OWNER_EMAIL_ALREADY_EXISTS',
+          },
+          { status: 409 }
+        );
+      }
 
       const newOwnerId = `owner-${crypto.randomUUID()}`;
 
@@ -538,19 +569,17 @@ export async function POST(req: Request) {
         expiresAt = exp.toISOString();
       }
 
+      const invitationProfile = buildAdminOwnerInvitationProfile({
+        id: newOwnerId,
+        email: normalizedEmail,
+        fullName,
+        phone,
+        plan,
+        planExpiresAt: expiresAt,
+      });
       const { data: created, error } = await sb
         .from('profiles')
-        .upsert(
-          {
-            id: newOwnerId,
-            email: normalizedEmail,
-            full_name: fullName.trim() || normalizedEmail.split('@')[0],
-            phone: phone.trim() || null,
-            plan,
-            plan_expires_at: expiresAt,
-          },
-          { onConflict: 'id' }
-        )
+        .upsert(invitationProfile, { onConflict: 'id' })
         .select('*')
         .single();
 

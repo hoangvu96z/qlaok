@@ -482,8 +482,8 @@ export default function SuperAdminPortalPage() {
         plan: newOwnerPlan,
       },
       tx(
-        'Đã tạo tài khoản Chủ quán {email} (gói {plan})!',
-        'Created shop owner {email} ({plan} plan)!',
+        'Đã tạo lời mời cho {email} (gói {plan}). Chủ quán cần đăng ký và xác thực đúng email này để nhận hồ sơ.',
+        'Created an invitation for {email} ({plan} plan). The owner must register and verify this exact email to claim the profile.',
         { email: newOwnerEmail, plan: newOwnerPlan.toUpperCase() }
       )
     );
@@ -2152,8 +2152,8 @@ export default function SuperAdminPortalPage() {
                   </div>
                   <p className="text-xs text-slate-400">
                     {tx(
-                      'Chủ quán đăng nhập và khôi phục mật khẩu qua Zitadel tại trang Đăng nhập Qlaok.',
-                      'Owners sign in and recover passwords through Zitadel on the Qlaok login page.'
+                      'Sau khi tạo lời mời, chủ quán đăng ký bằng đúng email này và xác thực email qua Zitadel. Hồ sơ và gói đã chọn sẽ được liên kết ở lần đăng nhập đầu tiên.',
+                      'After you create the invitation, the owner registers with this exact email and verifies it through Zitadel. Their profile and selected plan are linked on first sign-in.'
                     )}
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">

@@ -1,4 +1,9 @@
 import crypto from 'node:crypto';
+import {
+  canClaimAdminOwnerInvitation,
+  escapePostgrestIlikePattern,
+  isPendingAdminOwnerInvitation,
+} from '@/lib/owner-invitations';
 import type { NextResponse } from 'next/server';
 import { sanitizeNextPath } from '@/lib/post-login-route';
 import { getSupabaseDbClient } from '@/lib/db';
@@ -1149,6 +1154,7 @@ export async function fetchZitadelUserInfo(
 export interface ProfileDbRow {
   id: string;
   zitadel_sub?: string | null;
+  owner_invite_pending?: boolean | null;
   email?: string | null;
   full_name?: string | null;
   phone?: string | null;
@@ -1407,8 +1413,8 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
   const { data: rawByEmail, error: byEmailError } = await sb
     .from('profiles')
     .select('*')
-    .ilike('email', inputEmail)
-    .limit(1);
+    .ilike('email', escapePostgrestIlikePattern(inputEmail))
+    .limit(2);
 
   if (byEmailError && byEmailError.code !== 'PGRST116') {
     throw new ZitadelOidcError(
@@ -1418,12 +1424,92 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
     );
   }
 
+  const emailProfileMatches = Array.isArray(rawByEmail)
+    ? rawByEmail
+    : rawByEmail
+      ? [rawByEmail]
+      : [];
+  if (emailProfileMatches.length > 1) {
+    throw new ZitadelOidcError(
+      'OIDC_PROFILE_ID_CONFLICT',
+      'Email này đang gắn với nhiều hồ sơ người dùng trong hệ thống.',
+      409
+    );
+  }
   const existingByEmail = normalizeSingleRow<ProfileDbRow>(rawByEmail);
-  if (
-    existingByEmail &&
-    existingByEmail.id &&
-    existingByEmail.zitadel_sub !== sub
-  ) {
+  if (existingByEmail?.id && existingByEmail.zitadel_sub !== sub) {
+    if (isPendingAdminOwnerInvitation(existingByEmail, inputEmail)) {
+      if (
+        !canClaimAdminOwnerInvitation(
+          existingByEmail,
+          inputEmail,
+          params.emailVerified
+        )
+      ) {
+        throw new ZitadelOidcError(
+          'OIDC_EMAIL_NOT_VERIFIED',
+          'Email tài khoản chưa được xác thực. Vui lòng hoàn tất xác thực email trước khi tiếp tục.',
+          403
+        );
+      }
+
+      const { data: rawClaimedProfile, error: claimError } = await sb
+        .from('profiles')
+        .update({
+          zitadel_sub: sub,
+          owner_invite_pending: false,
+          updated_at: nowIso,
+        })
+        .eq('id', existingByEmail.id)
+        .is('zitadel_sub', null)
+        .eq('owner_invite_pending', true)
+        .select('*')
+        .maybeSingle();
+
+      if (claimError) {
+        throw new ZitadelOidcError(
+          'AUTH_PROFILE_UPDATE_FAILED',
+          `Không thể liên kết hồ sơ chủ cửa hàng: ${claimError.message}`,
+          500
+        );
+      }
+
+      const claimedProfile = normalizeSingleRow<ProfileDbRow>(
+        rawClaimedProfile
+      );
+      if (
+        claimedProfile?.id === existingByEmail.id &&
+        claimedProfile.zitadel_sub === sub
+      ) {
+        return resolveAndSyncZitadelOwnerProfile({ ...params, allowInsert: false });
+      }
+
+      // Another callback may have claimed the invitation concurrently. Only the
+      // same Zitadel subject may continue with this owner profile.
+      const { data: rawBySubjectAfterClaim, error: bySubjectAfterClaimError } =
+        await sb
+          .from('profiles')
+          .select('*')
+          .eq('zitadel_sub', sub)
+          .maybeSingle();
+      if (
+        bySubjectAfterClaimError &&
+        bySubjectAfterClaimError.code !== 'PGRST116'
+      ) {
+        throw new ZitadelOidcError(
+          'AUTH_PROFILE_QUERY_FAILED',
+          `Lỗi truy vấn hồ sơ người dùng: ${bySubjectAfterClaimError.message}`,
+          500
+        );
+      }
+      const profileClaimedByThisSubject = normalizeSingleRow<ProfileDbRow>(
+        rawBySubjectAfterClaim
+      );
+      if (profileClaimedByThisSubject?.id === existingByEmail.id) {
+        return resolveAndSyncZitadelOwnerProfile({ ...params, allowInsert: false });
+      }
+    }
+
     throw new ZitadelOidcError(
       'OIDC_PROFILE_ID_CONFLICT',
       'Email này đã gắn với một hồ sơ người dùng khác trong hệ thống.',

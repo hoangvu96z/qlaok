@@ -245,9 +245,132 @@ test('/api/admin routes owner password recovery through Zitadel instead of local
     'utf8'
   );
   assert.doesNotMatch(adminPageSource, /newOwnerPassword|handleResetOwnerPassword/);
-  assert.match(adminPageSource, /Owners sign in and recover passwords through Zitadel/);
+  assert.match(
+    adminPageSource,
+    /owner registers with this exact email and verifies it through Zitadel/
+  );
   assert.doesNotMatch(adminRouteSource, /readCredentials|writeCredentials/);
   assert.doesNotMatch(credentialSource, /CredentialMap|readCredentials|writeCredentials|INITIAL_SUPER_ADMIN_PASSWORD/);
+});
+
+test('/api/admin create_owner rejects mixed-case duplicate emails and writes a pending invitation', async () => {
+  const existingProfiles: Array<Record<string, unknown>> = [
+    { id: 'existing-owner', email: 'Owner@Example.test' },
+  ];
+  const insertedProfiles: Array<Record<string, unknown>> = [];
+  const client = {
+    from(table: string) {
+      if (table === 'shops') {
+        return {
+          select() {
+            return {
+              async limit() {
+                return { data: [{ id: 'ready-shop' }], error: null };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select() {
+            return {
+              ilike(column: string, pattern: string) {
+                const literalPattern = pattern.replace(/\\([\\%_])/g, '$1');
+                const matches = existingProfiles.filter(
+                  (profile) =>
+                    String(profile[column] ?? '').toLowerCase() ===
+                    literalPattern.toLowerCase()
+                );
+                return {
+                  async limit() {
+                    return { data: matches.slice(0, 1), error: null };
+                  },
+                };
+              },
+            };
+          },
+          upsert(payload: Record<string, unknown>) {
+            insertedProfiles.push({ ...payload });
+            return {
+              select() {
+                return {
+                  async single() {
+                    return { data: payload, error: null };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`Unexpected table in create_owner test: ${table}`);
+    },
+  };
+
+  const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const previousServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://fixture.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_fixture_key';
+  setSupabaseDbClientForTests(client as never);
+
+  const createOwnerRequest = (email: string) =>
+    new Request('http://localhost/api/admin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        action: 'create_owner',
+        email,
+        fullName: 'New Owner',
+        phone: '0900000000',
+        plan: 'premium',
+      }),
+    });
+
+  try {
+    const duplicateResponse = await adminPost(
+      createOwnerRequest('owner@example.test')
+    );
+    assert.equal(duplicateResponse.status, 409);
+    assert.equal(
+      (await duplicateResponse.json()).code,
+      'OWNER_EMAIL_ALREADY_EXISTS'
+    );
+    assert.equal(insertedProfiles.length, 0);
+
+    existingProfiles.length = 0;
+    const createResponse = await adminPost(
+      createOwnerRequest('New.Owner@Example.test')
+    );
+    assert.equal(createResponse.status, 201);
+    const createdBody = await createResponse.json();
+    assert.equal(createdBody.owner.owner_invite_pending, true);
+    assert.equal(createdBody.owner.zitadel_sub, null);
+    assert.equal(createdBody.owner.email, 'new.owner@example.test');
+    assert.equal(createdBody.owner.plan, 'premium');
+    assert.equal(insertedProfiles.length, 1);
+    assert.equal(insertedProfiles[0].owner_invite_pending, true);
+    assert.equal(insertedProfiles[0].plan, 'premium');
+    assert.equal('password' in insertedProfiles[0], false);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+    if (previousServiceRoleKey === undefined) {
+      delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    } else {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = previousServiceRoleKey;
+    }
+  }
 });
 
 test('/api/admin surfaces database query errors instead of returning empty fake data', async () => {

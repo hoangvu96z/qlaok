@@ -14,6 +14,10 @@ import {
   isSupabaseDbClientOverriddenForTests,
 } from '@/lib/db';
 import { resolveTrustedQlaokEmailOrigin } from '@/lib/auth-email-templates';
+import {
+  escapePostgrestIlikePattern,
+  isPendingAdminOwnerInvitation,
+} from '@/lib/owner-invitations';
 import { isShopMembershipDbAuthoritative } from '@/lib/shop-permissions';
 import {
   compareConstantTimeString,
@@ -1254,14 +1258,16 @@ async function tryRecoverUnverifiedZitadelUser(params: {
   email: string;
 } | null> {
   const locale = normalizeAuthEmailLocale(params.lang);
-  // Never recover or issue a registration ticket if a Qlaok profile already owns this email.
+  // Existing owners cannot use registration to link an unrelated identity. A
+  // Super Admin-created pending invitation is the only exception: its exact
+  // email must still be verified by Zitadel before the profile can be claimed.
   if (isOwnerLoginUiDbAuthoritative()) {
     try {
       const sb = getSupabaseDbClient();
       const { data: existingByEmail, error: emailErr } = await sb
         .from('profiles')
-        .select('id, email, zitadel_sub')
-        .ilike('email', params.email)
+        .select('id, email, zitadel_sub, owner_invite_pending')
+        .ilike('email', escapePostgrestIlikePattern(params.email))
         .limit(1);
       if (emailErr && emailErr.code !== 'PGRST116') {
         return null;
@@ -1269,7 +1275,18 @@ async function tryRecoverUnverifiedZitadelUser(params: {
       const existingRow = Array.isArray(existingByEmail)
         ? existingByEmail[0]
         : existingByEmail;
-      if (existingRow && typeof (existingRow as { id?: unknown }).id === 'string') {
+      if (
+        existingRow &&
+        !isPendingAdminOwnerInvitation(
+          existingRow as {
+            id: string;
+            email?: string | null;
+            zitadel_sub?: string | null;
+            owner_invite_pending?: boolean | null;
+          },
+          params.email
+        )
+      ) {
         return null;
       }
     } catch {

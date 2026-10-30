@@ -777,22 +777,39 @@ test('custom registration uses POST /v2/users/new with temporary password and re
 
 test('custom registration maps duplicate email errors, recovers unverified accounts without overwriting verified accounts, and handles post-verification login recovery', async () => {
   resetZitadelLoginUiRateLimitsForTests();
-  const { client } = {
-    client: {
+  const pendingOwnerInvitation = {
+    id: 'owner-invitation-fixture',
+    email: 'pending@example.test',
+    zitadel_sub: null,
+    owner_invite_pending: true,
+  };
+  const client = {
       from() {
         return {
           select() {
             return {
-              ilike() {
+              ilike(_column: string, email: string) {
                 return {
                   async limit() {
-                    return { data: [], error: null };
+                    return {
+                      data:
+                        email.toLowerCase() === pendingOwnerInvitation.email
+                          ? [pendingOwnerInvitation]
+                          : [],
+                      error: null,
+                    };
                   },
                 };
               },
-              eq() {
+              eq(column: string, value: unknown) {
                 return {
                   async maybeSingle() {
+                    if (
+                      column === 'zitadel_sub' &&
+                      pendingOwnerInvitation.zitadel_sub === value
+                    ) {
+                      return { data: pendingOwnerInvitation, error: null };
+                    }
                     return { data: null, error: null };
                   },
                 };
@@ -801,7 +818,6 @@ test('custom registration maps duplicate email errors, recovers unverified accou
           },
         };
       },
-    },
   };
   setSupabaseDbClientForTests(client as never);
 
