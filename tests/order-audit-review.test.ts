@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { GET as getAdminAudit } from '@/app/api/admin/audit/route';
@@ -72,6 +73,59 @@ test('production audit fails closed when database configuration is unavailable',
     console.error = previousConsoleError;
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('idempotent replay detection ignores updated_at but not real business changes', () => {
+  const base = {
+    status: 'acknowledged',
+    paid_at: new Date('2026-10-30T22:00:00.000Z'),
+    updated_at: '2026-10-30T22:00:00.000Z',
+  };
+  assert.equal(
+    hasBusinessStateChanged(base, {
+      ...base,
+      paid_at: '2026-10-31T05:00:00.000+07:00',
+      updated_at: '2026-10-31T06:00:00.000Z',
+    }),
+    false,
+    'same instants and a refreshed updated_at are a no-op replay'
+  );
+  assert.equal(
+    hasBusinessStateChanged(base, {
+      ...base,
+      paid_at: new Date('2026-10-30T22:00:00.001Z'),
+    }),
+    true,
+    'a different Date instant is a real change'
+  );
+  assert.equal(
+    hasBusinessStateChanged(base, { ...base, status: 'resolved' }),
+    true
+  );
+  assert.equal(hasBusinessStateChanged(null, base), true);
+  assert.equal(
+    hasBusinessStateChanged(
+      { customer_note: '2026-10-30T22:00:00.000Z' },
+      { customer_note: '2026-10-31T05:00:00.000+07:00' }
+    ),
+    true,
+    'equivalent timestamp strings in an ordinary text field are a real change'
+  );
+  assert.equal(
+    hasBusinessStateChanged(
+      { acknowledged_at: new Date('2026-10-30T22:00:00.000Z') },
+      { acknowledged_at: '2026-10-31T05:00:00.000+07:00' }
+    ),
+    false,
+    'a Date and its offset ISO string are the same instant for a timestamp field'
+  );
+  assert.equal(
+    hasBusinessStateChanged(
+      { resolved_at: '2026-10-30T22:00:00.000Z' },
+      { resolved_at: '2026-10-31T05:00:00.000+07:00' }
+    ),
+    false
+  );
 });
 
 function createPgliteAuditSupabaseClient(
@@ -787,6 +841,35 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
       ]
     );
 
+    // Repeating the already-acknowledged PATCH is an idempotent no-op replay.
+    const replayAckSrvRes = await patchServiceRequests(
+      new Request('http://localhost:3000/api/service-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${staffOrdersOnlyToken}`,
+        },
+        body: JSON.stringify({
+          id: serviceRequest.id,
+          shop_id: shopAId,
+          status: 'acknowledged',
+        }),
+      })
+    );
+    assert.equal(replayAckSrvRes.status, 200);
+    const srvAuditRowsAfterReplay = (
+      await db.query<{ action: string }>(
+        `SELECT action FROM public.order_audit_logs
+         WHERE shop_id = $1 AND service_request_id = $2`,
+        [shopAId, serviceRequest.id]
+      )
+    ).rows;
+    assert.deepEqual(
+      srvAuditRowsAfterReplay.map((r) => r.action).sort(),
+      ['create_service_request', 'update_service_request'],
+      'Replaying an acknowledged service request PATCH must not add an audit row'
+    );
+
     // =========================================================================
     // 3. Super-admin update_order_status & SePay webhook idempotency
     // =========================================================================
@@ -881,8 +964,8 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
     );
     assert.equal(
       localSepayAuditRows.length,
-      1,
-      'Duplicate SePay webhook must not append a duplicate local JSONL audit entry'
+      0,
+      'A successful DB SePay audit insert (and its duplicate delivery) must not append local JSONL rows'
     );
 
     // Super-admin cancels and refunds the paid order via /api/admin
@@ -922,6 +1005,134 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
     assert.equal(adminAuditRows[0]?.actor_user_id, superAdminId);
     assert.equal(adminAuditRows[0]?.actor_role, 'admin');
     assert.equal(adminAuditRows[0]?.reason, 'Hoàn tiền VietQR cho khách');
+
+    const countAdminActionRows = async () =>
+      (
+        await db.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM public.admin_audit_logs
+           WHERE action = 'update_order_status' AND target_id = $1`,
+          [vietQrOrder.id]
+        )
+      ).rows[0]!.n;
+    assert.equal(
+      await countAdminActionRows(),
+      1,
+      'The real admin state change records exactly one admin action row'
+    );
+
+    // Repeating the identical cancellation/refund leaves persisted state unchanged.
+    const adminCancelReplayRes = await postAdmin(
+      new Request('http://localhost:3000/api/admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${superAdminToken}`,
+        },
+        body: JSON.stringify({
+          action: 'update_order_status',
+          orderId: vietQrOrder.id,
+          status: 'cancelled',
+          payment_status: 'refunded',
+          cancelled_reason: 'Admin hủy đơn kiểm thử',
+          refund_reason: 'Hoàn tiền VietQR cho khách',
+        }),
+      })
+    );
+    assert.equal(adminCancelReplayRes.status, 200);
+    assert.equal(
+      (
+        await db.query(
+          `SELECT 1 FROM public.order_audit_logs
+           WHERE shop_id = $1 AND order_id = $2 AND action = 'admin_update_order_status'`,
+          [shopAId, vietQrOrder.id]
+        )
+      ).rows.length,
+      1,
+      'Admin replay must not add an admin_update_order_status order audit row'
+    );
+    assert.equal(
+      await countAdminActionRows(),
+      1,
+      'Admin replay must not add an admin_audit_logs action row'
+    );
+
+    // Payment collection replay on an already-paid order (idempotent no-op).
+    const createPayReplayRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerAToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: shopAId,
+          source: 'counter_pos',
+          table_label: 'Mang về',
+          payment_method: 'cash',
+          payment_status: 'unpaid',
+          items: [
+            {
+              item_id: 'item-audit-a2',
+              name_vi: 'Trà Sâm Dứa',
+              quantity: 1,
+              unit_price: 30000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(createPayReplayRes.status, 201);
+    const payReplayOrder = (
+      (await createPayReplayRes.json()) as { order: ShopOrder }
+    ).order;
+    const collectPayment = () =>
+      patchOrders(
+        new Request('http://localhost:3000/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({
+            order_id: payReplayOrder.id,
+            payment_status: 'paid',
+            payment_method: 'cash',
+            payment_idempotency_key: 'pay-replay-idem-1',
+          }),
+        })
+      );
+    const countUpdateOrderRows = async () =>
+      (
+        await db.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM public.order_audit_logs
+           WHERE shop_id = $1 AND order_id = $2 AND action = 'update_order'`,
+          [shopAId, payReplayOrder.id]
+        )
+      ).rows[0]!.n;
+    assert.equal((await collectPayment()).status, 200);
+    assert.equal(await countUpdateOrderRows(), 1);
+    assert.equal((await collectPayment()).status, 200);
+    assert.equal(
+      await countUpdateOrderRows(),
+      1,
+      'Replaying payment collection on a paid order must not add an update_order row'
+    );
+
+    // With the DB healthy, no order-audit JSONL rows are written for these events.
+    assert.equal(
+      readOrderAuditLog(2000).filter((r) =>
+        [
+          'settle_table_bill',
+          'update_service_request',
+          'admin_update_order_status',
+          'update_order',
+        ].includes(r.action)
+      ).length,
+      0,
+      'Successful DB audit inserts must not duplicate into local JSONL'
+    );
 
     const adminAuditUnauthorized = await getAdminAudit(
       new Request('http://localhost:3000/api/admin/audit')
@@ -1165,6 +1376,11 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
         (r) => r.order_id === resilientOrder.id
       );
       assert.equal(localBackupForResilient.length, 2);
+      assert.equal(
+        fs.statSync(tempAuditFile).mode & 0o777,
+        0o600,
+        'JSONL fallback must keep private 0600 permissions'
+      );
     } finally {
       failAdminAuditInsert = false;
       console.error = origConsoleError;

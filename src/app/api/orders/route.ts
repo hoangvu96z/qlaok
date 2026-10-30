@@ -32,6 +32,7 @@ import {
   recordOrderAuditLog,
   requireShopPermission,
 } from '@/lib/server-auth';
+import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import { hasShopPermission } from '@/lib/shop-permissions';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import type {
@@ -1147,40 +1148,43 @@ export async function PATCH(req: Request) {
       expected_total: body.expected_total,
     });
 
-    await recordOrderAuditLog({
-      shopId: existingOrder.shop_id,
-      orderId: existingOrder.id,
-      subjectType: 'order',
-      actorId: auth.user.sub,
-      actorRole: auth.membership.role,
-      action: 'update_order',
-      before: {
-        status: existingOrder.status,
-        workflow_step_id: existingOrder.workflow_step_id,
-        payment_status: existingOrder.payment_status,
-        subtotal_amount: existingOrder.subtotal_amount,
-        discount_amount: existingOrder.discount_amount,
-        total_amount: existingOrder.total_amount,
-        bill_version: existingOrder.bill_version,
-      },
-      after: {
-        status: updated.status,
-        workflow_step_id: updated.workflow_step_id,
-        payment_status: updated.payment_status,
-        subtotal_amount: updated.subtotal_amount,
-        discount_amount: updated.discount_amount,
-        total_amount: updated.total_amount,
-        bill_version: updated.bill_version,
-        waste_recorded: updated.waste_recorded,
-        ...(updated.refund_reason
-          ? { refund_reason: updated.refund_reason }
-          : {}),
-        ...(updated.cancelled_reason
-          ? { cancelled_reason: updated.cancelled_reason }
-          : {}),
-      },
-      reason: updated.refund_reason || updated.cancelled_reason || null,
-    });
+    // Skip the audit row for an idempotent no-op replay (state unchanged).
+    if (hasBusinessStateChanged(existingOrder, updated)) {
+      await recordOrderAuditLog({
+        shopId: existingOrder.shop_id,
+        orderId: existingOrder.id,
+        subjectType: 'order',
+        actorId: auth.user.sub,
+        actorRole: auth.membership.role,
+        action: 'update_order',
+        before: {
+          status: existingOrder.status,
+          workflow_step_id: existingOrder.workflow_step_id,
+          payment_status: existingOrder.payment_status,
+          subtotal_amount: existingOrder.subtotal_amount,
+          discount_amount: existingOrder.discount_amount,
+          total_amount: existingOrder.total_amount,
+          bill_version: existingOrder.bill_version,
+        },
+        after: {
+          status: updated.status,
+          workflow_step_id: updated.workflow_step_id,
+          payment_status: updated.payment_status,
+          subtotal_amount: updated.subtotal_amount,
+          discount_amount: updated.discount_amount,
+          total_amount: updated.total_amount,
+          bill_version: updated.bill_version,
+          waste_recorded: updated.waste_recorded,
+          ...(updated.refund_reason
+            ? { refund_reason: updated.refund_reason }
+            : {}),
+          ...(updated.cancelled_reason
+            ? { cancelled_reason: updated.cancelled_reason }
+            : {}),
+        },
+        reason: updated.refund_reason || updated.cancelled_reason || null,
+      });
+    }
 
     return NextResponse.json({ order: updated });
   } catch (error) {

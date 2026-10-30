@@ -47,6 +47,7 @@ import type {
   SupportedLocale,
 } from '@/types/qlaok';
 
+import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import {
   recordAdminAuditLog,
   recordOrderAuditLog,
@@ -815,6 +816,11 @@ export async function POST(req: Request) {
         refund_reason,
         cancelled_reason,
       });
+      // Idempotent replay (persisted state unchanged): no order audit row and
+      // no admin action audit row.
+      if (!hasBusinessStateChanged(existingOrder, updated)) {
+        return NextResponse.json({ order: updated });
+      }
       await recordOrderAuditLog({
         shopId: updated.shop_id,
         orderId: updated.id,

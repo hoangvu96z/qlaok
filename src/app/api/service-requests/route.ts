@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import { getOrderEventsBroker } from '@/lib/order-events';
 import { sendServiceRequestPushNotifications } from '@/lib/push-notifications';
 import {
@@ -252,25 +253,28 @@ export async function PATCH(req: Request) {
       actor_id: auth.user.sub,
     });
 
-    await recordOrderAuditLog({
-      shopId: requestedShopId,
-      subjectType: 'service_request',
-      serviceRequestId: existing.id,
-      orderId: null,
-      actorId: auth.user.sub,
-      actorRole: auth.membership.role,
-      action: 'update_service_request',
-      before: {
-        status: existing.status,
-        acknowledged_at: existing.acknowledged_at ?? null,
-        resolved_at: existing.resolved_at ?? null,
-      },
-      after: {
-        status: updated.status,
-        acknowledged_at: updated.acknowledged_at ?? null,
-        resolved_at: updated.resolved_at ?? null,
-      },
-    });
+    // Skip the audit row for an idempotent no-op replay (state unchanged).
+    if (hasBusinessStateChanged(existing, updated)) {
+      await recordOrderAuditLog({
+        shopId: requestedShopId,
+        subjectType: 'service_request',
+        serviceRequestId: existing.id,
+        orderId: null,
+        actorId: auth.user.sub,
+        actorRole: auth.membership.role,
+        action: 'update_service_request',
+        before: {
+          status: existing.status,
+          acknowledged_at: existing.acknowledged_at ?? null,
+          resolved_at: existing.resolved_at ?? null,
+        },
+        after: {
+          status: updated.status,
+          acknowledged_at: updated.acknowledged_at ?? null,
+          resolved_at: updated.resolved_at ?? null,
+        },
+      });
+    }
 
     getOrderEventsBroker().notifyShopChange(requestedShopId);
 

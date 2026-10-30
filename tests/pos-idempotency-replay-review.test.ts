@@ -416,17 +416,14 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
   const tempAuditFile = path.join(tempAuditDir, 'order-audit.jsonl');
   setOrderAuditLogFileForTests(tempAuditFile);
 
-  const countAuditEntriesForOrder = (orderId: string): number => {
-    if (!fs.existsSync(tempAuditFile)) return 0;
-    return fs
-      .readFileSync(tempAuditFile, 'utf8')
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { orderId?: string; action?: string })
-      .filter((e) => e.orderId === orderId && e.action === 'create_order')
-      .length;
-  };
+  const countAuditEntriesForOrder = async (orderId: string): Promise<number> =>
+    (
+      await db.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM public.order_audit_logs
+         WHERE order_id = $1 AND action = 'create_order'`,
+        [orderId]
+      )
+    ).rows[0]!.count;
 
   try {
     await db.exec(`
@@ -660,7 +657,12 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
     ).rows[0];
     assert.equal(stockAfterFirst.stock_quantity, 1);
     assert.equal(stockAfterFirst.sold_count, 2);
-    assert.equal(countAuditEntriesForOrder(createdOrder.id), 1);
+    assert.equal(await countAuditEntriesForOrder(createdOrder.id), 1);
+    assert.equal(
+      fs.existsSync(tempAuditFile),
+      false,
+      'A successful database audit insert must not be duplicated in JSONL'
+    );
 
     // 4. Mutate item price, mark item unavailable / 0 stock, and deactivate the table!
     await db.exec(`
@@ -728,7 +730,7 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
     assert.equal(stockAfterReplay.stock_quantity, 0);
     assert.equal(stockAfterReplay.sold_count, 2);
     assert.equal(
-      countAuditEntriesForOrder(createdOrder.id),
+      await countAuditEntriesForOrder(createdOrder.id),
       1,
       'Replay must not append duplicate create_order audit logs'
     );

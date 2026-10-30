@@ -1459,7 +1459,7 @@ export async function recordOrderAuditLog(
     typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : null;
 
   const dbRows: OrderAuditLogInsertRow[] = [];
-  let localWriteSucceeded = true;
+  const localPayloads: Record<string, unknown>[] = [];
 
   for (let idx = 0; idx < targetSubjectIds.length; idx += 1) {
     const subjectId = targetSubjectIds[idx]!;
@@ -1523,21 +1523,27 @@ export async function recordOrderAuditLog(
       reason: explicitReason,
     };
 
-    const appended = appendPrivateAuditRecord(
-      targetFile,
-      localPayload,
-      'order'
-    );
-    if (!appended) {
-      localWriteSucceeded = false;
-    }
+    localPayloads.push(localPayload);
   }
+
+  // Local JSONL is a private fallback only: it is written when the DB is
+  // unconfigured or the DB insert fails, never after a successful DB insert.
+  const writeLocalFallback = (): boolean => {
+    let allWritten = true;
+    for (const payload of localPayloads) {
+      if (!appendPrivateAuditRecord(targetFile, payload, 'order')) {
+        allWritten = false;
+      }
+    }
+    return allWritten;
+  };
 
   if (isOrderAuditDbConfigured()) {
     try {
       await dbInsertOrderAuditLogs(dbRows);
       return true;
     } catch {
+      const localWriteSucceeded = writeLocalFallback();
       console.error('ORDER_AUDIT_WRITE_FAILED', {
         code: 'ORDER_AUDIT_DB_WRITE_FAILED',
         shopId: cleanShopId,
@@ -1549,6 +1555,8 @@ export async function recordOrderAuditLog(
       return false;
     }
   }
+
+  const localWriteSucceeded = writeLocalFallback();
 
   if (process.env.NODE_ENV === 'production') {
     console.error('ORDER_AUDIT_WRITE_FAILED', {
