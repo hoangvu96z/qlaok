@@ -125,7 +125,7 @@ function buildSignedWebhookRequest(params: {
   );
 }
 
-test('SePay HMAC rejects malformed and stale timestamp headers outside the five-minute window', () => {
+test('SePay HMAC enforces the symmetric five-minute window and rejects malformed timestamps', () => {
   const rawBody = '{"id":1}';
   const timestamp = '1761120000';
   const signature = signSePayWebhookPayload(rawBody, timestamp, SHOP_A_SECRET);
@@ -141,24 +141,54 @@ test('SePay HMAC rejects malformed and stale timestamp headers outside the five-
     }),
     { valid: true, timestamp }
   );
+
+  const staleBoundary = verifySePayWebhookSignature({
+    rawBody,
+    timestampHeader: timestamp,
+    signatureHeader: signature,
+    secret: SHOP_A_SECRET,
+    nowMs: nowMs + 300_000,
+  });
+  assert.deepEqual(staleBoundary, { valid: true, timestamp });
+
+  const futureBoundary = verifySePayWebhookSignature({
+    rawBody,
+    timestampHeader: timestamp,
+    signatureHeader: signature,
+    secret: SHOP_A_SECRET,
+    nowMs: nowMs - 300_000,
+  });
+  assert.deepEqual(futureBoundary, { valid: true, timestamp });
+
   const expiredTimestamp = verifySePayWebhookSignature({
-      rawBody,
-      timestampHeader: timestamp,
-      signatureHeader: signature,
-      secret: SHOP_A_SECRET,
-      nowMs: nowMs + 300_001,
-    });
+    rawBody,
+    timestampHeader: timestamp,
+    signatureHeader: signature,
+    secret: SHOP_A_SECRET,
+    nowMs: nowMs + 300_001,
+  });
   assert.equal(expiredTimestamp.valid, false);
   if (expiredTimestamp.valid) assert.fail('Expected expired timestamp to be rejected');
   assert.equal(expiredTimestamp.code, 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW');
 
+  const futureTimestamp = verifySePayWebhookSignature({
+    rawBody,
+    timestampHeader: timestamp,
+    signatureHeader: signature,
+    secret: SHOP_A_SECRET,
+    nowMs: nowMs - 300_001,
+  });
+  assert.equal(futureTimestamp.valid, false);
+  if (futureTimestamp.valid) assert.fail('Expected future timestamp to be rejected');
+  assert.equal(futureTimestamp.code, 'WEBHOOK_TIMESTAMP_OUT_OF_WINDOW');
+
   const invalidTimestamp = verifySePayWebhookSignature({
-      rawBody,
-      timestampHeader: 'not-a-timestamp',
-      signatureHeader: signature,
-      secret: SHOP_A_SECRET,
-      nowMs,
-    });
+    rawBody,
+    timestampHeader: 'not-a-timestamp',
+    signatureHeader: signature,
+    secret: SHOP_A_SECRET,
+    nowMs,
+  });
   assert.equal(invalidTimestamp.valid, false);
   if (invalidTimestamp.valid) assert.fail('Expected invalid timestamp to be rejected');
   assert.equal(invalidTimestamp.code, 'INVALID_WEBHOOK_TIMESTAMP');
