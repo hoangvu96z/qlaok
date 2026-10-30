@@ -399,13 +399,13 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 - **Phạm vi:** chế độ DB `dbCreateOrder` đã ném `DB_COMMIT_REQUIRED`/`DB_COMMIT_FAILED` đúng; vấn đề chỉ ở nhánh file-backed. Vẫn nên sửa vì nhánh này vẫn dùng được ở dev/demo.
 - **Hướng sửa:** `writeStore` phải `throw`; nơi gọi quyết định có coi là lỗi nghiệp vụ hay không.
 
-#### P2-7. Floor plan tải toàn bộ lịch sử đơn, trả 500 khi >10.000
+#### P2-7. Floor plan trả 500 khi có hơn 10.000 đơn đang mở/chưa thanh toán
 
-- **Vị trí:** `src/app/api/tables/floor-plan/route.ts:18, 51, 80-106`
-- **Bằng chứng:** `MAX_RECORDS = 10000`, phân trang 500, và `records.length === MAX_RECORDS` + còn hàng → ném `MAX_RECORDS_EXCEEDED_*` → HTTP 500.
-- **Tác động:** shop nhiều lịch sử mất sơ đồ bàn và số tiền chưa thu.
-- **Trạng thái:** đã nêu ở AGY `#1`/`#30`, vẫn còn.
-- **Hướng sửa:** lọc đơn ở query theo đúng điều kiện tổng hợp cần (chưa huỷ đang mở, hoặc chưa thanh toán), hoặc tính tổng hợp bằng SQL.
+- **Vị trí tại thời điểm rà:** `src/app/api/tables/floor-plan/route.ts:18, 51, 80-106`
+- **Bằng chứng tại thời điểm rà:** `MAX_RECORDS = 10000`, phân trang 500, và nếu còn kết quả sau bản ghi 10.000 thì route ném `MAX_RECORDS_EXCEEDED_*` → HTTP 500.
+- **Tác động:** shop có hơn 10.000 ticket phù hợp điều kiện tổng hợp mất sơ đồ bàn và số tiền chưa thu.
+- **Trạng thái:** đã sửa ở mục 49; route giữ query lọc trạng thái tại DB và tổng hợp order pages tăng dần, không còn trần 10.000 đơn.
+- **Hướng sửa ban đầu:** lọc đúng đơn cần tổng hợp hoặc tính bằng SQL; mục 49 thực hiện lọc server-side + tổng hợp streaming.
 
 #### P2-8. `GET /api/health` lộ cấu hình nội bộ
 
@@ -1049,3 +1049,19 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - AGY Flash run `2026-10-30T06-26-07-225Z-21ffe950` mở được production dashboard/QR Studio trong phiên QA có sẵn; continuation `2026-10-30T06-29-26-443Z-b2bee5ce` bị dừng khi rơi vào vòng điều phối tác vụ nội bộ. AGY **không hoàn tất** kiểm tra chữ ký/API nên không tính là QA pass của AGY. Codex tự hoàn tất và kiểm tra độc lập như trên; không có source diff.
 - Claude CLI được gọi ở chế độ read-only nhưng gateway cảnh báo model `deepseek` không được nhận dạng; lượt review chạm giới hạn 4 turns và không trả kết luận sử dụng được. Không xem cảnh báo đó là kết quả review.
 - QA dùng Playwright CLI với phiên owner QA đã có; sau khi xong Codex đăng xuất và đóng browser. Không chạy test/build vì không thay đổi source.
+
+## 48. Storefront search — production read-only QA (2026-10-30)
+
+- Menu public của shop QA mở thành công. Tìm tên dịch vụ đang hiển thị giữ đúng thẻ kết quả; truy vấn không thể khớp hiện empty state có `role=status`; nút xóa khôi phục danh sách một thẻ.
+- Console có 0 lỗi và 0 cảnh báo. Network summary ghi nhận `GET /api/shops` và storefront RSC đều HTTP 200; CLI không liệt kê 27 request tài nguyên tĩnh trong summary. Không thấy business write request và không thao tác giỏ/đơn/thanh toán/dịch vụ.
+- AGY Flash run `2026-10-30T06-41-37-577Z-7572821d` dừng trước browser QA sau khoảng một phút dò setup Playwright/npm; không tính là AGY pass. Codex tự kiểm tra bằng Playwright CLI rồi đóng browser.
+- Evidence đã lược thông tin tại `.agy-runs/storefront-search-readonly-qa-2026-10-30.md`. Không sửa source nên không chạy test/build.
+
+## 49. P2-7: floor plan tổng hợp đơn theo trang, bỏ trần 10.000 đơn (2026-10-30)
+
+- Giữ nguyên quyền `orders.view`, lọc `shop_id` và trạng thái phía database, kích thước trang 500, response 13 field, quy tắc trạng thái/số dư, cách giải `table_label` legacy và dedupe ID.
+- Route tải tối đa 10.000 bàn như trước, sau đó đưa từng trang đơn phù hợp vào accumulator thuần; bộ nhớ không giữ toàn bộ order object. Không còn lỗi HTTP 500 chỉ vì có 10.001 đơn đang mở/chưa thanh toán.
+- Regression API: 10.001 đơn trả HTTP 200 với `open_order_count=10001`, `unpaid_amount=10001000`; 21 page calls kết thúc ở range `10000..10499`, không chạy cap lookahead. Case đúng 10.000 và query errors tiếp tục được kiểm tra. Unit test xác nhận accumulator theo nhiều batch bằng kết quả xử lý cả mảng, kể cả ID trùng qua biên trang.
+- AGY Argon Low run `2026-10-30T06-45-42-006Z-033f5c80` cập nhật route, helper và hai test; AGY chạy targeted suites 19/19 và typecheck. Codex chạy lại độc lập: targeted suites 19/19, `npm run typecheck`, ESLint trên bốn file source/test, `npm run build` (41 trang) và `git diff --check` đều đạt. Build có các cảnh báo `<img>`/hook sẵn có ngoài các file sửa.
+- CodeGraph trước/sau sửa: `src/app/api/tables/floor-plan/route.ts MAX_RECORDS getShopOrders filter statuses`; `computeTableFloorPlanSummaries TableFloorPlanOrderInput tests/floor-plan-api-review.test.ts pagination range MAX_RECORDS_EXCEEDED`; sau sửa `createTableFloorPlanSummaryAccumulator computeTableFloorPlanSummaries processOrderPagesWithPagination floor-plan-api-review.test.ts table-floor-plan.test.ts`. Khu vực ảnh hưởng chỉ gồm floor-plan API, helper aggregation và hai test tương ứng.
+- Claude CLI được gọi trực tiếp ở chế độ plan theo cấu hình DeepSeek; gateway báo `unrecognized_model deepseek` và không trả review sau khoảng 30 giây. Không tính đây là review pass. Chưa chạy full `test:review`/SQL suite hoặc production verification; chưa commit/push.

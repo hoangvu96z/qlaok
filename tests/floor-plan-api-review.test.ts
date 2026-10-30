@@ -545,8 +545,8 @@ test('(d) a DB page error also returns generic 500 without exposing the internal
   }
 });
 
-test('(e) 10001 matching orders triggers the cap lookahead and returns 500, while a separate test with exactly 10000 rows succeeds', async () => {
-  // Part 1: 10001 matching orders triggers cap lookahead and returns 500
+test('(e) 10001 matching orders returns 200 with exact open_order_count and unpaid_amount and paginates with no cap lookahead, while 10000 rows also succeeds', async () => {
+  // Part 1: 10001 matching orders returns 200 with exact open_order_count and unpaid_amount and no cap lookahead
   {
     const shopIdE1 = 'shop-floor-e1';
     const orders10001 = Array.from({ length: 10001 }, (_, i) => ({
@@ -573,12 +573,6 @@ test('(e) 10001 matching orders triggers the cap lookahead and returns 500, whil
       ordersData: orders10001,
     });
 
-    const originalConsoleError = console.error;
-    const capturedErrors: unknown[][] = [];
-    console.error = (...args: unknown[]) => {
-      capturedErrors.push(args);
-    };
-
     setSupabaseDbClientForTests(fakeClientE1);
     try {
       const req = new Request(
@@ -590,22 +584,31 @@ test('(e) 10001 matching orders triggers the cap lookahead and returns 500, whil
       );
 
       const res = await GET(req);
-      assert.equal(res.status, 500);
+      assert.equal(res.status, 200);
 
-      const json = (await res.json()) as Record<string, unknown>;
-      assert.deepEqual(json, {
-        error: 'Lỗi truy vấn sơ đồ bàn.',
-        code: 'TABLE_FLOOR_PLAN_FETCH_FAILED',
-      });
-      assert.equal('tables' in json, false, 'Must not return tables on cap exceeded');
+      const json = (await res.json()) as { tables: Array<Record<string, unknown>> };
+      assert.ok(Array.isArray(json.tables));
+      assert.equal(json.tables.length, 1);
+      assert.equal(json.tables[0].open_order_count, 10001);
+      assert.equal(json.tables[0].unpaid_amount, 10001 * 1000);
+      assert.equal(json.tables[0].floor_status, 'occupied');
 
       const lookaheadCalls = fakeClientE1.queryLogs.filter(
         (q) => q.table === 'orders' && q.range?.from === 10000 && q.range?.to === 10000
       );
-      assert.equal(lookaheadCalls.length, 1, 'Lookahead query range(10000, 10000) must be called');
-      assert.ok(capturedErrors.length > 0, 'MAX_RECORDS_EXCEEDED should be logged to console.error');
+      assert.equal(lookaheadCalls.length, 0, 'Must not perform a cap lookahead range(10000, 10000) for orders');
+
+      const orderRangeCalls = fakeClientE1.queryLogs.filter(
+        (q) => q.table === 'orders' && q.range !== undefined
+      );
+      assert.equal(orderRangeCalls.length, 21, 'Expected 21 pages of 500 for 10001 rows');
+      for (let i = 0; i < 21; i++) {
+        assert.deepEqual(orderRangeCalls[i].range, {
+          from: i * 500,
+          to: i * 500 + 499,
+        });
+      }
     } finally {
-      console.error = originalConsoleError;
       setSupabaseDbClientForTests(null);
     }
   }
@@ -660,12 +663,22 @@ test('(e) 10001 matching orders triggers the cap lookahead and returns 500, whil
       const lookaheadCalls = fakeClientE2.queryLogs.filter(
         (q) => q.table === 'orders' && q.range?.from === 10000 && q.range?.to === 10000
       );
-      assert.equal(lookaheadCalls.length, 1, 'Lookahead query range(10000, 10000) must be called');
+      assert.equal(lookaheadCalls.length, 0, 'Must not perform a cap lookahead range(10000, 10000) for orders');
 
       const orderRangeCalls = fakeClientE2.queryLogs.filter(
         (q) => q.table === 'orders' && q.range !== undefined
       );
-      assert.equal(orderRangeCalls.length, 21, 'Expected 20 pages of 500 + 1 lookahead call = 21 range calls');
+      assert.equal(
+        orderRangeCalls.length,
+        21,
+        'Expected 20 full pages of 500 + 1 empty terminal page range(10000, 10499)'
+      );
+      for (let i = 0; i < 21; i++) {
+        assert.deepEqual(orderRangeCalls[i].range, {
+          from: i * 500,
+          to: i * 500 + 499,
+        });
+      }
     } finally {
       setSupabaseDbClientForTests(null);
     }

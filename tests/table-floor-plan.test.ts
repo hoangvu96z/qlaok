@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeTableFloorPlanSummaries,
+  createTableFloorPlanSummaryAccumulator,
   aggregateTableFloorPlan,
 } from '@/lib/table-floor-plan';
 import type { ShopOrder, ShopTable } from '@/types/qlaok';
@@ -685,5 +686,141 @@ describe('table-floor-plan aggregation slice', () => {
       open_order_count: 2, // 1 deduplicated completed + 1 unique preparing
       unpaid_amount: 55000, // 30000 + 25000 (duplicate 30000 counts only once)
     });
+  });
+
+  test('incremental accumulator produces identical summaries to one combined list and deduplicates duplicate order IDs across page boundaries', () => {
+    const tables = [
+      makeTable({
+        id: 'tbl-inc-1',
+        shop_id: 'shop-001',
+        table_code: 'I01',
+        name: 'Bàn Inc 1',
+        is_active: true,
+      }),
+      makeTable({
+        id: 'tbl-inc-2',
+        shop_id: 'shop-001',
+        table_code: 'I02',
+        name: 'Bàn Inc 2',
+        is_active: true,
+      }),
+      makeTable({
+        id: 'tbl-inc-inactive',
+        shop_id: 'shop-001',
+        table_code: 'I03',
+        name: 'Bàn Inc Inactive',
+        is_active: false,
+      }),
+      makeTable({
+        id: 'tbl-inc-archived',
+        shop_id: 'shop-001',
+        table_code: 'I04',
+        name: 'Bàn Inc Archived',
+        is_active: true,
+        is_archived: true,
+      }),
+    ];
+
+    const page1 = [
+      makeOrder({
+        id: 'ord-inc-1',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-1',
+        status: 'completed',
+        payment_status: 'unpaid',
+        total_amount: 40000,
+      }),
+      makeOrder({
+        id: 'ord-inc-2',
+        shop_id: 'shop-001',
+        table_id: null,
+        table_label: 'Bàn Inc 2',
+        status: 'completed',
+        payment_status: 'unpaid',
+        total_amount: 65000,
+      }),
+    ];
+
+    const page2 = [
+      // Duplicate ID from page 1 across page boundary
+      makeOrder({
+        id: 'ord-inc-1',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-1',
+        status: 'completed',
+        payment_status: 'unpaid',
+        total_amount: 40000,
+      }),
+      makeOrder({
+        id: 'ord-inc-3',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-1',
+        status: 'preparing',
+        payment_status: 'unpaid',
+        total_amount: 25000,
+      }),
+      makeOrder({
+        id: 'ord-inc-4',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-inactive',
+        status: 'new',
+        payment_status: 'unpaid',
+        total_amount: 30000,
+      }),
+    ];
+
+    const page3 = [
+      // Another duplicate across page 2 -> page 3 boundary
+      makeOrder({
+        id: 'ord-inc-3',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-1',
+        status: 'preparing',
+        payment_status: 'unpaid',
+        total_amount: 25000,
+      }),
+      makeOrder({
+        id: 'ord-inc-5',
+        shop_id: 'shop-001',
+        table_id: 'tbl-inc-2',
+        status: 'cancelled',
+        payment_status: 'unpaid',
+        total_amount: 99000,
+      }),
+    ];
+
+    const accumulator = createTableFloorPlanSummaryAccumulator(tables);
+    accumulator.addOrders(page1);
+    accumulator.addOrders(page2);
+    accumulator.addOrders(page3);
+
+    const incrementalSummaries = accumulator.getSummaries();
+    const combinedSummaries = computeTableFloorPlanSummaries(tables, [
+      ...page1,
+      ...page2,
+      ...page3,
+    ]);
+
+    assert.deepEqual(incrementalSummaries, combinedSummaries);
+    assert.deepEqual(incrementalSummaries, [
+      {
+        table_id: 'tbl-inc-1',
+        floor_status: 'occupied',
+        open_order_count: 2,
+        unpaid_amount: 65000,
+      },
+      {
+        table_id: 'tbl-inc-2',
+        floor_status: 'waiting_payment',
+        open_order_count: 1,
+        unpaid_amount: 65000,
+      },
+      {
+        table_id: 'tbl-inc-inactive',
+        floor_status: 'inactive',
+        open_order_count: 1,
+        unpaid_amount: 30000,
+      },
+    ]);
   });
 });

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireShopPermission } from '@/lib/server-auth';
 import { requireSupabaseServiceRoleClient } from '@/lib/db';
 import {
-  computeTableFloorPlanSummaries,
+  createTableFloorPlanSummaryAccumulator,
   type TableFloorPlanTableInput,
   type TableFloorPlanOrderInput,
 } from '@/lib/table-floor-plan';
@@ -111,6 +111,42 @@ async function fetchAllWithPagination<T>(
   return records;
 }
 
+async function processOrderPagesWithPagination<T>(
+  createQuery: () => {
+    range: (from: number, to: number) => PromiseLike<QueryResult<T>>;
+  },
+  onPage: (rows: T[]) => void
+): Promise<void> {
+  let from = 0;
+
+  while (true) {
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await createQuery().range(from, to);
+
+    if (error) {
+      throw new Error(`QUERY_FAILED_ORDERS: ${error.message}`);
+    }
+
+    if (!Array.isArray(data)) {
+      throw new Error(
+        'QUERY_FAILED_ORDERS: Dữ liệu truy vấn không hợp lệ.'
+      );
+    }
+
+    if (data.length === 0) {
+      break;
+    }
+
+    onPage(data);
+
+    if (data.length < PAGE_SIZE) {
+      break;
+    }
+
+    from += PAGE_SIZE;
+  }
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -134,34 +170,37 @@ export async function GET(req: Request) {
 
     const sb = requireSupabaseServiceRoleClient('GET /api/tables/floor-plan');
 
-    const [tables, orders] = await Promise.all([
-      fetchAllWithPagination<TableRow>(
-        () =>
-          sb
-            .from('shop_tables')
-            .select(
-              'id, shop_id, name, table_code, section, capacity, is_active, is_archived, layout_x, layout_y'
-            )
-            .eq('shop_id', shopId)
-            .eq('is_archived', false)
-            .order('id', { ascending: true }),
-        'tables'
-      ),
-      fetchAllWithPagination<OrderRow>(
-        () =>
-          sb
-            .from('orders')
-            .select(
-              'id, shop_id, table_id, table_label, status, payment_status, total_amount'
-            )
-            .eq('shop_id', shopId)
-            .or('status.in.(new,preparing),and(status.eq.completed,payment_status.eq.unpaid)')
-            .order('id', { ascending: true }),
-        'orders'
-      ),
-    ]);
+    const tables = await fetchAllWithPagination<TableRow>(
+      () =>
+        sb
+          .from('shop_tables')
+          .select(
+            'id, shop_id, name, table_code, section, capacity, is_active, is_archived, layout_x, layout_y'
+          )
+          .eq('shop_id', shopId)
+          .eq('is_archived', false)
+          .order('id', { ascending: true }),
+      'tables'
+    );
 
-    const summaries = computeTableFloorPlanSummaries(tables, orders);
+    const accumulator = createTableFloorPlanSummaryAccumulator(tables);
+
+    await processOrderPagesWithPagination<OrderRow>(
+      () =>
+        sb
+          .from('orders')
+          .select(
+            'id, shop_id, table_id, table_label, status, payment_status, total_amount'
+          )
+          .eq('shop_id', shopId)
+          .or('status.in.(new,preparing),and(status.eq.completed,payment_status.eq.unpaid)')
+          .order('id', { ascending: true }),
+      (pageOrders) => {
+        accumulator.addOrders(pageOrders);
+      }
+    );
+
+    const summaries = accumulator.getSummaries();
     const summaryMap = new Map(summaries.map((s) => [s.table_id, s]));
 
     const responseTables: TableFloorPlanItem[] = tables.map((t) => {
