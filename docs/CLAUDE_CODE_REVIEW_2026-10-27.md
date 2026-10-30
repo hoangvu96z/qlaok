@@ -1453,3 +1453,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `codegraph status`; `codegraph explore "scripts/migrate-self-hosted.mjs migration schema_migrations table applied_at version connection configuration"`; `codegraph explore "readLocalMigrations planMigrations migration checksum mismatch"`. Phạm vi: `readMigrationHistory`, `checksumSql`, `readLocalMigrations` và `planMigrations`.
 - **Checks:** SSH chỉ đọc trả đúng production migration history; verify/deploy GitHub Actions run `41119914312` success trên SHA `14345a709ab908aa54fea2922e4f7f70bdc661a8`; VPS HEAD khớp SHA; `/api/health` và `/` HTTP 200; PostgreSQL backup timer `active` + `enabled`.
 - **Còn mở:** lịch chạy tự động tiếp theo là `2026-11-01 03:19:21 CST`; chưa có evidence timer tự chạy tại kỳ này. Diễn tập restore backup production vào PostgreSQL tạm vẫn cần chấp thuận riêng.
+
+## 91. Xác minh độc lập giới hạn gói và storefront QA (2026-10-31)
+
+- AGY Flash Low run `2026-10-30T20-20-27-355Z-13df63d5` đăng nhập tài khoản QA trên đúng host production, chỉ tải danh sách shop và các storefront GET. Kết quả tổng hợp: 1 shop, gói Free 1, Basic 0, Premium 0; shop đã publish 1, chưa publish 0. Không thay đổi gói hoặc dữ liệu nghiệp vụ.
+- Codex tự chạy lại luồng đăng nhập QA trong tiến trình cục bộ rồi đọc lại shop list. Kết quả khớp AGY: 1 Free, 0 Basic, 0 Premium; 1 published, 0 unpublished. Không in/ghi credential, cookie, token, shop ID, slug hoặc tên shop.
+- Codex gọi độc lập bốn endpoint storefront của shop QA: door bundle, menu bundle, catalog và tables — cả bốn trả HTTP 200; catalog không có `owner_id`. Không gọi endpoint ghi đơn, thanh toán, bàn, catalog hoặc analytics.
+- **CodeGraph:** `codegraph status`; `codegraph_explore` luồng login/authRequest và `GET /api/shops?member=1`; `codegraph_node` các file login page, `/api/auth`, `/api/auth/login-ui`, callback và `zitadel-oidc.ts`; `codegraph_explore "getZitadelIssuerUrl ZITADEL_ISSUER_URL issuerUrl default issuer"`. Phạm vi: auth QA, danh sách shop theo owner và public storefront door/menu/catalog/tables.
+- **Evidence/checks:** Codex chạy `.agy-runs/qa-codex-independent-storefront-coverage.mjs`; output chỉ chứa status và aggregate counts. `git diff --check` chạy sau khi ghi mục này. Không sửa source nên không chạy test/build.
+- **Còn mở:** tài khoản QA chưa có shop Basic/Premium; không thể xác nhận hành vi production theo hai gói nếu không có fixture phù hợp. Smoke cũng không kiểm thử authenticated owner APIs hay mutation flows.
