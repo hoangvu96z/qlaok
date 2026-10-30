@@ -1526,8 +1526,11 @@ test('Bug 4 & Bug 5 regression: TranslationEditorModal and DashboardCatalogPage 
     raceTree = raceHarness.render(RaceCatalogPage, {});
     const raceJson = JSON.stringify(raceTree);
     raceRows = findNodes(raceTree, (n) => n.type === QuickItemRowSymbol);
+    const staleShopRowItem = raceRows[0]?.props.item as
+      | { is_available?: unknown }
+      | undefined;
     assert.equal(
-      raceRows[0]?.props.item.is_available,
+      staleShopRowItem?.is_available,
       false,
       'Stale availability response must not update the newly active shop item'
     );
