@@ -7,21 +7,28 @@ cd "$repo_dir"
 db_container="qlaok-e2e-postgres-$$"
 postgrest_container="qlaok-e2e-postgrest-$$"
 next_pid=""
+supabase_rest_proxy_pid=""
 next_log="$(mktemp /tmp/qlaok-e2e-next.XXXXXX)"
+supabase_rest_proxy_log="$(mktemp /tmp/qlaok-e2e-postgrest-proxy.XXXXXX)"
 db_password="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
 jwt_secret="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(48).toString("base64url"))')"
 session_secret="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(48).toString("base64url"))')"
 db_name="qlaok_e2e"
 db_port=""
 postgrest_port="18080"
+supabase_rest_proxy_port="18081"
 
 cleanup() {
   if [[ -n "$next_pid" ]]; then
     kill "$next_pid" >/dev/null 2>&1 || true
     wait "$next_pid" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$supabase_rest_proxy_pid" ]]; then
+    kill "$supabase_rest_proxy_pid" >/dev/null 2>&1 || true
+    wait "$supabase_rest_proxy_pid" >/dev/null 2>&1 || true
+  fi
   docker rm -f "$postgrest_container" "$db_container" >/dev/null 2>&1 || true
-  rm -f "$next_log"
+  rm -f "$next_log" "$supabase_rest_proxy_log"
 }
 trap cleanup EXIT
 
@@ -95,6 +102,11 @@ if [[ "$postgrest_ready" != 1 ]]; then
   exit 1
 fi
 
+E2E_POSTGREST_ORIGIN="http://127.0.0.1:${postgrest_port}" \
+  E2E_SUPABASE_REST_PROXY_PORT="$supabase_rest_proxy_port" \
+  node scripts/e2e-supabase-rest-proxy.mjs >"$supabase_rest_proxy_log" 2>&1 &
+supabase_rest_proxy_pid=$!
+
 postgrest_service_token="$(make_postgrest_jwt service_role)"
 postgrest_db_ready=0
 postgrest_probe_status=""
@@ -104,19 +116,23 @@ for attempt in $(seq 1 60); do
     -H "Authorization: Bearer ${postgrest_service_token}" \
     -H "apikey: ${postgrest_service_token}" \
     -w $'\n%{http_code}' \
-    "http://127.0.0.1:${postgrest_port}/shops?select=id&limit=1" || true)"
+    "http://127.0.0.1:${supabase_rest_proxy_port}/rest/v1/shops?select=id&limit=1" || true)"
   postgrest_probe_status="${postgrest_probe_response##*$'\n'}"
   postgrest_probe_body="${postgrest_probe_response%$'\n'*}"
   if [[ "$postgrest_probe_status" =~ ^2[0-9][0-9]$ ]]; then
     postgrest_db_ready=1
     break
   fi
+  if ! kill -0 "$supabase_rest_proxy_pid" >/dev/null 2>&1; then
+    break
+  fi
   sleep 1
 done
 unset postgrest_service_token postgrest_probe_response
 if [[ "$postgrest_db_ready" != 1 ]]; then
-  echo "Disposable PostgREST could not query public.shops (HTTP ${postgrest_probe_status:-unknown})." >&2
+  echo "Supabase REST path could not query disposable public.shops (HTTP ${postgrest_probe_status:-unknown})." >&2
   echo "PostgREST response: ${postgrest_probe_body:-<empty>}" >&2
+  tail -n 40 "$supabase_rest_proxy_log" >&2 || true
   exit 1
 fi
 
@@ -148,7 +164,7 @@ export SESSION_SECRET="$session_secret"
 export QLAOK_DB_NAME="$db_name"
 export QLAOK_DATABASE_URL="postgres://postgres:${db_password}@127.0.0.1:${db_port}/${db_name}"
 export PGRST_JWT_SECRET="$jwt_secret"
-export NEXT_PUBLIC_SUPABASE_URL="http://127.0.0.1:${postgrest_port}"
+export NEXT_PUBLIC_SUPABASE_URL="http://127.0.0.1:${supabase_rest_proxy_port}"
 export NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="$(make_postgrest_jwt anon)"
 export NEXT_PUBLIC_SUPABASE_ANON_KEY="$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"
 export SUPABASE_SERVICE_ROLE_KEY="$(make_postgrest_jwt service_role)"
