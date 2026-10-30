@@ -58,6 +58,18 @@ for migration in supabase/migrations/*.sql; do
     < "$migration"
 done
 
+make_postgrest_jwt() {
+  E2E_TOKEN_ROLE="$1" PGRST_JWT_SECRET="$jwt_secret" node --input-type=module -e '
+    import { createHmac } from "node:crypto";
+    const role = process.env.E2E_TOKEN_ROLE;
+    const secret = process.env.PGRST_JWT_SECRET;
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ role, iat: now, exp: now + 3600 })}`;
+    process.stdout.write(`${unsigned}.${createHmac("sha256", secret).update(unsigned).digest("base64url")}`);
+  '
+}
+
 docker run -d \
   --name "$postgrest_container" \
   --network host \
@@ -83,15 +95,47 @@ if [[ "$postgrest_ready" != 1 ]]; then
   exit 1
 fi
 
-make_postgrest_jwt() {
-  E2E_TOKEN_ROLE="$1" PGRST_JWT_SECRET="$jwt_secret" node --input-type=module -e '
+postgrest_service_token="$(make_postgrest_jwt service_role)"
+postgrest_db_ready=0
+postgrest_probe_status=""
+postgrest_probe_body=""
+for attempt in $(seq 1 60); do
+  postgrest_probe_response="$(curl --silent --show-error --max-time 2 \
+    -H "Authorization: Bearer ${postgrest_service_token}" \
+    -H "apikey: ${postgrest_service_token}" \
+    -w $'\n%{http_code}' \
+    "http://127.0.0.1:${postgrest_port}/shops?select=id&limit=1" || true)"
+  postgrest_probe_status="${postgrest_probe_response##*$'\n'}"
+  postgrest_probe_body="${postgrest_probe_response%$'\n'*}"
+  if [[ "$postgrest_probe_status" =~ ^2[0-9][0-9]$ ]]; then
+    postgrest_db_ready=1
+    break
+  fi
+  sleep 1
+done
+unset postgrest_service_token postgrest_probe_response
+if [[ "$postgrest_db_ready" != 1 ]]; then
+  echo "Disposable PostgREST could not query public.shops (HTTP ${postgrest_probe_status:-unknown})." >&2
+  echo "PostgREST response: ${postgrest_probe_body:-<empty>}" >&2
+  exit 1
+fi
+
+make_health_admin_token() {
+  SESSION_SECRET="$session_secret" node --input-type=module -e '
     import { createHmac } from "node:crypto";
-    const role = process.env.E2E_TOKEN_ROLE;
-    const secret = process.env.PGRST_JWT_SECRET;
-    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
     const now = Math.floor(Date.now() / 1000);
-    const unsigned = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ role, iat: now, exp: now + 3600 })}`;
-    process.stdout.write(`${unsigned}.${createHmac("sha256", secret).update(unsigned).digest("base64url")}`);
+    const payload = {
+      sub: "e2e-health-diagnostic",
+      email: "hoangvu96z@gmail.com",
+      role: "admin",
+      iat: now,
+      exp: now + 300,
+    };
+    const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const signature = createHmac("sha256", process.env.SESSION_SECRET)
+      .update(encoded)
+      .digest("base64url");
+    process.stdout.write(`${encoded}.${signature}`);
   '
 }
 
@@ -126,6 +170,30 @@ done
 if [[ "$next_ready" != 1 ]]; then
   echo "Disposable Next.js test server did not become ready; recent output follows." >&2
   tail -n 80 "$next_log" >&2
+  echo "Disposable database readiness details:" >&2
+  health_admin_token="$(make_health_admin_token)"
+  health_diagnostic="$(curl --silent --show-error --max-time 5 \
+    -H "Authorization: Bearer ${health_admin_token}" \
+    "${TEST_BASE_URL}/api/health" || true)"
+  E2E_HEALTH_DIAGNOSTIC="$health_diagnostic" node --input-type=module -e '
+    let body;
+    try {
+      body = JSON.parse(process.env.E2E_HEALTH_DIAGNOSTIC || "");
+    } catch {
+      console.error("Health diagnostic response was not JSON.");
+      process.exit(0);
+    }
+    const environment = body.environment || {};
+    console.error(JSON.stringify({
+      status: body.status,
+      code: body.code,
+      error: body.error,
+      postgresConfigured: environment.postgresConfigured,
+      postgresTablesReady: environment.postgresTablesReady,
+      postgresMessage: environment.postgresMessage,
+    }));
+  '
+  unset health_admin_token health_diagnostic
   exit 1
 fi
 
