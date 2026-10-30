@@ -403,6 +403,7 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
       assert.ok(UI_LABELS[loc].decreaseQtyAria('Phở').includes('Phở'));
       assert.ok(UI_LABELS[loc].increaseQtyAria('Phở').includes('Phở'));
       assert.ok(UI_LABELS[loc].clearSearchAria.length > 0);
+      assert.ok(UI_LABELS[loc].noSearchResults.length > 0);
       assert.ok(UI_LABELS[loc].selectLanguageAria.length > 0);
 
       if (loc !== 'en') {

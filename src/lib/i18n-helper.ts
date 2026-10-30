@@ -360,6 +360,7 @@ export interface UiLabelSet {
   viewMenuService: string;
   viewMenuRetail: string;
   searchPlaceholder: string;
+  noSearchResults: string;
   allCategories: string;
   soldOut: string;
   bestSeller: string;
@@ -447,6 +448,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'Xem Bảng Giá Dịch Vụ',
     viewMenuRetail: 'Xem Danh Mục Sản Phẩm',
     searchPlaceholder: 'Tìm món ăn, dịch vụ, sản phẩm...',
+    noSearchResults: 'Không tìm thấy kết quả phù hợp.',
     allCategories: 'Tất cả',
     soldOut: 'Tạm hết',
     bestSeller: 'Bán chạy',
@@ -543,6 +545,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'View Service Price List',
     viewMenuRetail: 'Browse Product Catalog',
     searchPlaceholder: 'Search menu, services, products...',
+    noSearchResults: 'No matching results found.',
     allCategories: 'All',
     soldOut: 'Sold Out',
     bestSeller: 'Popular',
@@ -639,6 +642,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: '서비스 가격표 보기',
     viewMenuRetail: '상품 카탈로그 보기',
     searchPlaceholder: '메뉴, 서비스, 상품 검색...',
+    noSearchResults: '일치하는 결과가 없습니다.',
     allCategories: '전체',
     soldOut: '품절',
     bestSeller: '인기',
@@ -734,6 +738,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'サービス料金表を見る',
     viewMenuRetail: '商品カタログを見る',
     searchPlaceholder: 'メニュー・サービス・商品を検索...',
+    noSearchResults: '一致する結果がありません。',
     allCategories: 'すべて',
     soldOut: '売り切れ',
     bestSeller: '人気No.1',
@@ -829,6 +834,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: '查看服务价目表',
     viewMenuRetail: '查看商品目录',
     searchPlaceholder: '搜索菜品、服务、商品...',
+    noSearchResults: '没有找到匹配的结果。',
     allCategories: '全部',
     soldOut: '已售罄',
     bestSeller: '招牌推荐',
@@ -923,6 +929,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'Ver Lista de Precios y Servicios',
     viewMenuRetail: 'Ver Catálogo de Productos',
     searchPlaceholder: 'Buscar platos, servicios, productos...',
+    noSearchResults: 'No se encontraron resultados.',
     allCategories: 'Todos',
     soldOut: 'Agotado',
     bestSeller: 'Popular',
@@ -1018,6 +1025,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'Vedi Listino Servizi',
     viewMenuRetail: 'Sfoglia Catalogo Prodotti',
     searchPlaceholder: 'Cerca piatti, servizi, prodotti...',
+    noSearchResults: 'Nessun risultato corrispondente.',
     allCategories: 'Tutti',
     soldOut: 'Esaurito',
     bestSeller: 'Popolare',
@@ -1113,6 +1121,7 @@ export const UI_LABELS: Record<SupportedLocale, UiLabelSet> = {
     viewMenuService: 'Прайс-лист на услуги',
     viewMenuRetail: 'Каталог товаров',
     searchPlaceholder: 'Поиск блюд, услуг, товаров...',
+    noSearchResults: 'Подходящих результатов не найдено.',
     allCategories: 'Все',
     soldOut: 'Продано',
     bestSeller: 'Хит продаж',

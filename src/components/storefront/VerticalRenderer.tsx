@@ -66,13 +66,31 @@ export function VerticalRenderer({
     });
   };
 
+  const categoryResults = visibleCategories.map((category) => ({
+    category,
+    items: filterItemsByQuery(
+      items.filter((item) => item.category_id === category.id)
+    ),
+  }));
+  const hasVisibleResults = categoryResults.some(
+    ({ items: categoryItems }) => categoryItems.length > 0
+  );
+
   return (
     <div className="space-y-6 pb-28">
-      {visibleCategories.map((category) => {
-        const catItems = filterItemsByQuery(
-          items.filter((i) => i.category_id === category.id)
-        );
-
+      {q && !hasVisibleResults && (
+        <p
+          role="status"
+          className={`rounded-2xl border px-4 py-6 text-center text-sm font-medium ${
+            isDarkTheme
+              ? 'border-slate-700 bg-slate-900 text-slate-300'
+              : 'border-slate-200 bg-white text-slate-600'
+          }`}
+        >
+          {labels.noSearchResults}
+        </p>
+      )}
+      {categoryResults.map(({ category, items: catItems }) => {
         if (catItems.length === 0) return null;
 
         return (
