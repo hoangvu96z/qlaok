@@ -49,6 +49,8 @@ jobs:
             echo "📥 Pulling latest changes from GitHub..."
             git fetch origin main
             git reset --hard ${{ github.sha }}
+            echo "🛡️ Installing and verifying the PostgreSQL backup timer..."
+            sudo -n /usr/bin/node /var/www/qlaok.vunph.click/scripts/install-self-hosted-postgres-backup.mjs
             echo "🗃️ Applying pending self-hosted PostgreSQL migrations..."
             node scripts/migrate-self-hosted.mjs
             echo "📦 Installing dependencies..."

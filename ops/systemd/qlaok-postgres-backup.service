@@ -10,6 +10,7 @@ Group=postgres
 EnvironmentFile=/etc/qlaok/postgres-backup.env
 WorkingDirectory=/var/www/qlaok.vunph.click
 ExecStart=/usr/bin/node /var/www/qlaok.vunph.click/scripts/backup-self-hosted-postgres.mjs
+TimeoutStartSec=35min
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

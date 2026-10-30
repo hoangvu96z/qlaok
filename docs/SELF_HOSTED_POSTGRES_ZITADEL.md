@@ -100,23 +100,26 @@ WHERE id = '<existing_qlaok_user_uuid>';
 
 [`scripts/backup-self-hosted-postgres.mjs`](../scripts/backup-self-hosted-postgres.mjs) chạy `pg_dump --format=custom` qua Unix socket dưới tài khoản hệ điều hành `postgres`, kiểm tra bảng mục lục bằng `pg_restore --list`, đặt quyền file `0600`, và dọn bản cũ theo thời hạn lưu giữ. Script không nhận database URL hay mật khẩu; PostgreSQL peer authentication phải cho phép user `postgres` đọc database.
 
-Trên VPS, sau khi cập nhật checkout tại `/var/www/qlaok.vunph.click`:
+Workflow deploy gọi [`scripts/install-self-hosted-postgres-backup.mjs`](../scripts/install-self-hosted-postgres-backup.mjs) bằng `sudo` sau khi checkout mã mới và **trước migration**. Installer chỉ trích xuất `QLAOK_DB_NAME` từ `.env.local`; nó không in giá trị môi trường. Installer tạo `/etc/qlaok/postgres-backup.env` nếu chưa có, giữ nguyên file hiện có nếu cấu hình hợp lệ và trùng database runtime, đồng thời dừng deploy nếu file sai hoặc xung đột. Nó cài service/timer và chạy `systemctl daemon-reload`. Ở lần cài đầu, installer tạo đúng một backup ban đầu và kiểm tra bằng `pg_restore --list`, sau đó mới bật timer hằng ngày. Marker ở `/var/lib/qlaok/postgres-backup-initial-verified-v1` ngăn các deploy tiếp theo tạo dump đầy đủ. Nếu backup đầu tiên lỗi, installer trả lỗi đã lược bỏ chi tiết nhạy cảm và `set -e` dừng deploy trước migration.
+
+Installer yêu cầu Node.js tại `/usr/bin/node`, user `postgres`, group `postgres`, `pg_dump`, `pg_restore`, `systemctl`, và quyền `sudo -n` cho các thao tác cài đặt của user deploy. Nó giữ các quyền sau: thư mục backup `postgres:postgres` `0700`, file cấu hình `root:postgres` `0640`, archive `0600`, service chạy bằng OS user `postgres` với systemd hardening hiện có. `TimeoutStartSec=35min` cho phép backup lớn hoàn tất trong giới hạn 30 phút của `pg_dump`.
+
+Nếu deploy không chạy qua GitHub Actions, chạy installer thủ công từ checkout production sau khi xác nhận `.env.local` chứa đúng `QLAOK_DB_NAME`:
 
 ```sh
-sudo install -d -o postgres -g postgres -m 0700 /var/backups/qlaok/postgres
-sudo install -d -o root -g postgres -m 0750 /etc/qlaok
-sudo sh -c 'printf "%s\n" "QLAOK_DB_NAME=<database-name>" "QLAOK_DB_BACKUP_DIR=/var/backups/qlaok/postgres" "QLAOK_DB_BACKUP_RETENTION_DAYS=14" > /etc/qlaok/postgres-backup.env'
-sudo chown root:postgres /etc/qlaok/postgres-backup.env
-sudo chmod 0640 /etc/qlaok/postgres-backup.env
-sudo install -m 0644 ops/systemd/qlaok-postgres-backup.service /etc/systemd/system/
-sudo install -m 0644 ops/systemd/qlaok-postgres-backup.timer /etc/systemd/system/
+sudo -n /usr/bin/node /var/www/qlaok.vunph.click/scripts/install-self-hosted-postgres-backup.mjs
 ```
 
-Thay `<database-name>` bằng đúng giá trị `QLAOK_DB_NAME` của máy chủ. Nếu Node.js không nằm ở `/usr/bin/node`, sửa `ExecStart` trong service thành đường dẫn tuyệt đối lấy từ `command -v node`. Sau đó cài timer và chạy một backup thử:
+Nếu deploy dừng ở bước backup ban đầu, kiểm tra trạng thái và log service (không gửi nội dung `.env.local`):
 
 ```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now qlaok-postgres-backup.timer
+sudo systemctl status qlaok-postgres-backup.service --no-pager
+sudo journalctl -u qlaok-postgres-backup.service -n 80 --no-pager
+```
+
+Sau khi xử lý nguyên nhân, chạy lại installer. Nếu backup đầu tiên thành công thì installer ghi marker và migration có thể chạy ở lần deploy kế tiếp; installer không thay thế cấu hình sai. Để yêu cầu một backup thủ công sau lần khởi tạo, chạy:
+
+```sh
 sudo systemctl start qlaok-postgres-backup.service
 sudo systemctl status qlaok-postgres-backup.service
 sudo ls -l /var/backups/qlaok/postgres
