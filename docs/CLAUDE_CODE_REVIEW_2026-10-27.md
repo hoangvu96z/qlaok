@@ -355,6 +355,8 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 
 #### P2-1. `GET /api/catalog` công khai trả nguyên row `shops`, và trả **dữ liệu seed** khi `shopId` không tồn tại
 
+- **Trạng thái hiện tại:** source đã whitelist các trường shop công khai, yêu cầu quyền khi shop chưa publish và trả `404 SHOP_NOT_FOUND` khi ID không tồn tại. Production QA chỉ đọc tại mục 77 xác nhận projection, trường hợp thiếu ID và ID không tồn tại; chưa probe trực tiếp một shop chưa publish.
+
 - **Vị trí:** `src/app/api/catalog/route.ts:164-174`; `src/lib/db.ts:1309-1324`
 - **Bằng chứng:** `sb.from('shops').select('*')` không lọc `is_published`, không whitelist cột; response giữ nguyên object `shop`. Probe runtime xác nhận trả `owner_id` và `theme_config`. Thêm nữa (`db.ts:1317-1324`): shop không tồn tại → `return { shop: SEED_SHOPS[0], categories: [], items: [], profile: SEED_PROFILE, ownerPlan: 'free' }` thay vì `404`.
 - **Tác động:** (a) lộ UUID chủ quán + cấu hình theme của shop chưa publish; (b) shop chưa publish vẫn liệt kê được nếu biết `shopId`; (c) **`shopId` sai/không tồn tại trả 200 kèm dữ liệu seed** — storefront hiển thị một quán không có thật, và client không phân biệt được "shop rỗng" với "shop không tồn tại".
@@ -1326,3 +1328,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `codegraph status`; `codegraph explore "LanguageSwitcher allowedLocales locale selection localStorage onChange storefront"`; `codegraph query detectVisitorLocale`; `codegraph node detectVisitorLocale`; `codegraph node 'src/app/(storefront)/s/[slug]/page.tsx' --offset 1 --limit 175`; `codegraph node 'src/components/storefront/LanguageSwitcher.tsx' --offset 1 --limit 145`. Phạm vi: `LanguageSwitcher`, trang storefront door, `detectVisitorLocale`, giới hạn locale theo gói.
 - **Checks:** AGY Playwright QA; Codex Playwright CLI QA; `GET /api/health` sau deploy trả HTTP 200. Không sửa source nên không chạy test/build; CI trên commit `55e31df` đã chạy full suite và deploy success.
 - **Còn mở:** Đối chiếu locale với API production trên shop Basic/Premium thật khi có shop phù hợp; không đổi plan hoặc dữ liệu production trong QA này.
+
+## 77. P2-1: production QA public catalog sau khi whitelist response (2026-10-31)
+
+- AGY Flash Low run `2026-10-30T17-46-45-032Z-288b00cc` gọi đúng 4 GET trên host production: resolve shop QA đã publish trong bộ nhớ, đọc catalog, thiếu `shopId`, và ID giả không tồn tại. Kết quả lần lượt: `200`, `200`, `400 SHOP_ID_REQUIRED`, `404 SHOP_NOT_FOUND`. Response catalog có `shop`, không có `owner_id`, và chỉ chứa trường trong allowlist; API trả 1 category và 1 item. Không ghi ID, slug, tên hay giá trị dữ liệu vào báo cáo.
+- Codex gọi lại độc lập cùng bốn GET và xác nhận toàn bộ status, allowlist, `owner_id` absent, cùng số lượng category/item. Không đăng nhập, không gọi phương thức ghi, không sửa dữ liệu production hay source.
+- **CodeGraph:** `codegraph status`; `codegraph node src/app/api/catalog/route.ts --offset 160 --limit 100`; `codegraph node dbGetShopCatalog`; `codegraph node src/app/api/shops/route.ts --offset 68 --limit 100`. Phạm vi: public shop lookup, projection `/api/catalog`, publish gate và xử lý shop không tồn tại.
+- **Checks:** AGY Flash Low production QA **PASS**; Codex GET-only read-back **PASS**; `git diff --check` chạy trước commit. Không chạy test/build vì lượt này chỉ cập nhật tài liệu.
+- **Chưa xác minh:** không probe trực tiếp shop chưa publish; quyền chặn caller ẩn danh được xác nhận từ source, chưa có fixture phù hợp để kiểm tra runtime.
