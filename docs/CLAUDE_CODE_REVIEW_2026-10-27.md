@@ -294,7 +294,7 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
   const finalPassword = password && password.length >= 6 ? password : 'qlaok123456';
   ```
 - **Tác động:** tạo tài khoản chủ quán mà không nhập mật khẩu → mật khẩu công khai trong tài liệu/giao diện. Kể cả chủ động reset cũng có thể rơi về giá trị này.
-- **Trạng thái:** **vẫn tồn tại**, đã được nêu ở báo cáo 25/10 và AGY `#27`. Chưa sửa.
+- **Trạng thái:** **đã xử lý trong source hiện tại**; đối chiếu lại ngày 30/10 tại mục 62. `create_owner` tạo hồ sơ lời mời pending qua Zitadel và không cấp mật khẩu mặc định.
 - **Hướng sửa:** bắt buộc mật khẩu tối thiểu 12 ký tự khi `create_owner`; nếu không có thì sinh mật khẩu ngẫu nhiên và buộc đổi ở lần đăng nhập đầu; xoá chuỗi khỏi UI và placeholder.
 
 #### P1-4. POS "Sửa đơn": giảm giá của đơn bị mất, tổng tiền **tăng** sau khi lưu
@@ -1178,3 +1178,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Codex xác minh độc lập sau cleanup bằng public `GET /api/shops?slug=test-shop-1&view=menu`: HTTP 200, 1 category/1 item; không có fixture bổ sung. Đây là đối chiếu API cuối, không phải lượt chạy UI độc lập của Codex.
 - CodeGraph: `codegraph status` (index up-to-date: 303 files, 4.983 nodes, 17.742 edges; engine index cũ); `codegraph explore "storefront catalog category item cart"`; `codegraph explore "api/catalog"`; `codegraph explore "storefront menu category filter cart"`; `codegraph node "src/app/api/catalog/route.ts"`; `codegraph node "src/app/(dashboard)/dashboard/catalog/page.tsx"`; `codegraph node "src/components/storefront/VerticalRenderer.tsx"`; `codegraph explore "ShowToStaffModal cart quantity"`. Vùng đã xem: catalog API, owner catalog mutations, storefront category filter, quick-add và cart modal.
 - Checks: không sửa source; chỉ bổ sung evidence vào review log. `git diff --check` PASS. Không chạy test/build. Chưa kiểm tra gửi đơn từ giỏ nhiều danh mục hoặc thanh toán.
+
+## 62. Đối chiếu lại P1-3: bỏ mật khẩu mặc định khi tạo/reset chủ quán (2026-10-30)
+
+- Finding P1-3 trong phần đầu tài liệu đã lỗi thời: source hiện tại không còn chuỗi mật khẩu dùng chung và không tạo credential cho chủ quán từ trang Super Admin.
+- `POST /api/admin` với `action: 'create_owner'` chỉ nhận email, tên, số điện thoại và gói; kiểm tra email trùng, rồi upsert hồ sơ `owner_invite_pending: true`, `zitadel_sub: null`. Payload không có trường password. Chủ quán claim hồ sơ sau khi đăng ký và xác thực đúng email qua Zitadel.
+- UI form không có ô mật khẩu; nội dung xác nhận đây là lời mời và giải thích bước xác thực email. `reset_owner_password` trả HTTP 410 với mã `OWNER_PASSWORD_RESET_VIA_OIDC`, hướng người dùng sang luồng Quên mật khẩu Zitadel.
+- CodeGraph: `codegraph status`; `codegraph explore "src/app/api/admin/route.ts owner creation action create_owner validate password invitation"`; `codegraph explore "src/app/(admin)/admin/page.tsx create owner form password placeholder create_owner reset owner"`; `codegraph node src/app/api/admin/route.ts --offset 400 --limit 160`; `codegraph node src/app/api/admin/route.ts --offset 540 --limit 85`; `codegraph node 'src/app/(admin)/admin/page.tsx' --offset 2185 --limit 100`; `codegraph node tests/admin-review.test.ts --offset 205 --limit 170`; `codegraph explore "create_owner owner_invite_pending admin invitation never provisioning password Zitadel"`. Ảnh hưởng đã kiểm: Super Admin create/reset UI, `/api/admin`, invitation profile helper và test hợp đồng.
+- Checks: chạy đúng 2 test `owner password recovery through Zitadel` và `create_owner rejects mixed-case duplicate emails and writes a pending invitation` trong `tests/admin-review.test.ts`; **2/2 PASS**. Test xác nhận hồ sơ pending, `zitadel_sub=null`, payload upsert không chứa password, và reset cũ bị từ chối bằng 410. Lệnh test có cảnh báo dev về `SESSION_SECRET` thiếu và audit test fallback; không làm test fail.
+- Không sửa source trong lần đối chiếu này. Finding P1-3 về mật khẩu mặc định được đóng; kết luận này không xác nhận các flow Zitadel trên thiết bị/production ngoài những phần đã được kiểm chứng riêng.
