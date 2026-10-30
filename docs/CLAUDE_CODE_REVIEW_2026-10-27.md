@@ -1445,3 +1445,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `codegraph status`; `codegraph explore "mobile/App.tsx loadShopsAndData handleIncomingCallbackUrl"`; `codegraph node mobile/App.tsx --offset 750 --limit 200`; `codegraph node mobile/App.tsx --offset 205 --limit 35`; `codegraph node mobile/src/lib/owner-session.ts --offset 810 --limit 35`; `codegraph node mobile/src/lib/owner-session.ts --offset 1230 --limit 70`; Codex `codegraph explore "filterMembershipsForShops processIncomingCallbackUrl"`; `codegraph affected mobile/App.tsx`. Phạm vi: membership snapshot của `Workspace`, callback URL qua `App`/owner session và regression tests.
 - **Checks Codex:** `npm test --prefix mobile` **121/121 PASS**; `npm run typecheck --prefix mobile` PASS; `git diff --check` PASS.
 - **Chưa xác minh:** không chạy thiết bị thật, không gọi Zitadel/OIDC thật và không tạo EAS build. P3-27 vẫn cần EAS project ID chính xác trước khi có thể build.
+
+## 90. Đối chiếu migration history PostgreSQL production (2026-10-31)
+
+- Dùng SSH strict host-key checking và `sudo -u postgres psql` chỉ với `SELECT` trên `public.schema_migrations`; không truy vấn dữ liệu khách hàng và không ghi database.
+- Production có 32 migration records; migration mới nhất là `20261030000300_admin_owner_invitation_claims.sql`. Codex tính SHA-256 trên 32 migration file hiện có và so sánh trong bộ nhớ với history production: **32/32 khớp**, 0 file thiếu, 0 record dư và 0 checksum mismatch.
+- **CodeGraph:** `codegraph status`; `codegraph explore "scripts/migrate-self-hosted.mjs migration schema_migrations table applied_at version connection configuration"`; `codegraph explore "readLocalMigrations planMigrations migration checksum mismatch"`. Phạm vi: `readMigrationHistory`, `checksumSql`, `readLocalMigrations` và `planMigrations`.
+- **Checks:** SSH chỉ đọc trả đúng production migration history; verify/deploy GitHub Actions run `41119914312` success trên SHA `14345a709ab908aa54fea2922e4f7f70bdc661a8`; VPS HEAD khớp SHA; `/api/health` và `/` HTTP 200; PostgreSQL backup timer `active` + `enabled`.
+- **Còn mở:** lịch chạy tự động tiếp theo là `2026-11-01 03:19:21 CST`; chưa có evidence timer tự chạy tại kỳ này. Diễn tập restore backup production vào PostgreSQL tạm vẫn cần chấp thuận riêng.
