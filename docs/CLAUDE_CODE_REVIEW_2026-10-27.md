@@ -30,7 +30,7 @@ Nghiêm trọng nhất về nghiệp vụ là một nhóm lỗi mà lớp bảo 
 | Test coverage | Khá (69 file test) nhưng CI đang đỏ; **0 test cho vòng hydrate/ghi của UI** |
 | Realtime | Tốt (SSE + LISTEN/NOTIFY, payload tối thiểu) |
 | Mobile | Tốt (fail closed, không chạm `*.supabase.co`); **auth flow ghim prod host (P2-16)** |
-| i18n | Trung bình — 2 miền locale tách đúng, nhưng lọt chuỗi VI hardcode (P3-18, P3-19, P3-29) và `?lang=` khoá switcher (P2-18) |
+| i18n | Trung bình — 2 miền locale tách đúng, nhưng lọt chuỗi VI hardcode (P3-18, P3-19) và `?lang=` khoá switcher (P2-18); P3-29 đã được rút lại sau khi đối chiếu renderer storefront và mobile preview |
 | **Vận hành / backup** | **Yếu — không có backup tự động nào cho PostgreSQL tự host; deploy rollback `.local-db`** |
 | Audit trail | **Yếu — ghi mà không ai đọc, không rotate, quyền 644** |
 | Repo hygiene | Trung bình (tracked zip/tsbuildinfo, `.agy-runs` lọt lint, `mobile/src/lib/auth-recovery.ts` chết) |
@@ -578,7 +578,7 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 | P3-26 | `mobile/src/lib/auth-recovery.ts` 465 dòng, **0 importer** (grep cả `mobile/src`, `mobile/App.tsx`, `mobile/__tests__`) — dead code mang theo logic phục hồi phiên không ai chạy, dễ bị sửa nhầm tưởng là đường thật | `mobile/src/lib/auth-recovery.ts` |
 | P3-27 | `app.json` `extra.eas.projectId` là chuỗi rỗng → `getExpoPushTokenAsync` không lấy được token, nên đăng ký push **luôn** rơi vào nhánh "unavailable" mà không có cảnh báo build-time. Thông báo đơn mới trên mobile vì thế không hoạt động ở bản build thật | `mobile/app.json:26-30` |
 | P3-28 | `formatStaffLoginError(err, locale, _secretsToRedact = [])` — tham số thứ ba **hoàn toàn không dùng** trong thân hàm; tên gợi ý đã từng có bước che secret. Hiện chỉ là tham số chết, nhưng gây hiểu nhầm là đã có redaction | `mobile/src/components/AuthScreen.tsx:116-119` |
-| P3-29 | Banner khuyến mãi tự sinh tiêu đề/phụ đề **chỉ tiếng Việt** (`Giảm ngay …`, `Áp dụng … khi đặt món qua QR`, `toàn thực đơn`) rồi lưu vào dữ liệu shop — quán đặt `supported_langs` EN vẫn phát banner tiếng Việt cho khách nước ngoài | `mobile/src/components/tabs/PromotionsTab.tsx:75-92` |
+| P3-29 | **Đã rút lại (2026-10-30):** banner tạo text tiếng Việt để lưu không đồng nghĩa khách EN nhìn thấy tiếng Việt. Storefront sinh title/subtitle theo locale hiện tại; mobile preview cũng có đủ bản dịch cho 8 locale. Regression coverage mới xác nhận mobile preview giữ đúng các chuỗi hiện có. | `mobile/src/components/tabs/PromotionsTab.tsx:75-92`; `src/components/storefront/StorefrontCustomDecor.tsx:442-507`; `mobile/src/lib/promo-preview-i18n.ts` |
 
 ---
 
@@ -709,7 +709,7 @@ Sắp theo **rủi ro mất dữ liệu/sai tiền/phơi bí mật trước**, t
 - **P3-7:** giữ dưới dạng khuyến nghị kiến trúc; các route mutation đã được rà guard, chưa có lỗi route cụ thể để sửa bằng middleware toàn cục.
 - **P3-26:** file mobile không được app runtime import, nhưng `tests/unit.test.ts` còn import các helper của nó. Giữ file để không xóa API đang được test.
 - **P3-27:** chưa thể bật push thật vì `mobile/app.json` không có `extra.eas.projectId` và repo/CLI hiện không cung cấp ID để điền. Không tự tạo hoặc đoán ID.
-- **P3-29:** kết luận “khách EN thấy tiêu đề tiếng Việt” không khớp renderer storefront hiện tại: `getLocalizedPromoBannerStrings` tạo title/subtitle theo locale khác `vi`, chỉ dùng text lưu trong `banner` cho locale `vi`. Nội dung mobile preview vẫn có thể là tiếng Việt.
+- **P3-29:** kết luận “khách EN thấy tiêu đề tiếng Việt” không khớp renderer hiện tại. Storefront derive title/subtitle theo locale khác `vi`; mobile preview cũng đã có bản dịch cho 8 locale. Lượt rà 30/10 trích resolver ra helper và thêm regression tests cho đường render này; không đổi nội dung giao diện.
 
 **Kiểm tra trước đây:** `npm run typecheck` thành công; `npm run lint` thành công với 0 lỗi và 40 cảnh báo; `git diff --check` thành công. Các test/build trong lượt trước chưa được chạy lại sau những thay đổi cuối.
 
@@ -1137,3 +1137,13 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Quan sát phụ: một asset ảnh Storage hiện hữu trả HTTP 402; request chẩn đoán đầu tiên dùng slug thay ID shop nên nhận HTTP 404; HTTP 409 ở trên là kết quả mong đợi của request cạnh tranh. Không có lỗi khác trong console QA.
 - Evidence đã lược dữ liệu tại `.agy-runs/qa/catalog-concurrency-production-2026-10-30.md` (ignored). CodeGraph trước khi đọc source: `codegraph status`; `codegraph explore "src/app/api/catalog/route.ts POST upsert_item expected_stock_quantity is_available legacy payload metadata stock conflict stale snapshot caller UI bulk_update_price_stock"`; `codegraph node dbUpsertItem`; `codegraph node getCatalogItemUpdatePermissionOptions`; `codegraph callers dbUpsertItem`; `codegraph node src/app/api/catalog/route.ts --offset 264 --limit 310`; `codegraph explore "dashboard catalog create item save handler handleDeleteItem QuickItemRow delete item fixture cleanup shop_id category_id stock expected_stock_quantity"`; `codegraph explore "DELETE /api/catalog delete itemId item_id dbDeleteItem catalog item handler authorization"`. Khu vực đã xác minh: caller dashboard, catalog API, `dbUpsertItem` CAS và quyền catalog/kho.
 - Không sửa source trong lượt này nên không chạy test/build và không tạo commit code. Production đang chạy commit trước đó có các guard CAS; kiểm chứng này bổ sung bằng chứng HTTP/UI thật cho cập nhật tồn kho và trạng thái bán đồng thời. AGY không được chạy trong lượt này; quota Gemini snapshot còn 5% tuần tại thời điểm chọn runner. Máy đang khóa nên Codex dùng Playwright CLI headless; hai HTTP status kiểm tra trực tiếp và bước cleanup được đối chiếu độc lập.
+
+## 57. Mobile promo preview: xác nhận locale và hồi quy (2026-10-30)
+
+- Đối chiếu lại P3-29: `getLocalizedPromoBannerStrings` dựng title/subtitle theo locale storefront; `PhoneViewer` vốn có nội dung cho đủ 8 ngôn ngữ. Nhận định “khách EN thấy banner tiếng Việt” là false positive, không phải lỗi hiển thị cần đổi copy.
+- Trích phần resolve chuỗi promo/flash sale thành `mobile/src/lib/promo-preview-i18n.ts`; `PhoneViewer` dùng kết quả helper trực tiếp. Đây là refactor để test được, giữ nguyên chuỗi và cách fallback hiện có.
+- Thêm `mobile/tests/promo-preview-i18n.test.ts`: kiểm tra đủ 8 locale, fallback tiếng Việt, badge/title/subtitle, giờ flash sale, phần trăm, `fixed_amount`, định dạng VND và fallback mặc định; có assertion cho chuỗi Nga và Ý.
+- AGY Gemini Flash Low đã triển khai trong hai lượt `2026-10-30T10-16-27-395Z-ea7c93df` và `2026-10-30T10-20-48-751Z-19de6071`; Codex phát hiện và yêu cầu sửa ở lượt đầu helper chưa được nối vào `PhoneViewer`, rồi kiểm tra lại diff và caller.
+- CodeGraph: `codegraph status`; `codegraph explore "resolveMobilePromoPreview PhoneViewer mobile promo preview localization test callers"`; `codegraph node mobile/tests/promo-preview-i18n.test.ts`; `codegraph node mobile/src/components/PhoneViewer.tsx`; `codegraph node resolveMobilePromoPreview`; `codegraph explore "getLocalizedPromoBannerStrings storefront locale promo banner localization"`; `codegraph node getLocalizedPromoBannerStrings`. Ảnh hưởng: mobile promo preview và regression tests; không đổi API, dữ liệu shop hoặc storefront runtime.
+- Checks: `npm test --prefix mobile` PASS (118/118); `npm run typecheck --prefix mobile` PASS; `npm run test:unit` PASS (140/140); `npx eslint --no-ignore mobile/src/components/PhoneViewer.tsx mobile/src/lib/promo-preview-i18n.ts mobile/tests/promo-preview-i18n.test.ts` PASS; `git diff --check` PASS. Lệnh ESLint không có `--no-ignore` bỏ qua `mobile/`, nên đã chạy explicit để kiểm tra các file này.
+- Chưa xác minh bằng bản native/OTA mobile hoặc EAS release; web deploy không phát hành binary Expo. CI và production web deploy được kiểm tra sau push và báo riêng trong handoff.

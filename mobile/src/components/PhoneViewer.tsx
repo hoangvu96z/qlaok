@@ -11,6 +11,7 @@ import {
   BANNER_GRADIENT_SWATCHES,
   styles,
 } from '../styles/mobileStyles';
+import { resolveMobilePromoPreview } from '../lib/promo-preview-i18n';
 import { useMobileI18n } from './MobileI18nProvider';
 
 interface PhoneViewerProps {
@@ -24,74 +25,6 @@ interface PhoneViewerProps {
   flashSale: MobileFlashSaleConfig;
   items: MobileCatalogItem[];
 }
-
-const MOBILE_PROMO_I18N: Record<
-  string,
-  {
-    promoBadge: string;
-    promoTitle: (val: string, fallbackTitle: string) => string;
-    promoSub: (fallbackSub?: string) => string;
-    flashTitle: (fallbackFlash: string) => string;
-    timePrefix: string;
-  }
-> = {
-  vi: {
-    promoBadge: '🔥 ƯU ĐÃI HÔM NAY',
-    promoTitle: (_v, fallbackTitle) => fallbackTitle,
-    promoSub: (fallbackSub) => fallbackSub || '',
-    flashTitle: (fallbackFlash) => fallbackFlash || 'Giờ Vàng Giá Sốc',
-    timePrefix: 'Khung giờ',
-  },
-  en: {
-    promoBadge: '🔥 TODAY’S SPECIAL',
-    promoTitle: (v) => `Get ${v} OFF on your order`,
-    promoSub: () => 'Discount automatically applied at table checkout',
-    flashTitle: () => 'Golden Hour Flash Sale',
-    timePrefix: 'Time',
-  },
-  ko: {
-    promoBadge: '🔥 오늘의 프로모션',
-    promoTitle: (v) => `주문 시 ${v} 즉시 할인`,
-    promoSub: () => '테이블 주문 시 할인이 자동 적용됩니다',
-    flashTitle: () => '타임세일 한정 특가',
-    timePrefix: '시간',
-  },
-  ja: {
-    promoBadge: '🔥 本日のキャンペーン',
-    promoTitle: (v) => `ご注文で ${v} 割引`,
-    promoSub: () => 'ご注文時に割引が自動適用されます',
-    flashTitle: () => '時間限定タイムセール',
-    timePrefix: '時間',
-  },
-  zh: {
-    promoBadge: '🔥 今日特惠活动',
-    promoTitle: (v) => `扫码点餐立减 ${v}`,
-    promoSub: () => '点餐结算时系统自动减免',
-    flashTitle: () => '黄金时段限时秒杀',
-    timePrefix: '时段',
-  },
-  es: {
-    promoBadge: '🔥 OFERTA DE HOY',
-    promoTitle: (v) => `${v} de descuento en tu pedido`,
-    promoSub: () => 'Descuento aplicado automáticamente en mesa',
-    flashTitle: () => 'Oferta Flash Hora Dorada',
-    timePrefix: 'Horario',
-  },
-  it: {
-    promoBadge: '🔥 PROMO DI OGGI',
-    promoTitle: (v) => `Sconto di ${v} sul tuo ordine`,
-    promoSub: () => 'Lo sconto viene applicato automaticamente al tavolo',
-    flashTitle: () => 'Offerta Lampo Ora d’Oro',
-    timePrefix: 'Orario',
-  },
-  ru: {
-    promoBadge: '🔥 АКЦИЯ ДНЯ',
-    promoTitle: (v) => `Скидка ${v} на ваш заказ`,
-    promoSub: () => 'Скидка применяется автоматически при заказе',
-    flashTitle: () => 'Flash-акция Счастливые часы',
-    timePrefix: 'Время',
-  },
-};
 
 export const PhoneViewer = memo(function PhoneViewer({
   shopName,
@@ -113,17 +46,11 @@ export const PhoneViewer = memo(function PhoneViewer({
         : '#ffffff';
   const previewTextCol = backgroundStyle === 'dark' ? '#f8fafc' : '#0f172a';
 
-  const locText = MOBILE_PROMO_I18N[previewLang] || MOBILE_PROMO_I18N.vi;
-  const discValStr =
-    promoBanner.discountType === 'percent'
-      ? `${promoBanner.discountValue || 15}%`
-      : formatVnd(promoBanner.discountValue || 20000);
-
-  const badgeStr =
-    previewLang === 'vi'
-      ? promoBanner.badgeText || locText.promoBadge
-      : locText.promoBadge;
-  const subStr = locText.promoSub(promoBanner.subtitle);
+  const promoPreview = resolveMobilePromoPreview({
+    previewLang,
+    promoBanner,
+    flashSale,
+  });
 
   return (
     <View
@@ -213,7 +140,7 @@ export const PhoneViewer = memo(function PhoneViewer({
                 color: '#fef08a',
               }}
             >
-              {badgeStr}
+              {promoPreview.badgeStr}
               {promoBanner.voucherCode ? ` • ${promoBanner.voucherCode}` : ''}
             </Text>
             <Text
@@ -224,11 +151,11 @@ export const PhoneViewer = memo(function PhoneViewer({
                 marginTop: 2,
               }}
             >
-              {locText.promoTitle(discValStr, promoBanner.title)}
+              {promoPreview.titleStr}
             </Text>
-            {subStr ? (
+            {promoPreview.subStr ? (
               <Text style={{ fontSize: 10, color: '#ffedd5', marginTop: 1 }}>
-                {subStr}
+                {promoPreview.subStr}
               </Text>
             ) : null}
           </View>
@@ -252,11 +179,8 @@ export const PhoneViewer = memo(function PhoneViewer({
                   flex: 1,
                 }}
               >
-                ⚡ {locText.flashTitle(flashSale.title)} (
-                {flashSale.discountType === 'percent'
-                  ? `-${flashSale.discountValue}%`
-                  : `-${formatVnd(flashSale.discountValue)}`}
-                )
+                ⚡ {promoPreview.flashTitleStr} (
+                {promoPreview.flashDiscountLabel})
               </Text>
               <Text
                 style={{
@@ -265,8 +189,7 @@ export const PhoneViewer = memo(function PhoneViewer({
                   color: '#fde047',
                 }}
               >
-                ⏱ {locText.timePrefix}: {flashSale.startTime} -{' '}
-                {flashSale.endTime}
+                ⏱ {promoPreview.flashTimePrefix}: {promoPreview.flashTimeRange}
               </Text>
             </View>
           </View>
