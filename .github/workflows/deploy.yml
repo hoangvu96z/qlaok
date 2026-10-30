@@ -26,6 +26,8 @@ jobs:
       - run: npm ci --prefix mobile
       - run: npm run typecheck && npm run typecheck --prefix mobile
       - run: npm run test:unit && npm run test:review && npm run test:sql && npm run test:db-reset && npm test --prefix mobile
+      - name: Run E2E against disposable PostgreSQL and PostgREST
+        run: bash scripts/run-e2e-ci.sh
       - run: npm run build
 
   deploy:

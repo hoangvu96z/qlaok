@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { canRunMutatingE2e, resolveE2eBaseUrl } from "./e2e-safety.mjs";
+import { SUPER_ADMIN_EMAIL } from "../src/lib/auth-session.ts";
+import { issueSessionToken } from "../src/lib/server-auth.ts";
 
 const BASE_URL = resolveE2eBaseUrl(process.env.TEST_BASE_URL);
 const MUTATING_E2E_SKIP_REASON = canRunMutatingE2e()
@@ -8,12 +10,26 @@ const MUTATING_E2E_SKIP_REASON = canRunMutatingE2e()
   : "Set E2E_ALLOW_MUTATIONS=1 and E2E_DISPOSABLE_DATABASE=1 only for a disposable isolated database.";
 const LOCALES = ["vi", "en", "ko", "ja", "zh"];
 
-// Optional Super Admin session (minted through Zitadel on the test server).
-// Only tests that call Super-Admin-only endpoints need it; without it those
-// checks are reported as skipped instead of silently passing.
-const SUPER_ADMIN_TOKEN = (process.env.E2E_SUPER_ADMIN_TOKEN || "").trim();
-// Provider webhook prerequisites for the SaaS billing flow.
-const WEBHOOK_SECRET = (process.env.PAYMENT_WEBHOOK_SECRET || "").trim();
+// A disposable-run Super Admin session is signed with the local test secret.
+// An explicitly supplied token remains available for separately managed test servers.
+const SUPER_ADMIN_TOKEN =
+  (process.env.E2E_SUPER_ADMIN_TOKEN || "").trim() ||
+  (canRunMutatingE2e() && process.env.SESSION_SECRET?.trim()
+    ? issueSessionToken({
+        id: "e2e-super-admin",
+        email: SUPER_ADMIN_EMAIL,
+        role: "admin",
+        is_admin: true,
+      })
+    : "");
+const PLAN_LIMIT_E2E_SKIP_REASON = MUTATING_E2E_SKIP_REASON ||
+  (!SUPER_ADMIN_TOKEN
+    ? "Set E2E_SUPER_ADMIN_TOKEN or use the guarded disposable test server to run the Super Admin plan-limit case."
+    : false);
+const CATALOG_E2E_SKIP_REASON = MUTATING_E2E_SKIP_REASON ||
+  (!SUPER_ADMIN_TOKEN
+    ? "Set E2E_SUPER_ADMIN_TOKEN or use the guarded disposable test server to prepare the demo plan."
+    : false);
 
 let cachedAccessToken = null;
 
@@ -164,12 +180,20 @@ test("4. AI Menu OCR Vision API (/api/ai/ocr-menu)", async () => {
   }
 });
 
-test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/catalog)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
+test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/catalog)", { skip: CATALOG_E2E_SKIP_REASON }, async () => {
   // Ensure profile plan is premium so item creation is unrestricted
-  await fetchJson("/api/webhooks/payment", {
-    method: "POST",
-    body: JSON.stringify({ action: "switch_plan_direct", plan: "premium" }),
-  });
+  if (SUPER_ADMIN_TOKEN) {
+    const planRes = await fetchJson("/api/webhooks/payment", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${SUPER_ADMIN_TOKEN}` },
+      body: JSON.stringify({
+        action: "switch_plan_direct",
+        ownerId: "owner-demo-001",
+        plan: "premium",
+      }),
+    });
+    assert.equal(planRes.status, 200);
+  }
 
   const shopId = "shop-fnb-001";
 
@@ -257,34 +281,49 @@ test("5. Catalog CRUD API - Category, Item, Out-of-Stock Toggle & Cleanup (/api/
   assert.equal(delCat.data.deleted, true);
 });
 
-test("6. Plan Limit Enforcement - Free Tier Max 5 Items Rule", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
-  // Switch to free plan
-  await fetchJson("/api/webhooks/payment", {
+test("6. Plan Limit Enforcement - Free Tier Max 5 Items Rule", { skip: PLAN_LIMIT_E2E_SKIP_REASON }, async () => {
+  const adminHeaders = { Authorization: `Bearer ${SUPER_ADMIN_TOKEN}` };
+  // Switch the disposable demo owner to the free plan with Super Admin authority.
+  const downgrade = await fetchJson("/api/webhooks/payment", {
     method: "POST",
-    body: JSON.stringify({ action: "switch_plan_direct", plan: "free" }),
-  });
-
-  // Attempt to add a 6th+ item to shop-fnb-001 (already has >=5 items)
-  const blocked = await fetchJson("/api/catalog", {
-    method: "POST",
+    headers: adminHeaders,
     body: JSON.stringify({
-      action: "upsert_item",
-      item: {
-        shop_id: "shop-fnb-001",
-        category_id: "cat-fnb-1",
-        price: 45000,
-        name_i18n: { vi: "Món Vượt Giới Hạn Free" },
-      },
+      action: "switch_plan_direct",
+      ownerId: "owner-demo-001",
+      plan: "free",
     }),
   });
-  assert.equal(blocked.status, 400, "Free plan should block adding beyond 5 items");
-  assert.ok(blocked.data.error);
+  assert.equal(downgrade.status, 200);
 
-  // Restore premium plan
-  await fetchJson("/api/webhooks/payment", {
-    method: "POST",
-    body: JSON.stringify({ action: "switch_plan_direct", plan: "premium" }),
-  });
+  try {
+    // Attempt to add a 6th+ item to shop-fnb-001 (already has >=5 items)
+    const blocked = await fetchJson("/api/catalog", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "upsert_item",
+        item: {
+          shop_id: "shop-fnb-001",
+          category_id: "cat-fnb-1",
+          price: 45000,
+          name_i18n: { vi: "Món Vượt Giới Hạn Free" },
+        },
+      }),
+    });
+    assert.equal(blocked.status, 400, "Free plan should block adding beyond 5 items");
+    assert.ok(blocked.data.error);
+  } finally {
+    // Restore the demo owner before any subsequent test can run.
+    const restore = await fetchJson("/api/webhooks/payment", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        action: "switch_plan_direct",
+        ownerId: "owner-demo-001",
+        plan: "premium",
+      }),
+    });
+    assert.equal(restore.status, 200);
+  }
 });
 
 test("7. Posts CRUD API (/api/posts)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
@@ -353,7 +392,7 @@ test("8. QR Scan Analytics Tracking & Aggregation (/api/analytics/track)", { ski
   assert.equal(after.data.scanTableCount, prevTableScans + 1);
 });
 
-test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
+test("9. Payment Order & Development Webhook Sandbox Auto-Upgrade (/api/webhooks/payment)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
   // Create pending order
   const orderRes = await fetchJson("/api/webhooks/payment", {
     method: "POST",
@@ -367,13 +406,11 @@ test("9. Payment Order & SePay/PayOS Webhook Auto-Upgrade (/api/webhooks/payment
   const orderCode = orderRes.data.transaction.order_code;
   assert.ok(orderCode.startsWith("QLAOKP"));
 
-  // Simulate webhook callback from bank transfer (server must have PAYMENT_WEBHOOK_SECRET configured;
-  // there is no hardcoded fallback secret).
-  assert.ok(WEBHOOK_SECRET, "PAYMENT_WEBHOOK_SECRET must be set for the e2e webhook test");
+  // Exercise the development-only simulator with a fresh isolated owner/order.
   const webhook = await fetchJson("/api/webhooks/payment", {
     method: "POST",
-    headers: { "x-webhook-secret": WEBHOOK_SECRET },
     body: JSON.stringify({
+      simulateWebhook: true,
       content: `CHUYEN KHOAN ${orderCode} NANG CAP GOI`,
       referenceCode: "FT2628799999",
     }),
