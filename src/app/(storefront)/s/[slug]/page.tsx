@@ -381,7 +381,7 @@ export default function StorefrontDoorPage() {
         {/* Description & Address Card */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3 text-slate-900">
           {tField(shop.description_i18n, locale) && (
-            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed break-words">
               {tField(shop.description_i18n, locale)}
             </p>
           )}
