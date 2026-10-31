@@ -600,4 +600,56 @@ test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Anal
   assert.ok(Array.isArray(analyticsRes.data.topSellingItems));
 });
 
+test(
+  "14. Shops API - Persistent Shop Settings PATCH Behavior (/api/shops)",
+  { skip: MUTATING_E2E_SKIP_REASON },
+  async () => {
+    const shopId = "shop-fnb-001";
+    const initialRes = await fetchJson(`/api/shops?shopId=${shopId}`);
+    assert.equal(initialRes.status, 200);
+    assert.ok(initialRes.data?.shop?.name, "Expected shop to have a name");
+    const originalName = initialRes.data.shop.name;
+    const temporaryName = `${originalName} E2E ${Date.now()}`;
 
+    let testError;
+    try {
+      const patchRes = await fetchJson("/api/shops", {
+        method: "PATCH",
+        body: JSON.stringify({ id: shopId, name: temporaryName }),
+      });
+      assert.equal(patchRes.status, 200);
+      assert.equal(patchRes.data?.shop?.name, temporaryName);
+
+      const verifyRes = await fetchJson(`/api/shops?shopId=${shopId}`);
+      assert.equal(verifyRes.status, 200);
+      assert.equal(verifyRes.data?.shop?.name, temporaryName);
+    } catch (error) {
+      testError = error;
+    }
+
+    let cleanupError;
+    try {
+      const restoreRes = await fetchJson("/api/shops", {
+        method: "PATCH",
+        body: JSON.stringify({ id: shopId, name: originalName }),
+      });
+      assert.equal(restoreRes.status, 200);
+      assert.equal(restoreRes.data?.shop?.name, originalName);
+
+      const verifyRestoreRes = await fetchJson(`/api/shops?shopId=${shopId}`);
+      assert.equal(verifyRestoreRes.status, 200);
+      assert.equal(verifyRestoreRes.data?.shop?.name, originalName);
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    if (testError && cleanupError) {
+      throw new AggregateError(
+        [testError, cleanupError],
+        "Shop PATCH persistence failed and cleanup could not be verified"
+      );
+    }
+    if (testError) throw testError;
+    if (cleanupError) throw cleanupError;
+  }
+);
