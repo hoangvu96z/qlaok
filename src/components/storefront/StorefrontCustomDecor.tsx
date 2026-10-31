@@ -32,6 +32,7 @@ import {
 } from '@/lib/i18n-helper';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
+import { copyText } from '@/lib/copy-text';
 
 export const BANNER_GRADIENT_MAP: Record<
   NonNullable<ShopPromoBannerConfig['bgGradient']>,
@@ -591,6 +592,17 @@ export function calculateOrderPromoDiscount(
   };
 }
 
+const VOUCHER_COPY_FAILED: Record<SupportedLocale, string> = {
+  vi: 'Không thể sao chép. Hãy chọn mã để sao chép.',
+  en: 'Could not copy. Select the code to copy it.',
+  ko: '복사할 수 없습니다. 코드를 선택해 복사하세요.',
+  ja: 'コピーできませんでした。コードを選択してコピーしてください。',
+  zh: '无法复制，请选择优惠码后复制。',
+  es: 'No se pudo copiar. Selecciona el código para copiarlo.',
+  it: 'Impossibile copiare. Seleziona il codice per copiarlo.',
+  ru: 'Не удалось скопировать. Выделите код и скопируйте его.',
+};
+
 export function StorefrontPromoBanner({
   shop,
   locale = 'vi',
@@ -602,6 +614,7 @@ export function StorefrontPromoBanner({
 }) {
   const banner = shop.theme_config?.promoBanner;
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   if (!banner || !banner.enabled || !banner.title?.trim()) return null;
 
@@ -619,13 +632,10 @@ export function StorefrontPromoBanner({
   const handleCopyCode = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!banner.voucherCode) return;
-    try {
-      await navigator.clipboard.writeText(banner.voucherCode);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // ignore
-    }
+    const success = await copyText(banner.voucherCode);
+    setCopied(success);
+    setCopyFailed(!success);
+    if (success) setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -680,6 +690,12 @@ export function StorefrontPromoBanner({
                     {copied ? pt.copiedCode : pt.copyCode}
                   </span>
                 </button>
+              )}
+
+              {copyFailed && (
+                <span role="status" className="rounded bg-white px-2 py-1 text-xs font-semibold text-red-800">
+                  {VOUCHER_COPY_FAILED[locale]}
+                </span>
               )}
 
               {banner.ctaText && onOpenPopup && (
