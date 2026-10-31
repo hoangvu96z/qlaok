@@ -5,6 +5,18 @@ import { Wifi, Copy, Check } from 'lucide-react';
 import { SupportedLocale, WifiInfo } from '@/types/qlaok';
 import { UI_LABELS } from '@/lib/i18n-helper';
 import { getContrastTextColor } from '@/lib/theme-contrast';
+import { copyText } from '@/lib/copy-text';
+
+const COPY_FAILED: Record<SupportedLocale, string> = {
+  vi: 'Không thể sao chép. Hãy chọn mật khẩu để sao chép.',
+  en: 'Could not copy. Select the password to copy it.',
+  ko: '복사할 수 없습니다. 비밀번호를 선택해 복사하세요.',
+  ja: 'コピーできませんでした。パスワードを選択してコピーしてください。',
+  zh: '无法复制，请选择密码后复制。',
+  es: 'No se pudo copiar. Selecciona la contraseña para copiarla.',
+  it: 'Impossibile copiare. Seleziona la password per copiarla.',
+  ru: 'Не удалось скопировать. Выделите пароль и скопируйте его.',
+};
 
 interface WifiBadgeProps {
   wifi: WifiInfo;
@@ -20,6 +32,7 @@ export function WifiBadge({
   primaryColor = '#10b981',
 }: WifiBadgeProps) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const iconColor = getContrastTextColor(primaryColor);
 
@@ -27,32 +40,18 @@ export function WifiBadge({
 
   const handleCopy = async () => {
     if (!wifi.password) return;
-    try {
-      await navigator.clipboard.writeText(wifi.password);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+    const success = await copyText(wifi.password);
+    setCopyFailed(!success);
+    setCopied(success);
+    if (!success) return;
+    setTimeout(() => setCopied(false), 2500);
 
-      // Fire analytics event in background
-      fetch('/api/analytics/track', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop_id: shopId,
-          event_type: 'wifi_copy',
-          visitor_lang: locale,
-        }),
-      }).catch(() => {});
-    } catch {
-      // Fallback copy
-      const input = document.createElement('input');
-      input.value = wifi.password;
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand('copy');
-      document.body.removeChild(input);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    }
+    // Fire analytics only after a successful copy.
+    fetch('/api/analytics/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shop_id: shopId, event_type: 'wifi_copy', visitor_lang: locale }),
+    }).catch(() => {});
   };
 
   return (
@@ -73,6 +72,7 @@ export function WifiBadge({
           <p className="truncate text-sm font-bold text-slate-900">
             {wifi.ssid}
           </p>
+          {copyFailed && <p role="status" className="text-xs text-red-700">{COPY_FAILED[locale]}</p>}
           {wifi.password && (
             <p className="truncate text-xs text-slate-500 font-mono">
               Pass: <span className="font-semibold text-slate-700">{wifi.password}</span>
