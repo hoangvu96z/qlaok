@@ -950,6 +950,7 @@ export function StorefrontWelcomePopup({
   const popup = shop.theme_config?.welcomePopup;
   const banner = shop.theme_config?.promoBanner;
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copyVoucherFailed, setCopyVoucherFailed] = useState(false);
 
   if (!popup || !popup.enabled || !popup.title?.trim()) return null;
 
@@ -974,13 +975,10 @@ export function StorefrontWelcomePopup({
 
   const handleCopyVoucher = async () => {
     if (!popup.voucherCode) return;
-    try {
-      await navigator.clipboard.writeText(popup.voucherCode);
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
-    } catch {
-      // ignore
-    }
+    const success = await copyText(popup.voucherCode);
+    setCopiedCode(success);
+    setCopyVoucherFailed(!success);
+    if (success) setTimeout(() => setCopiedCode(false), 2000);
   };
 
   return (
@@ -1057,7 +1055,7 @@ export function StorefrontWelcomePopup({
 
               {/* Optional Voucher Code Box */}
               {popup.voucherCode && (
-                <div className="flex items-center justify-between rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50/80 dark:bg-amber-950/40 px-3.5 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50/80 dark:bg-amber-950/40 px-3.5 py-2.5">
                   <div>
                     <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
                       {pt.voucherLabel}
@@ -1083,6 +1081,11 @@ export function StorefrontWelcomePopup({
                       </>
                     )}
                   </button>
+                  {copyVoucherFailed && (
+                    <span role="status" className="max-w-full break-words text-xs font-semibold text-red-800 dark:text-red-200">
+                      {VOUCHER_COPY_FAILED[locale]}
+                    </span>
+                  )}
                 </div>
               )}
 
