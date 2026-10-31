@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
@@ -14,18 +15,29 @@ import {
   dbSettleTableBill,
   dbUpdateOrderStatus,
   fetchAllShopOrdersPaginatedForStats,
+  resetMposStoreForTests,
   setMposDbClientForTests,
 } from '@/lib/mpos-store';
 import {
   dbGetShopAnalyticsSummary,
   dbGetShopCatalog,
+  setOrderAuditDbClientForTests,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
 import { setShopMembershipDbClientForTest } from '@/lib/shop-permissions';
-import { issueSessionToken, SESSION_COOKIE_NAME } from '@/lib/server-auth';
+import {
+  issueSessionToken,
+  SESSION_COOKIE_NAME,
+  setOrderAuditLogFileForTests,
+} from '@/lib/server-auth';
+import {
+  setShopTablesDbClientForTests,
+  signTableQr,
+} from '@/lib/shop-tables';
 import {
   GET as getOrdersRoute,
   PATCH as patchOrdersRoute,
+  POST as postOrdersRoute,
 } from '@/app/api/orders/route';
 import { buildMobileOverviewMetrics } from '../mobile/src/lib/overview-metrics';
 import { buildOrderStatusPatchPayload } from '../mobile/src/lib/order-actions';
@@ -1017,6 +1029,780 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
     setMposDbClientForTests(null);
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);
+    await db.close();
+  }
+});
+
+test('POST /api/orders guest storefront checkout against isolated PostgreSQL enforces server pricing, stock decrement, idempotent replay, and payment/fulfillment independence', async () => {
+  const db = new PGlite({ extensions: { uuid_ossp } });
+  const tempAuditDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'qlaok-storefront-order-qa-')
+  );
+  const previousSessionSecret = process.env.SESSION_SECRET;
+
+  const ident = (name: string) => {
+    assert.match(name, /^[a-z_][a-z0-9_]*$/i);
+    return `"${name}"`;
+  };
+
+  class PgQueryBuilder {
+    private table: string;
+    private mode: 'select' | 'insert' | 'update' | 'delete' = 'select';
+    private columns = '*';
+    private eqFilters: Array<[string, unknown]> = [];
+    private neqFilters: Array<[string, unknown]> = [];
+    private ilikeFilters: Array<[string, string]> = [];
+    private inFilters: Array<[string, unknown[]]> = [];
+    private singleMode: 'none' | 'maybe' | 'single' = 'none';
+    private payload: Record<string, unknown> | null = null;
+    private orderSpecs: Array<{ col: string; ascending: boolean }> = [];
+    private limitCount: number | null = null;
+    private rangeSpec: { from: number; to: number } | null = null;
+
+    constructor(table: string) {
+      this.table = table;
+    }
+
+    select(columns = '*') {
+      if (this.mode === 'select') {
+        this.columns = columns;
+      }
+      return this;
+    }
+
+    insert(row: Record<string, unknown> | Array<Record<string, unknown>>) {
+      this.mode = 'insert';
+      this.payload = Array.isArray(row) ? (row[0] ?? {}) : row;
+      return this;
+    }
+
+    update(patch: Record<string, unknown>) {
+      this.mode = 'update';
+      this.payload = patch;
+      return this;
+    }
+
+    delete() {
+      this.mode = 'delete';
+      return this;
+    }
+
+    eq(col: string, val: unknown) {
+      this.eqFilters.push([col, val]);
+      return this;
+    }
+
+    neq(col: string, val: unknown) {
+      this.neqFilters.push([col, val]);
+      return this;
+    }
+
+    ilike(col: string, pattern: string) {
+      this.ilikeFilters.push([col, pattern]);
+      return this;
+    }
+
+    in(col: string, values: unknown[]) {
+      this.inFilters.push([col, values]);
+      return this;
+    }
+
+    order(col: string, opts?: { ascending?: boolean }) {
+      this.orderSpecs.push({ col, ascending: opts?.ascending !== false });
+      return this;
+    }
+
+    limit(n: number) {
+      this.limitCount = n;
+      return this;
+    }
+
+    range(from: number, to: number) {
+      this.rangeSpec = { from, to };
+      return this;
+    }
+
+    maybeSingle() {
+      this.singleMode = 'maybe';
+      return this.execute();
+    }
+
+    single() {
+      this.singleMode = 'single';
+      return this.execute();
+    }
+
+    then<TResult1 = unknown, TResult2 = never>(
+      onfulfilled?:
+        | ((value: { data: unknown; error: unknown }) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+    ): Promise<TResult1 | TResult2> {
+      return this.execute().then(onfulfilled ?? undefined, onrejected ?? undefined);
+    }
+
+    private async execute(): Promise<{ data: unknown; error: unknown }> {
+      try {
+        const params: unknown[] = [];
+        const buildWhere = () => {
+          const clauses: string[] = [];
+          for (const [col, val] of this.eqFilters) {
+            if (val === null) {
+              clauses.push(`${ident(col)} IS NULL`);
+            } else {
+              params.push(val);
+              clauses.push(`${ident(col)} = $${params.length}`);
+            }
+          }
+          for (const [col, val] of this.neqFilters) {
+            params.push(val);
+            clauses.push(`${ident(col)} <> $${params.length}`);
+          }
+          for (const [col, pat] of this.ilikeFilters) {
+            params.push(pat);
+            clauses.push(`${ident(col)} ILIKE $${params.length}`);
+          }
+          for (const [col, vals] of this.inFilters) {
+            if (vals.length === 0) {
+              clauses.push('FALSE');
+            } else {
+              const ph = vals.map((v) => {
+                params.push(v);
+                return `$${params.length}`;
+              });
+              clauses.push(`${ident(col)} IN (${ph.join(', ')})`);
+            }
+          }
+          return clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+        };
+
+        if (this.mode === 'insert' && this.payload) {
+          const keys = Object.keys(this.payload).filter(
+            (k) => this.payload![k] !== undefined
+          );
+          const cols = keys.map(ident).join(', ');
+          const placeholders = keys.map((k) => {
+            const v = this.payload![k];
+            if (v !== null && typeof v === 'object') {
+              params.push(JSON.stringify(v));
+              return `$${params.length}::jsonb`;
+            }
+            params.push(v);
+            return `$${params.length}`;
+          });
+          const { rows } = await db.query(
+            `INSERT INTO ${ident(this.table)} (${cols}) VALUES (${placeholders.join(', ')}) RETURNING *`,
+            params
+          );
+          return {
+            data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+            error: null,
+          };
+        }
+
+        if (this.mode === 'update' && this.payload) {
+          const keys = Object.keys(this.payload).filter(
+            (k) => this.payload![k] !== undefined
+          );
+          const sets = keys.map((k) => {
+            const v = this.payload![k];
+            if (v !== null && typeof v === 'object') {
+              params.push(JSON.stringify(v));
+              return `${ident(k)} = $${params.length}::jsonb`;
+            }
+            params.push(v);
+            return `${ident(k)} = $${params.length}`;
+          });
+          const whereSql = buildWhere();
+          const { rows } = await db.query(
+            `UPDATE ${ident(this.table)} SET ${sets.join(', ')}${whereSql} RETURNING *`,
+            params
+          );
+          return {
+            data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+            error: null,
+          };
+        }
+
+        if (this.mode === 'delete') {
+          const whereSql = buildWhere();
+          const { rows } = await db.query(
+            `DELETE FROM ${ident(this.table)}${whereSql} RETURNING *`,
+            params
+          );
+          return {
+            data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+            error: null,
+          };
+        }
+
+        const selectCols =
+          this.columns === '*'
+            ? '*'
+            : this.columns
+                .split(',')
+                .map((c) => ident(c.trim()))
+                .join(', ');
+        const whereSql = buildWhere();
+        const orderSql = this.orderSpecs.length
+          ? ` ORDER BY ${this.orderSpecs
+              .map((o) => `${ident(o.col)} ${o.ascending ? 'ASC' : 'DESC'}`)
+              .join(', ')}`
+          : '';
+        let limitOffsetSql = '';
+        if (this.rangeSpec) {
+          const count = Math.max(0, this.rangeSpec.to - this.rangeSpec.from + 1);
+          limitOffsetSql = ` LIMIT ${count} OFFSET ${Math.max(0, this.rangeSpec.from)}`;
+        } else if (typeof this.limitCount === 'number') {
+          limitOffsetSql = ` LIMIT ${Math.max(0, Math.floor(this.limitCount))}`;
+        }
+
+        const { rows } = await db.query(
+          `SELECT ${selectCols} FROM ${ident(this.table)}${whereSql}${orderSql}${limitOffsetSql}`,
+          params
+        );
+        return {
+          data: this.singleMode !== 'none' ? (rows[0] ?? null) : rows,
+          error: null,
+        };
+      } catch (err) {
+        const pgErr = err as { code?: string; message?: string };
+        return {
+          data: null,
+          error: {
+            code: pgErr?.code || 'PGLITE_ERR',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        };
+      }
+    }
+  }
+
+  const pgClient = {
+    from(table: string) {
+      return new PgQueryBuilder(table);
+    },
+    async rpc(name: string, args: Record<string, unknown> = {}) {
+      try {
+        assert.match(name, /^[a-z_]+$/);
+        const keys = Object.keys(args);
+        const values: unknown[] = [];
+        const paramList = keys
+          .map((k) => {
+            assert.match(k, /^[a-z_]+$/);
+            const v = args[k];
+            if (v !== null && typeof v === 'object') {
+              values.push(JSON.stringify(v));
+              return `${k} := $${values.length}::jsonb`;
+            }
+            values.push(v);
+            return `${k} := $${values.length}`;
+          })
+          .join(', ');
+        const { rows } = await db.query<{ result: unknown }>(
+          `SELECT public.${name}(${paramList}) AS result`,
+          values
+        );
+        return { data: rows[0]?.result ?? null, error: null };
+      } catch (err) {
+        return {
+          data: null,
+          error: { message: err instanceof Error ? err.message : String(err) },
+        };
+      }
+    },
+  };
+
+  try {
+    process.env.SESSION_SECRET = 'synthetic-test-session-secret-storefront-qa-0000';
+
+    await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS; CREATE SCHEMA auth;
+      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;`);
+    for (const file of fs
+      .readdirSync('supabase/migrations')
+      .filter((file) => file.endsWith('.sql'))
+      .sort()) {
+      await db.exec(
+        fs.readFileSync(path.join('supabase/migrations', file), 'utf8')
+      );
+    }
+
+    const optionGroupsJson = JSON.stringify([
+      {
+        id: 'size',
+        name_i18n: { vi: 'Kích cỡ', en: 'Size' },
+        required: true,
+        choices: [
+          {
+            id: 'size-regular',
+            label_vi: 'Tô thường',
+            label_i18n: { vi: 'Tô thường', en: 'Regular' },
+            extra_price: 0,
+          },
+          {
+            id: 'size-special',
+            label_vi: 'Tô đặc biệt',
+            label_i18n: { vi: 'Tô đặc biệt', en: 'Special' },
+            extra_price: 15000,
+          },
+        ],
+      },
+    ]);
+
+    await db.exec(`
+      INSERT INTO profiles (id, email, plan) VALUES
+        ('owner-qa-storefront', 'owner-qa@test.local', 'premium'),
+        ('staff-qa-fulfill', 'staff-fulfill@test.local', 'free'),
+        ('cashier-qa-collect', 'cashier-collect@test.local', 'free');
+      INSERT INTO shops (id, owner_id, slug, name, is_published, opening_hours) VALUES (
+        'shop-qa-storefront',
+        'owner-qa-storefront',
+        'shop-qa-storefront',
+        'QA Storefront Shop',
+        true,
+        '{"mon":{"open":"00:00","close":"23:59","closed":false},"tue":{"open":"00:00","close":"23:59","closed":false},"wed":{"open":"00:00","close":"23:59","closed":false},"thu":{"open":"00:00","close":"23:59","closed":false},"fri":{"open":"00:00","close":"23:59","closed":false},"sat":{"open":"00:00","close":"23:59","closed":false},"sun":{"open":"00:00","close":"23:59","closed":false}}'::jsonb
+      );
+      INSERT INTO categories (id, shop_id, name_i18n) VALUES
+        ('cat-qa-main', 'shop-qa-storefront', '{"vi":"Món chính"}');
+      INSERT INTO shop_tables (id, shop_id, table_code, name, is_active, sort_order) VALUES
+        ('tbl-qa-01', 'shop-qa-storefront', 'T01', 'Bàn QA 01', true, 1),
+        ('tbl-qa-inactive', 'shop-qa-storefront', 'T02', 'Bàn Khóa', false, 2);
+      INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
+        ('mem-qa-fulfill', 'shop-qa-storefront', 'staff-qa-fulfill', 'staff', '["orders.view","orders.fulfill"]'::jsonb, true),
+        ('mem-qa-collect', 'shop-qa-storefront', 'cashier-qa-collect', 'cashier', '["orders.view","payment.collect"]'::jsonb, true);
+    `);
+    await db.query(
+      `INSERT INTO items (
+        id, shop_id, category_id, price, stock_quantity, sold_count, is_available, name_i18n, options_json
+      ) VALUES (
+        'item-qa-pho', 'shop-qa-storefront', 'cat-qa-main', 55000, 5, 0, true, '{"vi":"Phở bò QA"}', $1::jsonb
+      )`,
+      [optionGroupsJson]
+    );
+
+    resetMposStoreForTests();
+    setSupabaseDbClientForTests(pgClient as never);
+    setMposDbClientForTests(pgClient as never, true);
+    setShopMembershipDbClientForTest(pgClient as never);
+    setShopTablesDbClientForTests(pgClient as never, true);
+    setOrderAuditDbClientForTests(pgClient as never, { forceDbMode: true });
+    setOrderAuditLogFileForTests(path.join(tempAuditDir, 'order-audit.jsonl'));
+
+    // 1. Anonymous dine-in order WITHOUT signed Table QR is rejected (400) with zero DB mutation
+    const unsignedGuestRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          table_label: 'Bàn QA 01',
+          visitor_lang: 'vi',
+          payment_method: 'cash',
+          items: [
+            {
+              item_id: 'item-qa-pho',
+              name_vi: 'Phở bò QA',
+              quantity: 1,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [
+                {
+                  group_id: 'size',
+                  id: 'size-regular',
+                  label_vi: 'Tô thường',
+                  extra_price: 0,
+                },
+              ],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(unsignedGuestRes.status, 400);
+    assert.equal(
+      (await unsignedGuestRes.json()).code,
+      'MISSING_TABLE_QR_SIGNATURE'
+    );
+
+    const inactiveSig = signTableQr('shop-qa-storefront', 'tbl-qa-inactive');
+    const inactiveTableRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          table_id: 'tbl-qa-inactive',
+          table_qr_sig: inactiveSig,
+          qr_table_mode: true,
+          table_label: 'Bàn Khóa',
+          items: [
+            {
+              item_id: 'item-qa-pho',
+              name_vi: 'Phở bò QA',
+              quantity: 1,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [
+                {
+                  group_id: 'size',
+                  id: 'size-regular',
+                  label_vi: 'Tô thường',
+                  extra_price: 0,
+                },
+              ],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(inactiveTableRes.status, 400);
+    assert.equal((await inactiveTableRes.json()).code, 'INACTIVE_SHOP_TABLE');
+
+    // 2. Valid anonymous signed Table QR storefront order:
+    //    Server overrides tampered unit_price/extra_price/table_label/discount and ignores forged paid/completed flags.
+    const validTableSig = signTableQr('shop-qa-storefront', 'tbl-qa-01');
+    const guestQrPayload = {
+      shop_id: 'shop-qa-storefront',
+      table_id: 'tbl-qa-01',
+      table_qr_sig: validTableSig,
+      qr_table_mode: true,
+      idempotency_key: 'guest-qr-idem-001',
+      table_label: 'Spoofed VIP Table',
+      visitor_lang: 'vi',
+      payment_method: 'vietqr',
+      payment_status: 'paid',
+      markCompletedImmediately: true,
+      discount_amount: 40000,
+      customer_note: 'Ít hành',
+      items: [
+        {
+          item_id: 'item-qa-pho',
+          name_vi: 'Tampered Client Name',
+          quantity: 2,
+          unit_price: 1,
+          extra_price: 0,
+          selected_choices: [
+            {
+              group_id: 'size',
+              id: 'size-special',
+              label_vi: 'Tampered Choice',
+              extra_price: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    const guestQrRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(guestQrPayload),
+      })
+    );
+    const guestQrJson = await guestQrRes.json();
+    assert.equal(guestQrRes.status, 201, JSON.stringify(guestQrJson));
+    const createdQrOrder = guestQrJson.order;
+    assert.ok(createdQrOrder?.id);
+    assert.equal(createdQrOrder.source, 'qr_table');
+    assert.equal(createdQrOrder.table_id, 'tbl-qa-01');
+    assert.equal(createdQrOrder.table_label, 'Bàn QA 01');
+    // Server authoritative pricing: (55,000 + 15,000) * 2 = 140,000 VND; unauthorized guest discount zeroed
+    assert.equal(createdQrOrder.items[0].unit_price, 55000);
+    assert.equal(createdQrOrder.items[0].extra_price, 15000);
+    assert.equal(createdQrOrder.items[0].selected_choices[0].id, 'size-special');
+    assert.equal(
+      createdQrOrder.items[0].selected_choices[0].label_vi,
+      'Tô đặc biệt'
+    );
+    assert.equal(createdQrOrder.subtotal_amount, 140000);
+    assert.equal(createdQrOrder.discount_amount, 0);
+    assert.equal(createdQrOrder.total_amount, 140000);
+    // Payment & fulfillment invariants on guest creation
+    assert.equal(createdQrOrder.status, 'new');
+    assert.equal(createdQrOrder.payment_status, 'unpaid');
+    assert.equal(typeof createdQrOrder.tracking_token, 'string');
+    assert.ok(createdQrOrder.tracking_token.length >= 16);
+
+    const itemAfterFirst = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.equal(itemAfterFirst.rows[0]?.stock_quantity, 3);
+    assert.equal(itemAfterFirst.rows[0]?.sold_count, 2);
+    assert.equal(itemAfterFirst.rows[0]?.is_available, true);
+
+    // 3. Exact idempotent replay returns same order without double stock deduction or duplicate order/audit rows
+    const replayQrRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(guestQrPayload),
+      })
+    );
+    assert.equal(replayQrRes.status, 201);
+    const replayQrJson = await replayQrRes.json();
+    assert.equal(replayQrJson.order.id, createdQrOrder.id);
+    assert.equal(replayQrJson.order.order_code, createdQrOrder.order_code);
+    assert.equal(replayQrJson.order.tracking_token, createdQrOrder.tracking_token);
+    assert.equal(replayQrJson.order.total_amount, 140000);
+
+    const countsAfterReplay = await db.query<{
+      order_count: number;
+      create_audit_count: number;
+      stock_quantity: number;
+      sold_count: number;
+    }>(
+      `SELECT
+        (SELECT COUNT(*)::int FROM orders WHERE shop_id = 'shop-qa-storefront') AS order_count,
+        (SELECT COUNT(*)::int FROM order_audit_logs WHERE shop_id = 'shop-qa-storefront' AND action = 'create_order') AS create_audit_count,
+        (SELECT stock_quantity FROM items WHERE id = 'item-qa-pho') AS stock_quantity,
+        (SELECT sold_count FROM items WHERE id = 'item-qa-pho') AS sold_count`
+    );
+    assert.equal(countsAfterReplay.rows[0]?.order_count, 1);
+    assert.equal(countsAfterReplay.rows[0]?.create_audit_count, 1);
+    assert.equal(countsAfterReplay.rows[0]?.stock_quantity, 3);
+    assert.equal(countsAfterReplay.rows[0]?.sold_count, 2);
+
+    // 4. Stale expected_total is rejected with 409 PRICE_CHANGED without mutating inventory,
+    //    then anonymous Takeaway order for remaining 3 units depletes stock to 0 and marks is_available = false
+    const staleQuoteRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          table_id: null,
+          table_label: 'Mang về',
+          expected_total: 1000,
+          items: [
+            {
+              item_id: 'item-qa-pho',
+              name_vi: 'Phở bò QA',
+              quantity: 3,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [
+                {
+                  group_id: 'size',
+                  id: 'size-regular',
+                  label_vi: 'Tô thường',
+                  extra_price: 0,
+                },
+              ],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(staleQuoteRes.status, 409);
+    const staleQuoteJson = await staleQuoteRes.json();
+    assert.equal(staleQuoteJson.code, 'PRICE_CHANGED');
+    assert.equal(staleQuoteJson.quote?.total_amount, 165000);
+
+    const stateAfterStaleQuote = await db.query<{
+      order_count: number;
+      stock_quantity: number;
+      sold_count: number;
+    }>(
+      `SELECT
+        (SELECT COUNT(*)::int FROM orders WHERE shop_id = 'shop-qa-storefront') AS order_count,
+        (SELECT stock_quantity FROM items WHERE id = 'item-qa-pho') AS stock_quantity,
+        (SELECT sold_count FROM items WHERE id = 'item-qa-pho') AS sold_count`
+    );
+    assert.equal(stateAfterStaleQuote.rows[0]?.order_count, 1);
+    assert.equal(stateAfterStaleQuote.rows[0]?.stock_quantity, 3);
+    assert.equal(stateAfterStaleQuote.rows[0]?.sold_count, 2);
+
+    const takeawayRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          table_id: null,
+          table_label: 'Mang về',
+          idempotency_key: 'guest-takeaway-idem-002',
+          expected_total: 165000,
+          payment_method: 'cash',
+          items: [
+            {
+              item_id: 'item-qa-pho',
+              name_vi: 'Phở bò QA',
+              quantity: 3,
+              unit_price: 55000,
+              extra_price: 0,
+              selected_choices: [
+                {
+                  group_id: 'size',
+                  id: 'size-regular',
+                  label_vi: 'Tô thường',
+                  extra_price: 0,
+                },
+              ],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(takeawayRes.status, 201);
+    const takeawayOrder = (await takeawayRes.json()).order;
+    assert.equal(takeawayOrder.table_id, null);
+    assert.equal(takeawayOrder.table_label, 'Mang về');
+    assert.equal(takeawayOrder.total_amount, 165000);
+    assert.equal(takeawayOrder.payment_status, 'unpaid');
+    assert.equal(takeawayOrder.status, 'new');
+
+    const itemDepleted = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.equal(itemDepleted.rows[0]?.stock_quantity, 0);
+    assert.equal(itemDepleted.rows[0]?.sold_count, 5);
+    assert.equal(itemDepleted.rows[0]?.is_available, false);
+
+    // 5. Guest order tracking requires x-tracking-token; fulfillment completion never marks an unpaid order paid
+    const unauthTrackRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}`
+      )
+    );
+    assert.equal(unauthTrackRes.status, 403);
+
+    const validTrackRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}`,
+        {
+          headers: { 'x-tracking-token': createdQrOrder.tracking_token },
+        }
+      )
+    );
+    assert.equal(validTrackRes.status, 200);
+    const validTrackJson = await validTrackRes.json();
+    assert.equal(validTrackJson.order.id, createdQrOrder.id);
+    assert.equal(validTrackJson.order.tracking_token, undefined);
+
+    const staffFulfillToken = issueSessionToken({
+      id: 'staff-qa-fulfill',
+      email: 'staff-fulfill@test.local',
+      role: 'staff',
+    });
+    const prepRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${staffFulfillToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          orderId: createdQrOrder.id,
+          status: 'preparing',
+        }),
+      })
+    );
+    assert.equal(prepRes.status, 200);
+
+    const completeRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${staffFulfillToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          orderId: createdQrOrder.id,
+          status: 'completed',
+        }),
+      })
+    );
+    assert.equal(completeRes.status, 200);
+    const completeJson = await completeRes.json();
+    assert.equal(completeJson.order.status, 'completed');
+    assert.equal(completeJson.order.payment_status, 'unpaid');
+
+    const staffIllegalPayRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${staffFulfillToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          orderId: createdQrOrder.id,
+          payment_status: 'paid',
+        }),
+      })
+    );
+    assert.equal(staffIllegalPayRes.status, 403);
+
+    const cashierToken = issueSessionToken({
+      id: 'cashier-qa-collect',
+      email: 'cashier-collect@test.local',
+      role: 'staff',
+    });
+    const cashierCollectRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${cashierToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          orderId: takeawayOrder.id,
+          payment_status: 'paid',
+        }),
+      })
+    );
+    assert.equal(cashierCollectRes.status, 200);
+    const cashierCollectJson = await cashierCollectRes.json();
+    assert.equal(cashierCollectJson.order.payment_status, 'paid');
+    assert.equal(cashierCollectJson.order.status, 'new');
+
+    const persistedOrders = await db.query<{
+      id: string;
+      status: string;
+      payment_status: string;
+    }>(
+      `SELECT id, status, payment_status FROM orders WHERE shop_id = 'shop-qa-storefront' ORDER BY created_at ASC`
+    );
+    const persistedQr = persistedOrders.rows.find(
+      (r) => r.id === createdQrOrder.id
+    );
+    const persistedTakeaway = persistedOrders.rows.find(
+      (r) => r.id === takeawayOrder.id
+    );
+    assert.deepEqual(persistedQr, {
+      id: createdQrOrder.id,
+      status: 'completed',
+      payment_status: 'unpaid',
+    });
+    assert.deepEqual(persistedTakeaway, {
+      id: takeawayOrder.id,
+      status: 'new',
+      payment_status: 'paid',
+    });
+  } finally {
+    if (previousSessionSecret === undefined) delete process.env.SESSION_SECRET;
+    else process.env.SESSION_SECRET = previousSessionSecret;
+
+    setMposDbClientForTests(null);
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+    setShopTablesDbClientForTests(null);
+    setOrderAuditDbClientForTests(null);
+    setOrderAuditLogFileForTests(null);
+    resetMposStoreForTests();
+    fs.rmSync(tempAuditDir, { recursive: true, force: true });
     await db.close();
   }
 });
