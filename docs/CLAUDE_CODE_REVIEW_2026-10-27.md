@@ -258,19 +258,15 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 
 ### P1
 
-#### P1-1. Khoá gateway AI hardcode làm fallback trong mã nguồn
+#### P1-1. Khóa gateway AI từng bị commit vào source — source đã sửa, rotate còn mở
 
-- **Cập nhật 2026-10-31:** `getAiConfig()` hiện chỉ dùng `AI_API_KEY` và trả `null` khi biến thiếu; fallback credential đã bị bỏ khỏi source. Giá trị từng xuất hiện trong repository công khai và vẫn nằm trong lịch sử Git. Cần rotate tại gateway; lượt này chưa có quyền quản trị gateway để xác nhận rotation. Giá trị trong báo cáo hiện được che.
-
-- **Vị trí:** `src/lib/gemini.ts:14-15`
-- **Bằng chứng:**
-  ```ts
-  const apiKey =
-    process.env.AI_API_KEY || '[REDACTED]';
-  ```
-- **Điều kiện:** biến `AI_API_KEY` không được đặt. Xảy ra khi deploy thiếu env, hoặc khi build/CI thiếu env.
-- **Tác động:** key sống trong git history (`git show HEAD:src/lib/gemini.ts` xác nhận **đã commit**, không chỉ ở working tree). Bất kỳ ai có repo đều gọi được gateway bằng credit của dự án. Đây là secrets-in-source, không phải "default dev".
-- **Hướng sửa:** xoá literal, trả `null` khi thiếu key (đường fallback `parseRawOcrTextFallback`/`smartFallbackTranslate` đã có sẵn), **và rotate key trên gateway** — xoá khỏi code không làm key cũ an toàn.
+- **Trạng thái 2026-11-01: một phần đã xử lý.** Literal credential đã được gỡ khỏi source hiện tại; khóa từng bị commit phải được coi là đã lộ cho đến khi gateway xác nhận thu hồi hoặc vô hiệu hóa.
+- **Source hiện tại:** `src/lib/gemini.ts:10-22` đọc `AI_API_KEY` từ environment. Khi biến rỗng hoặc thiếu, `getAiConfig()` trả `null`; `isAiConfigured()` trả `false`, còn `call9RouterJson()` từ chối với `AI_NOT_CONFIGURED` (`:25-26`, `:42-45`). Không có key hardcode làm fallback.
+- **Tác động còn lại:** bỏ literal khỏi `HEAD` không thu hồi khóa đã xuất hiện trong Git history công khai. Khóa cũ vẫn có thể gọi gateway cho tới khi provider thu hồi hoặc vô hiệu hóa nó.
+- **Bước đóng finding:** quản trị gateway xác nhận khóa cũ đã bị revoke/disable; cấu hình khóa thay thế trong `AI_API_KEY`; sau đó smoke-test một luồng AI mà không ghi giá trị khóa vào log hoặc báo cáo. Chưa có bằng chứng quản trị gateway về việc rotate/revoke.
+- **CodeGraph:** `codegraph explore "getAiConfig call9RouterJson isAiConfigured parseRawOcrTextFallback smartFallbackTranslate AI_NOT_CONFIGURED"`; ảnh hưởng gồm `src/lib/gemini.ts`, `/api/ai/ocr-menu` và các caller dịch của `src/lib/db.ts`.
+- **AGY đối chiếu độc lập:** Gemini 3.8 Flash Medium, run `2026-10-31T20-41-03-756Z-15746b12`, `SUCCESS`, chế độ plan/read-only. AGY xác nhận source đã fail-closed và chỉ phần gateway revoke còn chưa xác minh. Codex kiểm tra lại cùng symbol qua CodeGraph; không sửa source hay chạy test vì đây là cập nhật trạng thái tài liệu.
+- **Giới hạn:** lượt này không đọc environment, không truy vấn gateway hoặc production và không xác minh khóa nào đang hoạt động. P1-1 chỉ còn mở ở việc thu hồi khóa lịch sử và kiểm tra cấu hình thay thế.
 
 #### P1-2. `demo_login` cấp phiên owner không cần mật khẩu, không có gate môi trường
 
