@@ -165,6 +165,14 @@ import type {
   ShopOrder,
 } from '@/types/qlaok';
 
+const getDefaultFnbSizeChoice = () => [
+  {
+    id: 'size-m',
+    label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' },
+    extra_price: 0,
+  },
+];
+
 // ============================================================================
 // SUITE 1: VIETNAM 34 PROVINCES & CITIES
 // ============================================================================
@@ -1582,7 +1590,7 @@ describe('Suite 8: Security, Authorization, Webhook & Concurrency Hardening', ()
           quantity: 1,
           unit_price: 1, // Forged client price!
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -1969,7 +1977,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2145,7 +2153,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2164,7 +2172,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 2,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2287,7 +2295,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2335,7 +2343,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2350,7 +2358,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 2,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2401,7 +2409,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -2423,7 +2431,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
               quantity: 2,
               unit_price: 55000,
               extra_price: 0,
-              selected_choices: [],
+              selected_choices: getDefaultFnbSizeChoice(),
             },
           ],
         }),
@@ -2486,7 +2494,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
             quantity: 2,
             unit_price: 55000,
             extra_price: 0,
-            selected_choices: [],
+            selected_choices: getDefaultFnbSizeChoice(),
           },
         ],
       });
@@ -2633,7 +2641,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
             quantity: 1,
             unit_price: 55000,
             extra_price: 0,
-            selected_choices: [],
+            selected_choices: getDefaultFnbSizeChoice(),
           },
         ],
       });
@@ -2664,7 +2672,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
             quantity: 1,
             unit_price: 55000,
             extra_price: 0,
-            selected_choices: [],
+            selected_choices: getDefaultFnbSizeChoice(),
           },
         ],
       });
@@ -2764,7 +2772,7 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           quantity: 1,
           unit_price: 55000,
           extra_price: 0,
-          selected_choices: [],
+          selected_choices: getDefaultFnbSizeChoice(),
         },
       ],
     });
@@ -3107,7 +3115,7 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
         shop_id: 'shop-fnb-001',
         table_label: 'Mang về',
         source: 'qr_table' as const,
-        items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: [] }],
+        items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: getDefaultFnbSizeChoice() }],
       };
       await assert.rejects(
         dbCreateOrder({ ...guestOrder, now: closedNow }),
@@ -3143,7 +3151,7 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
             shop_id: 'shop-fnb-001',
             table_label: 'Mang về',
             source: 'qr_table',
-            items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: [] }],
+            items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 65000, extra_price: 0, selected_choices: getDefaultFnbSizeChoice() }],
           }),
         })
       );
@@ -5515,7 +5523,7 @@ describe('Suite 14: Kitchen Display System (kitchen-display.ts, KitchenTicketCar
             quantity: 1,
             unit_price: SEED_ITEMS[0].price,
             extra_price: 0,
-            selected_choices: [],
+            selected_choices: getDefaultFnbSizeChoice(),
           },
         ],
       });
