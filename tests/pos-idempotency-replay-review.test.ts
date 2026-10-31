@@ -1116,6 +1116,11 @@ test('Local store equivalent: dbGetOrderByShopIdempotencyKey and dbCreateOrder d
   resetMposStoreForTests();
 
   const rawKey = 'pos-web:shop-fnb-001:local-ticket-01';
+  const selectedChoices = [{
+    id: 'size-m',
+    label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' },
+    extra_price: 0,
+  }];
   const fp1 = computePosOrderIntentFingerprint({
     shop_id: 'shop-fnb-001',
     source: 'counter_pos',
@@ -1130,7 +1135,7 @@ test('Local store equivalent: dbGetOrderByShopIdempotencyKey and dbCreateOrder d
         quantity: 1,
         unit_price: 65000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: selectedChoices,
       },
     ],
   });
@@ -1148,7 +1153,7 @@ test('Local store equivalent: dbGetOrderByShopIdempotencyKey and dbCreateOrder d
         quantity: 1,
         unit_price: 65000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: selectedChoices,
       },
     ],
   });
@@ -1182,7 +1187,7 @@ test('Local store equivalent: dbGetOrderByShopIdempotencyKey and dbCreateOrder d
         quantity: 1,
         unit_price: 65000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: selectedChoices,
       },
     ],
   });

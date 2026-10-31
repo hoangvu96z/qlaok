@@ -86,7 +86,7 @@ test('receipt text escapes user-controlled markup and quoted attributes', () => 
 test('checkout rejects stale displayed totals before creating or collecting payment', async () => {
   const response = await ordersPost(request('/api/orders', null, {
     shop_id: 'shop-fnb-001', expected_total: 1,
-    items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 1, extra_price: 0, selected_choices: [] }],
+    items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 1, extra_price: 0, selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }] }],
   }, 'POST'));
   assert.equal(response.status, 409);
 });

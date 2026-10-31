@@ -306,7 +306,7 @@ test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATC
         quantity: 1,
         unit_price: 65000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }],
       },
     ];
 

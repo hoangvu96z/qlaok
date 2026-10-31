@@ -74,18 +74,100 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
       INSERT INTO shops(id,owner_id,slug,name) VALUES ('engine-shop','owner','engine-shop','Fixture');
       INSERT INTO categories(id,shop_id) VALUES ('engine-cat','engine-shop');
       INSERT INTO items(id,shop_id,category_id,price,stock_quantity) VALUES ('engine-item','engine-shop','engine-cat',10000,10);`);
+    const optionGroups = [
+      {
+        id: 'size',
+        name_i18n: { vi: 'Kích cỡ' },
+        required: true,
+        choices: [
+          { id: 'size-small', label_vi: 'Nhỏ', label_i18n: { vi: 'Nhỏ' }, extra_price: 1000 },
+          { id: 'size-large', label_vi: 'Lớn', label_i18n: { vi: 'Lớn' }, extra_price: 3000 },
+        ],
+      },
+      {
+        id: 'toppings',
+        name_i18n: { vi: 'Thêm món' },
+        required: false,
+        choices: [
+          { id: 'topping-cheese', label_vi: 'Phô mai', label_i18n: { vi: 'Phô mai' }, extra_price: 2000 },
+          { id: 'topping-egg', label_vi: 'Trứng', label_i18n: { vi: 'Trứng' }, extra_price: 1500 },
+        ],
+      },
+    ];
+    await db.query(
+      `INSERT INTO items(id,shop_id,category_id,price,stock_quantity,options_json)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
+      ['engine-item-options', 'engine-shop', 'engine-cat', 10000, 10, JSON.stringify(optionGroups)]
+    );
     setMposDbClientForTests(client, true);
     const create = (quantity = 2, table = 'Table A') => dbCreateOrder({ shop_id: 'engine-shop', table_label: table,
       items: [{ item_id: 'engine-item', name_vi: 'Fixture', quantity, unit_price: 1, extra_price: 0, selected_choices: [] }],
     });
+    const createOptionsOrder = (
+      table: string,
+      selected_choices: Parameters<typeof dbCreateOrder>[0]['items'][number]['selected_choices']
+    ) => dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label: table,
+      apply_shop_promotions: false,
+      items: [{
+        item_id: 'engine-item-options',
+        name_vi: 'Options fixture',
+        quantity: 1,
+        unit_price: 1,
+        extra_price: 0,
+        selected_choices,
+      }],
+    });
     const order = await create();
     assert.equal(order.total_amount, 20000, 'catalog price must override submitted price');
     assert.equal((await db.query<{ stock_quantity: number }>("SELECT stock_quantity FROM items WHERE id='engine-item'")).rows[0].stock_quantity, 8);
+    const orderCountBeforeInvalidOptions = Number(
+      (await db.query<{ count: string }>('SELECT count(*)::text AS count FROM orders')).rows[0].count
+    );
+    const selectedOption = (id: string, label: string, extra_price: number) => ({
+      id,
+      label_vi: label,
+      label_i18n: { vi: label },
+      extra_price,
+    });
+    await assert.rejects(createOptionsOrder('Missing required option', []), /REQUIRED_OPTION/);
+    await assert.rejects(
+      createOptionsOrder('Multiple radio choices', [
+        selectedOption('size-small', 'Nhỏ', 1000),
+        selectedOption('size-large', 'Lớn', 3000),
+      ]),
+      /MULTIPLE_OPTIONS/
+    );
+    await assert.rejects(
+      createOptionsOrder('Duplicate checkbox choice', [
+        selectedOption('size-small', 'Nhỏ', 1000),
+        selectedOption('topping-egg', 'Trứng', 1500),
+        selectedOption('topping-egg', 'Trứng', 1500),
+      ]),
+      /DUPLICATE_OPTION/
+    );
+    assert.equal(
+      Number((await db.query<{ count: string }>('SELECT count(*)::text AS count FROM orders')).rows[0].count),
+      orderCountBeforeInvalidOptions,
+      'invalid option selections must fail before an order is committed'
+    );
+    const optionsOrder = await createOptionsOrder('Valid options', [
+      selectedOption('', 'Lớn', 999999), // Legacy label form and a forged client price are canonicalized from the catalog.
+      selectedOption('topping-cheese', 'Phô mai', 0),
+      selectedOption('topping-egg', 'Trứng', 0),
+    ]);
+    assert.equal(optionsOrder.items[0].extra_price, 6500);
+    assert.equal(optionsOrder.total_amount, 16500);
+    assert.deepEqual(
+      optionsOrder.items[0].selected_choices?.map((choice) => choice.id),
+      ['size-large', 'topping-cheese', 'topping-egg']
+    );
     failRpc = true;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid' }), /injected DB failure/);
     assert.equal((await dbGetOrderById(order.id))?.payment_status, 'unpaid', 'failed payment must not be cached as paid');
     await assert.rejects(create(1), /injected DB failure/);
-    assert.equal((await db.query('SELECT id FROM orders')).rows.length, 1);
+    assert.equal((await db.query('SELECT id FROM orders')).rows.length, orderCountBeforeInvalidOptions + 1);
     failRpc = false;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 1 }), /Tổng tiền/);
     const paid = await dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 20000 });

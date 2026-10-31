@@ -1010,10 +1010,14 @@ function validateAndPriceOrderLines(
       const validChoiceMap = new Map<
         string,
         {
-          id: string;
-          label_vi: string;
-          label_i18n: { vi: string };
-          extra_price: number;
+          choice: {
+            id: string;
+            label_vi: string;
+            label_i18n: { vi: string };
+            extra_price: number;
+          };
+          groupId: string;
+          required: boolean;
         }
       >();
 
@@ -1021,17 +1025,23 @@ function validateAndPriceOrderLines(
         for (const ch of grp?.choices || []) {
           const chId = String(ch.id || '').trim();
           const labelVi = String(ch.label_vi || ch.label_i18n?.vi || '').trim();
-          const normChoice = {
-            id: chId || labelVi,
-            label_vi: labelVi,
-            label_i18n: ch.label_i18n || { vi: labelVi },
-            extra_price: Math.max(0, Number(ch.extra_price || 0)),
+          const option = {
+            choice: {
+              id: chId || labelVi,
+              label_vi: labelVi,
+              label_i18n: ch.label_i18n || { vi: labelVi },
+              extra_price: Math.max(0, Number(ch.extra_price || 0)),
+            },
+            groupId: String(grp?.id || ''),
+            required: Boolean(grp?.required),
           };
-          if (chId) validChoiceMap.set(chId.toLowerCase(), normChoice);
-          if (labelVi) validChoiceMap.set(labelVi.toLowerCase(), normChoice);
+          if (chId) validChoiceMap.set(chId.toLowerCase(), option);
+          if (labelVi) validChoiceMap.set(labelVi.toLowerCase(), option);
         }
       }
 
+      const selectedChoiceKeys = new Set<string>();
+      const selectedCountByGroup = new Map<string, number>();
       for (const rawChoice of submittedChoices as Array<
         (typeof submittedChoices)[number] | string
       >) {
@@ -1060,8 +1070,38 @@ function validateAndPriceOrderLines(
           );
         }
 
-        authoritativeExtraPrice += matched.extra_price;
-        verifiedChoices.push(matched);
+        const choiceKey = `${matched.groupId}\u0000${matched.choice.id.toLowerCase()}`;
+        if (selectedChoiceKeys.has(choiceKey)) {
+          throw new Error(
+            `DUPLICATE_OPTION: Không thể chọn lặp lại tùy chọn "${matched.choice.label_vi}" cho món "${dbItem.name_i18n?.vi || line.name_vi}".`
+          );
+        }
+        selectedChoiceKeys.add(choiceKey);
+
+        const selectedCount = (selectedCountByGroup.get(matched.groupId) || 0) + 1;
+        if (matched.required && selectedCount > 1) {
+          throw new Error(
+            `MULTIPLE_OPTIONS: Chỉ được chọn một tùy chọn trong nhóm bắt buộc của món "${dbItem.name_i18n?.vi || line.name_vi}".`
+          );
+        }
+        selectedCountByGroup.set(matched.groupId, selectedCount);
+
+        authoritativeExtraPrice += matched.choice.extra_price;
+        verifiedChoices.push(matched.choice);
+      }
+
+      for (const group of optionGroups) {
+        const groupId = String(group?.id || '');
+        if (
+          group?.required &&
+          Array.isArray(group.choices) &&
+          group.choices.length > 0 &&
+          !selectedCountByGroup.get(groupId)
+        ) {
+          throw new Error(
+            `REQUIRED_OPTION: Vui lòng chọn một tùy chọn bắt buộc cho món "${dbItem.name_i18n?.vi || line.name_vi}".`
+          );
+        }
       }
     } else {
       // Synthetic unit test fallback when dbItem is not in DB

@@ -230,7 +230,7 @@ test('rejects invalid query params, unauthenticated shop streams, unauthorized r
         quantity: 1,
         unit_price: 55000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }],
       },
     ],
   });
@@ -344,7 +344,7 @@ test('shares one upstream subscription across clients, enforces shop/order isola
         quantity: 1,
         unit_price: 55000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }],
       },
     ],
   });
@@ -358,7 +358,7 @@ test('shares one upstream subscription across clients, enforces shop/order isola
         quantity: 1,
         unit_price: 55000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }],
       },
     ],
   });
@@ -565,7 +565,7 @@ test('enforces max stream lifetime reconnect closure and bounded broker capacity
         quantity: 1,
         unit_price: 55000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }],
       },
     ],
   });
