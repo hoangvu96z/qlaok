@@ -29,6 +29,7 @@ import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
 import { getContrastTextColor } from '@/lib/theme-contrast';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { WifiBadge } from '@/components/storefront/WifiBadge';
+import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
 import {
   getStorefrontBackgroundProps,
   StorefrontFlashSaleSection,
@@ -478,11 +479,13 @@ export default function StorefrontDoorPage() {
         {shop.cover_urls && shop.cover_urls.length > 1 && (
           <div className="grid grid-cols-2 gap-2.5">
             {shop.cover_urls.slice(0, 4).map((url, idx) => (
-              <img
+              <StorefrontProductImage
                 key={idx}
                 src={url}
                 alt={`${shop.name} ${idx + 1}`}
+                vertical={shop.vertical}
                 className="h-32 w-full rounded-2xl object-cover border border-slate-200"
+                emojiClassName="flex h-32 w-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-100 text-3xl"
               />
             ))}
           </div>
