@@ -6,7 +6,7 @@
 **Phạm vi:** 141 file TS/TSX (~97.572 dòng `src`), 21 route handler, 24 file migration SQL (`001`–`023` + `002z`), `mobile/src` (29 file), `scripts/`, `supabase/self-hosted/`, CI workflow, 69 file test. **Vòng này phủ thêm ba tầng trước đây chưa rà sâu:** tầng UI/component (`src/components/dashboard/*`, `src/app/(dashboard)/**`), i18n (`src/lib/i18n-helper.ts` + chuỗi hardcode), và toàn bộ app mobile (`mobile/App.tsx`, `mobile/src/**`).
 **Trạng thái làm việc khi rà:** cây làm việc có WIP chưa commit (thêm `src/lib/auth-email.ts`, `src/lib/auth-email-templates.ts`, sửa `zitadel-login-ui.ts`, `login-ui/route.ts`, 2 file test). Các kết luận dưới đây phản ánh **đúng trạng thái đĩa tại thời điểm rà**.
 
-> **Trạng thái hiện tại — 2026-11-01:** các mục 1–10 dưới đây là snapshot ngày 27/10. Theo follow-up, P1-2–P1-7 và P2-10 đã được xử lý; backup timer đã tự chạy và tạo archive thành công (mục 128). P1-1 đã sạch ở source nhưng key lịch sử chưa có bằng chứng thu hồi từ provider (mục 127). Những việc còn mở gồm xác minh ảnh legacy Supabase HTTP 402 trước khi remap, kiểm tra shop Basic/Premium thật khi có fixture, credentials/build push native, và các thao tác ghi storefront bị giới hạn nên chưa chạy trên production (mục 108, 106, 129).
+> **Trạng thái hiện tại — 2026-11-01:** các mục 1–10 dưới đây là snapshot ngày 27/10. Theo follow-up, P1-2–P1-7 và P2-10 đã được xử lý; backup timer đã tự chạy và tạo archive thành công (mục 128). P1-1 đã sạch ở source nhưng key lịch sử chưa có bằng chứng thu hồi từ provider (mục 127). Những việc còn mở gồm xác minh ảnh legacy Supabase HTTP 402 trước khi remap, kiểm tra shop Basic/Premium thật khi có fixture, credentials/build push native, và xác minh các luồng ghi storefront thành công trong môi trường QA cô lập. Mục 131 chỉ kiểm thử các đường từ chối 401/400 trên production, không thay thế các luồng ghi còn mở (mục 106, 108, 129, 131).
 
 ---
 
@@ -1831,3 +1831,17 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Ranh giới & an toàn:**
   - Không sửa mã nguồn production, không thay đổi schema/migration SQL, không sửa cấu hình `.env` hay secret.
   - Finding gốc P3-21 trong bảng mục 4 được giữ nguyên làm snapshot lịch sử đánh giá ngày 27/10/2026.
+
+## 131. Production negative probes cho API ghi storefront (2026-11-01)
+
+- **Mục tiêu:** bổ sung bằng chứng cho các API ghi còn thiếu ở mục 129 bằng request bị từ chối trước khi tới thao tác nghiệp vụ. Không gửi cookie, Authorization, token, shop ID thật, hay chữ ký webhook; không theo redirect và không retry.
+- **CodeGraph:** `codegraph status`; `codegraph explore "PATCH /api/shops requireShopOwnerOrAdmin input validation persistence order"`; `codegraph node src/app/api/shops/route.ts --offset 758 --limit 95`; `codegraph node src/app/api/orders/route.ts --offset 465 --limit 145`; `codegraph node handleSePayShopWebhookHttpRequest`; `codegraph node processSePayShopWebhook`. Ảnh hưởng: guard owner/settings, kiểm tra `shop_id` ở checkout, và chữ ký/đối soát SePay.
+- **Claude CLI peer review qua gateway DeepSeek:** xác nhận các nhánh đã trích dẫn short-circuit trước bước cập nhật shop, tạo order và đối soát thanh toán; lưu ý kết luận chỉ nói về các thao tác nghiệp vụ này, không loại trừ middleware/logging side effects. Không gọi công cụ, không đọc secret, không gửi request.
+- **AGY Flash Low:** run `2026-10-31T21-57-59-837Z-d80603f0`, conversation `cabf6983-ff22-4fcf-b46d-d7f8ebf0840f`, **SUCCESS**. AGY đọc handler và call path trước khi gửi ba request một lần, không auth/cookie, redirect manual, không retry. Report đã khử dữ liệu: `.agy-runs/qa/storefront-prod-negative-api-qa-2026-11-01.md`.
+- **Kết quả AGY và Codex kiểm chứng độc lập:**
+  - `PATCH /api/shops`, body có UUID giả lập hợp lệ không tồn tại: **401**; nhánh không tìm thấy shop gọi permission guard trước khi có thể cập nhật.
+  - `POST /api/orders`, thiếu `shop_id`: **400**; trả ngay trước membership lookup và order creation.
+  - `POST /api/webhooks/sepay`, thiếu shop ID và chữ ký: **400 `MISSING_SHOP_ID`**; trả trước shop/config lookup và payment reconciliation.
+  - Các request không đi theo redirect; Codex chỉ ghi status và field allowlist `code`, `success`, `reconciled`, không lưu body/header thô. Không thấy lời gọi lưu shop/order/payment/audit business record trong các nhánh từ chối đã xác minh.
+- **Giới hạn:** đây là kiểm tra đường từ chối, không xác minh lưu settings/slug thành công, tạo checkout order, hoặc webhook SePay hợp lệ và ghi nhận thanh toán. Những luồng thành công vẫn cần fixture QA cô lập; không được xem 3 probe này là bằng chứng thay thế.
+- **Không sửa source, schema, dữ liệu hoặc cấu hình production; không commit thay đổi trong phần kiểm tra này.**
