@@ -25,7 +25,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": ""
+        "projectId": "4d683d00-5ac1-4665-8f3f-618531d72707"
       }
     },
     "plugins": [
@@ -39,6 +39,7 @@
           "defaultChannel": "qlaok-orders"
         }
       ]
-    ]
+    ],
+    "owner": "hoangvu96z"
   }
 }
