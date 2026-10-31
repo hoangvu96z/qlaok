@@ -50,10 +50,49 @@ import {
 } from '@/lib/plan-limits';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
-import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
+import type { Shop, ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
 const INVITABLE_MEMBER_ROLES: ShopRole[] = ['cashier', 'staff'];
+
+/** Keep the public storefront response limited to fields used by customers. */
+function toPublicStorefrontShop(shop: Shop) {
+  const theme = shop.theme_config;
+  return {
+    id: shop.id,
+    slug: shop.slug,
+    name: shop.name,
+    vertical: shop.vertical,
+    tagline_i18n: shop.tagline_i18n,
+    description_i18n: shop.description_i18n,
+    logo_url: shop.logo_url,
+    cover_urls: shop.cover_urls,
+    address: shop.address,
+    city: shop.city,
+    google_maps_url: shop.google_maps_url,
+    google_review_url: shop.google_review_url,
+    phone_contact: shop.phone_contact,
+    zalo_phone: shop.zalo_phone,
+    wifi_info: shop.wifi_info,
+    opening_hours: shop.opening_hours,
+    supported_langs: shop.supported_langs,
+    currency: shop.currency,
+    theme_config: {
+      primaryColor: theme?.primaryColor,
+      layout: theme?.layout,
+      fontStyle: theme?.fontStyle,
+      backgroundStyle: theme?.backgroundStyle,
+      backgroundImageUrl: theme?.backgroundImageUrl,
+      backgroundOverlayOpacity: theme?.backgroundOverlayOpacity,
+      promoBanner: theme?.promoBanner,
+      flashSale: theme?.flashSale,
+      welcomePopup: theme?.welcomePopup,
+      paymentConfig: theme?.paymentConfig,
+      paymentQr: theme?.paymentQr,
+      orderWorkflow: theme?.orderWorkflow,
+    },
+  };
+}
 
 async function getShopForMemberAction(
   shopId: string
@@ -136,6 +175,10 @@ export async function GET(req: Request) {
     if (!bundle) {
       return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
     }
+    const publicBundle = {
+      ...bundle,
+      shop: toPublicStorefrontShop(bundle.shop),
+    };
     const tableIdParam = (searchParams.get('tableId') ?? '').trim();
     if (tableIdParam) {
       const tableQrVerified = verifyTableQrSignature({
@@ -143,9 +186,9 @@ export async function GET(req: Request) {
         table_id: tableIdParam,
         signature: searchParams.get('sig'),
       });
-      return NextResponse.json({ ...bundle, tableQrVerified });
+      return NextResponse.json({ ...publicBundle, tableQrVerified });
     }
-    return NextResponse.json(bundle);
+    return NextResponse.json(publicBundle);
   }
 
   if (shopId) {

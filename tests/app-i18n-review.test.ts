@@ -418,8 +418,19 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
         slug: 'quan-free-owner',
         name: 'Quán Chủ Free',
         owner_id: 'owner-free-01',
+        telegram_chat_id: 'internal-telegram-chat',
+        opening_hours_confirmed: true,
+        created_at: 'internal-created-at',
+        updated_at: 'internal-updated-at',
         is_published: true,
         supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
+        theme_config: {
+          primaryColor: '#123456',
+          layout: 'grid',
+          paymentConfig: { bankId: 'MB', accountNumber: '123456789' },
+          serviceRequestNotificationRule: 'owner_only',
+          labelPrintConfig: {} as unknown as NonNullable<Shop['theme_config']['labelPrintConfig']>,
+        },
       },
       'shop-prem': {
         id: 'shop-prem',
@@ -507,6 +518,16 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
     assert.equal(apiFreeRes.status, 200);
     const apiFreeData = await apiFreeRes.json();
     assert.equal(apiFreeData.ownerPlan, 'free');
+    assert.equal(apiFreeData.shop.id, 'shop-free');
+    assert.equal(apiFreeData.shop.owner_id, undefined);
+    assert.equal(apiFreeData.shop.telegram_chat_id, undefined);
+    assert.equal(apiFreeData.shop.opening_hours_confirmed, undefined);
+    assert.equal(apiFreeData.shop.created_at, undefined);
+    assert.equal(apiFreeData.shop.updated_at, undefined);
+    assert.equal(apiFreeData.shop.theme_config.primaryColor, '#123456');
+    assert.equal(apiFreeData.shop.theme_config.paymentConfig.accountNumber, '123456789');
+    assert.equal(apiFreeData.shop.theme_config.serviceRequestNotificationRule, undefined);
+    assert.equal(apiFreeData.shop.theme_config.labelPrintConfig, undefined);
 
     // 2. Premium owner: bundle derives ownerPlan: 'premium' using shop.owner_id
     const premBundle = await dbGetStorefrontBundle('quan-prem-owner');
