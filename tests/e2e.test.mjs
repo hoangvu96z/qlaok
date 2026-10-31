@@ -539,6 +539,13 @@ test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Anal
           quantity: 2,
           unit_price: targetItem.price,
           extra_price: 0,
+          selected_choices: [
+            {
+              id: "size-m",
+              label_i18n: { vi: "Tô Vừa (Tiêu chuẩn)" },
+              extra_price: 0,
+            },
+          ],
         },
       ],
     }),
