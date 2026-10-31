@@ -16,6 +16,7 @@ import {
   getGuestOrderLabels,
   GUEST_ORDER_LABELS,
   normalizeShopSupportedLangs,
+  isValidOpeningHoursTime,
 } from '@/lib/i18n-helper';
 import {
   PLAN_CONFIGS,
@@ -106,6 +107,7 @@ import {
   hasConfiguredStoreInfo,
   normalizeShopSlugInput,
   requiresSlugChangeConfirmation,
+  validateOpeningHoursInput,
 } from '@/lib/shop-setup-checklist';
 import {
   buildPasswordRecoveryRedirectUrl as buildWebPasswordRecoveryRedirectUrl,
@@ -3097,12 +3099,22 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
 
   test('G.3 missing / unparseable opening hours are treated as open; closed days stay closed', () => {
     const now = vn('2026-10-19T03:00:00');
-    assert.equal(checkShopOpenStatus(null, { now }).isOpen, true);
+    const missingSchedule = checkShopOpenStatus(null, { now });
+    assert.equal(missingSchedule.isOpen, true);
+    assert.equal(missingSchedule.todayScheduleValid, true);
     assert.equal(checkShopOpenStatus(undefined, { now }).isOpen, true);
     assert.equal(checkShopOpenStatus({} as OpeningHours, { now }).isOpen, true);
-    assert.equal(checkShopOpenStatus(week('abc', '??'), { now }).isOpen, true);
+
+    const malformedSchedule = checkShopOpenStatus(week('abc', '??'), { now });
+    assert.equal(malformedSchedule.isOpen, true);
+    assert.equal(malformedSchedule.todayScheduleValid, false);
+
     assert.equal(checkShopOpenStatus(week('08:00', '08:00'), { now }).isOpen, true, 'open==close → 24h');
-    assert.equal(checkShopOpenStatus(week('08:00', '22:00', true), { now: vn('2026-10-19T12:00:00') }).isOpen, false);
+    const closedDay = checkShopOpenStatus(week('08:00', '22:00', true), {
+      now: vn('2026-10-19T12:00:00'),
+    });
+    assert.equal(closedDay.isOpen, false);
+    assert.equal(closedDay.todayScheduleValid, true);
   });
 
   test('G.4 dbCreateOrder rejects guest orders with SHOP_CLOSED outside opening hours (staff POS exempt)', async () => {
@@ -4163,6 +4175,234 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       await dbDeleteShopMembership(shopId, staffUserId);
       await dbDeleteShopMembership(shopId, settingsOnlyUserId);
       await dbDeleteShopMembership(shopId, bankOnlyUserId);
+    }
+  });
+
+  test('R.3d PATCH /api/shops validates opening_hours schedules and rejects malformed payloads without calling dbUpdateShop', async () => {
+    assert.equal(isValidOpeningHoursTime('00:00'), true);
+    assert.equal(isValidOpeningHoursTime('08:30'), true);
+    assert.equal(isValidOpeningHoursTime('23:59'), true);
+    assert.equal(isValidOpeningHoursTime('24:00'), false);
+    assert.equal(isValidOpeningHoursTime('25:00'), false);
+    assert.equal(isValidOpeningHoursTime('12:60'), false);
+    assert.equal(isValidOpeningHoursTime('8:00'), false);
+    assert.equal(isValidOpeningHoursTime('08:5'), false);
+    assert.equal(isValidOpeningHoursTime('08:00:00'), false);
+    assert.equal(isValidOpeningHoursTime(' 08:00'), false);
+    assert.equal(isValidOpeningHoursTime(''), false);
+    assert.equal(isValidOpeningHoursTime(null), false);
+
+    assert.equal(validateOpeningHoursInput(null).valid, true);
+    assert.equal(validateOpeningHoursInput({}).valid, true);
+
+    const shopId = 'shop-pho-hoi-an';
+    const ownerId = 'user-demo-owner';
+    const ownerToken = issueSessionToken({
+      id: ownerId,
+      email: 'owner@qlaok.test',
+      role: 'owner',
+    });
+
+    let storedShop: Shop = {
+      ...SEED_SHOPS[0],
+      id: shopId,
+      owner_id: ownerId,
+      name: 'Phở Hội An',
+      slug: 'pho-hoi-an',
+      theme_config: {
+        ...SEED_SHOPS[0].theme_config,
+        primaryColor: '#D4A855',
+      },
+    };
+    const recordedUpdates: Array<Record<string, unknown>> = [];
+
+    const mockSupabase = {
+      from(table: string) {
+        assert.equal(table, 'shops');
+        return {
+          select() {
+            return {
+              limit() {
+                return Promise.resolve({
+                  data: [{ id: storedShop.id }],
+                  error: null,
+                });
+              },
+              eq(col: string, val: unknown) {
+                return {
+                  async single() {
+                    if (col === 'id' && val === shopId) {
+                      return { data: { ...storedShop }, error: null };
+                    }
+                    return { data: null, error: { message: 'Not found' } };
+                  },
+                  async maybeSingle() {
+                    if (col === 'id' && val === shopId) {
+                      return { data: { ...storedShop }, error: null };
+                    }
+                    return { data: null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(patch: Record<string, unknown>) {
+            recordedUpdates.push(patch);
+            return {
+              eq(col: string, val: unknown) {
+                return {
+                  select() {
+                    return {
+                      async single() {
+                        assert.equal(col, 'id');
+                        assert.equal(val, shopId);
+                        storedShop = {
+                          ...storedShop,
+                          ...(patch as Partial<Shop>),
+                        };
+                        return { data: { ...storedShop }, error: null };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    };
+
+    setSupabaseDbClientForTests(mockSupabase);
+
+    try {
+      const sendPatch = (body: Record<string, unknown>) =>
+        shopsPatch(
+          new Request('http://localhost:3000/api/shops', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${ownerToken}`,
+            },
+            body: JSON.stringify({ id: shopId, ...body }),
+          })
+        );
+
+      // 1. Valid full 7-day schedule (standard, 24/7 preset 00:00-23:59, overnight, equal boundary, and closed day).
+      const validFullHours = {
+        mon: { open: '08:00', close: '22:00', closed: false },
+        tue: { open: '00:00', close: '23:59', closed: false },
+        wed: { open: '18:00', close: '02:00', closed: false },
+        thu: { open: '00:00', close: '00:00', closed: false },
+        fri: { open: '09:30', close: '21:15', closed: false },
+        sat: { open: '10:00', close: '23:00', closed: false },
+        sun: { open: '08:00', close: '22:00', closed: true },
+      };
+      const fullRes = await sendPatch({ opening_hours: validFullHours });
+      assert.equal(fullRes.status, 200);
+      assert.equal(recordedUpdates.length, 1);
+      assert.deepEqual(storedShop.opening_hours, validFullHours);
+
+      // 2. Valid partial day schedule (missing day keys remain compatible).
+      const validPartialHours = {
+        mon: { open: '07:00', close: '20:00', closed: false },
+        sun: { open: '07:00', close: '20:00', closed: true },
+      };
+      const partialRes = await sendPatch({ opening_hours: validPartialHours });
+      assert.equal(partialRes.status, 200);
+      assert.equal(recordedUpdates.length, 2);
+      assert.deepEqual(storedShop.opening_hours, validPartialHours);
+
+      // 3. Closed days may omit times; the API normalizes them to empty strings.
+      const closedWithoutTimes = {
+        mon: { closed: true },
+        tue: { open: '', close: '', closed: true },
+        wed: { open: 'bad', close: 'also-bad', closed: true },
+      };
+      const closedWithoutTimesRes = await sendPatch({
+        opening_hours: closedWithoutTimes,
+      });
+      assert.equal(closedWithoutTimesRes.status, 200);
+      assert.equal(recordedUpdates.length, 3);
+      assert.deepEqual(storedShop.opening_hours, {
+        mon: { open: '', close: '', closed: true },
+        tue: { open: '', close: '', closed: true },
+        wed: { open: '', close: '', closed: true },
+      });
+
+      // 4. Valid nullable schedule (`opening_hours: null`).
+      const nullRes = await sendPatch({ opening_hours: null });
+      assert.equal(nullRes.status, 200);
+      assert.equal(recordedUpdates.length, 4);
+      assert.equal(storedShop.opening_hours, null);
+
+      // 5. Narrow patch without `opening_hours` is unaffected.
+      const narrowRes = await sendPatch({ name: 'Phở Hội An Mới' });
+      assert.equal(narrowRes.status, 200);
+      assert.equal(recordedUpdates.length, 5);
+      assert.equal(storedShop.name, 'Phở Hội An Mới');
+
+      // Confirming hours requires a non-null schedule in the same request.
+      const updatesBeforeInvalidConfirmation = recordedUpdates.length;
+      const confirmOnlyRes = await sendPatch({ opening_hours_confirmed: true });
+      assert.equal(confirmOnlyRes.status, 400);
+      assert.equal(recordedUpdates.length, updatesBeforeInvalidConfirmation);
+      const confirmNullRes = await sendPatch({
+        opening_hours: null,
+        opening_hours_confirmed: true,
+      });
+      assert.equal(confirmNullRes.status, 400);
+      assert.equal(recordedUpdates.length, updatesBeforeInvalidConfirmation);
+      const confirmValidRes = await sendPatch({
+        opening_hours: validPartialHours,
+        opening_hours_confirmed: true,
+      });
+      assert.equal(confirmValidRes.status, 200);
+      assert.equal(recordedUpdates.length, updatesBeforeInvalidConfirmation + 1);
+      assert.deepEqual(storedShop.opening_hours, validPartialHours);
+      assert.equal(storedShop.opening_hours_confirmed, true);
+
+      // 6. Reject malformed time strings, non-boolean `closed`, bad types, and unexpected keys without calling dbUpdateShop.
+      const invalidPayloads: unknown[] = [
+        '08:00-22:00',
+        123,
+        [],
+        { monday: { open: '08:00', close: '22:00', closed: false } },
+        { mon: null },
+        { mon: [] },
+        { mon: '08:00-22:00' },
+        { mon: { open: '25:00', close: '22:00', closed: false } },
+        { mon: { open: '24:00', close: '22:00', closed: false } },
+        { mon: { open: '08:00', close: '12:60', closed: false } },
+        { mon: { open: '8:00', close: '22:00', closed: false } },
+        { mon: { open: '08:00', close: '22:5', closed: false } },
+        { mon: { open: '08:00:00', close: '22:00', closed: false } },
+        { mon: { open: ' 08:00', close: '22:00', closed: false } },
+        { mon: { open: '', close: '22:00', closed: false } },
+        { mon: { open: 'invalid', close: '22:00', closed: false } },
+        { mon: { open: 800, close: '22:00', closed: false } },
+        { mon: { open: '08:00', close: null, closed: false } },
+        { mon: { open: '08:00', close: '22:00', closed: 'false' } },
+        { mon: { open: '08:00', close: '22:00', closed: 0 } },
+        { mon: { open: '08:00', close: '22:00', closed: null } },
+        { mon: { open: '08:00', close: '22:00' } },
+        { mon: { open: '08:00', close: '22:00', closed: false, extra: true } },
+      ];
+
+      const updatesBeforeInvalid = recordedUpdates.length;
+      for (const invalidOpeningHours of invalidPayloads) {
+        const res = await sendPatch({ opening_hours: invalidOpeningHours });
+        assert.equal(
+          res.status,
+          400,
+          `Expected 400 for payload: ${JSON.stringify(invalidOpeningHours)}`
+        );
+        const body = (await res.json()) as { error?: string; code?: string };
+        assert.equal(body.code, 'INVALID_OPENING_HOURS');
+        assert.equal(typeof body.error, 'string');
+        assert.equal(recordedUpdates.length, updatesBeforeInvalid);
+      }
+    } finally {
+      setSupabaseDbClientForTests(null);
     }
   });
 

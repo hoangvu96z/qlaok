@@ -49,6 +49,7 @@ import {
   normalizePlanTier,
 } from '@/lib/plan-limits';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
+import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
 import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -992,12 +993,42 @@ export async function PATCH(req: Request) {
         incomingTheme.serviceRequestNotificationRule;
     }
 
+    if (patch.opening_hours !== undefined) {
+      const openingHoursValidation = validateOpeningHoursInput(
+        patch.opening_hours
+      );
+      if (!openingHoursValidation.valid) {
+        return NextResponse.json(
+          {
+            error: openingHoursValidation.error,
+            code: openingHoursValidation.code,
+          },
+          { status: 400 }
+        );
+      }
+      patch.opening_hours = openingHoursValidation.openingHours;
+    }
+
     if (
       patch.opening_hours_confirmed !== undefined &&
       typeof patch.opening_hours_confirmed !== 'boolean'
     ) {
       return NextResponse.json(
         { error: 'opening_hours_confirmed phải là kiểu boolean' },
+        { status: 400 }
+      );
+    }
+
+    if (
+      patch.opening_hours_confirmed === true &&
+      (patch.opening_hours === undefined || patch.opening_hours === null)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'INVALID_OPENING_HOURS: Cần gửi lịch mở cửa hợp lệ cùng lúc xác nhận giờ mở cửa.',
+          code: 'INVALID_OPENING_HOURS',
+        },
         { status: 400 }
       );
     }

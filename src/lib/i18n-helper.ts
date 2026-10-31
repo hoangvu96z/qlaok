@@ -221,6 +221,14 @@ export function parseScheduleTime(value: unknown): number | null {
   return h * 60 + m;
 }
 
+const OPENING_HOURS_TIME_24H_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+export function isValidOpeningHoursTime(value: unknown): value is string {
+  return (
+    typeof value === 'string' && OPENING_HOURS_TIME_24H_REGEX.test(value)
+  );
+}
+
 /**
  * Resolve the weekday index (0=Sun) and minutes since midnight of `now`
  * in the given IANA timezone. Falls back to the default shop timezone and
@@ -282,6 +290,7 @@ export function checkShopOpenStatus(
 ): {
   isOpen: boolean;
   todaySchedule: { open: string; close: string; closed: boolean };
+  todayScheduleValid: boolean;
 } {
   const now = options.now ?? new Date();
   const { dayIndex, minutes } = getZonedWeekdayAndMinutes(
@@ -291,7 +300,11 @@ export function checkShopOpenStatus(
   const fallbackSchedule = { open: '08:00', close: '22:00', closed: false };
 
   if (!openingHours || typeof openingHours !== 'object') {
-    return { isOpen: true, todaySchedule: fallbackSchedule };
+    return {
+      isOpen: true,
+      todaySchedule: fallbackSchedule,
+      todayScheduleValid: true,
+    };
   }
 
   const todayKey = OPENING_DAY_KEYS[dayIndex];
@@ -304,18 +317,28 @@ export function checkShopOpenStatus(
     const yOpen = parseScheduleTime(yesterday.open);
     const yClose = parseScheduleTime(yesterday.close);
     if (yOpen !== null && yClose !== null && yClose < yOpen && minutes <= yClose) {
+      const todaySchedule = today
+        ? { open: today.open, close: today.close, closed: Boolean(today.closed) }
+        : fallbackSchedule;
       return {
         isOpen: true,
-        todaySchedule: today
-          ? { open: today.open, close: today.close, closed: Boolean(today.closed) }
-          : fallbackSchedule,
+        todaySchedule,
+        todayScheduleValid:
+          !today ||
+          Boolean(today.closed) ||
+          (isValidOpeningHoursTime(today.open) &&
+            isValidOpeningHoursTime(today.close)),
       };
     }
   }
 
   if (!today) {
     // No schedule configured for today → fail open
-    return { isOpen: true, todaySchedule: fallbackSchedule };
+    return {
+      isOpen: true,
+      todaySchedule: fallbackSchedule,
+      todayScheduleValid: true,
+    };
   }
 
   const todaySchedule = {
@@ -325,25 +348,25 @@ export function checkShopOpenStatus(
   };
 
   if (today.closed) {
-    return { isOpen: false, todaySchedule };
+    return { isOpen: false, todaySchedule, todayScheduleValid: true };
   }
 
   const openMins = parseScheduleTime(today.open);
   const closeMins = parseScheduleTime(today.close);
   if (openMins === null || closeMins === null) {
     // Unparseable schedule → fail open
-    return { isOpen: true, todaySchedule };
+    return { isOpen: true, todaySchedule, todayScheduleValid: false };
   }
 
   if (openMins === closeMins) {
-    return { isOpen: true, todaySchedule };
+    return { isOpen: true, todaySchedule, todayScheduleValid: true };
   }
 
   const isOpen =
     closeMins > openMins
       ? minutes >= openMins && minutes <= closeMins
       : minutes >= openMins; // overnight: open until midnight, tail handled above
-  return { isOpen, todaySchedule };
+  return { isOpen, todaySchedule, todayScheduleValid: true };
 }
 
 export interface UiLabelSet {

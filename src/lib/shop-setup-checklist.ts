@@ -1,4 +1,5 @@
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
+import { isValidOpeningHoursTime } from '@/lib/i18n-helper';
 import type { OpeningHours, Shop } from '@/types/qlaok';
 
 export type ShopSetupChecklistStepId =
@@ -115,6 +116,129 @@ export function hasConfirmedOpeningHours(
 export interface OpeningHoursSettingsState {
   openingHours: OpeningHours | null;
   openingHoursConfirmed: boolean;
+}
+
+export const OPENING_HOURS_DAY_KEYS: ReadonlyArray<keyof OpeningHours> = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+];
+
+const OPENING_HOURS_DAY_KEY_SET = new Set<string>(OPENING_HOURS_DAY_KEYS);
+const OPENING_HOURS_SCHEDULE_KEY_SET = new Set<string>([
+  'open',
+  'close',
+  'closed',
+]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+export type ValidateOpeningHoursResult =
+  | {
+      valid: true;
+      openingHours: OpeningHours | null;
+    }
+  | {
+      valid: false;
+      code: 'INVALID_OPENING_HOURS';
+      error: string;
+    };
+
+export function validateOpeningHoursInput(
+  raw: unknown
+): ValidateOpeningHoursResult {
+  if (raw === null) {
+    return { valid: true, openingHours: null };
+  }
+
+  if (!isPlainRecord(raw)) {
+    return {
+      valid: false,
+      code: 'INVALID_OPENING_HOURS',
+      error:
+        'INVALID_OPENING_HOURS: Cấu hình giờ mở cửa (opening_hours) phải là object lịch tuần hoặc null.',
+    };
+  }
+
+  const normalized: Partial<OpeningHours> = {};
+
+  for (const dayKey of Object.keys(raw)) {
+    if (!OPENING_HOURS_DAY_KEY_SET.has(dayKey)) {
+      return {
+        valid: false,
+        code: 'INVALID_OPENING_HOURS',
+        error: `INVALID_OPENING_HOURS: Khóa ngày "${dayKey}" không hợp lệ (chỉ chấp nhận mon, tue, wed, thu, fri, sat, sun).`,
+      };
+    }
+
+    const daySchedule = raw[dayKey];
+    if (!isPlainRecord(daySchedule)) {
+      return {
+        valid: false,
+        code: 'INVALID_OPENING_HOURS',
+        error: `INVALID_OPENING_HOURS: Lịch ngày "${dayKey}" phải là object gồm open, close (HH:mm) và closed (boolean).`,
+      };
+    }
+
+    for (const fieldKey of Object.keys(daySchedule)) {
+      if (!OPENING_HOURS_SCHEDULE_KEY_SET.has(fieldKey)) {
+        return {
+          valid: false,
+          code: 'INVALID_OPENING_HOURS',
+          error: `INVALID_OPENING_HOURS: Trường "${fieldKey}" trong lịch ngày "${dayKey}" không hợp lệ.`,
+        };
+      }
+    }
+
+    const { open, close, closed } = daySchedule;
+    if (typeof closed !== 'boolean') {
+      return {
+        valid: false,
+        code: 'INVALID_OPENING_HOURS',
+        error: `INVALID_OPENING_HOURS: Trạng thái nghỉ (closed) của ngày "${dayKey}" phải là kiểu boolean.`,
+      };
+    }
+
+    let normalizedOpen: string;
+    let normalizedClose: string;
+    if (closed) {
+      normalizedOpen = isValidOpeningHoursTime(open) ? open : '';
+      normalizedClose = isValidOpeningHoursTime(close) ? close : '';
+    } else if (
+      isValidOpeningHoursTime(open) &&
+      isValidOpeningHoursTime(close)
+    ) {
+      normalizedOpen = open;
+      normalizedClose = close;
+    } else {
+      return {
+        valid: false,
+        code: 'INVALID_OPENING_HOURS',
+        error: `INVALID_OPENING_HOURS: Giờ mở/đóng cửa của ngày "${dayKey}" phải đúng định dạng HH:mm (00:00–23:59).`,
+      };
+    }
+
+    normalized[dayKey as keyof OpeningHours] = {
+      open: normalizedOpen,
+      close: normalizedClose,
+      closed,
+    };
+  }
+
+  return {
+    valid: true,
+    openingHours: normalized as OpeningHours,
+  };
 }
 
 export function createInitialOpeningHoursSettingsState(

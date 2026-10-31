@@ -285,7 +285,7 @@ export default function StorefrontDoorPage() {
             />
             {openStatus.isOpen ? labels.openNow : labels.closedNow}
           </span>
-          {!openStatus.todaySchedule.closed && (
+          {!openStatus.todaySchedule.closed && openStatus.todayScheduleValid && (
             <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-xs">
               <Clock className="inline h-3 w-3 mr-1 -mt-0.5" />
               {openStatus.todaySchedule.open} – {openStatus.todaySchedule.close}
