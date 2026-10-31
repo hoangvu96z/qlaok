@@ -6,6 +6,8 @@
 **Phạm vi:** 141 file TS/TSX (~97.572 dòng `src`), 21 route handler, 24 file migration SQL (`001`–`023` + `002z`), `mobile/src` (29 file), `scripts/`, `supabase/self-hosted/`, CI workflow, 69 file test. **Vòng này phủ thêm ba tầng trước đây chưa rà sâu:** tầng UI/component (`src/components/dashboard/*`, `src/app/(dashboard)/**`), i18n (`src/lib/i18n-helper.ts` + chuỗi hardcode), và toàn bộ app mobile (`mobile/App.tsx`, `mobile/src/**`).
 **Trạng thái làm việc khi rà:** cây làm việc có WIP chưa commit (thêm `src/lib/auth-email.ts`, `src/lib/auth-email-templates.ts`, sửa `zitadel-login-ui.ts`, `login-ui/route.ts`, 2 file test). Các kết luận dưới đây phản ánh **đúng trạng thái đĩa tại thời điểm rà**.
 
+> **Trạng thái hiện tại — 2026-11-01:** các mục 1–10 dưới đây là snapshot ngày 27/10. Theo follow-up, P1-2–P1-7 và P2-10 đã được xử lý; backup timer đã tự chạy và tạo archive thành công (mục 128). P1-1 đã sạch ở source nhưng key lịch sử chưa có bằng chứng thu hồi từ provider (mục 127). Những việc còn mở gồm xác minh ảnh legacy Supabase HTTP 402 trước khi remap, kiểm tra shop Basic/Premium thật khi có fixture, credentials/build push native, và các thao tác ghi storefront bị giới hạn nên chưa chạy trên production (mục 108, 106, 129).
+
 ---
 
 ## 1. Kết luận tổng quát
@@ -735,7 +737,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 
 **Claude CLI:** đã gọi trực tiếp theo yêu cầu, không liệt kê model. CLI hiện cấu hình backend DeepSeek; dù có in cảnh báo `unrecognized_model`, nó vẫn tiếp tục chạy và tạo nhiều tool event/thay đổi. Đã dừng sau 361 lượt khi tiếp tục quét và khởi chạy lại kiểm tra mà không kết thúc; không có bản tổng kết cuối từ CLI. Các thay đổi còn lại được Codex đọc lại, sửa lỗi regression tìm thấy và xác minh độc lập bằng các lệnh trên; không xem lời khẳng định chưa kiểm chứng của CLI là bằng chứng.
 
-**Còn cần thao tác ngoài source:** rotate key gateway AI đã từng nằm trong git history; cài systemd backup timer trên VPS; cấu hình credentials APNs/FCM và tạo EAS build để xác minh push thật. EAS project đã được link ở mục 106. Lúc chạy các check local chưa migrate/deploy production; kết quả lần push sau được ghi ở mục 12. `P3-7` vẫn là khuyến nghị kiến trúc; `P3-26` đã đóng bằng cách xóa helper mobile chết và cập nhật test/docs; `P3-29` là kết luận không đúng với renderer storefront hiện tại, như đã giải thích ở trên.
+**Còn cần thao tác ngoài source:** rotate key gateway AI đã từng nằm trong git history; cấu hình credentials APNs/FCM và tạo EAS build để xác minh push thật. Timer backup PostgreSQL đã được cài và chu kỳ tự chạy được xác minh ở mục 128. EAS project đã được link ở mục 106. Lúc chạy các check local chưa migrate/deploy production; kết quả lần push sau được ghi ở mục 12. `P3-7` vẫn là khuyến nghị kiến trúc; `P3-26` đã đóng bằng cách xóa helper mobile chết và cập nhật test/docs; `P3-29` là kết luận không đúng với renderer storefront hiện tại, như đã giải thích ở trên.
 
 ## 11. Follow-up QA danh mục (2026-10-28)
 
@@ -1405,9 +1407,9 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **AGY:** implementation `gemini-4-argon-medium`, run `2026-10-30T19-23-06-074Z-8bcb839b`; follow-up metadata sau review Codex, conversation tiếp nối `594931d3-c0c4-43f2-b994-81b25ce3f037`, run `2026-10-30T19-25-51-907Z-e5182542`. AGY chạy test installer; Codex tự đọc diff và phát hiện/đóng hồi quy quyền file.
 - **CodeGraph:** `codegraph status`; `codegraph sync`; `codegraph explore "installSelfHostedPostgresBackup installUnit checkCommand repeated install timerUnitChanged"`; `codegraph explore "installUnit checkCommand installSelfHostedPostgresBackup root ownership metadata test unchanged install"`; `codegraph node scripts/install-self-hosted-postgres-backup.mjs`; `codegraph node tests/install-self-hosted-postgres-backup.test.mjs`. Phạm vi: systemd unit installer, trạng thái timer, regression tests và runbook backup.
 - **Checks Codex:** `npm run test:backup` **26/26 PASS**; `npm run typecheck` PASS; ESLint hai file JS PASS; `git diff --check` PASS. Trước thay đổi installer, `npm run test:unit` cũng pass **141/141**.
-- **Chưa xác minh:** chưa quan sát lần timer tự chạy kế tiếp dự kiến 1/11. Restore drill archive production vào PostgreSQL tạm đã hoàn tất và có caveat về logical replication tại mục 96.
+- **Đóng follow-up timer tại mục 128:** đã quan sát chu kỳ tự chạy ngày 1/11 thành công. Restore drill archive production vào PostgreSQL tạm đã hoàn tất và có caveat về logical replication tại mục 96.
 
-- Deploy commit `f6402e9b0687f9a623af8096bd9d01659ea8f684` qua Actions run `41115585565` kết thúc `success` cả verify và deploy. Production đang chạy đúng SHA; `/api/health` và `/` HTTP 200. Timer giữ nguyên `active` + `enabled` và `NextElapseUSecRealtime=2026-11-01 03:19:21 CST`, trùng mốc đọc trước deploy; lần chạy tự động kế tiếp vẫn cần quan sát.
+- Deploy commit `f6402e9b0687f9a623af8096bd9d01659ea8f684` qua Actions run `41115585565` kết thúc `success` cả verify và deploy. Production đang chạy đúng SHA; `/api/health` và `/` HTTP 200. Timer giữ nguyên `active` + `enabled` và `NextElapseUSecRealtime=2026-11-01 03:19:21 CST`, trùng mốc đọc trước deploy; chu kỳ sau mốc đó được xác minh thành công ở mục 128.
 
 ## 86. Đóng P2-10/P2-13: bỏ backup `.local-db` thừa và credential owner chết (2026-10-31)
 
@@ -1415,7 +1417,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **P2-13:** source hiện không còn writer `auth-credentials.json` hoặc `INITIAL_SUPER_ADMIN_PASSWORD`; tạo owner dùng hồ sơ lời mời Zitadel. `hashPassword` vẫn được dùng cho credentials nhân viên, không phải owner/admin. Test `tests/admin-review.test.ts` xác nhận biến password Super Admin cũ bị bỏ qua và không tạo file credential ở fixture. Không đọc, xóa hoặc kiểm tra nội dung `.local-db` production; nếu còn file credential lịch sử thì trạng thái tồn tại/quyền/cleanup chưa được xác minh.
 - **CodeGraph:** `codegraph explore ".github/workflows/deploy.yml .local-db backup restore deploy copy /tmp rollback"`; `codegraph explore "tests/e2e-safety.test.mjs deploy workflow .local-db backup restore /tmp secret local db regression"`; `codegraph node tests/e2e-safety.test.mjs`; `codegraph node src/lib/auth-credentials.ts`; `codegraph explore "hashPassword verifyPassword auth-credentials admin create_owner owner password credentials"`; `codegraph node tests/admin-review.test.ts --offset 780 --limit 55`. Workflow YAML được đọc trực tiếp vì là config chưa được CodeGraph index.
 - **Checks:** `node --test tests/e2e-safety.test.mjs` **4/4 PASS**; `npm run test:unit` **142/142 PASS**; `git diff --check` PASS.
-- **Còn mở:** cần kiểm tra timer tự chạy tại kỳ tiếp theo; restore production backup vào database tạm vẫn cần chấp thuận riêng.
+- **Trạng thái:** follow-up timer đã đóng tại mục 128; restore drill đã hoàn tất ở mục 96 và còn caveat logical replication được ghi tại đó.
 
 ## 87. Đối chiếu P3 mobile: push, membership, OIDC, catalog và lỗi đăng nhập (2026-10-31)
 
@@ -1454,7 +1456,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - Production có 32 migration records; migration mới nhất là `20261030000300_admin_owner_invitation_claims.sql`. Codex tính SHA-256 trên 32 migration file hiện có và so sánh trong bộ nhớ với history production: **32/32 khớp**, 0 file thiếu, 0 record dư và 0 checksum mismatch.
 - **CodeGraph:** `codegraph status`; `codegraph explore "scripts/migrate-self-hosted.mjs migration schema_migrations table applied_at version connection configuration"`; `codegraph explore "readLocalMigrations planMigrations migration checksum mismatch"`. Phạm vi: `readMigrationHistory`, `checksumSql`, `readLocalMigrations` và `planMigrations`.
 - **Checks:** SSH chỉ đọc trả đúng production migration history; verify/deploy GitHub Actions run `41119914312` success trên SHA `14345a709ab908aa54fea2922e4f7f70bdc661a8`; VPS HEAD khớp SHA; `/api/health` và `/` HTTP 200; PostgreSQL backup timer `active` + `enabled`.
-- **Còn mở:** lịch chạy tự động tiếp theo là `2026-11-01 03:19:21 CST`; chưa có evidence timer tự chạy tại kỳ này. Restore drill archive đã hoàn tất tại mục 96; logical replication cần cấu hình riêng nếu có consumer phụ thuộc.
+- **Trạng thái:** follow-up chu kỳ tự chạy đã đóng tại mục 128. Restore drill archive đã hoàn tất tại mục 96; logical replication cần cấu hình riêng nếu có consumer phụ thuộc.
 
 ## 91. Xác minh độc lập giới hạn gói và storefront QA (2026-10-31)
 
@@ -1507,7 +1509,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Restore drill:** tạo database PostgreSQL tạm có tên riêng, restore với `pg_restore --exit-on-error --no-owner --no-acl`, rồi chỉ kiểm tra metadata schema: có 22 bảng `public` và đủ ba bảng lõi `shops`, `orders`, `schema_migrations`. Database tạm được drop và xác nhận không còn. Không đọc/in row khách hàng và không sửa database `qlaok`.
 - **Caveat được phát hiện:** `pg_restore` thành công nhưng cảnh báo `wal_level is insufficient to publish logical changes`. Production đang `wal_level=replica`; publication `supabase_realtime` liệt kê `public.orders` và `public.table_service_requests`, nhưng PostgreSQL không có logical replication slot và VPS không chạy Supabase Realtime service. CodeGraph xác nhận luồng order hiện tại dùng PostgreSQL `LISTEN/NOTIFY` → SSE; mobile cũng dùng authenticated SSE, còn POS recovery dùng `BroadcastChannel`. Không thấy consumer logical replication trong các luồng app đã kiểm tra. Vì vậy restore dữ liệu/schema đã thành công, nhưng chưa chứng minh publication có thể phục vụ consumer logical-replication; nếu khôi phục dịch vụ phụ thuộc publication thì phải cấu hình `wal_level=logical` trên target và kiểm tra lại sau restart.
 - **CodeGraph:** `codegraph explore "OrderEventsBroker Postgres LISTEN NOTIFY SSE order events database realtime publication logical replication"`; `codegraph node OrderEventsBroker`; `codegraph node attachUpstream`; `codegraph explore "subscribePosRecoveryChanges PosCounterWorkspace Supabase realtime channel postgres_changes"`; `codegraph explore "source code usages supabase.channel postgres_changes on postgres_changes client-side realtime"`; `codegraph node mobile/tests/shop-realtime-orders.test.ts --offset 68 --limit 30`. Phạm vi: order event broker, mobile order SSE, POS local recovery channel và các subscription client.
-- **Còn mở:** chưa đến giờ chạy tự động tiếp theo `2026-11-01 03:19:21 CST`; cần đối chiếu timer sau mốc đó. Restore drill không bao gồm `.local-db`, cấu hình VPS hoặc Garage object storage. Logical replication được ghi rõ là chưa xác minh/không bật trên production; không thay đổi PostgreSQL config hay publication trong lượt này.
+- **Trạng thái:** follow-up chu kỳ tự chạy đã đóng tại mục 128. Restore drill không bao gồm `.local-db`, cấu hình VPS hoặc Garage object storage. Logical replication được ghi rõ là chưa xác minh/không bật trên production; không thay đổi PostgreSQL config hay publication trong lượt này.
 
 ## 97. Vá Next.js audit findings trên production dependency tree (2026-10-31)
 
@@ -1518,7 +1520,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Follow-up dependency security (2026-10-31):** thêm override hẹp `exceljs.uuid: ^11.1.1` và `postcss-selector-parser: ^6.1.5`, giữ `exceljs@4.4.0` và `tailwindcss@3.4.19`; lockfile thay đúng hai gói bắc cầu. `uuid@11.1.1` vá [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq); ExcelJS chỉ gọi `uuid.v4()`, còn advisory ảnh hưởng `v3/v5/v6`. Parser `6.1.5` vá [GHSA-rj75-hqrm-r3gf](https://github.com/advisories/GHSA-rj75-hqrm-r3gf); dependency này chỉ nằm trong Tailwind/PostCSS build tooling. Không đổi app source hay mobile dependencies.
 - **Checks AGY + Codex:** npm 11.19.1 lockfile generation, `npm ci --dry-run`, `npm ci`, `npm ls exceljs uuid postcss-selector-parser --all`, full `npm audit` (**0 vulnerabilities**), `npm audit --omit=dev` (**0 vulnerabilities**), XLSX CommonJS smoke với ZIP signature, `npm run test:unit` **142/142**, `npm run typecheck`, `npm run build` (**41/41** trang) và `git diff --check` đều pass. Build giữ các warning lint hiện có; không có lỗi.
 - **Kiểm thử E2E:** AGY thử `npm test`, wrapper chạy `test:unit` rồi `test:e2e` và kết thúc nonzero; không dùng kết quả này làm bằng chứng pass. Codex chạy `test:unit` riêng thành công; workflow sau push sẽ kiểm tra lại E2E trên PostgreSQL disposable và build trước deploy.
-- **Còn mở trong review:** hai npm audit findings đã được xử lý ở dependency tree hiện tại. Các mục vận hành độc lập như lần auto-run kế tiếp của backup timer và credentials/build EAS để kiểm push thật vẫn mở ở các mục tương ứng; project ID đã link ở mục 106.
+- **Còn mở trong review:** hai npm audit findings đã được xử lý ở dependency tree hiện tại. Follow-up auto-run backup timer đã đóng tại mục 128; credentials/build EAS để kiểm push thật vẫn mở ở mục 106. Project ID đã link ở mục 106.
 
 ## 98. Production QA chỉ đọc: owner dashboard và GET APIs (2026-10-31)
 
@@ -1744,7 +1746,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Kết nối:** SSH read-only tới VPS với `StrictHostKeyChecking=yes`, dùng host key `vunph.click` đã lưu qua hostname origin `auth.vunph.click`; không dùng private key từng được dán trong chat. Apex `vunph.click` hiện phân giải ra Cloudflare, nên SSH tới apex trả `No route to host`; hostname `auth` phân giải trực tiếp tới origin.
 - **Chu kỳ tự chạy:** `systemctl list-timers --all` báo `qlaok-postgres-backup.timer` `enabled` và `active`; lần trigger gần nhất **2026-10-31 03:21:33 CST**, lịch kế tiếp **2026-11-01 03:15:17 CST**. Đây là lần service được kích hoạt bởi timer, không phải lệnh Codex start service.
 - **Kết quả lần gần nhất:** `systemctl show qlaok-postgres-backup.service` trả `Result=success`, `ExecMainStatus=0`, start `03:21:33` và exit `03:21:34 CST`. Journal ghi backup archive được verify: `qlaok-postgres-20261030T192133Z.dump`, **319589 bytes**; service hoàn tất thành công. Không đọc hoặc tải nội dung archive, không truy vấn hay sửa database.
-- **Phạm vi kết luận:** đã xác minh một lần timer định kỳ tự kích hoạt và tạo archive hợp lệ; chu kỳ kế tiếp `2026-11-01 03:15:17 CST` còn ở tương lai tại thời điểm kiểm tra. Giữ follow-up cho tới khi đối chiếu journal và service result sau mốc đó.
+- **Phạm vi kết luận tại thời điểm ghi:** chu kỳ kế tiếp `2026-11-01 03:15:17 CST` còn ở tương lai. Đã đối chiếu chu kỳ đó và đóng follow-up tại mục 128.
 - **CodeGraph:** `codegraph status`; `codegraph explore "runSelfHostedPostgresBackup self-hosted PostgreSQL systemd timer backup installer deployment"`. Phạm vi: backup helper, installer, service/timer và workflow deploy; không sửa source hoặc cấu hình VPS.
 - **Kiểm tra:** SSH host-key strict; `systemctl list-timers`, `systemctl is-enabled`, `systemctl is-active`, `systemctl show` và journal theo timestamp đều là truy vấn chỉ đọc. Không chạy test/build vì chỉ cập nhật tài liệu.
 
@@ -1782,3 +1784,30 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Kết quả:** CLI in cảnh báo `unrecognized_model` cho alias `deepseek`, sau đó trả `OK` và thoát mã `0`. Vì vậy cảnh báo alias không đồng nghĩa request thất bại; lần gọi này xác nhận Claude Code CLI hoạt động qua gateway DeepSeek. Ảnh TUI cũng hiển thị `deepseek · API Usage Billing`.
 - **Đính chính ghi chú mục 118:** lần gọi mới trả `OK` với exit code `0` dù gateway vẫn in cùng cảnh báo alias. Vì vậy cảnh báo `unrecognized_model` trước đó không đủ để kết luận chỉ interactive TUI gọi được; lỗi cũ hiện không tái hiện bằng smoke command này.
 - **Phạm vi:** smoke prompt không chứa dữ liệu repo hoặc bí mật; không gọi model catalog, không sửa source, không chạy test/build.
+
+## 127. Claude CLI peer review: trạng thái P1-1 key gateway AI (2026-11-01)
+
+- Claude Code CLI qua gateway DeepSeek được hỏi độc lập về finding P1-1. Lượt review rộng hơn không trả output trong 5 phút 31 giây nên đã dừng và không tính là review hoàn tất; prompt hẹp tiếp theo trả kết luận rõ ràng.
+- **Kết luận peer review:** đóng phần sửa source vì `src/lib/gemini.ts` chỉ đọc `AI_API_KEY` từ environment, không có key fallback và fail closed khi thiếu cấu hình; giữ rủi ro lộ credential mở cho tới khi admin provider xác nhận key lịch sử đã bị thu hồi.
+- **Còn cần bằng chứng ngoài repo:** key thay thế phải là credential mới và chỉ nằm trong secret store phía server/CI; rà usage/billing trong khoảng key bị lộ; quyết định có cần xử lý git history và bật secret scanning/push protection. Không đọc giá trị secret, không gọi provider admin, không sửa lịch sử Git.
+- Không có thay đổi source hoặc production trong lượt peer review.
+
+## 128. P2-11: xác minh timer backup PostgreSQL tự chạy ngày 1/11 (2026-11-01)
+
+- **Kết nối:** SSH chỉ đọc tới origin IP `43.128.116.69`, `HostKeyAlias=vunph.click`, `StrictHostKeyChecking=yes`, `BatchMode=yes`; không dùng private key từng được dán trong chat. Không đọc file credential hoặc nội dung archive.
+- **Chu kỳ timer:** `qlaok-postgres-backup.timer` đang `active`; `LastTriggerUSec=2026-11-01 03:15:17 CST`, lần kế tiếp `2026-11-02 03:18:39 CST`. Journal ghi systemd tự khởi chạy `qlaok-postgres-backup.service` lúc `03:15:17`, hoàn tất `03:15:18 CST`.
+- **Kết quả archive:** service có `Result=success`, `ExecMainStatus=0`; journal xác nhận archive `qlaok-postgres-20261031T191517Z.dump` được verify, **319961 bytes**. Không chạy backup thủ công, không mở/tải archive, không truy vấn hay thay đổi database.
+- **Kết luận:** đã xác minh thêm một chu kỳ timer định kỳ tự kích hoạt và archive được kiểm thành công. Follow-up chờ lần chạy tự động ở mục 85, 90, 96 và 122 được đóng; restore drill trước đó vẫn có caveat về logical replication tại mục 96.
+- **Kiểm tra:** `systemctl list-timers`, `systemctl show`, và `journalctl` qua SSH strict host-key chỉ đọc. Không sửa source, cấu hình VPS, schema hoặc dữ liệu; không chạy test/build.
+
+## 129. QR Cửa: bổ sung ma trận QA tính năng và API còn thiếu (2026-11-01)
+
+- **Phạm vi:** mở rộng báo cáo baseline 27 ca ở mục 125. Lượt này thêm 17 ca cho QR Cửa và API public; API production chỉ dùng cùng-origin `GET`, redirects bị từ chối. Analytics `POST` được fulfill bằng HTTP 204 giả lập trong Chrome; mọi request ghi khác và mọi origin ngoài đều bị chặn.
+- **AGY Flash:** Gemini 3.8 Flash Medium, run `2026-10-31T21-03-12-356Z-2442517c`, conversation `7d0b00d8-adb8-4ea2-99ad-63e300172a30`, `SUCCESS`. AGY đọc CodeGraph trước source, kiểm safety harness và chạy lại ma trận.
+- **Codex kiểm chứng độc lập:** rà script và guard, sửa nhãn assertion chữ ký sai để thể hiện `invalidSignatureRejected`, bổ sung exit code khác 0 nếu có assertion FAIL, rồi tự chạy script. `node -c` PASS; `node --test .agy-runs/qa/storefront-home-qa-safety.test.cjs` **6/6 PASS**; `node .agy-runs/qa/storefront-home-extended-qa-2026-11-01.cjs` **17 PASS, 0 FAIL, 3 UNVERIFIED**, exit 0. AGY Flash chạy lại cùng ma trận và xác nhận đúng **17/0/3**.
+- **API:** kiểm tra shop không tồn tại (404), chữ ký QR bàn sai (`tableQrVerified=false`), catalog/tables shop không tồn tại (404), posts shop không tồn tại (mảng rỗng), và thiếu `shopId` ở catalog/tables (400). Năm GET baseline của shop QA gồm shop, menu view, catalog, tables và posts đều trả 200/đúng shape; phản hồi shop public không lộ owner ID hoặc secret.
+- **Tính năng QR Cửa:** alias slug chuyển về slug chính và giữ query; CTA cho F&B/service/retail; lịch mở qua nửa đêm kiểm bằng đồng hồ giả lập cố định tại thứ Hai 21:00 mở, thứ Ba 00:30 còn mở, và 02:01 đã đóng; chuyển các locale còn lại `ja/zh/es/it/ru` (vi/en/ko đã có ở baseline); clipboard voucher thành công/thất bại; scan analytics chỉ phát một lần khi điều hướng lại.
+- **CodeGraph:** `codegraph status`; `codegraph node checkShopOpenStatus`; `codegraph callers checkShopOpenStatus`; `codegraph query verifyTableQrSignature`; `codegraph node verifyTableQrSignature`; `codegraph callers verifyTableQrSignature`; khám phá GET `/api/shops` và các API catalog/tables/posts. Ảnh hưởng được kiểm: QR Cửa, `/api/shops`, `/api/catalog`, `/api/tables`, `/api/posts` và harness QA; không sửa source/API/schema.
+- **Bảo vệ production:** không dùng credentials; không có mutation production. Các thay đổi harness/báo cáo chi tiết nằm trong `.agy-runs/qa/` bị Git ignore; chỉ lưu số liệu đã khử dữ liệu tại đây.
+- **Chưa xác minh:** `PATCH /api/shops` để lưu settings/alias, `POST /api/orders` checkout, và payment webhook không được gửi tới production. Locale/gói Premium dùng fixture RAM; QA shop thật hiện chỉ gói Free. Ảnh bên thứ ba và thao tác trên thiết bị iOS/Android thật cũng chưa nằm trong lần chạy này.
+- **Handoff:** AGY report `.agy-runs/qa/storefront-home-extended-qa-2026-11-01.md`; Codex xác nhận các metrics sau khi chạy lại. Không có commit source hoặc migration trong phần QA.
