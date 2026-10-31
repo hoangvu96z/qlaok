@@ -5,6 +5,7 @@ import {
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
 import type { AnalyticsEventType, SupportedLocale } from '@/types/qlaok';
+import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { requireShopPermission } from '@/lib/server-auth';
 
 const ANALYTICS_RATE_WINDOW_MS = 60_000;
@@ -17,7 +18,7 @@ const ANALYTICS_EVENT_TYPES = new Set<AnalyticsEventType>([
   'show_to_staff',
   'wifi_copy',
 ]);
-const ANALYTICS_LOCALES = new Set<SupportedLocale>(['vi', 'en', 'ko', 'ja', 'zh']);
+const ANALYTICS_LOCALES = new Set<SupportedLocale>(ALL_LOCALES);
 const analyticsRateBuckets = new Map<string, number[]>();
 
 function getSafeAnalyticsErrorCode(error: unknown): string {
