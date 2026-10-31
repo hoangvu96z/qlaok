@@ -2062,53 +2062,21 @@ export async function dbRecordAnalyticsEvent(params: {
 }): Promise<AnalyticsEvent> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
-
-  const { data: shop, error: shopError } = await sb
-    .from('shops')
-    .select('id, is_published')
-    .eq('id', params.shop_id)
-    .maybeSingle();
-  if (shopError) throw new Error('ANALYTICS_SHOP_LOOKUP_FAILED', { cause: shopError });
-  if (!shop || shop.is_published === false) {
-    throw new Error('SHOP_NOT_TRACKABLE');
-  }
-
-  const itemId = params.item_id?.trim() || null;
-  if (params.event_type === 'item_view') {
-    if (!itemId) throw new Error('ITEM_NOT_IN_SHOP');
-    const { data: item, error: itemError } = await sb
-      .from('items')
-      .select('id')
-      .eq('id', itemId)
-      .eq('shop_id', params.shop_id)
-      .maybeSingle();
-    if (itemError) throw new Error('ANALYTICS_ITEM_LOOKUP_FAILED', { cause: itemError });
-    if (!item) throw new Error('ITEM_NOT_IN_SHOP');
-  }
-
-  const { data, error } = await sb
-    .from('analytics_events')
-    .insert({
-      shop_id: params.shop_id,
-      event_type: params.event_type,
-      item_id: itemId,
-      visitor_lang: params.visitor_lang || 'vi',
-      user_agent: params.user_agent || 'unknown',
-    })
-    .select('*')
-    .single();
+  const itemId =
+    params.event_type === 'item_view'
+      ? params.item_id?.trim() || null
+      : null;
+  const { data, error } = await sb.rpc('record_analytics_event_atomic', {
+    p_shop_id: params.shop_id,
+    p_event_type: params.event_type,
+    p_item_id: itemId,
+    p_visitor_lang: params.visitor_lang || 'vi',
+    p_user_agent: params.user_agent || 'unknown',
+  });
 
   if (error) throw new Error(error.message);
-  if (params.event_type === 'item_view' && itemId) {
-    const { error: incrementError } = await sb.rpc(
-      'increment_item_view_count',
-      { p_shop_id: params.shop_id, p_item_id: itemId }
-    );
-    if (incrementError) {
-      throw new Error('ANALYTICS_VIEW_COUNT_UPDATE_FAILED', {
-        cause: incrementError,
-      });
-    }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('ANALYTICS_RECORD_FAILED');
   }
   return data as AnalyticsEvent;
 }

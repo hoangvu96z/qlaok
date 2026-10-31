@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   dbGetShopAnalyticsSummary,
@@ -7,10 +6,10 @@ import {
 import type { AnalyticsEventType, SupportedLocale } from '@/types/qlaok';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { requireShopPermission } from '@/lib/server-auth';
+import { createAnalyticsRateLimiter } from '@/lib/analytics-rate-limit';
 
-const ANALYTICS_RATE_WINDOW_MS = 60_000;
-const ANALYTICS_RATE_MAX = 120;
-const ANALYTICS_RATE_MAX_BUCKETS = 5000;
+export const runtime = 'nodejs';
+
 const ANALYTICS_EVENT_TYPES = new Set<AnalyticsEventType>([
   'scan_door',
   'scan_table',
@@ -19,7 +18,7 @@ const ANALYTICS_EVENT_TYPES = new Set<AnalyticsEventType>([
   'wifi_copy',
 ]);
 const ANALYTICS_LOCALES = new Set<SupportedLocale>(ALL_LOCALES);
-const analyticsRateBuckets = new Map<string, number[]>();
+const consumeAnalyticsRateLimit = createAnalyticsRateLimiter();
 
 function getSafeAnalyticsErrorCode(error: unknown): string {
   if (!error || typeof error !== 'object' || !('code' in error)) {
@@ -29,30 +28,6 @@ function getSafeAnalyticsErrorCode(error: unknown): string {
   return typeof code === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(code)
     ? code
     : 'INTERNAL_ERROR';
-}
-
-function consumeAnalyticsRateLimit(req: Request, shopId: string): number | null {
-  const forwardedFor = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  const address = req.headers.get('x-real-ip')?.trim() || forwardedFor || 'unknown';
-  const bucketKey = crypto
-    .createHash('sha256')
-    .update(`${shopId}:${address}`)
-    .digest('hex');
-  const now = Date.now();
-  const current = (analyticsRateBuckets.get(bucketKey) || []).filter(
-    (timestamp) => now - timestamp < ANALYTICS_RATE_WINDOW_MS
-  );
-  if (current.length >= ANALYTICS_RATE_MAX) {
-    analyticsRateBuckets.set(bucketKey, current);
-    return Math.max(1, Math.ceil((current[0] + ANALYTICS_RATE_WINDOW_MS - now) / 1000));
-  }
-  if (!analyticsRateBuckets.has(bucketKey) && analyticsRateBuckets.size >= ANALYTICS_RATE_MAX_BUCKETS) {
-    const oldestKey = analyticsRateBuckets.keys().next().value;
-    if (oldestKey) analyticsRateBuckets.delete(oldestKey);
-  }
-  current.push(now);
-  analyticsRateBuckets.set(bucketKey, current);
-  return null;
 }
 
 export async function GET(req: Request) {
@@ -104,7 +79,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const retryAfterSeconds = consumeAnalyticsRateLimit(req, shop_id);
+    const retryAfterSeconds = consumeAnalyticsRateLimit(req);
     if (retryAfterSeconds !== null) {
       return NextResponse.json(
         { error: 'Analytics rate limit exceeded', code: 'RATE_LIMITED' },
@@ -112,7 +87,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const userAgent = req.headers.get('user-agent') || 'unknown';
+    const userAgent = (req.headers.get('user-agent') || 'unknown').slice(0, 512);
     const event = await dbRecordAnalyticsEvent({
       shop_id,
       event_type,
