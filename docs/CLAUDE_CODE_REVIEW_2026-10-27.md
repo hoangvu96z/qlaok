@@ -1811,3 +1811,23 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Bảo vệ production:** không dùng credentials; không có mutation production. Các thay đổi harness/báo cáo chi tiết nằm trong `.agy-runs/qa/` bị Git ignore; chỉ lưu số liệu đã khử dữ liệu tại đây.
 - **Chưa xác minh:** `PATCH /api/shops` để lưu settings/alias, `POST /api/orders` checkout, và payment webhook không được gửi tới production. Locale/gói Premium dùng fixture RAM; QA shop thật hiện chỉ gói Free. Ảnh bên thứ ba và thao tác trên thiết bị iOS/Android thật cũng chưa nằm trong lần chạy này.
 - **Handoff:** AGY report `.agy-runs/qa/storefront-home-extended-qa-2026-11-01.md`; Codex xác nhận các metrics sau khi chạy lại. Không có commit source hoặc migration trong phần QA.
+
+## 130. Đóng finding P3-21: xác nhận logic origin đặt lại mật khẩu đã hợp nhất và bổ sung regression test (2026-11-01)
+
+- **Trạng thái finding P3-21:** Finding P3-21 ghi nhận tại snapshot ngày 27/10/2026 về sự phân kỳ giữa hai bản sao hàm resolve origin (`resolveTrustedQlaokEmailOrigin` trong `src/lib/auth-email-templates.ts` và `resolvePasswordResetQlaokOrigin` trong `src/lib/zitadel-login-ui.ts`). Đối chiếu thực tế mã nguồn hiện tại xác nhận hàm `resolvePasswordResetQlaokOrigin` đã được tinh giản thành wrapper ủy quyền trực tiếp sang `resolveTrustedQlaokEmailOrigin` (`src/lib/auth-email-templates.ts:58-130`), loại bỏ hoàn toàn sự trùng lặp và phân kỳ logic giữa hai file. Mã nguồn production không cần sửa đổi thêm.
+- **Phạm vi kiểm thử hồi quy mới (`tests/password-reset-origin-review.test.ts`):**
+  - Bổ sung bộ kiểm thử tập trung cho wrapper xuất khẩu `buildZitadelPasswordResetUrlTemplate` (`src/lib/zitadel-login-ui.ts:1972`).
+  - **Môi trường phát triển (development):** Caller origin `http://localhost:3000` được chuẩn hóa và phân giải về origin `webRedirectUri` tin cậy từ cấu hình (`https://preview.qlaok.vn`).
+  - **Môi trường sản xuất (production):** Caller origin không tin cậy (`https://attacker-origin.example.com`) và caller `webRedirectUri` không thể ghi đè `process.env.ZITADEL_REDIRECT_URI`; với env trỏ tới fixture khác fallback (`https://configured.qlaok.test`), template trả đúng fixture đã cấu hình.
+  - **Fallback trong production:** Khi `process.env.ZITADEL_REDIRECT_URI` không hợp lệ (URL sai cú pháp, giao thức ngoài http/https, chứa user/pass), bị thiếu, hoặc trỏ trùng với origin của issuer (`process.env.ZITADEL_ISSUER_URL`), helper trả về origin mặc định `https://qlaok.vunph.click`. Các test xác nhận cụ thể host fallback trùng với host Qlaok đang dùng.
+  - **Bảo toàn môi trường:** Mỗi ca lưu các giá trị ban đầu của `NODE_ENV`, `ZITADEL_REDIRECT_URI`, `ZITADEL_ISSUER_URL`, rồi khôi phục giá trị hoặc xóa key trong khối `finally`. Resolver đọc `NODE_ENV` và redirect URI khi được gọi; test thay đổi env trước mỗi lần gọi.
+- **Ánh xạ số ca:** Node test runner báo 4 pass gồm một test cha và ba subtest; subtest thứ ba kiểm tra năm biến thể fallback (URL sai, protocol không hợp lệ, embedded credentials, redirect trùng issuer, và redirect bị thiếu).
+- **Kết quả kiểm thử:**
+  - Loader trực tiếp: `node --experimental-strip-types --import ./tests/register-ts.mjs --import ./tests/tsx-review-loader.mjs --test tests/password-reset-origin-review.test.ts` chạy **4/4 PASS** (0 fail).
+  - Review test runner: `npm run test:review` chạy **408/408 PASS** (0 fail).
+  - Typecheck: `npm run typecheck` thành công (`tsc --noEmit --incremental false`, exit 0).
+  - Linter: `npx eslint tests/password-reset-origin-review.test.ts` đạt 0 error, 0 warning.
+- **Peer review:** Claude Code CLI qua gateway DeepSeek review toàn bộ diff gồm test mới và phụ lục; sau khi sửa các điểm về phân biệt env/fallback, path callback và phạm vi test, phản hồi cuối là `NO FINDINGS`.
+- **Ranh giới & an toàn:**
+  - Không sửa mã nguồn production, không thay đổi schema/migration SQL, không sửa cấu hình `.env` hay secret.
+  - Finding gốc P3-21 trong bảng mục 4 được giữ nguyên làm snapshot lịch sử đánh giá ngày 27/10/2026.
