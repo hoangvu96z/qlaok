@@ -1778,3 +1778,10 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Browser/API QA sau deploy:** report đã khử dữ liệu `.agy-runs/qa/storefront-home-full-qa-2026-11-01.md`: **27/27 PASS, 0 FAIL, 0 UNVERIFIED**. Năm GET API storefront trả HTTP 200 và đúng shape; shop response không lộ `owner_id` hoặc secret. Ba viewport QR Cửa không tràn ngang; giới hạn ngôn ngữ Free/Premium và lưu qua reload, bốn theme, lịch mở cửa, Wi-Fi copy/failure, liên hệ, promotion/popup, post active/pinned, gallery 2 cột và fallback ảnh lỗi đều đạt.
 - **An toàn:** `example.invalid` bị guard từ chối trước DNS/network; analytics POST được fulfill tại browser bằng synthetic 204; mọi origin khác bị chặn. Chỉ gọi GET API cùng origin; không có business mutation, không dùng credential và không lưu raw shop/customer data.
 - **Giới hạn:** promo/theme/locale/gallery variants dùng fixture RAM và chỉ đọc production. Request ảnh bên ngoài bị guard chặn; chưa xác minh ảnh third-party hoặc rendering trên thiết bị iOS/Android thật.
+
+## 126. Xác minh lại Claude Code CLI qua gateway DeepSeek (2026-11-01)
+
+- **Lệnh kiểm tra:** `claude -p 'Reply exactly OK' --output-format text`.
+- **Kết quả:** CLI in cảnh báo `unrecognized_model` cho alias `deepseek`, sau đó trả `OK` và thoát mã `0`. Vì vậy cảnh báo alias không đồng nghĩa request thất bại; lần gọi này xác nhận Claude Code CLI hoạt động qua gateway DeepSeek. Ảnh TUI cũng hiển thị `deepseek · API Usage Billing`.
+- **Đính chính ghi chú mục 118:** lần gọi mới trả `OK` với exit code `0` dù gateway vẫn in cùng cảnh báo alias. Vì vậy cảnh báo `unrecognized_model` trước đó không đủ để kết luận chỉ interactive TUI gọi được; lỗi cũ hiện không tái hiện bằng smoke command này.
+- **Phạm vi:** smoke prompt không chứa dữ liệu repo hoặc bí mật; không gọi model catalog, không sửa source, không chạy test/build.
