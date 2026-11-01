@@ -2107,3 +2107,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **AGY Flash Low:** run thực thi browser `2026-11-01T11-17-12-066Z-ed2e1469`, `SUCCESS`, 0 file tracked changes; trả cùng status/count với Codex. CodeGraph status/query/node được AGY thực hiện tại run `2026-11-01T11-13-48-142Z-c5ab0d1d`.
 - **Claude Code CLI:** khởi chạy trực tiếp `claude --permission-mode plan`; TUI xác nhận `deepseek · API Usage Billing`, nhưng phiên review không trả verdict trước khi dừng nên không tính là peer review được chấp thuận.
 - **Giới hạn và bước tiếp:** shop fixture chỉ có một ảnh Qlaok-origin hoạt động. Cần truy vấn chỉ đọc đúng catalog QA có URL Supabase lỗi, sau đó xác minh object và checksum trên Garage; không đổi URL hoặc dữ liệu theo suy đoán.
+
+## 157. Production QA follow-up: báo giá storefront dùng giá server (2026-11-01)
+
+- **Phạm vi:** shop QA `test-shop-1`; GET storefront menu, GET catalog, sau đó POST `/api/orders` với `action: "quote"` cho một món đang bán, không có option bắt buộc. Không gọi checkout hay tạo order.
+- **CodeGraph:** `codegraph status`; `codegraph explore "POST /api/orders action quote quoteOrderPricing computeSharedOrderQuote read-only no order write"`; `codegraph node src/app/api/orders/route.ts --offset 295 --limit 110`; `codegraph node quoteOrderPricing`; `codegraph node computeSharedOrderQuote`; `codegraph node src/app/api/catalog/route.ts --offset 175 --limit 90`. Nhánh quote chỉ đọc membership/catalog, tính giá và trả response trước các nhánh có ghi order.
+- **AGY Flash Low:** run `2026-11-01T11-29-10-934Z-60d06d14`, `SUCCESS`, 0 tracked changes. GET storefront **200**, GET catalog **200**, POST quote **200**; có item phù hợp, schema quote hợp lệ, unit price khớp catalog, subtotal khớp unit price và total nằm trong subtotal. Report không lưu giá, tên hoặc ID.
+- **Codex kiểm chứng độc lập:** chạy lại cùng script QA, nhận cùng ba status **200** và tất cả boolean kiểm tra giá đều `true`.
+- **Giới hạn:** chỉ xác minh một món không có options; không thử mã giảm giá, flash sale, tồn kho đồng thời hoặc các nhánh tạo/thu tiền order.
