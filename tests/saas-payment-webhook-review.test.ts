@@ -7,6 +7,7 @@ import {
   isSuccessfulPayOSWebhook,
   verifySaasPaymentWebhookAuthentication,
 } from '@/lib/saas-payment-webhook';
+import { setSupabaseDbClientForTests } from '@/lib/db';
 
 const TEST_CHECKSUM_KEY = 'local-only-payos-checksum-test-key';
 
@@ -15,7 +16,12 @@ function signPayOSData(data: Record<string, unknown>, secret: string) {
     .sort()
     .map((key) => {
       const value = data[key];
-      return `${key}=${value === null || value === undefined ? '' : String(value)}`;
+      const emptyValue =
+        value === null ||
+        value === undefined ||
+        value === 'null' ||
+        value === 'undefined';
+      return `${key}=${emptyValue ? '' : String(value)}`;
     })
     .join('&');
   return crypto.createHmac('sha256', secret).update(canonical).digest('hex');
@@ -47,6 +53,95 @@ function makePayOSBody(
   };
 }
 
+function createBillingWebhookTestClient() {
+  const profile: Record<string, unknown> = {
+    id: 'qa-owner',
+    plan: 'free',
+  };
+  const transaction: Record<string, unknown> = {
+    id: 'qa-payment-tx',
+    user_id: 'qa-owner',
+    order_code: 'QLAOKB12345',
+    amount: 99000,
+    status: 'pending',
+    created_at: '2026-11-01T00:00:00.000Z',
+  };
+  const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+  type QueryBuilder = {
+    select(columns?: string): QueryBuilder;
+    eq(column: string, value: unknown): QueryBuilder;
+    ilike(column: string, value: unknown): QueryBuilder;
+    limit(count?: number): Promise<{ data: unknown[]; error: null }>;
+    maybeSingle(): Promise<{
+      data: Record<string, unknown> | null;
+      error: null;
+    }>;
+    order(
+      column: string,
+      options?: { ascending?: boolean }
+    ): Promise<{ data: Record<string, unknown>[]; error: null }>;
+  };
+
+  const client = {
+    from(table: string): QueryBuilder {
+      const filters = new Map<string, unknown>();
+      const builder: QueryBuilder = {
+        select() {
+          return builder;
+        },
+        eq(column, value) {
+          filters.set(column, value);
+          return builder;
+        },
+        ilike(column, value) {
+          filters.set(column, value);
+          return builder;
+        },
+        async limit() {
+          assert.equal(table, 'shops');
+          return { data: [{ id: 'qa-shop' }], error: null };
+        },
+        async maybeSingle() {
+          if (
+            table === 'payment_transactions' &&
+            filters.get('order_code') === 'QLAOKB12345'
+          ) {
+            return { data: transaction, error: null };
+          }
+          if (table === 'profiles' && filters.get('id') === 'qa-owner') {
+            return { data: profile, error: null };
+          }
+          return { data: null, error: null };
+        },
+        async order() {
+          return {
+            data:
+              table === 'payment_transactions' &&
+              filters.get('user_id') === 'qa-owner'
+                ? [transaction]
+                : [],
+            error: null,
+          };
+        },
+      };
+      return builder;
+    },
+    async rpc(name: string, args: Record<string, unknown>) {
+      rpcCalls.push({ name, args });
+      transaction.status = 'completed';
+      transaction.bank_ref_id = args.p_bank_ref_id;
+      profile.plan = 'premium';
+      return {
+        data: { status: 'completed', owner_id: 'qa-owner' },
+        error: null,
+      };
+    },
+  };
+
+  return { client, rpcCalls };
+}
+
 function makeRequest(headers?: HeadersInit) {
   return new Request('https://qlaok.example/api/webhooks/payment', {
     method: 'POST',
@@ -70,6 +165,90 @@ test('PayOS envelope verifies its signed data and exposes the nested payment pay
     ),
     { valid: true }
   );
+});
+
+test('PayOS canonicalization maps null values and null-like strings to empty strings', () => {
+  const body = makePayOSBody({}, {
+    bankName: null,
+    bankNumber: 'null',
+    payerName: 'undefined',
+  });
+
+  assert.deepEqual(
+    verifySaasPaymentWebhookAuthentication(
+      makeRequest(),
+      JSON.stringify(body),
+      body,
+      TEST_CHECKSUM_KEY
+    ),
+    { valid: true }
+  );
+});
+
+test('valid PayOS payment webhook completes billing through the atomic DB RPC', async () => {
+  const envKeys = [
+    'PAYMENT_WEBHOOK_SECRET',
+    'SAAS_BANK_ACCOUNTS',
+    'SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'QLAOK_DATABASE_URL',
+    'PAYMENT_DEV_SIMULATE',
+  ];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
+  process.env.SAAS_BANK_ACCOUNTS = '["1234567890"]';
+
+  const { client, rpcCalls } = createBillingWebhookTestClient();
+  setSupabaseDbClientForTests(client);
+
+  try {
+    const { POST } = await import('@/app/api/webhooks/payment/route');
+    const body = makePayOSBody({}, {
+      description: 'Thanh toan QLAOKB12345',
+      accountNumber: '1234567890',
+      reference: 'bank-ref-qa-1',
+    });
+    const response = await POST(
+      new Request('https://qlaok.example/api/webhooks/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+    const responseBody = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.success, true);
+    assert.equal(responseBody.alreadyCompleted, false);
+    assert.equal(responseBody.profile.id, 'qa-owner');
+    assert.equal(responseBody.profile.plan, 'premium');
+    assert.equal(responseBody.transactions[0].status, 'completed');
+    assert.equal(responseBody.transactions[0].bank_ref_id, 'bank-ref-qa-1');
+    assert.deepEqual(rpcCalls, [
+      {
+        name: 'complete_payment_webhook_atomic',
+        args: {
+          p_order_code: 'QLAOKB12345',
+          p_bank_ref_id: 'bank-ref-qa-1',
+          p_verified_transfer_amount: 99000,
+          p_allow_unverified_amount: false,
+        },
+      },
+    ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    for (const key of envKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('invalid or missing PayOS signature cannot fall back to a valid API key header', () => {
