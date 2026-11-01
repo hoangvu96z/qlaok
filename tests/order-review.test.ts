@@ -1667,13 +1667,65 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(itemDepleted.rows[0]?.sold_count, 5);
     assert.equal(itemDepleted.rows[0]?.is_available, false);
 
-    // 5. Guest order tracking requires x-tracking-token; fulfillment completion never marks an unpaid order paid
+    // 5. Guest order tracking requires x-tracking-token header (no query-string fallback) and timing-safe compare;
+    //    guest PATCH self-edit enforces timing-safe token validation without affecting status/payment/inventory;
+    //    fulfillment completion never marks an unpaid order paid
     const unauthTrackRes = await getOrdersRoute(
       new Request(
         `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}`
       )
     );
     assert.equal(unauthTrackRes.status, 403);
+    const unauthTrackBodyText = JSON.stringify(await unauthTrackRes.json());
+    assert.equal(
+      unauthTrackBodyText.includes(createdQrOrder.tracking_token),
+      false
+    );
+
+    const queryOnlyTrackRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}&trackingToken=${encodeURIComponent(createdQrOrder.tracking_token)}`
+      )
+    );
+    assert.equal(
+      queryOnlyTrackRes.status,
+      403,
+      'GET /api/orders must reject query-string trackingToken when x-tracking-token header is absent'
+    );
+    const queryOnlyTrackBodyText = JSON.stringify(
+      await queryOnlyTrackRes.json()
+    );
+    assert.equal(
+      queryOnlyTrackBodyText.includes(createdQrOrder.tracking_token),
+      false
+    );
+
+    const flippedLastChar =
+      createdQrOrder.tracking_token.slice(-1) === 'a' ? 'b' : 'a';
+    const sameLengthWrongToken = `${createdQrOrder.tracking_token.slice(0, -1)}${flippedLastChar}`;
+
+    for (const wrongHeaderToken of [
+      'wrong-short-token',
+      sameLengthWrongToken,
+    ]) {
+      const wrongHeaderTrackRes = await getOrdersRoute(
+        new Request(
+          `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}`,
+          {
+            headers: { 'x-tracking-token': wrongHeaderToken },
+          }
+        )
+      );
+      assert.equal(wrongHeaderTrackRes.status, 403);
+      const wrongHeaderBodyText = JSON.stringify(
+        await wrongHeaderTrackRes.json()
+      );
+      assert.equal(
+        wrongHeaderBodyText.includes(createdQrOrder.tracking_token),
+        false
+      );
+      assert.equal(wrongHeaderBodyText.includes(wrongHeaderToken), false);
+    }
 
     const validTrackRes = await getOrdersRoute(
       new Request(
@@ -1687,12 +1739,130 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     const validTrackJson = await validTrackRes.json();
     assert.equal(validTrackJson.order.id, createdQrOrder.id);
     assert.equal(validTrackJson.order.tracking_token, undefined);
+    assert.equal('tracking_token' in validTrackJson.order, false);
+    assert.equal(
+      JSON.stringify(validTrackJson).includes(createdQrOrder.tracking_token),
+      false
+    );
 
     const staffFulfillToken = issueSessionToken({
       id: 'staff-qa-fulfill',
       email: 'staff-fulfill@test.local',
       role: 'staff',
     });
+
+    // Authenticated shop member with orders.view retains authorization precedence even without/with mismatched x-tracking-token
+    const memberOrderViewRes = await getOrdersRoute(
+      new Request(
+        `http://localhost/api/orders?orderId=${encodeURIComponent(createdQrOrder.id)}`,
+        {
+          headers: {
+            cookie: `${SESSION_COOKIE_NAME}=${staffFulfillToken}`,
+            'x-tracking-token': 'ignored-for-authenticated-member',
+          },
+        }
+      )
+    );
+    assert.equal(memberOrderViewRes.status, 200);
+    const memberOrderViewJson = await memberOrderViewRes.json();
+    assert.equal(memberOrderViewJson.order.id, createdQrOrder.id);
+    assert.equal(memberOrderViewJson.membership?.role, 'staff');
+
+    // Guest PATCH with wrong token (different length, same char length wrong value, multi-byte UTF-8 same char length, or wrong header) is forbidden
+    const multiByteSameCharLengthToken = `${createdQrOrder.tracking_token.slice(0, -1)}đ`;
+    for (const wrongPatchReq of [
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          trackingToken: 'wrong-short-token',
+          customer_note: 'Không được phép ghi',
+        }),
+      }),
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          tracking_token: sameLengthWrongToken,
+          customer_note: 'Không được phép ghi',
+        }),
+      }),
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          trackingToken: multiByteSameCharLengthToken,
+          customer_note: 'Không được phép ghi',
+        }),
+      }),
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tracking-token': sameLengthWrongToken,
+        },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          customer_note: 'Không được phép ghi',
+        }),
+      }),
+    ]) {
+      const wrongPatchRes = await patchOrdersRoute(wrongPatchReq);
+      assert.equal(wrongPatchRes.status, 403);
+      const wrongPatchJson = await wrongPatchRes.json();
+      assert.equal(wrongPatchJson.code, 'INVALID_TRACKING_TOKEN');
+      assert.equal(
+        JSON.stringify(wrongPatchJson).includes(createdQrOrder.tracking_token),
+        false
+      );
+    }
+
+    // Guest PATCH with correct token updates customer_note while status, payment_status, and inventory stay unchanged
+    const validGuestPatchRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tracking-token': createdQrOrder.tracking_token,
+        },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          customer_note: 'Ít hành, thêm chanh',
+        }),
+      })
+    );
+    assert.equal(validGuestPatchRes.status, 200);
+    const validGuestPatchJson = await validGuestPatchRes.json();
+    assert.equal(validGuestPatchJson.order.id, createdQrOrder.id);
+    assert.equal(
+      validGuestPatchJson.order.customer_note,
+      'Ít hành, thêm chanh'
+    );
+    assert.equal(validGuestPatchJson.order.status, 'new');
+    assert.equal(validGuestPatchJson.order.payment_status, 'unpaid');
+    assert.equal(validGuestPatchJson.order.total_amount, 140000);
+    assert.equal(validGuestPatchJson.order.tracking_token, undefined);
+    assert.equal('tracking_token' in validGuestPatchJson.order, false);
+    assert.equal(
+      JSON.stringify(validGuestPatchJson).includes(
+        createdQrOrder.tracking_token
+      ),
+      false
+    );
+
+    const itemAfterGuestNotePatch = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.equal(itemAfterGuestNotePatch.rows[0]?.stock_quantity, 0);
+    assert.equal(itemAfterGuestNotePatch.rows[0]?.sold_count, 5);
+    assert.equal(itemAfterGuestNotePatch.rows[0]?.is_available, false);
     const prepRes = await patchOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'PATCH',

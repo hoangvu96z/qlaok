@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   buildScopedPosWebIdempotencyKey,
@@ -67,6 +67,24 @@ function buildTableBillAuditId(shopId: string, idempotencyKey?: string): string 
   return `settle-${digest}`;
 }
 
+function isValidTrackingTokenMatch(
+  supplied: unknown,
+  expected: unknown
+): boolean {
+  if (typeof supplied !== 'string' || typeof expected !== 'string') {
+    return false;
+  }
+  if (supplied.length === 0 || expected.length === 0) {
+    return false;
+  }
+  const suppliedBuffer = Buffer.from(supplied, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  if (suppliedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(suppliedBuffer, expectedBuffer);
+}
+
 function sanitizeCustomerOrderView(order: ShopOrder) {
   const {
     tracking_token: _t,
@@ -83,9 +101,7 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const orderId = searchParams.get('orderId');
-    const trackingToken =
-      searchParams.get('trackingToken') ||
-      req.headers.get('x-tracking-token');
+    const trackingToken = req.headers.get('x-tracking-token');
     const rawShopId = (searchParams.get('shopId') || '').trim();
     const shopId = rawShopId;
     const action = searchParams.get('action');
@@ -108,10 +124,8 @@ export async function GET(req: Request) {
         return NextResponse.json({ order, membership });
       }
 
-      // Customer order status tracker: require matching trackingToken when order has tracking_token
-      if (
-        !order.tracking_token || !trackingToken || trackingToken !== order.tracking_token
-      ) {
+      // Customer order status tracker: require matching x-tracking-token header when order has tracking_token
+      if (!isValidTrackingTokenMatch(trackingToken, order.tracking_token)) {
         return NextResponse.json(
           {
             error:
@@ -884,8 +898,10 @@ export async function PATCH(req: Request) {
     // Customer pre-acceptance self-edit/cancel flow via trackingToken (when not an authenticated shop member)
     if ((!membership || !membership.is_active) && resolvedTrackingToken) {
       if (
-        !existingOrder.tracking_token ||
-        resolvedTrackingToken !== existingOrder.tracking_token
+        !isValidTrackingTokenMatch(
+          resolvedTrackingToken,
+          existingOrder.tracking_token
+        )
       ) {
         return NextResponse.json(
           {

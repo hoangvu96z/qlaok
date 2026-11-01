@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { test } from 'node:test';
 import {
+  extractPayOSOrderCodeFromDescription,
   getSaasPaymentWebhookPayload,
   isPayOSWebhookEnvelope,
   isSuccessfulPayOSWebhook,
@@ -53,7 +54,7 @@ function makePayOSBody(
   };
 }
 
-function createBillingWebhookTestClient() {
+function createBillingWebhookTestClient(expectedOrderCode = 'QLAOKB12345') {
   const profile: Record<string, unknown> = {
     id: 'qa-owner',
     plan: 'free',
@@ -61,7 +62,7 @@ function createBillingWebhookTestClient() {
   const transaction: Record<string, unknown> = {
     id: 'qa-payment-tx',
     user_id: 'qa-owner',
-    order_code: 'QLAOKB12345',
+    order_code: expectedOrderCode,
     amount: 99000,
     status: 'pending',
     created_at: '2026-11-01T00:00:00.000Z',
@@ -105,7 +106,7 @@ function createBillingWebhookTestClient() {
         async maybeSingle() {
           if (
             table === 'payment_transactions' &&
-            filters.get('order_code') === 'QLAOKB12345'
+            filters.get('order_code') === expectedOrderCode
           ) {
             return { data: transaction, error: null };
           }
@@ -597,6 +598,195 @@ test('payment route does not mistake the PayOS numeric order ID for a Qlaok paym
     assert.equal(responseBody.code, 'PAYOS_NON_QLAOK_EVENT_IGNORED');
     assert.deepEqual(dbAccesses, []);
     assert.deepEqual(rpcCalls, []);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    for (const key of envKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('extractPayOSOrderCodeFromDescription accepts only standalone Basic/Premium 5-digit Qlaok codes', () => {
+  const validCases: Array<[string, string]> = [
+    ['QLAOKB12345', 'QLAOKB12345'],
+    ['QLAOKP67890', 'QLAOKP67890'],
+    ['Thanh toan QLAOKB12345', 'QLAOKB12345'],
+    ['Thanh toan goi Premium QLAOKP00123 ngay', 'QLAOKP00123'],
+    ['MBVCB.998877.QLAOKB54321.CT tu NGUYEN VAN A', 'QLAOKB54321'],
+    ['NAPAS-QLAOKP10000:ck', 'QLAOKP10000'],
+    ['(QLAOKB99999)', 'QLAOKB99999'],
+    ['thanh toan qlaokb12345', 'qlaokb12345'],
+    ['Nang cap QlaokP13579', 'QlaokP13579'],
+  ];
+
+  for (const [description, expected] of validCases) {
+    assert.equal(
+      extractPayOSOrderCodeFromDescription({ description }),
+      expected,
+      `expected "${description}" to extract "${expected}"`
+    );
+  }
+
+  const invalidDescriptions = [
+    '',
+    'VQRIO123',
+    'Thanh toan goi Premium',
+    'QLAOK',
+    'QLAOKB',
+    'QLAOKP',
+    'QLAOKTEST',
+    'QLAOK12345',
+    'QLAOKF12345',
+    'QLAOKX12345',
+    'QLAOKE12345',
+    'QLAOKBB12345',
+    'QLAOKBP12345',
+    'QLAOKB1',
+    'QLAOKB1234',
+    'QLAOKP1234',
+    'QLAOKB123456',
+    'QLAOKP123450',
+    'QLAOKB1234A',
+    'QLAOKP12A45',
+    'XQLAOKB12345',
+    '1QLAOKB12345',
+    'REF9QLAOKP12345',
+    'FOOQLAOKB12345BAR',
+    'QLAOKB12345X',
+    'Thanh toan QLAOKP12345extra',
+    'mãQLAOKB12345',
+    'ma\u0303QLAOKB12345',
+    'QLAOKB12345đ',
+  ];
+
+  for (const description of invalidDescriptions) {
+    assert.equal(
+      extractPayOSOrderCodeFromDescription({ description }),
+      null,
+      `expected "${description}" to be rejected`
+    );
+  }
+
+  assert.equal(extractPayOSOrderCodeFromDescription({}), null);
+  assert.equal(extractPayOSOrderCodeFromDescription({ description: null }), null);
+  assert.equal(
+    extractPayOSOrderCodeFromDescription({ description: 12345 }),
+    null
+  );
+});
+
+test('payment route ignores signed PayOS webhooks with embedded or malformed QLAOK candidates before DB or account checks', async () => {
+  const envKeys = [
+    'PAYMENT_WEBHOOK_SECRET',
+    'SAAS_BANK_ACCOUNTS',
+    'SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'QLAOK_DATABASE_URL',
+    'PAYMENT_DEV_SIMULATE',
+  ];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
+
+  const { client, dbAccesses, rpcCalls } =
+    createForbiddenBillingWebhookTestClient();
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const { POST } = await import('@/app/api/webhooks/payment/route');
+    for (const description of [
+      'FOOQLAOKB12345BAR',
+      'Thanh toan QLAOKB123456',
+      'Thanh toan QLAOKF12345',
+      'QLAOKTEST',
+    ]) {
+      const body = makePayOSBody({}, { description });
+      const response = await POST(
+        new Request('https://qlaok.example/api/webhooks/payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      );
+      const responseBody = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(responseBody.success, true);
+      assert.equal(responseBody.ignored, true);
+      assert.equal(responseBody.code, 'PAYOS_NON_QLAOK_EVENT_IGNORED');
+    }
+
+    assert.deepEqual(dbAccesses, []);
+    assert.deepEqual(rpcCalls, []);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    for (const key of envKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('valid signed PayOS webhook with case-insensitive standalone Premium order code completes billing unchanged', async () => {
+  const envKeys = [
+    'PAYMENT_WEBHOOK_SECRET',
+    'SAAS_BANK_ACCOUNTS',
+    'SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'QLAOK_DATABASE_URL',
+    'PAYMENT_DEV_SIMULATE',
+  ];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
+  process.env.SAAS_BANK_ACCOUNTS = '["1234567890"]';
+
+  const { client, rpcCalls } = createBillingWebhookTestClient('QLAOKP54321');
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const { POST } = await import('@/app/api/webhooks/payment/route');
+    const body = makePayOSBody({}, {
+      description: 'Nang cap goi qlaokp54321',
+      accountNumber: '1234567890',
+      reference: 'bank-ref-qa-premium',
+    });
+    const response = await POST(
+      new Request('https://qlaok.example/api/webhooks/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+    const responseBody = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.success, true);
+    assert.equal(responseBody.alreadyCompleted, false);
+    assert.deepEqual(rpcCalls, [
+      {
+        name: 'complete_payment_webhook_atomic',
+        args: {
+          p_order_code: 'QLAOKP54321',
+          p_bank_ref_id: 'bank-ref-qa-premium',
+          p_verified_transfer_amount: 99000,
+          p_allow_unverified_amount: false,
+        },
+      },
+    ]);
   } finally {
     setSupabaseDbClientForTests(null);
     for (const key of envKeys) {

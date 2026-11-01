@@ -164,11 +164,16 @@ export function isSuccessfulPayOSWebhook(body: unknown): boolean {
   );
 }
 
+const PAYOS_STANDALONE_ORDER_CODE_PATTERN =
+  /(?<![\p{L}\p{N}\p{M}])QLAOK[BP][0-9]{5}(?![\p{L}\p{N}\p{M}])/iu;
+
 export function extractPayOSOrderCodeFromDescription(
   data: Record<string, unknown>
 ): string | null {
-  if (typeof data.description !== 'string') {
+  if (!isRecord(data) || typeof data.description !== 'string') {
     return null;
   }
-  return data.description.match(/QLAOK[A-Z0-9]+/i)?.[0] || null;
+  return (
+    data.description.match(PAYOS_STANDALONE_ORDER_CODE_PATTERN)?.[0] || null
+  );
 }
