@@ -9,6 +9,57 @@ import {
 import { ItemDetailDrawer } from '../src/components/storefront/ItemDetailDrawer.tsx';
 import { VerticalRenderer } from '../src/components/storefront/VerticalRenderer.tsx';
 import { StorefrontFlashSaleSection } from '../src/components/storefront/StorefrontCustomDecor.tsx';
+import {
+  getAccessibleAccentTextColors,
+  getContrastRatio,
+  STOREFRONT_CARD_BACKGROUNDS,
+} from '../src/lib/theme-contrast.ts';
+
+const CONTRAST_TEST_ACCENT_COLORS = [
+  '#8b5cf6',
+  '#10b981',
+  '#ef4444',
+  '#fde047',
+  '#000000',
+];
+
+const contrastTestCategory = {
+  id: 'contrast-cat',
+  shop_id: 'contrast-shop',
+  name_i18n: { vi: 'Món thử' },
+  sort_order: 1,
+  is_active: true,
+};
+
+const contrastTestItem = {
+  id: 'contrast-item',
+  shop_id: 'contrast-shop',
+  category_id: contrastTestCategory.id,
+  sort_order: 1,
+  name_i18n: { vi: 'Giá thử tương phản' },
+  desc_i18n: { vi: '' },
+  options_json: [],
+  view_count: 0,
+  price: 12345,
+  image_url: null,
+  is_available: true,
+  is_featured: false,
+};
+
+function assertRenderedAccentVariants(html, colors) {
+  const priceElement = html.match(
+    /<[^>]*class="[^"]*storefront-accent-text[^"]*"[^>]*>/
+  )?.[0];
+  assert.ok(priceElement, 'Expected a storefront price element');
+  assert.ok(
+    priceElement.includes(`--storefront-accent-light:${colors.light}`),
+    `Expected the light price color ${colors.light} in the rendered style`
+  );
+  assert.ok(
+    priceElement.includes(`--storefront-accent-dark:${colors.dark}`),
+    `Expected the dark price color ${colors.dark} in the rendered style`
+  );
+}
 
 describe('Storefront Image Presentation Resilience', () => {
   it('maps business vertical to the correct fallback emoji', () => {
@@ -203,6 +254,52 @@ describe('Storefront Image Presentation Resilience', () => {
     assert.ok(!htmlNoImg.includes('h-52 w-full'));
     assert.ok(htmlNoImg.includes('Qlaok Smart Menu'));
     assert.ok(htmlNoImg.includes('aria-label="Đóng chi tiết món"'));
+  });
+
+  it('keeps every storefront price readable on light and dark card surfaces for user-selected colors', () => {
+    for (const primaryColor of CONTRAST_TEST_ACCENT_COLORS) {
+      const colors = getAccessibleAccentTextColors(primaryColor);
+      assert.ok(
+        getContrastRatio(colors.light, STOREFRONT_CARD_BACKGROUNDS.light) >= 4.5,
+        `${primaryColor} light price color ${colors.light} must reach WCAG AA`
+      );
+      assert.ok(
+        getContrastRatio(colors.dark, STOREFRONT_CARD_BACKGROUNDS.dark) >= 4.5,
+        `${primaryColor} dark price color ${colors.dark} must reach WCAG AA`
+      );
+
+      for (const vertical of ['fnb', 'service', 'retail']) {
+        for (const isDarkTheme of [false, true]) {
+          const html = renderToStaticMarkup(
+            React.createElement(VerticalRenderer, {
+              vertical,
+              categories: [contrastTestCategory],
+              items: [contrastTestItem],
+              locale: 'vi',
+              primaryColor,
+              isDarkTheme,
+              selectedCategoryId: 'all',
+              searchQuery: '',
+              onSelectItem: () => {},
+              onQuickAdd: () => {},
+            })
+          );
+          assertRenderedAccentVariants(html, colors);
+        }
+      }
+
+      const drawerHtml = renderToStaticMarkup(
+        React.createElement(ItemDetailDrawer, {
+          item: contrastTestItem,
+          vertical: 'fnb',
+          locale: 'vi',
+          primaryColor,
+          onClose: () => {},
+          onAddToCart: () => {},
+        })
+      );
+      assertRenderedAccentVariants(drawerHtml, colors);
+    }
   });
 
   it('VerticalRenderer uses StorefrontProductImage in 2-column grid and list views', () => {

@@ -10,7 +10,7 @@ import {
 } from '@/types/qlaok';
 import { formatCurrency, tField, UI_LABELS } from '@/lib/i18n-helper';
 import {
-  getAccessibleAccentTextColor,
+  getAccessibleAccentTextColors,
   getContrastTextColor,
 } from '@/lib/theme-contrast';
 import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
@@ -45,7 +45,11 @@ export function VerticalRenderer({
   onQuickAdd,
 }: VerticalRendererProps) {
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
-  const accentTextColor = getAccessibleAccentTextColor(primaryColor);
+  const accentTextColors = getAccessibleAccentTextColors(primaryColor);
+  const accentTextStyle = {
+    '--storefront-accent-light': accentTextColors.light,
+    '--storefront-accent-dark': accentTextColors.dark,
+  } as React.CSSProperties;
   const accentOnPrimaryColor = getContrastTextColor(primaryColor);
   const q = searchQuery.trim().toLowerCase();
   const useGridLayout = layoutMode === 'grid' || (layoutMode !== 'list' && vertical === 'retail');
@@ -189,8 +193,8 @@ export function VerticalRenderer({
 
                         <div className="pt-1 flex items-baseline gap-2">
                           <span
-                            className="text-sm font-extrabold"
-                            style={{ color: accentTextColor }}
+                            className="storefront-accent-text text-sm font-extrabold"
+                            style={accentTextStyle}
                           >
                             {formatCurrency(item.price, currency)}
                           </span>
@@ -282,8 +286,8 @@ export function VerticalRenderer({
 
                         <div className="text-right shrink-0 flex items-center gap-2">
                           <span
-                            className="text-sm font-extrabold"
-                            style={{ color: accentTextColor }}
+                            className="storefront-accent-text text-sm font-extrabold"
+                            style={accentTextStyle}
                           >
                             {formatCurrency(item.price, currency)}
                           </span>
@@ -424,8 +428,8 @@ export function VerticalRenderer({
                         <div className="flex items-center justify-between pt-1 pr-10">
                           <div>
                             <div
-                              className="text-sm font-extrabold"
-                              style={{ color: accentTextColor }}
+                              className="storefront-accent-text text-sm font-extrabold"
+                              style={accentTextStyle}
                             >
                               {formatCurrency(item.price, currency)}
                             </div>

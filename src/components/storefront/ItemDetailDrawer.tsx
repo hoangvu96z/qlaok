@@ -17,7 +17,7 @@ import {
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import {
-  getAccessibleAccentTextColor,
+  getAccessibleAccentTextColors,
   getContrastTextColor,
 } from '@/lib/theme-contrast';
 import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
@@ -48,7 +48,11 @@ export function ItemDetailDrawer({
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const quickTags = QUICK_TAGS_BY_VERTICAL[vertical] || [];
-  const accentTextColor = getAccessibleAccentTextColor(primaryColor);
+  const accentTextColors = getAccessibleAccentTextColors(primaryColor);
+  const accentTextStyle = {
+    '--storefront-accent-light': accentTextColors.light,
+    '--storefront-accent-dark': accentTextColors.dark,
+  } as React.CSSProperties;
   const accentOnPrimaryColor = getContrastTextColor(primaryColor);
 
   useEffect(() => {
@@ -190,8 +194,8 @@ export function ItemDetailDrawer({
                   </h3>
                   <div className="text-right shrink-0">
                     <div
-                      className="text-lg font-extrabold"
-                      style={{ color: accentTextColor }}
+                      className="storefront-accent-text text-lg font-extrabold"
+                      style={accentTextStyle}
                     >
                       {formatCurrency(item.price, currency)}
                     </div>

@@ -52,6 +52,14 @@ html.dark .text-slate-500:not(.qr-light-surface):not(.qr-light-surface *) {
   color: #94a3b8 !important;
 }
 
+/* Storefront prices preserve the shop's selected accent across both card surfaces. */
+.storefront-accent-text {
+  color: var(--storefront-accent-light);
+}
+html.dark .storefront-accent-text {
+  color: var(--storefront-accent-dark);
+}
+
 /* Ensure dark slate buttons/tabs inside dark cards remain clearly visible in Dark Mode */
 html.dark button.bg-slate-900,
 html.dark a.bg-slate-900 {

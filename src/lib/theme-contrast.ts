@@ -3,6 +3,12 @@
  * Complies with WCAG relative luminance calculations.
  */
 
+/** Matches the card surfaces used by the storefront's global light/dark theme. */
+export const STOREFRONT_CARD_BACKGROUNDS = {
+  light: '#ffffff',
+  dark: '#0f172a',
+} as const;
+
 export function parseRgb(color?: string | null): [number, number, number] | null {
   if (!color || typeof color !== 'string') return null;
   const trimmed = color.trim();
@@ -114,6 +120,26 @@ export function getAccessibleAccentTextColor(
         .padStart(2, '0')
     )
     .join('')}`;
+}
+
+/**
+ * Computes price text colors for the storefront's light and dark card surfaces.
+ * CSS selects the active value from the global theme so toggles update instantly.
+ */
+export function getAccessibleAccentTextColors(color?: string | null): {
+  light: string;
+  dark: string;
+} {
+  return {
+    light: getAccessibleAccentTextColor(
+      color,
+      STOREFRONT_CARD_BACKGROUNDS.light
+    ),
+    dark: getAccessibleAccentTextColor(
+      color,
+      STOREFRONT_CARD_BACKGROUNDS.dark
+    ),
+  };
 }
 
 /**
