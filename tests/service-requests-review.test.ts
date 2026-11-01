@@ -615,7 +615,14 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     );
     assert.equal(unauthPatch.status, 401);
 
-    // Missing shop_id on authenticated PATCH -> 400 MISSING_SHOP_ID before lookup
+    // Missing shop_id / shopId on GET & PATCH -> 400 MISSING_SHOP_ID before lookup
+    const missingShopGet = await getServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests')
+    );
+    assert.equal(missingShopGet.status, 400);
+    const missingShopGetData = await missingShopGet.json();
+    assert.equal(missingShopGetData.code, 'MISSING_SHOP_ID');
+
     const missingShopPatch = await patchServiceRequestsRoute(
       new Request('http://localhost/api/service-requests', {
         method: 'PATCH',

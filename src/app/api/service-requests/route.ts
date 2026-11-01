@@ -26,9 +26,22 @@ function extractErrorCode(message: string): string | undefined {
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const shopId =
-      (searchParams.get('shopId') || searchParams.get('shop_id') || '').trim() ||
-      'shop-fnb-001';
+    const shopId = (
+      searchParams.get('shopId') ||
+      searchParams.get('shop_id') ||
+      ''
+    ).trim();
+
+    if (!shopId) {
+      return NextResponse.json(
+        {
+          error: 'MISSING_SHOP_ID: Thiếu mã cửa hàng (shop_id).',
+          code: 'MISSING_SHOP_ID',
+        },
+        { status: 400 }
+      );
+    }
+
     const includeResolved =
       searchParams.get('includeResolved') === '1' ||
       searchParams.get('includeResolved') === 'true';
