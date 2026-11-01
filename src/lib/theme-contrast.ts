@@ -143,19 +143,16 @@ export function getAccessibleAccentTextColors(color?: string | null): {
 }
 
 /**
- * Returns true if a color has high relative luminance (is "light"),
- * meaning dark text/elements provide better contrast than white text.
- * Compare actual WCAG contrast ratios for slate-950 and white.
+ * Returns true when pure black has at least as much WCAG contrast as white.
+ * Use the same black endpoint in the rendered UI so it keeps the selected ratio.
  */
 export function isLightColor(color?: string | null): boolean {
-  const background = getHexLuminance(color);
-  const darkText = getHexLuminance('#020617');
-  return (background + 0.05) / (darkText + 0.05) >= 1.05 / (background + 0.05);
+  return getContrastRatio('#000000', color) >= getContrastRatio('#ffffff', color);
 }
 
 /**
- * Returns high-contrast text color ('#020617' or '#ffffff') for a given background color.
+ * Returns the stronger black or white text endpoint for a background color.
  */
 export function getContrastTextColor(color?: string | null): string {
-  return isLightColor(color) ? '#020617' : '#ffffff';
+  return isLightColor(color) ? '#000000' : '#ffffff';
 }

@@ -14,6 +14,10 @@ const storefrontDoorPageSource = readFileSync(
   new URL('../src/app/(storefront)/s/[slug]/page.tsx', import.meta.url),
   'utf8'
 );
+const storefrontMenuPageSource = readFileSync(
+  new URL('../src/app/(storefront)/s/[slug]/menu/page.tsx', import.meta.url),
+  'utf8'
+);
 
 test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() strings', () => {
   assert.deepEqual(parseRgb('#fff'), [255, 255, 255]);
@@ -28,12 +32,26 @@ test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() string
 });
 
 test('theme-contrast: chooses the stronger readable foreground for varied shop colors', () => {
-  for (const color of ['#f43f5e', '#ef4444', '#10b981', '#8b5cf6', '#fde047', '#ffffff', '#000000', '#654321', '#777777']) {
+  for (const color of ['#f43f5e', '#ef4444', '#10b981', '#8b5cf6', '#fde047', '#ffffff', '#000000', '#654321', '#767776', '#777777']) {
     const bg = getHexLuminance(color);
     const fg = getHexLuminance(getContrastTextColor(color));
     const ratio = (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05);
     assert.ok(ratio >= 4.5, `${color}: contrast ${ratio.toFixed(2)} is below 4.5`);
   }
+});
+
+test('theme-contrast: every grayscale background keeps an AA black/white endpoint', () => {
+  for (let channel = 0; channel <= 255; channel += 1) {
+    const value = channel.toString(16).padStart(2, '0');
+    const color = `#${value}${value}${value}`;
+    const foreground = getContrastTextColor(color);
+    assert.ok(
+      getContrastRatio(foreground, color) >= 4.5,
+      `${color} with ${foreground} is below WCAG AA`
+    );
+  }
+  assert.equal(getContrastTextColor('#767776'), '#000000');
+  assert.ok(getContrastRatio('#000000', '#767776') >= 4.5);
 });
 
 test('theme-contrast: adjusts accent text dynamically to meet surface contrast', () => {
@@ -75,8 +93,8 @@ test('theme-contrast: distinguishes light vs dark brand swatches accurately', ()
     );
     assert.equal(
       getContrastTextColor(hex),
-      '#020617',
-      `Expected ${hex} to require dark text (#020617)`
+      '#000000',
+      `Expected ${hex} to require dark text (#000000)`
     );
   }
 
@@ -107,7 +125,21 @@ test('theme-contrast: fallback behavior for invalid or missing colors', () => {
   assert.equal(isLightColor(null), true);
   assert.equal(isLightColor(''), true);
   assert.equal(isLightColor('not-a-color'), true);
-  assert.equal(getContrastTextColor(null), '#020617');
+  assert.equal(getContrastTextColor(null), '#000000');
+});
+
+test('storefront menu primary header renders the same black endpoint as the contrast helper', () => {
+  assert.match(storefrontMenuPageSource, /border-black\/10 text-black/);
+  assert.equal(
+    (storefrontMenuPageSource.match(/isLightPrimary\s*\?\s*'text-black'\s*:\s*'text-white'/g) || [])
+      .length,
+    6,
+    'shop name, back link, table labels and table hints must use the selected primary contrast endpoint'
+  );
+  assert.doesNotMatch(
+    storefrontMenuPageSource,
+    /isLightPrimary\s*\?\s*'text-slate-950'\s*:\s*'text-white'/
+  );
 });
 
 test('storefront door primary-color surfaces use a computed readable foreground', () => {

@@ -1027,7 +1027,7 @@ export default function StorefrontMenuPage() {
         style={{ backgroundColor: primaryColor }}
         className={`sticky top-0 z-30 shadow-xs backdrop-blur-md border-b transition-colors ${
           isLightPrimary
-            ? 'border-black/10 text-slate-950'
+            ? 'border-black/10 text-black'
             : 'border-white/15 text-white'
         }`}
       >
@@ -1049,14 +1049,14 @@ export default function StorefrontMenuPage() {
               <div className="min-w-0">
                 <h1
                   className={`truncate text-sm font-extrabold leading-tight ${
-                    isLightPrimary ? 'text-slate-950' : 'text-white'
+                    isLightPrimary ? 'text-black' : 'text-white'
                   }`}
                 >
                   {shop.name}
                 </h1>
                 <p
                   className={`truncate text-[11px] font-medium ${
-                    isLightPrimary ? 'text-slate-950' : 'text-white'
+                    isLightPrimary ? 'text-black' : 'text-white'
                   }`}
                 >
                   {labels.backToStore}
@@ -1102,7 +1102,7 @@ export default function StorefrontMenuPage() {
               <div className="flex items-center gap-1.5 min-w-0">
                 <span
                   className={`shrink-0 text-[11px] font-bold mr-0.5 ${
-                    isLightPrimary ? 'text-slate-950' : 'text-white'
+                    isLightPrimary ? 'text-black' : 'text-white'
                   }`}
                 >
                   {labels.tableSelectorLabel}
@@ -1120,7 +1120,7 @@ export default function StorefrontMenuPage() {
                 </span>
                 <span
                   className={`truncate text-[10px] font-medium ${
-                    isLightPrimary ? 'text-slate-950' : 'text-white'
+                    isLightPrimary ? 'text-black' : 'text-white'
                   }`}
                 >
                   {guestLabels.tableLockedHint}
@@ -1204,7 +1204,7 @@ export default function StorefrontMenuPage() {
           >
             <span
               className={`shrink-0 text-[11px] font-bold mr-0.5 ${
-                isLightPrimary ? 'text-slate-950' : 'text-white'
+                isLightPrimary ? 'text-black' : 'text-white'
               }`}
             >
               {labels.tableSelectorLabel}
@@ -1236,7 +1236,7 @@ export default function StorefrontMenuPage() {
             <span
               data-testid="menu-rescan-table-qr-hint"
               className={`truncate text-[10px] font-medium ${
-                isLightPrimary ? 'text-slate-950' : 'text-white'
+                isLightPrimary ? 'text-black' : 'text-white'
               }`}
             >
               {guestLabels.rescanTableQrHint}
