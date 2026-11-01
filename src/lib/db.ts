@@ -731,78 +731,20 @@ async function queryShopSlugAliasOwner(
   return inMemoryShopSlugAliases.get(normalized) ?? null;
 }
 
-async function recordShopSlugAlias(
-  sb: SupabaseClient | null,
+function syncInMemoryShopSlugAlias(
   shopId: string,
   previousSlug: string,
   nextSlug: string
-): Promise<void> {
+): void {
   const normalizedPrev = normalizeShopSlugValue(previousSlug);
   const normalizedNext = normalizeShopSlugValue(nextSlug);
   if (!shopId || !normalizedPrev || !normalizedNext || normalizedPrev === normalizedNext) {
     return;
   }
 
-  // If the shop is reverting to one of its own former slugs, remove that slug from aliases
+  // If the shop is reverting to one of its own former slugs, remove that slug from in-memory aliases
   if (inMemoryShopSlugAliases.get(normalizedNext) === shopId) {
     inMemoryShopSlugAliases.delete(normalizedNext);
-  }
-
-  if (sb) {
-    try {
-      const deleteTable = sb.from('shop_slug_aliases') as unknown as {
-        delete?: () => {
-          eq?: (
-            col: string,
-            val: string
-          ) => {
-            eq?: (
-              col2: string,
-              val2: string
-            ) => Promise<{ error?: { message?: string } | null }>;
-          } & PromiseLike<{ error?: { message?: string } | null }>;
-        };
-      };
-      const firstEq = deleteTable?.delete?.()?.eq?.('slug', normalizedNext);
-      if (firstEq) {
-        if (typeof firstEq.eq === 'function') {
-          await firstEq.eq('shop_id', shopId);
-        } else if (typeof (firstEq as PromiseLike<unknown>).then === 'function') {
-          await firstEq;
-        }
-      }
-    } catch (err) {
-      if (!isIgnorableSlugAliasTableError(err)) {
-        throw err;
-      }
-    }
-
-    try {
-      const upsertTable = sb.from('shop_slug_aliases') as unknown as {
-        upsert?: (
-          payload: Record<string, unknown>,
-          opts?: { onConflict?: string }
-        ) => Promise<{ error?: { message?: string } | null }>;
-      };
-      if (typeof upsertTable?.upsert === 'function') {
-        const nowIso = new Date().toISOString();
-        const res = await upsertTable.upsert(
-          {
-            slug: normalizedPrev,
-            shop_id: shopId,
-            updated_at: nowIso,
-          },
-          { onConflict: 'slug' }
-        );
-        if (res?.error && !isIgnorableSlugAliasTableError(res.error)) {
-          throw new Error(String(res.error.message || 'SLUG_ALIAS_PERSIST_FAILED'));
-        }
-      }
-    } catch (err) {
-      if (!isIgnorableSlugAliasTableError(err)) {
-        throw err;
-      }
-    }
   }
 
   inMemoryShopSlugAliases.set(normalizedPrev, shopId);
@@ -1302,7 +1244,7 @@ export async function dbUpdateShop(
   const updated = data as Shop;
 
   if (nextSlug && previousSlug && previousSlug !== nextSlug) {
-    await recordShopSlugAlias(sb, shopId, previousSlug, nextSlug);
+    syncInMemoryShopSlugAlias(shopId, previousSlug, nextSlug);
   }
 
   return {

@@ -7580,6 +7580,7 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
     ]);
 
     const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
+    let failAliasUpsert = false;
 
     const mockSupabase = {
       from(table: string) {
@@ -7654,8 +7655,32 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
                               error: { message: 'Shop not found' },
                             };
                           }
+                          const oldSlug =
+                            typeof existing.slug === 'string'
+                              ? existing.slug.trim().toLowerCase()
+                              : '';
+                          const newSlug =
+                            typeof patch.slug === 'string'
+                              ? patch.slug.trim().toLowerCase()
+                              : oldSlug;
                           const updated = { ...existing, ...patch };
                           shopsStore.set(idVal, updated);
+
+                          // Model migration 014 AFTER UPDATE trigger:
+                          // On a successful canonical slug change, remove the next slug from that shop's aliases
+                          // and insert the previous canonical slug into shop_slug_aliases.
+                          if (newSlug && oldSlug && newSlug !== oldSlug) {
+                            for (const [k, row] of aliasesStore.entries()) {
+                              if (row.slug === newSlug && row.shop_id === idVal) {
+                                aliasesStore.delete(k);
+                              }
+                            }
+                            aliasesStore.set(oldSlug, {
+                              slug: oldSlug,
+                              shop_id: idVal,
+                            });
+                          }
+
                           return { data: { ...updated }, error: null };
                         },
                       };
@@ -7707,6 +7732,15 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               return chain;
             },
             upsert: async (payload: { slug: string; shop_id: string }) => {
+              if (failAliasUpsert) {
+                return {
+                  data: null,
+                  error: {
+                    message:
+                      'FORBIDDEN_SHOP_SLUG_ALIAS_MUTATION: Không được phép chỉnh sửa trực tiếp bảng bí danh đường dẫn (shop_slug_aliases) từ phía client.',
+                  },
+                };
+              }
               aliasesStore.set(payload.slug, {
                 slug: payload.slug,
                 shop_id: payload.shop_id,
@@ -8000,6 +8034,87 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
         200,
         'Super Admin must resolve unpublished shop via alias'
       );
+
+      // 8. Regression scenario: application-level alias upsert would fail if called,
+      // proving rename still returns 200 while canonical slug and prior alias are present due to trigger behavior.
+      failAliasUpsert = true;
+      const regressionRenameRes = await shopsPatch(
+        new Request('http://localhost:3000/api/shops', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerAToken}`,
+          },
+          body: JSON.stringify({
+            id: shopAId,
+            slug: 'pho-co-hoi-an-v4',
+            is_published: true,
+          }),
+        })
+      );
+      assert.equal(
+        regressionRenameRes.status,
+        200,
+        'Rename must return 200 even if application-level alias upsert would fail'
+      );
+      const regressionBody = await regressionRenameRes.json();
+      assert.equal(regressionBody.shop.slug, 'pho-co-hoi-an-v4');
+      assert.equal(shopsStore.get(shopAId)?.slug, 'pho-co-hoi-an-v4');
+
+      // Canonical slug and prior alias are present due to trigger behavior
+      assert.ok(
+        aliasesStore.has('pho-co-hoi-an'),
+        'Prior canonical slug must be recorded as alias by trigger'
+      );
+      assert.equal(aliasesStore.get('pho-co-hoi-an')?.shop_id, shopAId);
+
+      const aliasesAfterRegress = await dbGetShopSlugAliases(shopAId);
+      assert.ok(
+        aliasesAfterRegress.some((a) => a.slug === 'pho-co-hoi-an'),
+        'Prior canonical slug must be in aliases list'
+      );
+
+      // Verify storefront lookup resolves both new canonical slug and prior alias
+      const canonicalGet = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an-v4')
+      );
+      assert.equal(canonicalGet.status, 200);
+      assert.equal((await canonicalGet.json()).shop.id, shopAId);
+
+      const aliasGet = await shopsGet(
+        new Request('http://localhost:3000/api/shops?slug=pho-co-hoi-an')
+      );
+      assert.equal(aliasGet.status, 200);
+      const aliasData = await aliasGet.json();
+      assert.equal(aliasData.shop.id, shopAId);
+      assert.equal(aliasData.shop.slug, 'pho-co-hoi-an-v4');
+
+      // Also verify admin POST update_shop succeeds under failAliasUpsert = true
+      const adminRegressionRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'update_shop',
+            shopId: shopAId,
+            patch: { slug: 'pho-co-hoi-an-v5' },
+          }),
+        })
+      );
+      assert.equal(
+        adminRegressionRes.status,
+        200,
+        'Admin rename must return 200 even if application-level alias upsert would fail'
+      );
+      assert.equal(shopsStore.get(shopAId)?.slug, 'pho-co-hoi-an-v5');
+      assert.ok(
+        aliasesStore.has('pho-co-hoi-an-v4'),
+        'Prior canonical slug before admin rename must be recorded as alias by trigger'
+      );
+      assert.equal(aliasesStore.get('pho-co-hoi-an-v4')?.shop_id, shopAId);
     } finally {
       setSupabaseDbClientForTests(null);
       setShopTablesDbClientForTests(null);
@@ -8041,6 +8156,7 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
     ]);
 
     const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
+    let failAliasUpsert = false;
     let failShopDelete = false;
 
     const mockSupabase = {
@@ -8116,8 +8232,30 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
                               error: { message: 'Shop not found' },
                             };
                           }
+                          const oldSlug =
+                            typeof existing.slug === 'string'
+                              ? existing.slug.trim().toLowerCase()
+                              : '';
+                          const newSlug =
+                            typeof patch.slug === 'string'
+                              ? patch.slug.trim().toLowerCase()
+                              : oldSlug;
                           const updated = { ...existing, ...patch };
                           shopsStore.set(idVal, updated);
+
+                          // Model migration 014 AFTER UPDATE trigger:
+                          if (newSlug && oldSlug && newSlug !== oldSlug) {
+                            for (const [k, row] of aliasesStore.entries()) {
+                              if (row.slug === newSlug && row.shop_id === idVal) {
+                                aliasesStore.delete(k);
+                              }
+                            }
+                            aliasesStore.set(oldSlug, {
+                              slug: oldSlug,
+                              shop_id: idVal,
+                            });
+                          }
+
                           return { data: { ...updated }, error: null };
                         },
                       };
@@ -8174,6 +8312,15 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               return chain;
             },
             upsert: async (payload: { slug: string; shop_id: string }) => {
+              if (failAliasUpsert) {
+                return {
+                  data: null,
+                  error: {
+                    message:
+                      'FORBIDDEN_SHOP_SLUG_ALIAS_MUTATION: Không được phép chỉnh sửa trực tiếp bảng bí danh đường dẫn (shop_slug_aliases) từ phía client.',
+                  },
+                };
+              }
               aliasesStore.set(payload.slug, {
                 slug: payload.slug,
                 shop_id: payload.shop_id,

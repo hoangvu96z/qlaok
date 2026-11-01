@@ -605,6 +605,63 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     ]);
     await db.exec('RESET ROLE');
 
+    // 7. Atomic transaction invariant: temporary failure on alias insertion rolls back canonical slug update
+    await db.exec(`
+      CREATE OR REPLACE FUNCTION trg_test_fail_slug_alias_insert()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        RAISE EXCEPTION 'SIMULATED_SLUG_ALIAS_INSERTION_FAILURE';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER trg_test_fail_slug_alias_insert
+      BEFORE INSERT ON public.shop_slug_aliases
+      FOR EACH ROW EXECUTE FUNCTION trg_test_fail_slug_alias_insert();
+    `);
+
+    try {
+      const canonicalBefore = (
+        await db.query("SELECT slug FROM shops WHERE id = 'sql-pub-shop'")
+      ).rows[0].slug;
+      const aliasesBefore = (
+        await db.query(
+          "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+        )
+      ).rows;
+
+      await assert.rejects(
+        db.query(
+          "UPDATE shops SET slug = 'sql-pub-shop-fail-attempt' WHERE id = 'sql-pub-shop'"
+        ),
+        /SIMULATED_SLUG_ALIAS_INSERTION_FAILURE/i
+      );
+
+      const canonicalAfter = (
+        await db.query("SELECT slug FROM shops WHERE id = 'sql-pub-shop'")
+      ).rows[0].slug;
+      assert.equal(
+        canonicalAfter,
+        canonicalBefore,
+        'canonical slug update must roll back when alias insertion fails'
+      );
+
+      const aliasesAfter = (
+        await db.query(
+          "SELECT slug, shop_id FROM shop_slug_aliases WHERE shop_id = 'sql-pub-shop' ORDER BY slug"
+        )
+      ).rows;
+      assert.deepEqual(
+        aliasesAfter,
+        aliasesBefore,
+        'alias rows must remain unchanged when canonical slug update fails'
+      );
+    } finally {
+      await db.exec(`
+        DROP TRIGGER IF EXISTS trg_test_fail_slug_alias_insert ON public.shop_slug_aliases;
+        DROP FUNCTION IF EXISTS trg_test_fail_slug_alias_insert();
+      `);
+    }
+
     // Verify 015_atomic_payment_completion.sql: atomic execution, rollback, idempotency, invariants & grants
     const saasUser = '00000000-0000-0000-0000-000000000099';
     await db.query(
