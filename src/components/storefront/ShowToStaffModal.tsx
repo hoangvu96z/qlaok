@@ -639,7 +639,7 @@ export function ShowToStaffModal({
     try {
       const promoNoteSuffix =
         promoDiscountAmount > 0
-          ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoDiscountAmount, shop.currency)}]`
+          ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoDiscountAmount, shop.currency, locale)}]`
           : '';
       const mappedItems = cart.map((entry) => {
         const extraPrice = entry.selectedChoices.reduce(
@@ -1091,7 +1091,8 @@ export function ShowToStaffModal({
                       <span className="font-bold text-slate-700 dark:text-slate-300 shrink-0">
                         {formatCurrency(
                           (it.unit_price + it.extra_price) * it.quantity,
-                          shop.currency
+                          shop.currency,
+                          locale
                         )}
                       </span>
                     </div>
@@ -1099,7 +1100,7 @@ export function ShowToStaffModal({
                   <div className="flex items-center justify-between pt-2 text-base font-black text-emerald-700 dark:text-emerald-400">
                     <span>{labels.totalEstimated}</span>
                     <span>
-                      {formatCurrency(activeOrder.total_amount, shop.currency)}
+                      {formatCurrency(activeOrder.total_amount, shop.currency, locale)}
                     </span>
                   </div>
                 </div>
@@ -1546,10 +1547,10 @@ export function ShowToStaffModal({
                           <div>
                             <span className="text-xs text-slate-500 dark:text-slate-400">
                               {labels.unitPriceLabel}:{' '}
-                              {formatCurrency(unitWithExtra, shop.currency)}
+                              {formatCurrency(unitWithExtra, shop.currency, locale)}
                             </span>
                             <p className="text-base font-black text-emerald-600 dark:text-emerald-400">
-                              {formatCurrency(lineTotal, shop.currency)}
+                              {formatCurrency(lineTotal, shop.currency, locale)}
                             </p>
                           </div>
 
@@ -1609,7 +1610,7 @@ export function ShowToStaffModal({
                         : ''}
                     </span>
                     <span className="font-black text-emerald-600 dark:text-emerald-400">
-                      -{formatCurrency(promoDiscountAmount, shop.currency)}
+                      -{formatCurrency(promoDiscountAmount, shop.currency, locale)}
                     </span>
                   </div>
                 )}
@@ -1619,7 +1620,7 @@ export function ShowToStaffModal({
                     {(
                       PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
                     ).unlockHint(
-                      formatCurrency(promoMinOrderNeeded, shop.currency),
+                      formatCurrency(promoMinOrderNeeded, shop.currency, locale),
                       promoCalc.promoTitle || ''
                     )}
                   </div>
@@ -1632,11 +1633,11 @@ export function ShowToStaffModal({
                   <div className="text-right">
                     {(promoDiscountAmount > 0 || editManualDiscountAmount > 0) && (
                       <span className="block text-xs text-slate-400 dark:text-slate-500 line-through">
-                        {formatCurrency(subtotal, shop.currency)}
+                        {formatCurrency(subtotal, shop.currency, locale)}
                       </span>
                     )}
                     <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-                      {formatCurrency(grandTotal, shop.currency)}
+                      {formatCurrency(grandTotal, shop.currency, locale)}
                     </span>
                   </div>
                 </div>

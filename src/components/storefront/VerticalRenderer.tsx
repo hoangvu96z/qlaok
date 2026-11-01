@@ -196,12 +196,12 @@ export function VerticalRenderer({
                             className="storefront-accent-text text-sm font-extrabold"
                             style={accentTextStyle}
                           >
-                            {formatCurrency(item.price, currency)}
+                            {formatCurrency(item.price, currency, locale)}
                           </span>
                           {item.compare_at_price &&
                             item.compare_at_price > item.price && (
                               <span className="text-xs text-slate-400 line-through">
-                                {formatCurrency(item.compare_at_price, currency)}
+                                {formatCurrency(item.compare_at_price, currency, locale)}
                               </span>
                             )}
                         </div>
@@ -289,7 +289,7 @@ export function VerticalRenderer({
                             className="storefront-accent-text text-sm font-extrabold"
                             style={accentTextStyle}
                           >
-                            {formatCurrency(item.price, currency)}
+                            {formatCurrency(item.price, currency, locale)}
                           </span>
                         </div>
                       </div>
@@ -431,12 +431,12 @@ export function VerticalRenderer({
                               className="storefront-accent-text text-sm font-extrabold"
                               style={accentTextStyle}
                             >
-                              {formatCurrency(item.price, currency)}
+                              {formatCurrency(item.price, currency, locale)}
                             </div>
                             {item.compare_at_price &&
                               item.compare_at_price > item.price && (
                                 <div className="text-[10px] text-slate-400 line-through">
-                                  {formatCurrency(item.compare_at_price, currency)}
+                                  {formatCurrency(item.compare_at_price, currency, locale)}
                                 </div>
                               )}
                           </div>

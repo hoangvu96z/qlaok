@@ -197,11 +197,11 @@ export function ItemDetailDrawer({
                       className="storefront-accent-text text-lg font-extrabold"
                       style={accentTextStyle}
                     >
-                      {formatCurrency(item.price, currency)}
+                      {formatCurrency(item.price, currency, locale)}
                     </div>
                     {item.compare_at_price && item.compare_at_price > item.price && (
                       <div className="text-xs text-slate-400 line-through">
-                        {formatCurrency(item.compare_at_price, currency)}
+                        {formatCurrency(item.compare_at_price, currency, locale)}
                       </div>
                     )}
                   </div>
@@ -341,7 +341,7 @@ export function ItemDetailDrawer({
                                   </span>
                                   {choice.extra_price > 0 ? (
                                     <span className="shrink-0 rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-900">
-                                      +{formatCurrency(choice.extra_price, currency)}
+                                      +{formatCurrency(choice.extra_price, currency, locale)}
                                     </span>
                                   ) : (
                                     <span className="shrink-0 text-[10px] font-semibold text-slate-400">
@@ -438,7 +438,7 @@ export function ItemDetailDrawer({
                   }}
                 >
                   <span>{labels.addToOrder}</span>
-                  <span>{formatCurrency(totalPrice, currency)}</span>
+                  <span>{formatCurrency(totalPrice, currency, locale)}</span>
                 </button>
               </div>
             </div>

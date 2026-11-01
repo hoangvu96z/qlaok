@@ -330,13 +330,24 @@ describe('Suite 2: Multilingual i18n & Storefront Helpers (i18n-helper.ts)', () 
     assert.equal(detectVisitorLocale(ALL_LOCALES, 'invalid_lang'), 'vi');
   });
 
-  test('2.7 formatCurrency formats VND with dot separators and đ suffix', () => {
+  test('2.7 formatCurrency formats VND with dot separators and đ suffix in Vietnamese and supports locale-aware English and non-finite guards', () => {
     const formatted65k = formatCurrency(65000, 'VND');
     assert.ok(formatted65k.endsWith('đ'));
     assert.ok(formatted65k.includes('65'));
+    assert.equal(formatCurrency(65000, 'VND', 'vi'), '65.000đ');
 
     const formattedZero = formatCurrency(0, 'VND');
     assert.equal(formattedZero, '0đ');
+
+    // English locale uses locale-aware comma separator for VND
+    const formattedEn = formatCurrency(65000, 'VND', 'en');
+    assert.notEqual(formattedEn, '65.000đ');
+    assert.ok(formattedEn.includes('65,000'));
+
+    // Non-finite values return the existing em dash
+    assert.equal(formatCurrency(NaN, 'VND', 'vi'), '—');
+    assert.equal(formatCurrency(Infinity, 'VND', 'en'), '—');
+    assert.equal(formatCurrency(-Infinity, 'VND'), '—');
   });
 
   test('2.8 formatCurrency formats non-VND currencies with currency code', () => {
@@ -3277,6 +3288,34 @@ describe('Guest flow: opening hours (timezone + overnight), SHOP_CLOSED, error l
       assert.ok(
         omittedPropHtml.includes(LOCALE_META[loc].nativeName),
         `Omitted supportedLangs prop must retain default ALL_LOCALES (${loc})`
+      );
+    }
+  });
+
+  test('G.9 GUEST_ORDER_LABELS defines localized errorTrackingToken for all locales without English fallback', () => {
+    const enFallback = GUEST_ORDER_LABELS.en.errorTrackingToken;
+    assert.ok(typeof enFallback === 'string' && enFallback.length > 0);
+
+    for (const loc of ALL_LOCALES) {
+      const direct = GUEST_ORDER_LABELS[loc]?.errorTrackingToken;
+      assert.ok(
+        typeof direct === 'string' && direct.length > 0,
+        `GUEST_ORDER_LABELS[${loc}].errorTrackingToken must be non-empty`
+      );
+
+      if (loc !== 'en') {
+        assert.notEqual(
+          direct,
+          enFallback,
+          `GUEST_ORDER_LABELS[${loc}].errorTrackingToken must not equal English fallback`
+        );
+      }
+
+      const getterResolved = getGuestOrderLabels(loc);
+      assert.equal(
+        getterResolved.errorTrackingToken,
+        direct,
+        `getGuestOrderLabels(${loc}).errorTrackingToken must return direct localized value`
       );
     }
   });
@@ -8156,7 +8195,7 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
     ]);
 
     const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
-    let failAliasUpsert = false;
+    const failAliasUpsert = false;
     let failShopDelete = false;
 
     const mockSupabase = {

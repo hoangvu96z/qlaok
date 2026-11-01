@@ -1541,7 +1541,8 @@ export default function StorefrontMenuPage() {
                         ).savedDiscount(
                           formatCurrency(
                             promoCalc.discountAmount,
-                            shop.currency
+                            shop.currency,
+                            locale
                           )
                         )
                       : labels.bottomBarHint}
@@ -1556,11 +1557,11 @@ export default function StorefrontMenuPage() {
                       isLightPrimary ? 'text-slate-700/75' : 'text-white/75'
                     }`}
                   >
-                    {formatCurrency(subtotalCartAmount, shop.currency)}
+                    {formatCurrency(subtotalCartAmount, shop.currency, locale)}
                   </span>
                 )}
                 <span className="text-sm sm:text-base font-black">
-                  {formatCurrency(totalCartAmount, shop.currency)}
+                  {formatCurrency(totalCartAmount, shop.currency, locale)}
                 </span>
               </div>
             </button>
