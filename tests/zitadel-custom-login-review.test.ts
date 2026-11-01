@@ -659,6 +659,7 @@ test('custom registration uses POST /v2/users/new with temporary password and re
   assert.equal(deliveredEmails[0]?.kind, 'registration_verify');
   assert.equal(deliveredEmails[0]?.locale, 'vi');
   assert.equal(deliveredEmails[0]?.to, 'bich.tran@example.test');
+  assert.match(deliveredEmails[0]?.html || '', /<html lang="vi">/);
   assert.match(deliveredEmails[0]?.html || '', /610492/);
   assert.match(deliveredEmails[0]?.text || '', /610492/);
   assert.doesNotMatch(
@@ -690,6 +691,7 @@ test('custom registration uses POST /v2/users/new with temporary password and re
   assert.equal(deliveredEmails.length, 2);
   assert.equal(deliveredEmails[1]?.kind, 'registration_resend');
   assert.equal(deliveredEmails[1]?.locale, 'en');
+  assert.match(deliveredEmails[1]?.html || '', /<html lang="en">/);
   assert.match(deliveredEmails[1]?.html || '', /849201/);
   assert.match(deliveredEmails[1]?.text || '', /849201/);
 
@@ -1562,6 +1564,7 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
   assert.equal(sentResetEmails[0]?.kind, 'password_reset');
   assert.equal(sentResetEmails[0]?.locale, 'vi');
   assert.equal(sentResetEmails[0]?.to, 'verified.owner@example.test');
+  assert.match(sentResetEmails[0]?.html || '', /<html lang="vi">/);
   assert.equal(
     sentResetEmails[0]?.actionUrl,
     'https://qlaok.vunph.click/login?mode=reset&userID=289911223344556677&code=918273&lang=vi'
@@ -1616,6 +1619,7 @@ test('password_reset_request performs exact-email lookup, sends Qlaok reset URL 
   );
   assert.equal(sentResetEmails.length, 1);
   assert.equal(sentResetEmails[0]?.locale, 'en');
+  assert.match(sentResetEmails[0]?.html || '', /<html lang="en">/);
   assert.equal(
     sentResetEmails[0]?.actionUrl,
     'https://qlaok.vunph.click/login?mode=reset&userID=289911223344558899&code=918273&lang=en'
