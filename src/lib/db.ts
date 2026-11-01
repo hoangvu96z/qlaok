@@ -1988,26 +1988,18 @@ export async function dbBulkImportCatalog(
 
 // ================= POSTS HELPERS =================
 
-export async function dbGetShopPosts(shopId?: string): Promise<Post[]> {
+export async function dbGetShopPosts(shopId: string): Promise<Post[]> {
+  const targetShopId = (shopId || '').trim();
+  if (!targetShopId) return [];
+
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
-
-  let targetShopId = shopId;
-  if (!targetShopId) {
-    const { data: firstShop } = await sb
-      .from('shops')
-      .select('id')
-      .limit(1)
-      .single();
-    targetShopId = firstShop?.id;
-  }
-
-  if (!targetShopId) return [];
 
   const { data } = await sb
     .from('posts')
     .select('*')
     .eq('shop_id', targetShopId)
+    .eq('is_active', true)
     .order('is_pinned', { ascending: false })
     .order('created_at', { ascending: false });
 

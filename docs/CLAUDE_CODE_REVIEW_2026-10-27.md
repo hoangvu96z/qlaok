@@ -366,7 +366,9 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 
 #### P2-2. `GET /api/posts` công khai, không lọc `is_active`, mặc định shop đầu tiên
 
-- **Vị trí:** `src/app/api/posts/route.ts:10-15`; `src/lib/db.ts:1718-1741`
+- **Trạng thái hiện tại — 2026-11-01:** public route đã bắt buộc `shopId` và lọc bài inactive; follow-up phát hiện helper DB vẫn tự chọn shop đầu tiên và tải cả bài inactive. Helper đã được khóa theo shop, filter `is_active=true`, có regression coverage và production GET read-only; xem mục 151.
+
+- **Vị trí ban đầu:** `src/app/api/posts/route.ts:10-15`; helper hiện tại ở `src/lib/db.ts:1991-2007`
 - **Bằng chứng:** `dbGetShopPosts` khi không có `shopId` chọn `shops` `.limit(1).single()`; query `posts` không có `.eq('is_active', true)`. Probe: `GET /api/posts` → trả 1 post của `shop-fnb-001`.
 - **Tác động:** nội dung nháp của shop bất kỳ đọc được mà không cần quyền; và endpoint "quên tham số" lại trả dữ liệu của một shop cố định — sai ngữ nghĩa nguy hiểm hơn lỗi 400.
 - **Hướng sửa:** lọc `is_active`; trả `400 SHOP_ID_REQUIRED` khi thiếu `shopId`.
@@ -2045,3 +2047,13 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Production read-only:** `GET /api/shops?slug=test-shop-1` trả **200**, `primaryColor=#8b5cf6`, response không có `owner_id`. Trang `/s/test-shop-1` và `/s/test-shop-1/menu` đều hiển thị `rgb(139, 92, 246)` với chữ đen; Codex đo lại độc lập cả hai bề mặt ở **4.9594:1**, AGY báo **4.94:1**. Màu dự kiến thử `#ef4444` không được lưu; tính riêng với chữ đen cho kết quả **5.58:1**.
 - **Mutation và cleanup:** 0 business mutations; màu production vẫn `#8b5cf6`. Browser tạm đã đóng/xóa storage. Report AGY ban đầu chứa định danh bị xóa; bản đã khử dữ liệu: `.agy-runs/qa/theme-color-persistence-qa-2026-11-01.md`. Codex cũng xóa snapshot DOM tạm có dữ liệu Wi-Fi của shop thử nghiệm. Không sửa source, test, schema, dữ liệu hay cấu hình production; không chạy build/deploy.
 - **Còn mở:** chưa xác minh save → reload cho màu tùy chỉnh trên shop Basic/Premium vì không có fixture thuộc gói đó. QA shop hiện tại không thể dùng để kiểm tra tính năng bị khóa bởi gói.
+
+## 151. P2-2: bỏ fallback shop đầu tiên khỏi helper bài viết công khai (2026-11-01)
+
+- **Phát hiện:** `GET /api/posts` đã yêu cầu `shopId` và lọc bài inactive tại route, nhưng `dbGetShopPosts(shopId?)` vẫn có fallback lấy shop đầu tiên nếu helper được gọi thiếu tham số, đồng thời truy vấn lấy cả bài inactive rồi mới lọc ở route. Hiện chỉ route công khai gọi helper; đây là rủi ro tái phát khi có caller mới và đọc thừa nội dung nháp.
+- **Sửa:** helper yêu cầu `shopId`, trim và trả `[]` trước DB init nếu rỗng; bỏ hẳn query tìm shop đầu tiên; truy vấn posts buộc cả `shop_id` và `is_active=true`, giữ thứ tự ghim và thời gian. API status, response shape và các mutation bài viết không đổi.
+- **Regression:** thêm `tests/posts-review.test.ts`: 4/4 pass cho shopId rỗng/trắng không phát sinh query, scope theo shop, chỉ lấy bài active, thứ tự hiện tại và GET thiếu shop trả `400 SHOP_ID_REQUIRED`.
+- **CodeGraph:** `codegraph status`; `codegraph explore "GET /api/posts public is_active default shopId dbGetShopPosts"`; `codegraph node src/app/api/posts/route.ts`; `codegraph callers dbGetShopPosts`; `codegraph node src/lib/db.ts --offset 1988 --limit 35`; sau sửa `codegraph sync`; `codegraph node dbGetShopPosts`; `codegraph node tests/posts-review.test.ts`. Ảnh hưởng: helper DB, GET `/api/posts`, test; không đổi POST/DELETE, schema, migration hay quyền.
+- **AGY Flash Medium:** run `2026-11-01T09-27-12-047Z-9d8c1ced`, `SUCCESS`, sửa 2 file tracked. AGY chạy focused test 4/4, `npm run test:review` 432/432, typecheck, ESLint, build và diff check thành công.
+- **Codex kiểm chứng độc lập:** focused test 4/4; `npm run test:review` 432/432; `npm run typecheck`; `npx eslint src/lib/db.ts tests/posts-review.test.ts`; `npm run build`; `git diff --check` đều pass. Build có cảnh báo hook dependency/`<img>` ngoài phần sửa; Node test có cảnh báo `MODULE_TYPELESS_PACKAGE_JSON` và log `SESSION_SECRET` từ test fixture, không có test fail.
+- **Production read-only trước khi đẩy helper fix:** `GET /api/posts` không có shop trả `400 SHOP_ID_REQUIRED`; shop QA `test-shop-1` trả 200 với 0 bài; shop ID giả trả 200 với mảng rỗng. Không đọc nội dung bài viết hoặc sửa production. Smoke sau deploy và kết quả Actions của commit source sẽ được xác nhận trước khi chốt release.
