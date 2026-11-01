@@ -466,6 +466,95 @@ test('payment route rejects a missing amount from nested PayOS data before DB us
   }
 });
 
+function createForbiddenBillingWebhookTestClient() {
+  const dbAccesses: string[] = [];
+  const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+  const client = {
+    from(table: string) {
+      dbAccesses.push(`from:${table}`);
+      throw new Error(`Unexpected DB table access: ${table}`);
+    },
+    async rpc(name: string, args: Record<string, unknown>) {
+      dbAccesses.push(`rpc:${name}`);
+      rpcCalls.push({ name, args });
+      throw new Error(`Unexpected DB RPC call: ${name}`);
+    },
+  };
+
+  return { client, dbAccesses, rpcCalls };
+}
+
+test('payment route acknowledges official signed PayOS validation sample as an ignored no-op before DB or account checks', async () => {
+  const envKeys = [
+    'PAYMENT_WEBHOOK_SECRET',
+    'SAAS_BANK_ACCOUNTS',
+    'SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'QLAOK_DATABASE_URL',
+    'PAYMENT_DEV_SIMULATE',
+  ];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
+
+  const { client, dbAccesses, rpcCalls } =
+    createForbiddenBillingWebhookTestClient();
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const { POST } = await import('@/app/api/webhooks/payment/route');
+    const body = makePayOSBody(
+      {},
+      {
+        orderCode: 123,
+        amount: 3000,
+        description: 'VQRIO123',
+        accountNumber: '12345678',
+        reference: 'TF230204212323',
+        transactionDateTime: '2023-02-04 18:25:00',
+        currency: 'VND',
+        paymentLinkId: '124c33293c43417ab7879e14c8d9eb18',
+        code: '00',
+        desc: 'Thành công',
+        counterAccountBankId: '',
+        counterAccountBankName: '',
+        counterAccountName: null,
+        counterAccountNumber: null,
+        virtualAccountName: '',
+        virtualAccountNumber: '',
+      }
+    );
+    const response = await POST(
+      new Request('https://qlaok.example/api/webhooks/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+    const responseBody = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.success, true);
+    assert.equal(responseBody.ignored, true);
+    assert.equal(responseBody.code, 'PAYOS_NON_QLAOK_EVENT_IGNORED');
+    assert.deepEqual(dbAccesses, []);
+    assert.deepEqual(rpcCalls, []);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    for (const key of envKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('payment route does not mistake the PayOS numeric order ID for a Qlaok payment code', async () => {
   const envKeys = [
     'PAYMENT_WEBHOOK_SECRET',
@@ -484,6 +573,10 @@ test('payment route does not mistake the PayOS numeric order ID for a Qlaok paym
   for (const key of envKeys) delete process.env[key];
   process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
 
+  const { client, dbAccesses, rpcCalls } =
+    createForbiddenBillingWebhookTestClient();
+  setSupabaseDbClientForTests(client as never);
+
   try {
     const { POST } = await import('@/app/api/webhooks/payment/route');
     const body = makePayOSBody({}, {
@@ -496,10 +589,16 @@ test('payment route does not mistake the PayOS numeric order ID for a Qlaok paym
         body: JSON.stringify(body),
       })
     );
+    const responseBody = await response.json();
 
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, 'Missing orderCode in webhook payload');
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.success, true);
+    assert.equal(responseBody.ignored, true);
+    assert.equal(responseBody.code, 'PAYOS_NON_QLAOK_EVENT_IGNORED');
+    assert.deepEqual(dbAccesses, []);
+    assert.deepEqual(rpcCalls, []);
   } finally {
+    setSupabaseDbClientForTests(null);
     for (const key of envKeys) {
       const value = previous.get(key);
       if (value === undefined) delete process.env[key];

@@ -362,12 +362,14 @@ export async function POST(req: Request) {
     }
 
     // 3. SePay / PayOS Webhook completion
-    const sessionUser = await verifyRequestUser(req);
-    const isSuperAdminCaller = isVerifiedSuperAdmin(sessionUser);
+    const sessionUser = payOSWebhook ? null : await verifyRequestUser(req);
+    const isSuperAdminCaller =
+      !payOSWebhook && isVerifiedSuperAdmin(sessionUser);
     // Non-admin sandbox simulation is only possible outside production AND
     // when explicitly enabled via PAYMENT_DEV_SIMULATE=true. It is further
     // restricted below to the caller's own pending orders.
     const isDevSandboxSimulator =
+      !payOSWebhook &&
       !isSuperAdminCaller &&
       process.env.NODE_ENV !== 'production' &&
       process.env.PAYMENT_DEV_SIMULATE === 'true' &&
@@ -408,6 +410,19 @@ export async function POST(req: Request) {
       typeof orderCodeCandidate === 'number'
         ? String(orderCodeCandidate).trim()
         : '';
+
+    if (payOSWebhook && !orderCode) {
+      return NextResponse.json(
+        {
+          success: true,
+          ignored: true,
+          code: 'PAYOS_NON_QLAOK_EVENT_IGNORED',
+          reason:
+            'PayOS webhook does not contain a Qlaok orderCode in data.description.',
+        },
+        { status: 200 }
+      );
+    }
 
     if (!orderCode) {
       return NextResponse.json(
