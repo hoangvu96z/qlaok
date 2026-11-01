@@ -192,6 +192,12 @@ function createInMemoryShopDbMock(params: {
     setSimulateNextShopUpdateMissingRow(flag: boolean) {
       simulateNextShopUpdateMissingRow = flag;
     },
+    setProfile(profile: Profile) {
+      profilesById.set(profile.id, cloneJson(profile));
+    },
+    removeProfile(profileId: string) {
+      profilesById.delete(profileId);
+    },
     getRawShopSnapshot(shopId: string): Shop | undefined {
       const found = shopsById.get(shopId);
       return found ? cloneJson(found) : undefined;
@@ -572,6 +578,249 @@ test('PATCH /api/shops persists promoBanner, welcomePopup, and flashSale, preser
     assert.equal(missingRowRes.status, 404);
     const missingRowJson = (await missingRowRes.json()) as { error?: string };
     assert.equal(missingRowJson.error, 'Shop not found');
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+  }
+});
+
+test('PATCH /api/shops enforces plan restrictions on custom theme and supported languages, and fails closed when owner profile is missing', async () => {
+  const ownerId = '44444444-4444-4444-8444-444444444444';
+  const shopId = 'shop-plan-enforcement-regression';
+
+  const initialShop: Shop = {
+    ...cloneJson(SEED_SHOPS[0]),
+    id: shopId,
+    owner_id: ownerId,
+    slug: 'quan-ca-phe-plan-test',
+    name: 'Quán Cà Phê Plan Test',
+    is_published: true,
+    opening_hours_confirmed: true,
+    supported_langs: ['vi'],
+    tagline_i18n: { vi: 'Thơm ngon mỗi ngày' },
+    description_i18n: { vi: 'Menu chính thức' },
+    theme_config: {
+      primaryColor: '#1d4ed8',
+      layout: 'grid',
+      fontStyle: 'modern',
+    },
+  };
+
+  const initialOwnerProfile: Profile = {
+    id: ownerId,
+    email: 'owner-plan@qlaok.test',
+    full_name: 'Chủ Quán Plan Test',
+    plan: 'free',
+    role: 'owner',
+  };
+
+  const ownerMembership: ShopMembership = {
+    id: 'mem-plan-owner',
+    shop_id: shopId,
+    user_id: ownerId,
+    role: 'owner',
+    permissions: [...ALL_SHOP_PERMISSIONS],
+    is_active: true,
+    created_at: '2026-10-24T00:00:00.000Z',
+    updated_at: '2026-10-24T00:00:00.000Z',
+  };
+
+  const mockDb = createInMemoryShopDbMock({
+    initialShops: [initialShop],
+    profiles: [initialOwnerProfile],
+    memberships: [ownerMembership],
+  });
+
+  setSupabaseDbClientForTests(mockDb.client);
+  setShopMembershipDbClientForTest(mockDb.client as never);
+
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: 'owner-plan@qlaok.test',
+    role: 'owner',
+  });
+
+  try {
+    // 1. Free owner changing a custom theme field is rejected with HTTP 403, PLAN_FEATURE_LOCKED,
+    // current plan free, required plan basic, and no shop mutation.
+    const freeThemeRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          theme_config: {
+            primaryColor: '#059669',
+          },
+        }),
+      })
+    );
+    assert.equal(freeThemeRes.status, 403);
+    const freeThemeJson = (await freeThemeRes.json()) as {
+      code?: string;
+      currentPlan?: string;
+      requiredPlan?: string;
+    };
+    assert.equal(freeThemeJson.code, 'PLAN_FEATURE_LOCKED');
+    assert.equal(freeThemeJson.currentPlan, 'free');
+    assert.equal(freeThemeJson.requiredPlan, 'basic');
+    assert.deepEqual(mockDb.getRawShopSnapshot(shopId), initialShop);
+
+    // 2. Free owner increasing supported languages beyond one is rejected with HTTP 403,
+    // PLAN_LIMIT_REACHED, and max language count 1.
+    const freeLangRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          supported_langs: ['vi', 'en'],
+        }),
+      })
+    );
+    assert.equal(freeLangRes.status, 403);
+    const freeLangJson = (await freeLangRes.json()) as {
+      code?: string;
+      currentPlan?: string;
+      requiredPlan?: string;
+      maxLanguages?: number;
+    };
+    assert.equal(freeLangJson.code, 'PLAN_LIMIT_REACHED');
+    assert.equal(freeLangJson.currentPlan, 'free');
+    assert.equal(freeLangJson.requiredPlan, 'basic');
+    assert.equal(freeLangJson.maxLanguages, 1);
+    assert.deepEqual(mockDb.getRawShopSnapshot(shopId), initialShop);
+
+    // 3. Basic owner can change custom theme and use up to three languages;
+    // a request for four languages is rejected with HTTP 403, PLAN_LIMIT_REACHED, required plan premium, and max language count 3.
+    mockDb.setProfile({
+      ...initialOwnerProfile,
+      plan: 'basic',
+    });
+
+    const basicAllowedRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          theme_config: {
+            primaryColor: '#059669',
+          },
+          supported_langs: ['vi', 'en', 'ja'],
+        }),
+      })
+    );
+    assert.equal(basicAllowedRes.status, 200);
+    const basicAllowedJson = (await basicAllowedRes.json()) as { shop: Shop };
+    assert.equal(basicAllowedJson.shop.theme_config?.primaryColor, '#059669');
+    assert.deepEqual(basicAllowedJson.shop.supported_langs, ['vi', 'en', 'ja']);
+
+    const snapshotAfterBasic = mockDb.getRawShopSnapshot(shopId);
+    assert.equal(snapshotAfterBasic?.theme_config?.primaryColor, '#059669');
+    assert.deepEqual(snapshotAfterBasic?.supported_langs, ['vi', 'en', 'ja']);
+
+    const basicFourLangRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          supported_langs: ['vi', 'en', 'ja', 'ko'],
+        }),
+      })
+    );
+    assert.equal(basicFourLangRes.status, 403);
+    const basicFourLangJson = (await basicFourLangRes.json()) as {
+      code?: string;
+      currentPlan?: string;
+      requiredPlan?: string;
+      maxLanguages?: number;
+    };
+    assert.equal(basicFourLangJson.code, 'PLAN_LIMIT_REACHED');
+    assert.equal(basicFourLangJson.currentPlan, 'basic');
+    assert.equal(basicFourLangJson.requiredPlan, 'premium');
+    assert.equal(basicFourLangJson.maxLanguages, 3);
+    assert.deepEqual(mockDb.getRawShopSnapshot(shopId), snapshotAfterBasic);
+
+    // 4. Premium owner can change custom theme and use eight supported languages.
+    mockDb.setProfile({
+      ...initialOwnerProfile,
+      plan: 'premium',
+    });
+
+    const premiumLanguages = [
+      'vi',
+      'en',
+      'ko',
+      'ja',
+      'zh',
+      'es',
+      'it',
+      'ru',
+    ];
+    const premiumAllowedRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          theme_config: {
+            primaryColor: '#7c3aed',
+          },
+          supported_langs: premiumLanguages,
+        }),
+      })
+    );
+    assert.equal(premiumAllowedRes.status, 200);
+    const premiumAllowedJson = (await premiumAllowedRes.json()) as { shop: Shop };
+    assert.equal(premiumAllowedJson.shop.theme_config?.primaryColor, '#7c3aed');
+    assert.deepEqual(premiumAllowedJson.shop.supported_langs, premiumLanguages);
+
+    const snapshotAfterPremium = mockDb.getRawShopSnapshot(shopId);
+    assert.equal(snapshotAfterPremium?.theme_config?.primaryColor, '#7c3aed');
+    assert.deepEqual(snapshotAfterPremium?.supported_langs, premiumLanguages);
+
+    // 5. If the owner profile needed for plan lookup is absent, a custom-theme request
+    // fails closed with HTTP 503 and PLAN_ACCESS_CHECK_FAILED; persisted shop state stays unchanged.
+    mockDb.removeProfile(ownerId);
+
+    const missingProfileRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: shopId,
+          theme_config: {
+            primaryColor: '#ea580c',
+          },
+        }),
+      })
+    );
+    assert.equal(missingProfileRes.status, 503);
+    const missingProfileJson = (await missingProfileRes.json()) as {
+      code?: string;
+    };
+    assert.equal(missingProfileJson.code, 'PLAN_ACCESS_CHECK_FAILED');
+    assert.deepEqual(mockDb.getRawShopSnapshot(shopId), snapshotAfterPremium);
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

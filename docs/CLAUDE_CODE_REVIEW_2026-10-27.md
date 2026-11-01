@@ -2356,3 +2356,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Được kiểm tra:** quyền owner/staff ở shop settings và table management; guest order dùng giá server, ràng buộc bàn/QR, idempotent replay, tồn kho và tách biệt fulfillment khỏi payment; entitlement Free/Basic/Premium cho số ngôn ngữ và custom theme.
 - **Giới hạn:** đây là handler, PGlite và temp-directory fixtures; không chứng minh save→reload bằng phiên owner production, không kiểm chứng RLS qua JWT/PostgREST thật và không chạy business write trên production. PayOS và webhook thanh toán vẫn hoãn theo yêu cầu.
 - **Shop QA:** public `GET /api/shops?slug=qlaok` trả **404**; tài khoản owner QA đã kiểm kê trước đó chỉ có shop `test-shop-1` gói Free. Chưa có shop Basic/Premium hợp lệ để chạy xác minh theo tài khoản thật.
+
+## 180. Regression route-level cho giới hạn plan của `PATCH /api/shops` (2026-11-02)
+
+- **AGY Gemini 3.8 Flash Medium:** run `2026-11-01T20-48-45-922Z-4ab01ee5`, conversation `770e6de2-57a4-4dd0-9b73-2a90bbd20666`, terminal **SUCCESS**. Chỉ sửa `tests/promotions-review.test.ts`; thêm helper thay/loại profile cho mock DB và gọi handler `PATCH` thật bằng shop, profile, membership giả lập trong bộ nhớ.
+- **Ma trận route:** Free đổi theme và thêm ngôn ngữ bị từ chối đúng `403 PLAN_FEATURE_LOCKED` / `403 PLAN_LIMIT_REACHED`; Basic đổi theme và dùng 3 ngôn ngữ thành công, 4 ngôn ngữ bị từ chối với gói cần thiết Premium; Premium đổi theme và dùng 8 ngôn ngữ thành công. Khi thiếu owner profile, API fail-closed bằng `503 PLAN_ACCESS_CHECK_FAILED`. Mỗi ca từ chối xác nhận snapshot shop không bị thay đổi; ca cho phép xác nhận các giá trị đã lưu.
+- **Codex kiểm chứng độc lập:** `node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/promotions-review.test.ts` **2/2 PASS**; `npm run test:unit` **144/144 PASS**; `git diff --check` sạch.
+- **CodeGraph/ảnh hưởng:** status up-to-date; explore route plan guard, `dbGetShopById`, `dbUpdateShop`, `requireShopPermission`, `setShopMembershipDbClientForTest`, và mock `createInMemoryShopDbMock`. Chỉ test fixture thay đổi, không sửa route, schema, migration, hay dữ liệu production.
+- **Giới hạn:** đây là route regression với in-memory DB; không thay thế thử save/reload bằng tài khoản Basic/Premium thật. Chưa có shop Basic/Premium QA hợp lệ theo mục 179; PayOS production vẫn hoãn.
