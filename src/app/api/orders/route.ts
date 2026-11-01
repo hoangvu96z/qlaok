@@ -942,6 +942,21 @@ export async function PATCH(req: Request) {
         );
       }
 
+      if (
+        Array.isArray(items) &&
+        (typeof body.expected_total !== 'number' ||
+          !Number.isFinite(body.expected_total))
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Tổng tiền đã thay đổi hoặc chưa được xác nhận. Vui lòng kiểm tra lại đơn hàng.',
+            code: 'PRICE_CHANGED',
+          },
+          { status: 409 }
+        );
+      }
+
       const updatedByCustomer = await dbUpdateOrderStatus(resolvedOrderId, {
         status: status === 'cancelled' ? 'cancelled' : undefined,
         table_id: resolvedTableId,
@@ -953,6 +968,7 @@ export async function PATCH(req: Request) {
         items,
         canApplyDiscount: false,
         require_new_unpaid: true,
+        expected_total: Array.isArray(items) ? body.expected_total : undefined,
       });
 
       await recordOrderAuditLog({
@@ -1055,7 +1071,7 @@ export async function PATCH(req: Request) {
           })
         : { total_amount: existingOrder.total_amount };
       if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== Number(quote.total_amount)) {
-        return NextResponse.json({ error: 'Tổng tiền đã thay đổi. Vui lòng tải lại đơn trước khi xác nhận.', quote }, { status: 409 });
+        return NextResponse.json({ error: 'Tổng tiền đã thay đổi. Vui lòng tải lại đơn trước khi xác nhận.', code: 'PRICE_CHANGED', quote }, { status: 409 });
       }
     }
 
@@ -1208,7 +1224,7 @@ export async function PATCH(req: Request) {
       error instanceof Error
         ? error.message
         : 'Không thể cập nhật trạng thái đơn';
-    const statusCode = /ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED|AMBIGUOUS_WORKFLOW_TRANSITION/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
+    const statusCode = /PRICE_CHANGED|ORDER_ALREADY_PAID|CONCURRENT_|CUSTOMER_EDIT_LOCKED|AMBIGUOUS_WORKFLOW_TRANSITION/.test(message) ? 409 : message.startsWith('DB_COMMIT_FAILED') ? 503 : 400;
     const code = extractOrderErrorCode(message);
     return NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status: statusCode });
   }

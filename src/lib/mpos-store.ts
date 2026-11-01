@@ -927,7 +927,7 @@ function assertPaymentTransition(existing: ShopOrder, nextStatus: OrderStatus, n
 /**
  * Validates each order line item:
  * 1) Strict positive integer quantity (1..999)
- * 2) Verifies item belongs to `shopId` and is available
+ * 2) Verifies item belongs to `shopId` and is available, except quantities already reserved by the order being edited
  * 3) Computes `unit_price` and `extra_price` strictly from server catalog (ignoring client price fields)
  * 4) Validates `selected_choices` against `dbItem.options_json`
  */
@@ -935,13 +935,28 @@ function validateAndPriceOrderLines(
   rawLines: OrderLineItem[],
   shopId: string,
   itemMap: Map<string, CatalogItem>,
-  options?: { preserveStaffLineDiscountMeta?: boolean }
+  options?: {
+    preserveStaffLineDiscountMeta?: boolean;
+    allowUnavailableItemQuantities?: ReadonlyMap<string, number>;
+  }
 ): OrderLineItem[] {
   if (!Array.isArray(rawLines) || rawLines.length === 0) {
     throw new Error('EMPTY_ORDER_ITEMS: Đơn hàng phải có ít nhất 1 món/dịch vụ.');
   }
   if (rawLines.length > 100) {
     throw new Error('TOO_MANY_LINES: Đơn hàng không được vượt quá 100 dòng món.');
+  }
+
+  const submittedQuantitiesByItem = new Map<string, number>();
+  for (const line of rawLines) {
+    if (!line || typeof line.item_id !== 'string') continue;
+    const quantity = Number(line.quantity);
+    if (Number.isInteger(quantity) && quantity > 0) {
+      submittedQuantitiesByItem.set(
+        line.item_id,
+        (submittedQuantitiesByItem.get(line.item_id) || 0) + quantity
+      );
+    }
   }
 
   const catalogLoaded = itemMap.size > 0;
@@ -986,9 +1001,15 @@ function validateAndPriceOrderLines(
     }
 
     if (dbItem && dbItem.is_available === false) {
-      throw new Error(
-        `ITEM_UNAVAILABLE: Món "${dbItem.name_i18n?.vi || line.name_vi}" hiện đã tạm hết hàng.`
-      );
+      const requestedQuantity =
+        submittedQuantitiesByItem.get(line.item_id) || 0;
+      const alreadyReservedQuantity =
+        options?.allowUnavailableItemQuantities?.get(line.item_id) || 0;
+      if (requestedQuantity > alreadyReservedQuantity) {
+        throw new Error(
+          `ITEM_UNAVAILABLE: Món "${dbItem.name_i18n?.vi || line.name_vi}" hiện đã tạm hết hàng.`
+        );
+      }
     }
 
     // Server-authoritative unit price from catalog when catalog item exists
@@ -1241,7 +1262,8 @@ export async function quoteOrderPricing(params: {
 function assertAggregatedStockAvailable(
   lines: OrderLineItem[],
   inventory: Record<string, InventoryMeta>,
-  itemMap: Map<string, CatalogItem>
+  itemMap: Map<string, CatalogItem>,
+  allowUnavailableItemQuantities?: ReadonlyMap<string, number>
 ): Map<string, number> {
   const demandByItem = new Map<string, number>();
   const nameByItem = new Map<string, string>();
@@ -1261,7 +1283,13 @@ function assertAggregatedStockAvailable(
     const meta = inventory[itemId];
     const itemName = dbItem?.name_i18n?.vi || nameByItem.get(itemId) || itemId;
 
-    if (dbItem && dbItem.is_available === false) {
+    const alreadyReservedQuantity =
+      allowUnavailableItemQuantities?.get(itemId) || 0;
+    if (
+      dbItem &&
+      dbItem.is_available === false &&
+      totalRequestedQty > alreadyReservedQuantity
+    ) {
       throw new Error(`ITEM_UNAVAILABLE: Món "${itemName}" hiện đã tạm hết hàng.`);
     }
 
@@ -2802,6 +2830,7 @@ export async function dbUpdateOrderStatus(
 
     const restoredItemIds: string[] = [];
     const zeroedItemIds: string[] = [];
+    let pendingInventory: Record<string, InventoryMeta> | null = null;
     let nextItems = existing.items;
     let nextSubtotalAmount = Number(
       existing.subtotal_amount ?? existing.total_amount ?? 0
@@ -2815,11 +2844,24 @@ export async function dbUpdateOrderStatus(
 
     // Case A: Updating the items list of an order
     if (Array.isArray(patch.items)) {
+      const alreadyReservedQuantities = new Map<string, number>();
+      if (existing.status !== 'cancelled') {
+        for (const line of existing.items || []) {
+          alreadyReservedQuantities.set(
+            line.item_id,
+            (alreadyReservedQuantities.get(line.item_id) || 0) +
+              Number(line.quantity || 0)
+          );
+        }
+      }
       const validatedNewItems = validateAndPriceOrderLines(
         patch.items,
         existing.shop_id,
         itemMap,
-        { preserveStaffLineDiscountMeta: patch.canApplyDiscount !== false }
+        {
+          preserveStaffLineDiscountMeta: patch.canApplyDiscount !== false,
+          allowUnavailableItemQuantities: alreadyReservedQuantities,
+        }
       );
 
       // 1. Temporarily restore old quantities into a working copy of inventory (if order was active)
@@ -2848,7 +2890,8 @@ export async function dbUpdateOrderStatus(
         const demandByItem = assertAggregatedStockAvailable(
           validatedNewItems,
           workingInventory,
-          itemMap
+          itemMap,
+          alreadyReservedQuantities
         );
 
         for (const [itemId, totalQty] of demandByItem.entries()) {
@@ -2879,7 +2922,7 @@ export async function dbUpdateOrderStatus(
           zeroedItemIds.push(itemId);
         }
       }
-      store.inventory = workingInventory;
+      pendingInventory = workingInventory;
       nextItems = validatedNewItems;
 
       nextSubtotalAmount = nextItems.reduce(
@@ -3055,7 +3098,7 @@ export async function dbUpdateOrderStatus(
 
     assertPaymentTransition(existing, nextStatus, nextPaymentStatus);
     if (patch.expected_total !== undefined && Number(patch.expected_total) !== nextTotalAmount) {
-      throw new Error('ORDER_ALREADY_PAID: Tổng tiền đã thay đổi, vui lòng tải lại đơn.');
+      throw new Error('PRICE_CHANGED: Tổng tiền đã thay đổi, vui lòng tải lại đơn.');
     }
 
     const becamePaid =
@@ -3113,9 +3156,11 @@ export async function dbUpdateOrderStatus(
           expected_status: existing.status, expected_payment_status: existing.payment_status,
           require_new_unpaid: Boolean(patch.require_new_unpaid) },
       });
+      if (pendingInventory) store.inventory = pendingInventory;
       return normalizeOrderRecord(committed as ShopOrder);
     }
 
+    if (pendingInventory) store.inventory = pendingInventory;
     store.orders[idx] = updated;
     writeStore(store);
 

@@ -760,6 +760,7 @@ test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATC
           order_id: createdGuestOrder.id,
           tracking_token: createdGuestOrder.tracking_token,
           customer_note: 'Ít hành',
+          expected_total: createdGuestOrder.total_amount,
           items: sampleItems,
         }),
       })

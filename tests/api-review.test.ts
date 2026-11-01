@@ -173,6 +173,7 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
     orderId: createdOrder.id,
     trackingToken: createdOrder.tracking_token,
     customer_note: 'Thêm hành',
+    expected_total: 110000,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 2, unit_price: 55000, extra_price: 0, selected_choices: [] }],
   }, 'PATCH'));
   assert.equal(guestEditRes.status, 200);

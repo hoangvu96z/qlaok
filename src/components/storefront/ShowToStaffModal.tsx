@@ -54,6 +54,7 @@ import {
 } from '@/lib/table-helpers';
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { getShopPaymentQrInfo } from '@/lib/payment-qr';
+import { getStoredManualDiscountAmount } from '@/lib/order-discounts';
 import {
   calculateOrderPromoDiscount,
   PROMO_LOCALE_TEXT,
@@ -600,7 +601,22 @@ export function ShowToStaffModal({
     locale
   );
 
-  const grandTotal = Math.max(0, subtotal - promoCalc.discountAmount);
+  const canApplyExistingOrderPromo =
+    !editingOrder ||
+    Boolean(editingOrder.discount_code || editingOrder.promo_discount_amount);
+  const promoDiscountAmount = canApplyExistingOrderPromo
+    ? promoCalc.discountAmount
+    : 0;
+  const promoMinOrderNeeded = canApplyExistingOrderPromo
+    ? promoCalc.minOrderNeeded
+    : 0;
+  const editManualDiscountAmount = editingOrder
+    ? getStoredManualDiscountAmount(editingOrder)
+    : 0;
+  const grandTotal = Math.max(
+    0,
+    subtotal - promoDiscountAmount - editManualDiscountAmount
+  );
 
   const handleSendOrderToMpos = async () => {
     if (cart.length === 0 || submitting) return;
@@ -622,8 +638,8 @@ export function ShowToStaffModal({
 
     try {
       const promoNoteSuffix =
-        promoCalc.discountAmount > 0
-          ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoCalc.discountAmount, shop.currency)}]`
+        promoDiscountAmount > 0
+          ? ` [KM${promoCalc.voucherCode ? ` ${promoCalc.voucherCode}` : ''}: -${formatCurrency(promoDiscountAmount, shop.currency)}]`
           : '';
       const mappedItems = cart.map((entry) => {
         const extraPrice = entry.selectedChoices.reduce(
@@ -672,6 +688,7 @@ export function ShowToStaffModal({
           ? {
               order_id: editingOrder.id,
               tracking_token: editingOrder.tracking_token,
+              expected_total: grandTotal,
               ...(shouldSendEditedTable
                 ? {
                     table_id: resolvedNewTableId,
@@ -1580,7 +1597,7 @@ export function ShowToStaffModal({
                   </div>
                 )}
 
-                {promoCalc.discountAmount > 0 && (
+                {promoDiscountAmount > 0 && (
                   <div className="flex items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs dark:bg-emerald-950/70 dark:border-emerald-700/60">
                     <span className="font-bold text-emerald-800 dark:text-emerald-300">
                       🎁{' '}
@@ -1592,17 +1609,17 @@ export function ShowToStaffModal({
                         : ''}
                     </span>
                     <span className="font-black text-emerald-600 dark:text-emerald-400">
-                      -{formatCurrency(promoCalc.discountAmount, shop.currency)}
+                      -{formatCurrency(promoDiscountAmount, shop.currency)}
                     </span>
                   </div>
                 )}
 
-                {promoCalc.minOrderNeeded > 0 && (
+                {promoMinOrderNeeded > 0 && (
                   <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-1.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:border-amber-700/50 dark:text-amber-300">
                     {(
                       PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi
                     ).unlockHint(
-                      formatCurrency(promoCalc.minOrderNeeded, shop.currency),
+                      formatCurrency(promoMinOrderNeeded, shop.currency),
                       promoCalc.promoTitle || ''
                     )}
                   </div>
@@ -1613,7 +1630,7 @@ export function ShowToStaffModal({
                     {labels.totalEstimated} ({currentSelectionDisplay})
                   </span>
                   <div className="text-right">
-                    {promoCalc.discountAmount > 0 && (
+                    {(promoDiscountAmount > 0 || editManualDiscountAmount > 0) && (
                       <span className="block text-xs text-slate-400 dark:text-slate-500 line-through">
                         {formatCurrency(subtotal, shop.currency)}
                       </span>

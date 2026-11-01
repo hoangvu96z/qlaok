@@ -1863,6 +1863,108 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(itemAfterGuestNotePatch.rows[0]?.stock_quantity, 0);
     assert.equal(itemAfterGuestNotePatch.rows[0]?.sold_count, 5);
     assert.equal(itemAfterGuestNotePatch.rows[0]?.is_available, false);
+
+    const reducedGuestItems = [
+      { ...createdQrOrder.items[0], quantity: 1 },
+    ];
+    for (const expectedTotal of [undefined, 69999]) {
+      const rejectedGuestEditRes = await patchOrdersRoute(
+        new Request('http://localhost/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-tracking-token': createdQrOrder.tracking_token,
+          },
+          body: JSON.stringify({
+            orderId: createdQrOrder.id,
+            customer_note: 'Không được lưu với giá cũ',
+            ...(expectedTotal === undefined ? {} : { expected_total: expectedTotal }),
+            items: reducedGuestItems,
+          }),
+        })
+      );
+      const rejectedGuestEditJson = await rejectedGuestEditRes.json();
+      assert.equal(
+        rejectedGuestEditRes.status,
+        409,
+        JSON.stringify({ expectedTotal, response: rejectedGuestEditJson })
+      );
+      assert.equal(rejectedGuestEditJson.code, 'PRICE_CHANGED');
+    }
+
+    const unavailableGuestIncreaseRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tracking-token': createdQrOrder.tracking_token,
+        },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          expected_total: 210000,
+          items: [{ ...createdQrOrder.items[0], quantity: 3 }],
+        }),
+      })
+    );
+    assert.equal(unavailableGuestIncreaseRes.status, 400);
+    assert.equal(
+      (await unavailableGuestIncreaseRes.json()).code,
+      'ITEM_UNAVAILABLE'
+    );
+
+    const orderAfterRejectedGuestEdits = await dbGetOrderById(
+      createdQrOrder.id
+    );
+    assert.equal(orderAfterRejectedGuestEdits?.total_amount, 140000);
+    assert.equal(orderAfterRejectedGuestEdits?.items[0]?.quantity, 2);
+    assert.equal(orderAfterRejectedGuestEdits?.customer_note, 'Ít hành, thêm chanh');
+    const itemAfterRejectedGuestEdits = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.equal(itemAfterRejectedGuestEdits.rows[0]?.stock_quantity, 0);
+    assert.equal(itemAfterRejectedGuestEdits.rows[0]?.sold_count, 5);
+    assert.equal(itemAfterRejectedGuestEdits.rows[0]?.is_available, false);
+
+    const validGuestItemPatchRes = await patchOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tracking-token': createdQrOrder.tracking_token,
+        },
+        body: JSON.stringify({
+          orderId: createdQrOrder.id,
+          expected_total: 70000,
+          customer_note: 'Ít hành, đổi thành một tô',
+          items: reducedGuestItems,
+        }),
+      })
+    );
+    assert.equal(validGuestItemPatchRes.status, 200);
+    const validGuestItemPatchJson = await validGuestItemPatchRes.json();
+    assert.equal(validGuestItemPatchJson.order.total_amount, 70000);
+    assert.equal(validGuestItemPatchJson.order.items[0]?.quantity, 1);
+    assert.equal(
+      validGuestItemPatchJson.order.customer_note,
+      'Ít hành, đổi thành một tô'
+    );
+    assert.equal(validGuestItemPatchJson.order.status, 'new');
+    assert.equal(validGuestItemPatchJson.order.payment_status, 'unpaid');
+    const itemAfterValidGuestEdit = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.equal(itemAfterValidGuestEdit.rows[0]?.stock_quantity, 1);
+    assert.equal(itemAfterValidGuestEdit.rows[0]?.sold_count, 4);
+    assert.equal(itemAfterValidGuestEdit.rows[0]?.is_available, true);
+
     const prepRes = await patchOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'PATCH',
