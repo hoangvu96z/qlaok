@@ -30,6 +30,10 @@ export interface CatalogImportValidationResult {
   errors: string[];
 }
 
+export interface CatalogExcelImportOptions {
+  allowPriceChanges?: boolean;
+}
+
 /**
  * Checks if a byte buffer starts with standard ZIP/OOXML magic bytes (PK\x03\x04).
  */
@@ -432,8 +436,10 @@ export async function downloadCatalogXlsx(
  */
 export async function parseAndValidateCatalogExcel(
   buffer: ArrayBuffer | Uint8Array,
-  currentItems: CatalogItem[]
+  currentItems: CatalogItem[],
+  options?: CatalogExcelImportOptions
 ): Promise<CatalogImportValidationResult> {
+  const allowPriceChanges = options?.allowPriceChanges ?? true;
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
   if (bytes.byteLength > MAX_CATALOG_EXCEL_FILE_SIZE) {
@@ -527,7 +533,7 @@ export async function parseAndValidateCatalogExcel(
 
   const missingHeaders: string[] = [];
   if (idCol === -1) missingHeaders.push('Mã món (Item ID)');
-  if (priceCol === -1) missingHeaders.push('Giá bán (Price)');
+  if (allowPriceChanges && priceCol === -1) missingHeaders.push('Giá bán (Price)');
   if (stockCol === -1) missingHeaders.push('Tồn kho (Stock)');
 
   if (missingHeaders.length > 0) {
@@ -556,15 +562,19 @@ export async function parseAndValidateCatalogExcel(
     const row = worksheet.getRow(rowIdx);
 
     const rawIdVal = extractPrimitiveCellValue(row.getCell(idCol).value);
-    const rawPriceVal = extractPrimitiveCellValue(row.getCell(priceCol).value);
+    const rawPriceVal =
+      priceCol !== -1 ? extractPrimitiveCellValue(row.getCell(priceCol).value) : undefined;
     const rawStockVal = extractPrimitiveCellValue(row.getCell(stockCol).value);
     const rawNameVal = nameCol !== -1 ? String(extractPrimitiveCellValue(row.getCell(nameCol).value) || '') : '';
     const rawCatVal = categoryCol !== -1 ? String(extractPrimitiveCellValue(row.getCell(categoryCol).value) || '') : '';
 
-    // Check if entire row is empty
+    // Check if entire row is empty (in stock-only mode, ignored price cells do not turn an empty row into data)
     const isRowEmpty =
       (rawIdVal === '' || rawIdVal === null || rawIdVal === undefined) &&
-      (rawPriceVal === '' || rawPriceVal === null || rawPriceVal === undefined) &&
+      (!allowPriceChanges ||
+        rawPriceVal === '' ||
+        rawPriceVal === null ||
+        rawPriceVal === undefined) &&
       (rawStockVal === '' || rawStockVal === null || rawStockVal === undefined);
 
     if (isRowEmpty) {
@@ -601,8 +611,10 @@ export async function parseAndValidateCatalogExcel(
       );
     }
 
-    const priceResult = parseCatalogPriceValue(rawPriceVal);
-    if (!priceResult.valid) {
+    const priceResult = allowPriceChanges
+      ? parseCatalogPriceValue(rawPriceVal)
+      : null;
+    if (priceResult && !priceResult.valid) {
       rowErrors.push(priceResult.error);
     }
 
@@ -611,14 +623,17 @@ export async function parseAndValidateCatalogExcel(
       rowErrors.push(stockResult.error);
     }
 
-    const parsedPrice = priceResult.valid ? priceResult.price : undefined;
+    const parsedPrice =
+      priceResult && priceResult.valid ? priceResult.price : undefined;
     const parsedStock = stockResult.valid ? stockResult.stock : undefined;
 
     let priceChanged = false;
     let stockChanged = false;
 
-    if (matchedItem && priceResult.valid && stockResult.valid) {
-      priceChanged = parsedPrice !== matchedItem.price;
+    if (matchedItem && stockResult.valid && (!allowPriceChanges || priceResult?.valid)) {
+      if (allowPriceChanges && parsedPrice !== undefined) {
+        priceChanged = parsedPrice !== matchedItem.price;
+      }
       const currentStockNormalized =
         matchedItem.stock_quantity === undefined ? null : matchedItem.stock_quantity;
       stockChanged = parsedStock !== currentStockNormalized;
@@ -626,7 +641,7 @@ export async function parseAndValidateCatalogExcel(
 
     let status: 'valid' | 'invalid' | 'unchanged' = 'invalid';
     if (rowErrors.length === 0) {
-      if (priceChanged || stockChanged) {
+      if ((allowPriceChanges && priceChanged) || stockChanged) {
         status = 'valid';
       } else {
         status = 'unchanged';
@@ -679,24 +694,39 @@ export interface CatalogExcelBulkUpdateItemPayload {
  * Builds the narrow bulk_update_price_stock payload items from validated Excel rows.
  * Price-only rows omit stock_quantity so concurrent order stock deductions are never overwritten.
  * Stock-modifying rows include expected_stock_quantity for atomic compare-and-swap protection.
+ * When allowPriceChanges is false, price is never included and rows without stock changes are skipped.
  */
 export function buildCatalogExcelBulkUpdateItems(
-  validRows: CatalogImportRowParsed[]
+  validRows: CatalogImportRowParsed[],
+  options?: CatalogExcelImportOptions
 ): CatalogExcelBulkUpdateItemPayload[] {
-  return validRows.map((r) => {
+  const allowPriceChanges = options?.allowPriceChanges ?? true;
+  const payloadItems: CatalogExcelBulkUpdateItemPayload[] = [];
+
+  for (const r of validRows) {
+    const includePrice =
+      allowPriceChanges && r.priceChanged && r.parsedPrice !== undefined;
+    const includeStock = r.stockChanged && r.parsedStock !== undefined;
+
+    if (!includePrice && !includeStock) {
+      continue;
+    }
+
     const entry: CatalogExcelBulkUpdateItemPayload = {
       id: r.rawId,
     };
-    if (r.priceChanged && r.parsedPrice !== undefined) {
+    if (includePrice) {
       entry.price = r.parsedPrice;
     }
-    if (r.stockChanged && r.parsedStock !== undefined) {
+    if (includeStock) {
       entry.stock_quantity = r.parsedStock;
       entry.expected_stock_quantity =
         r.matchedItem?.stock_quantity === undefined
           ? null
           : r.matchedItem.stock_quantity;
     }
-    return entry;
-  });
+    payloadItems.push(entry);
+  }
+
+  return payloadItems;
 }

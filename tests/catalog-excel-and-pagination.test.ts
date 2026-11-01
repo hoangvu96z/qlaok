@@ -8359,6 +8359,114 @@ test('upsert_item legacy full snapshot concurrency ambiguity vs expected_is_avai
     assert.equal(resInvStockCasSuccess.status, 200);
     assert.equal(liveRow.stock_quantity, 12);
     assert.equal(liveRow.is_available, true);
+
+    // 7. Excel bulk_update_price_stock: inventory-only stock-only payload succeeds; price mutation continues to be rejected; catalog.manage succeeds with price+stock:
+    const wbInvExcel = new ExcelJS.Workbook();
+    const wsInvExcel = wbInvExcel.addWorksheet('ThucDon');
+    wsInvExcel.addRow(['Mã món (Item ID)', 'Giá bán (Price)', 'Tồn kho (Stock)']);
+    wsInvExcel.addRow([itemId, 'INVALID_OR_UNAUTHORIZED_PRICE', 8]);
+    const invExcelBuf = await wbInvExcel.xlsx.writeBuffer();
+    const invExcelParsed = await parseAndValidateCatalogExcel(
+      new Uint8Array(invExcelBuf as ArrayBuffer),
+      [structuredClone(liveRow) as unknown as CatalogItem],
+      { allowPriceChanges: false }
+    );
+    assert.equal(invExcelParsed.ok, true);
+    assert.equal(invExcelParsed.validRows.length, 1);
+    const invStockOnlyPayload = buildCatalogExcelBulkUpdateItems(
+      invExcelParsed.validRows,
+      { allowPriceChanges: false }
+    );
+    assert.equal('price' in invStockOnlyPayload[0], false);
+
+    const resInvBulkStockOnly = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId,
+          items: invStockOnlyPayload,
+        }),
+      })
+    );
+    assert.equal(resInvBulkStockOnly.status, 200);
+    const invBulkData = await resInvBulkStockOnly.json();
+    assert.equal(invBulkData.success, true);
+    assert.equal(invBulkData.updatedCount, 1);
+    assert.equal(liveRow.stock_quantity, 8);
+    assert.equal(liveRow.price, 64000);
+
+    // Server continues rejecting price mutations in bulk_update_price_stock for inventory-only members
+    const resInvBulkForbiddenPrice = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${invOnlyStaffToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId,
+          items: [
+            {
+              id: itemId,
+              price: 99000,
+              stock_quantity: 6,
+              expected_stock_quantity: 8,
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(resInvBulkForbiddenPrice.status, 200);
+    const invForbiddenBulkData = await resInvBulkForbiddenPrice.json();
+    assert.equal(invForbiddenBulkData.success, false);
+    assert.equal(invForbiddenBulkData.updatedCount, 0);
+    assert.equal(invForbiddenBulkData.results[0].success, false);
+    assert.ok(String(invForbiddenBulkData.results[0].error).includes('catalog.manage'));
+    assert.equal(liveRow.price, 64000);
+    assert.equal(liveRow.stock_quantity, 8);
+
+    // Catalog manager succeeds with price + stock Excel bulk payload
+    const wbMgrExcel = new ExcelJS.Workbook();
+    const wsMgrExcel = wbMgrExcel.addWorksheet('ThucDon');
+    wsMgrExcel.addRow(['Mã món (Item ID)', 'Giá bán (Price)', 'Tồn kho (Stock)']);
+    wsMgrExcel.addRow([itemId, 68000, 15]);
+    const mgrExcelBuf = await wbMgrExcel.xlsx.writeBuffer();
+    const mgrExcelParsed = await parseAndValidateCatalogExcel(
+      new Uint8Array(mgrExcelBuf as ArrayBuffer),
+      [structuredClone(liveRow) as unknown as CatalogItem],
+      { allowPriceChanges: true }
+    );
+    assert.equal(mgrExcelParsed.ok, true);
+    const mgrPayload = buildCatalogExcelBulkUpdateItems(
+      mgrExcelParsed.validRows,
+      { allowPriceChanges: true }
+    );
+    const resMgrBulkPriceStock = await catalogPost(
+      new Request('http://localhost:3000/api/catalog', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${catCashierToken}`,
+        },
+        body: JSON.stringify({
+          action: 'bulk_update_price_stock',
+          shopId,
+          items: mgrPayload,
+        }),
+      })
+    );
+    assert.equal(resMgrBulkPriceStock.status, 200);
+    const mgrBulkData = await resMgrBulkPriceStock.json();
+    assert.equal(mgrBulkData.success, true);
+    assert.equal(mgrBulkData.updatedCount, 1);
+    assert.equal(liveRow.price, 68000);
+    assert.equal(liveRow.stock_quantity, 15);
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

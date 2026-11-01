@@ -236,6 +236,16 @@ export default function DashboardCatalogPage() {
   const { activeShop, activeMembership } = useDashboard();
   const { locale, t, tx } = useAppI18n();
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  const canManageCatalog = membershipHasPermission(
+    activeMembership,
+    'catalog.manage'
+  );
+  const canAdjustInventory =
+    canManageCatalog ||
+    membershipHasPermission(activeMembership, 'inventory.adjust');
+  const isShopOwner = Boolean(
+    activeMembership?.is_active && activeMembership.role === 'owner'
+  );
   const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
     null
   );
@@ -556,7 +566,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextAvailable: boolean
   ): Promise<boolean> => {
-    if (!isItemInCurrentShop(item)) return false;
+    if (!canAdjustInventory || !isItemInCurrentShop(item)) return false;
     // Optimistic update
     setItems((prev) =>
       prev.map((i) =>
@@ -688,7 +698,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextPrice: number
   ): Promise<boolean> => {
-    if (!isItemInCurrentShop(item)) return false;
+    if (!canManageCatalog || !isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, price: nextPrice } : i))
     );
@@ -712,7 +722,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextStock: number | null
   ): Promise<boolean> => {
-    if (!isItemInCurrentShop(item)) return false;
+    if (!canAdjustInventory || !isItemInCurrentShop(item)) return false;
     const prevStock =
       item.stock_quantity === undefined ? null : item.stock_quantity;
     const nextAvailable =
@@ -763,7 +773,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextFeatured: boolean
   ): Promise<boolean> => {
-    if (!isItemInCurrentShop(item)) return false;
+    if (!canManageCatalog || !isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, is_featured: nextFeatured } : i
@@ -789,7 +799,7 @@ export default function DashboardCatalogPage() {
     item: CatalogItem,
     nextImageUrl: string
   ): Promise<boolean> => {
-    if (!isItemInCurrentShop(item)) return false;
+    if (!canManageCatalog || !isItemInCurrentShop(item)) return false;
     setItems((prev) =>
       prev.map((i) =>
         i.id === item.id ? { ...i, image_url: nextImageUrl } : i
@@ -817,6 +827,7 @@ export default function DashboardCatalogPage() {
   };
 
   const handleDeleteItem = async (itemId: string): Promise<boolean> => {
+    if (!canManageCatalog) return false;
     const target = items.find((i) => i.id === itemId);
     if (!target || !isItemInCurrentShop(target)) return false;
     const confirmed = await confirm({
@@ -1104,14 +1115,6 @@ export default function DashboardCatalogPage() {
     );
   }
 
-  const canManageCatalog = activeMembership
-    ? membershipHasPermission(activeMembership, 'catalog.manage')
-    : true;
-  const canAdjustInventory = activeMembership
-    ? canManageCatalog ||
-      membershipHasPermission(activeMembership, 'inventory.adjust')
-    : true;
-
   const planTier = ownerPlan;
   const planCfg = PLAN_CONFIGS[planTier];
   const itemLimitReached = items.length >= planCfg.maxItems;
@@ -1123,7 +1126,7 @@ export default function DashboardCatalogPage() {
         : tx('Gói Khởi Đầu (Free)', 'Starter Plan (Free)');
 
   const handleToggleSelectItem = (itemId: string, nextSelected: boolean) => {
-    if (bulkActionPending) return;
+    if (bulkActionPending || !canAdjustInventory) return;
     setSelectedItemIds((prev) => {
       const next = new Set(prev);
       if (nextSelected) {
@@ -1136,7 +1139,9 @@ export default function DashboardCatalogPage() {
   };
 
   const handleToggleSelectCurrentPage = () => {
-    if (bulkActionPending || pagedItemIds.length === 0) return;
+    if (bulkActionPending || !canAdjustInventory || pagedItemIds.length === 0) {
+      return;
+    }
     setSelectedItemIds((prev) => {
       const next = new Set(prev);
       const everyOnPageSelected = pagedItemIds.every((id) => next.has(id));
@@ -1887,10 +1892,15 @@ export default function DashboardCatalogPage() {
             {tx('Thực đơn', 'Menu')}
           </h1>
           <p className="text-xs text-slate-500">
-            {tx(
-              'Bật/tắt còn món hoặc sửa giá bán trực tiếp bên dưới — cập nhật ngay trên thực đơn QR.',
-              'Toggle availability or edit prices inline — updates immediately on the QR menu.'
-            )}
+            {canManageCatalog
+              ? tx(
+                  'Bật/tắt còn món hoặc sửa giá bán trực tiếp bên dưới — cập nhật ngay trên thực đơn QR.',
+                  'Toggle availability or edit prices inline — updates immediately on the QR menu.'
+                )
+              : tx(
+                  'Bật/tắt còn món hoặc cập nhật số lượng tồn kho bên dưới — cập nhật ngay trên thực đơn QR.',
+                  'Toggle availability or update stock quantities inline — updates immediately on the QR menu.'
+                )}
           </p>
         </div>
 
@@ -1899,10 +1909,17 @@ export default function DashboardCatalogPage() {
             type="button"
             onClick={handleExportCatalog}
             disabled={exportingExcel || items.length === 0}
-            title={tx(
-              'Xuất file Excel (.xlsx) để chỉnh sửa giá & tồn kho hàng loạt',
-              'Export Excel (.xlsx) file to edit price & stock in bulk'
-            )}
+            title={
+              canManageCatalog
+                ? tx(
+                    'Xuất file Excel (.xlsx) để chỉnh sửa giá & tồn kho hàng loạt',
+                    'Export Excel (.xlsx) file to edit price & stock in bulk'
+                  )
+                : tx(
+                    'Xuất file Excel (.xlsx) thực đơn & tồn kho',
+                    'Export Excel (.xlsx) catalog & stock file'
+                  )
+            }
             className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             {exportingExcel ? (
@@ -1913,54 +1930,75 @@ export default function DashboardCatalogPage() {
             <span>{tx('Xuất Excel', 'Export Excel')}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setIsExcelModalOpen(true)}
-            title={tx(
-              'Nhập file Excel (.xlsx) để cập nhật giá & tồn kho hàng loạt',
-              'Import Excel (.xlsx) file to bulk update price & stock'
-            )}
-            className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-          >
-            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-            <span>{tx('Nhập Excel', 'Import Excel')}</span>
-          </button>
+          {canAdjustInventory && (
+            <button
+              type="button"
+              data-testid="catalog-import-excel-btn"
+              onClick={() => {
+                if (!canAdjustInventory) return;
+                setIsExcelModalOpen(true);
+              }}
+              title={
+                canManageCatalog
+                  ? tx(
+                      'Nhập file Excel (.xlsx) để cập nhật giá & tồn kho hàng loạt',
+                      'Import Excel (.xlsx) file to bulk update price & stock'
+                    )
+                  : tx(
+                      'Nhập file Excel (.xlsx) để cập nhật tồn kho hàng loạt',
+                      'Import Excel (.xlsx) file to bulk update stock'
+                    )
+              }
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <span>{tx('Nhập Excel', 'Import Excel')}</span>
+            </button>
+          )}
 
-          <Link
-            href="/dashboard/ai-scanner"
-            className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
-          >
-            <Sparkles className="h-4 w-4" />
-            <span>{tx('Quét ảnh thực đơn', 'Scan Menu Photo')}</span>
-          </Link>
+          {canManageCatalog && (
+            <Link
+              href="/dashboard/ai-scanner"
+              data-testid="catalog-scan-menu-link"
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
+            >
+              <Sparkles className="h-4 w-4" />
+              <span>{tx('Quét ảnh thực đơn', 'Scan Menu Photo')}</span>
+            </Link>
+          )}
 
-          <button
-            type="button"
-            disabled={itemLimitReached}
-            aria-describedby={itemLimitReached ? 'catalog-item-limit-hint' : undefined}
-            title={
-              itemLimitReached
-                ? tx(
-                    'Đã đạt giới hạn {max} món của gói hiện tại',
-                    'Reached the {max}-item limit of your plan',
-                    { max: planCfg.maxItems }
-                  )
-                : undefined
-            }
-            onClick={() => {
-              if (itemLimitReached) return;
-              setEditingItem(null);
-              setIsModalOpen(true);
-            }}
-            className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{tx('Thêm món mới', 'Add Item')}</span>
-          </button>
+          {canManageCatalog && (
+            <button
+              type="button"
+              data-testid="catalog-add-item-btn"
+              disabled={itemLimitReached}
+              aria-describedby={
+                itemLimitReached ? 'catalog-item-limit-hint' : undefined
+              }
+              title={
+                itemLimitReached
+                  ? tx(
+                      'Đã đạt giới hạn {max} món của gói hiện tại',
+                      'Reached the {max}-item limit of your plan',
+                      { max: planCfg.maxItems }
+                    )
+                  : undefined
+              }
+              onClick={() => {
+                if (!canManageCatalog || itemLimitReached) return;
+                setEditingItem(null);
+                setIsModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100"
+            >
+              <Plus className="h-4 w-4" />
+              <span>{tx('Thêm món mới', 'Add Item')}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {itemLimitReached && (
+      {canManageCatalog && itemLimitReached && (
         <div
           id="catalog-item-limit-hint"
           data-testid="catalog-item-limit-hint"
@@ -1973,13 +2011,15 @@ export default function DashboardCatalogPage() {
               { max: planCfg.maxItems, plan: planLabel }
             )}
           </span>
-          <Link
-            href="/dashboard/billing"
-            className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 font-black text-slate-950 hover:bg-amber-400"
-          >
-            <Crown className="h-3.5 w-3.5" aria-hidden="true" />
-            {tx('Nâng cấp gói', 'Upgrade plan')}
-          </Link>
+          {isShopOwner && (
+            <Link
+              href="/dashboard/billing"
+              className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 font-black text-slate-950 hover:bg-amber-400"
+            >
+              <Crown className="h-3.5 w-3.5" aria-hidden="true" />
+              {tx('Nâng cấp gói', 'Upgrade plan')}
+            </Link>
+          )}
         </div>
       )}
 
@@ -1995,7 +2035,7 @@ export default function DashboardCatalogPage() {
               : tx('{max} món', '{max} items', { max: planCfg.maxItems })}
           </span>
         </div>
-        {planTier !== 'premium' && (
+        {isShopOwner && planTier !== 'premium' && (
           <Link
             href="/dashboard/billing"
             className="text-xs font-bold text-emerald-600 hover:underline"
@@ -2183,10 +2223,15 @@ export default function DashboardCatalogPage() {
                 )}
           </p>
           <p className="text-xs text-slate-500 max-w-md mx-auto">
-            {tx(
-              'Bấm "Thêm món mới" hoặc dùng "Quét ảnh thực đơn" để thêm món và dịch tự động sang 8 ngôn ngữ.',
-              'Click "Add Item" or use "Scan Menu Photo" to add dishes with automatic 8-language translation.'
-            )}
+            {canManageCatalog || searchQuery.trim()
+              ? tx(
+                  'Bấm "Thêm món mới" hoặc dùng "Quét ảnh thực đơn" để thêm món và dịch tự động sang 8 ngôn ngữ.',
+                  'Click "Add Item" or use "Scan Menu Photo" to add dishes with automatic 8-language translation.'
+                )
+              : tx(
+                  'Liên hệ chủ quán hoặc quản lý thực đơn để thêm món mới.',
+                  'Contact the shop owner or catalog manager to add menu items.'
+                )}
           </p>
         </div>
       ) : (
@@ -2214,7 +2259,11 @@ export default function DashboardCatalogPage() {
                         ? 'true'
                         : 'false'
                   }
-                  disabled={Boolean(bulkActionPending) || pagedItems.length === 0}
+                  disabled={
+                    Boolean(bulkActionPending) ||
+                    !canAdjustInventory ||
+                    pagedItems.length === 0
+                  }
                   onChange={handleToggleSelectCurrentPage}
                   className="h-[1.15em] w-[1.15em] cursor-pointer rounded border-slate-300 accent-emerald-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                 />
@@ -2533,13 +2582,16 @@ export default function DashboardCatalogPage() {
                 canAdjustInventory={canAdjustInventory}
                 selected={selectedItemIds.has(item.id)}
                 onToggleSelect={handleToggleSelectItem}
-                selectionDisabled={Boolean(bulkActionPending)}
+                selectionDisabled={
+                  Boolean(bulkActionPending) || !canAdjustInventory
+                }
                 onToggleAvailable={handleToggleAvailable}
                 onUpdatePrice={handleUpdatePrice}
                 onUpdateStock={handleUpdateStock}
                 onUpdateImage={handleUpdateImage}
                 onToggleFeatured={handleToggleFeatured}
                 onEditTranslations={(target) => {
+                  if (!canManageCatalog) return;
                   setEditingItem(target);
                   setIsModalOpen(true);
                 }}
@@ -2629,7 +2681,7 @@ export default function DashboardCatalogPage() {
 
       {/* Translation & Item Editor Modal */}
       <TranslationEditorModal
-        isOpen={isModalOpen}
+        isOpen={canManageCatalog && isModalOpen}
         onClose={() => setIsModalOpen(false)}
         shopId={activeShop.id}
         vertical={activeShop.vertical}
@@ -2687,7 +2739,8 @@ export default function DashboardCatalogPage() {
 
       {/* Excel Bulk Import Modal */}
       <CatalogExcelImportModal
-        isOpen={isExcelModalOpen}
+        isOpen={canAdjustInventory && isExcelModalOpen}
+        canManageCatalog={canManageCatalog}
         onClose={() => setIsExcelModalOpen(false)}
         shopId={activeShop.id}
         shopName={activeShop.name}

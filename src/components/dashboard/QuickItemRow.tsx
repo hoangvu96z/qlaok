@@ -102,6 +102,7 @@ export function QuickItemRow({
   }, [item.stock_quantity]);
 
   const handlePriceBlurOrEnter = async () => {
+    if (!canManageCatalog) return;
     const parseResult = parseCatalogPriceValue(priceInput);
     if (!parseResult.valid) {
       // Invalid input: perform no request, preserve the invalid input with visible validation feedback,
@@ -138,7 +139,7 @@ export function QuickItemRow({
   };
 
   const handleStockBlurOrEnter = async () => {
-    if (!onUpdateStock) return;
+    if (!canAdjustInventory || !onUpdateStock) return;
     const parseResult = parseCatalogStockValue(stockInput);
     if (!parseResult.valid) {
       // Invalid input: perform no request, preserve the invalid input with visible validation feedback,
@@ -258,7 +259,9 @@ export function QuickItemRow({
               data-testid={`catalog-item-checkbox-${item.id}`}
               type="checkbox"
               checked={Boolean(selected)}
-              disabled={selectionDisabled}
+              disabled={
+                selectionDisabled || (!canManageCatalog && !canAdjustInventory)
+              }
               onChange={(e) => onToggleSelect?.(item.id, e.target.checked)}
               aria-label={tx('Chọn món {name}', 'Select item {name}', {
                 name: item.name_i18n.vi,
@@ -290,6 +293,7 @@ export function QuickItemRow({
           {/* Clickable Image Thumbnail with 1-Tap Upload Overlay */}
           {canManageCatalog && (
             <label
+              data-testid="item-thumbnail-upload"
               title={tx(
                 'Bấm để tải lên hoặc đổi ảnh món',
                 'Click to upload or change item photo'
@@ -400,20 +404,37 @@ export function QuickItemRow({
               </div>
 
               {/* Options badge */}
-              {item.options_json && item.options_json.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onEditTranslations(item)}
-                  className="inline-flex items-center gap-0.5 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.2 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100"
-                  title={tx('Xem tùy chọn & topping', 'View options & toppings')}
-                >
-                  <span>⚙️</span>
-                  <span>
-                    {item.options_json.length}{' '}
-                    {tx('nhóm tùy chọn', 'options')}
+              {item.options_json &&
+                item.options_json.length > 0 &&
+                (canManageCatalog ? (
+                  <button
+                    type="button"
+                    data-testid="item-options-badge-button"
+                    onClick={() => onEditTranslations(item)}
+                    className="inline-flex items-center gap-0.5 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.2 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100"
+                    title={tx(
+                      'Xem tùy chọn & topping',
+                      'View options & toppings'
+                    )}
+                  >
+                    <span>⚙️</span>
+                    <span>
+                      {item.options_json.length}{' '}
+                      {tx('nhóm tùy chọn', 'options')}
+                    </span>
+                  </button>
+                ) : (
+                  <span
+                    data-testid="item-options-badge-readonly"
+                    className="inline-flex items-center gap-0.5 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.2 text-[10px] font-bold text-indigo-800"
+                  >
+                    <span>⚙️</span>
+                    <span>
+                      {item.options_json.length}{' '}
+                      {tx('nhóm tùy chọn', 'options')}
+                    </span>
                   </span>
-                </button>
-              )}
+                ))}
 
               {/* Sold count */}
               {Boolean(item.sold_count) && (
@@ -442,6 +463,7 @@ export function QuickItemRow({
             <button
               type="button"
               role="switch"
+              data-testid="item-availability-switch"
               aria-checked={item.is_available}
               aria-label={
                 item.is_available
@@ -482,6 +504,7 @@ export function QuickItemRow({
             <div className="relative flex items-center">
               <input
                 id={`price-${item.id}`}
+                data-testid="item-price-input"
                 type="text"
                 inputMode="numeric"
                 value={priceInput}
@@ -554,6 +577,7 @@ export function QuickItemRow({
               </label>
               <input
                 id={`stock-${item.id}`}
+                data-testid="item-stock-input"
                 type="text"
                 inputMode="numeric"
                 value={stockInput}
@@ -616,6 +640,7 @@ export function QuickItemRow({
             {/* Featured toggle */}
             {canManageCatalog && <button
               type="button"
+              data-testid="item-featured-toggle"
               onClick={() => onToggleFeatured(item, !item.is_featured)}
               className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border transition-colors ${
                 item.is_featured
@@ -634,9 +659,11 @@ export function QuickItemRow({
             {/* Options & Translations */}
             {canManageCatalog && <button
               type="button"
+              data-testid="item-edit-translations-button"
               onClick={() => onEditTranslations(item)}
               className="inline-flex h-8 items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
               title={tx('Tùy chọn & Dịch 8 ngôn ngữ', 'Options & 8-language translations')}
+              aria-label={tx('Tùy chọn & Dịch 8 ngôn ngữ', 'Options & 8-language translations')}
             >
               <Languages className="h-3.5 w-3.5" />
               <span className="hidden xl:inline">{tx('Tùy chọn', 'Options')}</span>
@@ -645,6 +672,7 @@ export function QuickItemRow({
             {/* Photo upload action */}
             {canManageCatalog && (
             <label
+              data-testid="item-change-photo-action"
               className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 ${
                 uploadingPhoto ? 'pointer-events-none cursor-wait opacity-60' : 'cursor-pointer'
               }`}
@@ -672,6 +700,7 @@ export function QuickItemRow({
             {canManageCatalog && (
             <button
               type="button"
+              data-testid="item-delete-button"
               onClick={() => onDelete(item.id)}
               className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
               title={t('common.delete')}

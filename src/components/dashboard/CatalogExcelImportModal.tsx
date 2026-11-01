@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Upload,
   FileSpreadsheet,
@@ -27,6 +27,7 @@ import {
 
 interface CatalogExcelImportModalProps {
   isOpen: boolean;
+  canManageCatalog: boolean;
   onClose: () => void;
   shopId: string;
   shopName?: string;
@@ -37,6 +38,7 @@ interface CatalogExcelImportModalProps {
 
 export function CatalogExcelImportModal({
   isOpen,
+  canManageCatalog,
   onClose,
   shopId,
   shopName,
@@ -45,11 +47,15 @@ export function CatalogExcelImportModal({
   onSuccess,
 }: CatalogExcelImportModalProps) {
   const { t, tx } = useAppI18n();
+  const allowPriceChanges = Boolean(canManageCatalog);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const parseRequestIdRef = useRef(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [parsing, setParsing] = useState(false);
-  const [validationResult, setValidationResult] =
-    useState<CatalogImportValidationResult | null>(null);
+  const [validationState, setValidationState] = useState<{
+    result: CatalogImportValidationResult;
+    allowPriceChanges: boolean;
+  } | null>(null);
   const [filterTab, setFilterTab] = useState<'all' | 'valid' | 'invalid' | 'unchanged'>('all');
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -61,11 +67,112 @@ export function CatalogExcelImportModal({
   } | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
+  const validationResult =
+    validationState && validationState.allowPriceChanges === allowPriceChanges
+      ? validationState.result
+      : null;
+
+  const processFile = useCallback(
+    async (file: File, priceAllowed: boolean) => {
+      const requestId = ++parseRequestIdRef.current;
+      setApplyError(null);
+      setHasApplied(false);
+      setPartialResult(null);
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        setValidationState({
+          allowPriceChanges: priceAllowed,
+          result: {
+            ok: false,
+            totalRows: 0,
+            validRows: [],
+            invalidRows: [],
+            unchangedRows: [],
+            errors: [
+              tx(
+                'Chỉ chấp nhận file định dạng Excel (.xlsx).',
+                'Only Excel (.xlsx) files are accepted.'
+              ),
+            ],
+          },
+        });
+        setSelectedFile(file);
+        return;
+      }
+
+      if (file.size > MAX_CATALOG_EXCEL_FILE_SIZE) {
+        setValidationState({
+          allowPriceChanges: priceAllowed,
+          result: {
+            ok: false,
+            totalRows: 0,
+            validRows: [],
+            invalidRows: [],
+            unchangedRows: [],
+            errors: [
+              tx(
+                'Dung lượng file vượt quá giới hạn 5MB.',
+                'File size exceeds the 5MB limit.'
+              ),
+            ],
+          },
+        });
+        setSelectedFile(file);
+        return;
+      }
+
+      setSelectedFile(file);
+      setParsing(true);
+      try {
+        const buffer = await file.arrayBuffer();
+        const res = await parseAndValidateCatalogExcel(buffer, currentItems, {
+          allowPriceChanges: priceAllowed,
+        });
+        if (parseRequestIdRef.current !== requestId) return;
+        setValidationState({
+          allowPriceChanges: priceAllowed,
+          result: res,
+        });
+        if (res.invalidRows.length > 0 && res.validRows.length === 0) {
+          setFilterTab('invalid');
+        } else {
+          setFilterTab('all');
+        }
+      } catch (err) {
+        if (parseRequestIdRef.current !== requestId) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setValidationState({
+          allowPriceChanges: priceAllowed,
+          result: {
+            ok: false,
+            totalRows: 0,
+            validRows: [],
+            invalidRows: [],
+            unchangedRows: [],
+            errors: [
+              tx(
+                'Lỗi khi xử lý file: {msg}',
+                'Error processing file: {msg}',
+                { msg }
+              ),
+            ],
+          },
+        });
+      } finally {
+        if (parseRequestIdRef.current === requestId) {
+          setParsing(false);
+        }
+      }
+    },
+    [currentItems, tx]
+  );
+
   // Reset state when modal opens or closes
   useEffect(() => {
     if (!isOpen) {
+      parseRequestIdRef.current++;
       setSelectedFile(null);
-      setValidationResult(null);
+      setValidationState(null);
+      setParsing(false);
       setFilterTab('all');
       setApplying(false);
       setApplyError(null);
@@ -74,8 +181,17 @@ export function CatalogExcelImportModal({
     }
   }, [isOpen]);
 
+  // Re-validate immediately if catalog.manage permission changes while a file is loaded
+  useEffect(() => {
+    if (!isOpen || !selectedFile || applying) return;
+    if (validationState && validationState.allowPriceChanges !== allowPriceChanges) {
+      void processFile(selectedFile, allowPriceChanges);
+    }
+  }, [allowPriceChanges, applying, isOpen, processFile, selectedFile, validationState]);
+
   // Esc key dismiss
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen && !applying) {
         onClose();
@@ -89,82 +205,10 @@ export function CatalogExcelImportModal({
 
   if (!isOpen) return null;
 
-  const handleProcessFile = async (file: File) => {
-    setApplyError(null);
-    setHasApplied(false);
-    setPartialResult(null);
-    if (!file.name.toLowerCase().endsWith('.xlsx')) {
-      setValidationResult({
-        ok: false,
-        totalRows: 0,
-        validRows: [],
-        invalidRows: [],
-        unchangedRows: [],
-        errors: [
-          tx(
-            'Chỉ chấp nhận file định dạng Excel (.xlsx).',
-            'Only Excel (.xlsx) files are accepted.'
-          ),
-        ],
-      });
-      setSelectedFile(file);
-      return;
-    }
-
-    if (file.size > MAX_CATALOG_EXCEL_FILE_SIZE) {
-      setValidationResult({
-        ok: false,
-        totalRows: 0,
-        validRows: [],
-        invalidRows: [],
-        unchangedRows: [],
-        errors: [
-          tx(
-            'Dung lượng file vượt quá giới hạn 5MB.',
-            'File size exceeds the 5MB limit.'
-          ),
-        ],
-      });
-      setSelectedFile(file);
-      return;
-    }
-
-    setSelectedFile(file);
-    setParsing(true);
-    try {
-      const buffer = await file.arrayBuffer();
-      const res = await parseAndValidateCatalogExcel(buffer, currentItems);
-      setValidationResult(res);
-      if (res.invalidRows.length > 0 && res.validRows.length === 0) {
-        setFilterTab('invalid');
-      } else {
-        setFilterTab('all');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setValidationResult({
-        ok: false,
-        totalRows: 0,
-        validRows: [],
-        invalidRows: [],
-        unchangedRows: [],
-        errors: [
-          tx(
-            'Lỗi khi xử lý file: {msg}',
-            'Error processing file: {msg}',
-            { msg }
-          ),
-        ],
-      });
-    } finally {
-      setParsing(false);
-    }
-  };
-
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      void handleProcessFile(file);
+      void processFile(file, allowPriceChanges);
     }
   };
 
@@ -173,7 +217,7 @@ export function CatalogExcelImportModal({
     setDragOver(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      void handleProcessFile(file);
+      void processFile(file, allowPriceChanges);
     }
   };
 
@@ -187,15 +231,19 @@ export function CatalogExcelImportModal({
       return;
     }
 
+    const itemsPayload = buildCatalogExcelBulkUpdateItems(
+      validationResult.validRows,
+      { allowPriceChanges }
+    );
+    if (itemsPayload.length === 0) {
+      return;
+    }
+
     setApplying(true);
     setApplyError(null);
     setPartialResult(null);
 
     try {
-      const itemsPayload = buildCatalogExcelBulkUpdateItems(
-        validationResult.validRows
-      );
-
       const res = await fetch('/api/catalog', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -305,13 +353,20 @@ export function CatalogExcelImportModal({
                 id="catalog-excel-modal-title"
                 className="text-base font-bold text-slate-900"
               >
-                {tx('Nhập giá & tồn kho từ Excel', 'Import Price & Stock from Excel')}
+                {allowPriceChanges
+                  ? tx('Nhập giá & tồn kho từ Excel', 'Import Price & Stock from Excel')
+                  : tx('Nhập tồn kho từ Excel', 'Import Stock from Excel')}
               </h2>
               <p className="text-xs text-slate-500">
-                {tx(
-                  'Cập nhật hàng loạt nhanh chóng qua file .xlsx (chỉ cập nhật giá & tồn kho)',
-                  'Bulk update price and stock quickly via .xlsx file (only modifies price & stock)'
-                )}
+                {allowPriceChanges
+                  ? tx(
+                      'Cập nhật hàng loạt nhanh chóng qua file .xlsx (chỉ cập nhật giá & tồn kho)',
+                      'Bulk update price and stock quickly via .xlsx file (only modifies price & stock)'
+                    )
+                  : tx(
+                      'Cập nhật tồn kho hàng loạt qua file .xlsx (chỉ nhập tồn kho, bỏ qua cột giá bán)',
+                      'Bulk update stock quickly via .xlsx file (imports stock only; price column is ignored)'
+                    )}
               </p>
             </div>
           </div>
@@ -347,6 +402,7 @@ export function CatalogExcelImportModal({
               >
                 <input
                   ref={fileInputRef}
+                  data-testid="catalog-excel-file-input"
                   type="file"
                   accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   className="hidden"
@@ -372,10 +428,15 @@ export function CatalogExcelImportModal({
                         )}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
-                        {tx(
-                          'Hỗ trợ file .xlsx tối đa 5MB và 2,000 món. Cần có các cột: Mã món (Item ID), Giá bán, Tồn kho.',
-                          'Supports .xlsx up to 5MB and 2,000 rows. Required columns: Item ID, Price, Stock.'
-                        )}
+                        {allowPriceChanges
+                          ? tx(
+                              'Hỗ trợ file .xlsx tối đa 5MB và 2,000 món. Cần có các cột: Mã món (Item ID), Giá bán, Tồn kho.',
+                              'Supports .xlsx up to 5MB and 2,000 rows. Required columns: Item ID, Price, Stock.'
+                            )
+                          : tx(
+                              'Hỗ trợ file .xlsx tối đa 5MB và 2,000 món. Cần có các cột: Mã món (Item ID), Tồn kho (cột Giá bán không bắt buộc và sẽ được bỏ qua).',
+                              'Supports .xlsx up to 5MB and 2,000 rows. Required columns: Item ID, Stock (Price column is optional and ignored).'
+                            )}
                       </p>
                     </div>
                   </div>
@@ -426,8 +487,9 @@ export function CatalogExcelImportModal({
                   type="button"
                   disabled={applying}
                   onClick={() => {
+                    parseRequestIdRef.current++;
                     setSelectedFile(null);
-                    setValidationResult(null);
+                    setValidationState(null);
                     setApplyError(null);
                   }}
                   className="inline-flex items-center gap-1 font-bold text-slate-600 hover:text-slate-900 shrink-0"
@@ -527,34 +589,68 @@ export function CatalogExcelImportModal({
                   </div>
 
                   {/* Safety note */}
-                  <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-medium text-amber-900">
+                  <div
+                    data-testid="catalog-excel-safety-note"
+                    className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-medium text-amber-900"
+                  >
                     <Info className="h-3.5 w-3.5 shrink-0 text-amber-600" />
                     <span>
-                      {tx(
-                        'Các dòng lỗi sẽ bị bỏ qua khi áp dụng. Tên món, danh mục, quyền và tùy chọn khác được giữ nguyên 100%.',
-                        'Error rows are skipped during apply. Item names, categories, permissions, and options remain 100% untouched.'
-                      )}
+                      {allowPriceChanges
+                        ? tx(
+                            'Các dòng lỗi sẽ bị bỏ qua khi áp dụng. Tên món, danh mục, quyền và tùy chọn khác được giữ nguyên 100%.',
+                            'Error rows are skipped during apply. Item names, categories, permissions, and options remain 100% untouched.'
+                          )
+                        : tx(
+                            'Chế độ chỉ nhập tồn kho: chỉ cập nhật số lượng tồn kho, mọi thay đổi ở cột Giá bán đều bị bỏ qua. Các dòng lỗi sẽ bị bỏ qua và giá bán, tên món, danh mục, tùy chọn được giữ nguyên 100%.',
+                            'Stock-only import mode: only stock quantities are imported and any Price column values are ignored. Error rows are skipped and prices, names, categories, and options remain 100% untouched.'
+                          )}
                     </span>
                   </div>
 
                   {/* Preview Table */}
                   <div className="rounded-2xl border border-slate-200 overflow-hidden">
-                    <div className="max-h-72 overflow-y-auto">
-                      <table className="w-full text-left border-collapse text-xs">
+                    <div
+                      tabIndex={0}
+                      role="region"
+                      aria-label={
+                        allowPriceChanges
+                          ? tx(
+                              'Bảng xem trước giá và tồn kho từ Excel',
+                              'Price and stock Excel preview table'
+                            )
+                          : tx(
+                              'Bảng xem trước tồn kho từ Excel',
+                              'Stock-only Excel preview table'
+                            )
+                      }
+                      className="max-h-72 overflow-y-auto"
+                    >
+                      <table
+                        data-testid="catalog-excel-preview-table"
+                        className="w-full text-left border-collapse text-xs"
+                      >
                         <thead className="sticky top-0 bg-slate-100 text-slate-700 font-bold border-b border-slate-200 z-10">
                           <tr>
-                            <th className="py-2.5 px-3 w-12 text-center">#</th>
-                            <th className="py-2.5 px-3">{tx('Món ăn', 'Item')}</th>
-                            <th className="py-2.5 px-3">{tx('Giá bán', 'Price')}</th>
-                            <th className="py-2.5 px-3">{tx('Tồn kho', 'Stock')}</th>
-                            <th className="py-2.5 px-3">{tx('Trạng thái', 'Status')}</th>
+                            <th scope="col" className="py-2.5 px-3 w-12 text-center">#</th>
+                            <th scope="col" className="py-2.5 px-3">{tx('Món ăn', 'Item')}</th>
+                            {allowPriceChanges && (
+                              <th scope="col" className="py-2.5 px-3">
+                                {tx('Giá bán', 'Price')}
+                              </th>
+                            )}
+                            <th scope="col" className="py-2.5 px-3">
+                              {allowPriceChanges
+                                ? tx('Tồn kho', 'Stock')
+                                : tx('Tồn kho cập nhật', 'Stock update')}
+                            </th>
+                            <th scope="col" className="py-2.5 px-3">{tx('Trạng thái', 'Status')}</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {rowsToDisplay.length === 0 ? (
                             <tr>
                               <td
-                                colSpan={5}
+                                colSpan={allowPriceChanges ? 5 : 4}
                                 className="py-6 text-center text-slate-400 font-medium"
                               >
                                 {tx('Không có dòng nào trong tab này.', 'No rows in this tab.')}
@@ -594,29 +690,31 @@ export function CatalogExcelImportModal({
                                       ID: {row.rawId}
                                     </p>
                                   </td>
-                                  <td className="py-2 px-3">
-                                    {row.matchedItem && row.parsedPrice !== undefined ? (
-                                      row.priceChanged ? (
-                                        <div className="flex items-center gap-1 font-semibold">
-                                          <span className="line-through text-slate-400">
+                                  {allowPriceChanges && (
+                                    <td className="py-2 px-3">
+                                      {row.matchedItem && row.parsedPrice !== undefined ? (
+                                        row.priceChanged ? (
+                                          <div className="flex items-center gap-1 font-semibold">
+                                            <span className="line-through text-slate-400">
+                                              {row.matchedItem.price.toLocaleString('vi-VN')}đ
+                                            </span>
+                                            <ArrowRight className="h-3 w-3 text-emerald-600 shrink-0" />
+                                            <span className="font-bold text-emerald-700">
+                                              {row.parsedPrice.toLocaleString('vi-VN')}đ
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <span className="text-slate-600">
                                             {row.matchedItem.price.toLocaleString('vi-VN')}đ
                                           </span>
-                                          <ArrowRight className="h-3 w-3 text-emerald-600 shrink-0" />
-                                          <span className="font-bold text-emerald-700">
-                                            {row.parsedPrice.toLocaleString('vi-VN')}đ
-                                          </span>
-                                        </div>
+                                        )
                                       ) : (
-                                        <span className="text-slate-600">
-                                          {row.matchedItem.price.toLocaleString('vi-VN')}đ
+                                        <span className="text-rose-600 font-mono">
+                                          {String(row.rawPrice ?? '')}
                                         </span>
-                                      )
-                                    ) : (
-                                      <span className="text-rose-600 font-mono">
-                                        {String(row.rawPrice ?? '')}
-                                      </span>
-                                    )}
-                                  </td>
+                                      )}
+                                    </td>
+                                  )}
                                   <td className="py-2 px-3">
                                     {row.matchedItem && row.errors.every((e) => !e.includes('Tồn kho')) ? (
                                       row.stockChanged ? (
@@ -751,6 +849,7 @@ export function CatalogExcelImportModal({
           {validationResult && validationResult.errors.length === 0 && (
             <button
               type="button"
+              data-testid="catalog-excel-apply-btn"
               disabled={applying || validationResult.validRows.length === 0 || hasApplied}
               onClick={handleApplyUpdates}
               className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-md hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
