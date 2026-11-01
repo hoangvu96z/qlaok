@@ -8548,16 +8548,82 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       pathMod.join(process.cwd(), 'src/app/(storefront)/s/[slug]/menu/page.tsx'),
       'utf8'
     );
+    const navStateSource = fsMod.readFileSync(
+      pathMod.join(process.cwd(), 'src/lib/storefront-navigation-state.ts'),
+      'utf8'
+    );
 
-    assert.match(doorSource, /resolveStorefrontCanonicalRedirect\(/);
-    assert.match(doorSource, /view:\s*'door'/);
-    assert.match(doorSource, /searchParams:\s*searchParams\.toString\(\)/);
-    assert.match(doorSource, /router\.replace\(canonicalRedirect\.canonicalUrl\)/);
+    assert.match(doorSource, /createStorefrontDoorCoordinator\(/);
+    assert.match(doorSource, /searchParams\.toString\(\)/);
+    assert.match(doorSource, /routerRef\.current\.replace\(url\)/);
 
-    assert.match(menuSource, /resolveStorefrontCanonicalRedirect\(/);
-    assert.match(menuSource, /view:\s*'menu'/);
-    assert.match(menuSource, /searchParams:\s*searchParams\.toString\(\)/);
-    assert.match(menuSource, /router\.replace\(canonicalRedirect\.canonicalUrl\)/);
+    assert.match(menuSource, /createStorefrontMenuCoordinator\(/);
+    assert.match(menuSource, /searchParams\.toString\(\)/);
+    assert.match(menuSource, /routerRef\.current\.replace\(url\)/);
+
+    assert.match(navStateSource, /resolveStorefrontCanonicalRedirect\(/);
+    assert.match(navStateSource, /view:\s*'door'/);
+    assert.match(navStateSource, /view:\s*'menu'/);
+
+    const {
+      createStorefrontDoorCoordinator,
+      createStorefrontMenuCoordinator,
+    } = await import('../src/lib/storefront-navigation-state');
+
+    const replacedDoorUrls: string[] = [];
+    const doorCoordinator = createStorefrontDoorCoordinator({
+      initialSlug: 'old-door-alias',
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            shop: { id: 'shop-canon-1', slug: 'canonical-shop', supported_langs: ['vi', 'en'] },
+            items: [],
+            posts: [],
+            ownerPlan: 'basic',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )) as typeof fetch,
+      onReplaceUrl: (url) => replacedDoorUrls.push(url),
+      trackDoorScan: () => {},
+    });
+    await doorCoordinator.navigate({
+      slug: 'old-door-alias',
+      searchParams: 'src=door&lang=en&utm_campaign=qr',
+      langParam: 'en',
+    });
+    assert.deepEqual(replacedDoorUrls, [
+      '/s/canonical-shop?src=door&lang=en&utm_campaign=qr',
+    ]);
+
+    const replacedMenuUrls: string[] = [];
+    const menuCoordinator = createStorefrontMenuCoordinator({
+      initialSlug: 'old-menu-alias',
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            shop: { id: 'shop-canon-1', slug: 'canonical-shop', supported_langs: ['vi', 'en'] },
+            categories: [],
+            items: [],
+            tables: [],
+            ownerPlan: 'basic',
+            tableQrVerified: true,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )) as typeof fetch,
+      onReplaceUrl: (url) => replacedMenuUrls.push(url),
+      trackTableScan: () => {},
+    });
+    await menuCoordinator.navigate({
+      slug: 'old-menu-alias',
+      searchParams: 'src=table&tableId=t1&sig=abc&lang=en',
+      tableId: 't1',
+      sig: 'abc',
+      langParam: 'en',
+      srcParam: 'table',
+    });
+    assert.deepEqual(replacedMenuUrls, [
+      '/s/canonical-shop/menu?src=table&tableId=t1&sig=abc&lang=en',
+    ]);
   });
 });
 

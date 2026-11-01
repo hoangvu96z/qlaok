@@ -795,27 +795,75 @@ test('storefront ownerPlan fallback and getAllowedLocalesForPlan fail closed to 
     'Explicit basic ownerPlan in storefront API payload must be capped at 3 languages'
   );
 
-  // 6. Source check: Verify neither door page nor menu page contains legacy `|| 'premium'` fallback
+  // 6. Source & behavioral check: Verify door page, menu page, and shared navigation coordinator
+  // never contain legacy `|| 'premium'` fallback and fail closed to `'free'` when ownerPlan is absent
   const fs = await import('node:fs');
   const doorPageSource = fs.readFileSync('src/app/(storefront)/s/[slug]/page.tsx', 'utf8');
   const menuPageSource = fs.readFileSync('src/app/(storefront)/s/[slug]/menu/page.tsx', 'utf8');
+  const navStateSource = fs.readFileSync('src/lib/storefront-navigation-state.ts', 'utf8');
 
+  for (const [label, src] of [
+    ['Door page', doorPageSource],
+    ['Menu page', menuPageSource],
+    ['Navigation coordinator', navStateSource],
+  ] as const) {
+    assert.equal(
+      src.includes("ownerPlan || 'premium'"),
+      false,
+      `${label} must not contain legacy ownerPlan || 'premium'`
+    );
+  }
   assert.equal(
-    doorPageSource.includes("data.ownerPlan || 'premium'"),
-    false,
-    "Door page must not contain legacy data.ownerPlan || 'premium'"
+    (navStateSource.match(/data\?\.ownerPlan \|\| 'free'/g) || []).length,
+    2,
+    "Door and Menu coordinators must both pass data?.ownerPlan || 'free'"
   );
-  assert.equal(
-    menuPageSource.includes("data.ownerPlan || 'premium'"),
-    false,
-    "Menu page must not contain legacy data.ownerPlan || 'premium'"
-  );
-  assert.ok(
-    doorPageSource.includes("data.ownerPlan || 'free'"),
-    "Door page must pass data.ownerPlan || 'free'"
-  );
-  assert.ok(
-    menuPageSource.includes("data.ownerPlan || 'free'"),
-    "Menu page must pass data.ownerPlan || 'free'"
-  );
+
+  const {
+    createStorefrontDoorCoordinator,
+    createStorefrontMenuCoordinator,
+  } = await import('../src/lib/storefront-navigation-state');
+
+  const doorCoord = createStorefrontDoorCoordinator({
+    initialSlug: 'plan-fallback-shop',
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          shop: {
+            id: 'shop-no-plan',
+            slug: 'plan-fallback-shop',
+            supported_langs: ['vi', 'en', 'ko', 'ja'],
+          },
+          items: [],
+          posts: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )) as typeof fetch,
+    trackDoorScan: () => {},
+  });
+  await doorCoord.navigate({ slug: 'plan-fallback-shop', langParam: 'ko' });
+  assert.deepEqual(doorCoord.getSnapshot().allowedLangs, ['vi']);
+  assert.equal(doorCoord.getSnapshot().locale, 'vi');
+
+  const menuCoord = createStorefrontMenuCoordinator({
+    initialSlug: 'plan-fallback-shop',
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          shop: {
+            id: 'shop-no-plan',
+            slug: 'plan-fallback-shop',
+            supported_langs: ['vi', 'en', 'ko', 'ja'],
+          },
+          categories: [],
+          items: [],
+          tables: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )) as typeof fetch,
+    trackTableScan: () => {},
+  });
+  await menuCoord.navigate({ slug: 'plan-fallback-shop', langParam: 'ko' });
+  assert.deepEqual(menuCoord.getSnapshot().allowedLangs, ['vi']);
+  assert.equal(menuCoord.getSnapshot().locale, 'vi');
 });

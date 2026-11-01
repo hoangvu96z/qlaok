@@ -1,6 +1,14 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -17,42 +25,38 @@ import {
 import {
   CartSelection,
   CatalogItem,
-  Category,
   ServiceRequestType,
-  Shop,
   ShopOrder,
-  ShopTable,
   SupportedLocale,
 } from '@/types/qlaok';
 import {
   checkShopOpenStatus,
-  DEFAULT_STOREFRONT_LOCALES,
-  detectVisitorLocale,
   formatCurrency,
   formatTableLabel,
   getGuestOrderLabels,
   getTableServiceRequestLabels,
   localizeStorefrontTableError,
-  normalizeShopSupportedLangs,
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
 import {
   buildStorefrontTableQueryKey,
-  buildTableQrVerificationKey,
   canUseStorefrontTableServiceActions,
-  createScopedTableQrVerification,
   filterSelectableTables,
-  resolveScopedTableQrVerification,
-  resolveStorefrontCanonicalRedirect,
   resolveStorefrontMenuTableState,
   shouldRefreshStorefrontCatalog,
   STOREFRONT_MENU_POLL_INTERVAL_MS,
   STOREFRONT_MENU_STALE_REFRESH_MS,
-  type ScopedTableQrVerification,
   type StorefrontTableChoice,
 } from '@/lib/table-helpers';
-import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
+import {
+  createStorefrontMenuCoordinator,
+  isCanonicalizingLoadedShop,
+  normalizeStorefrontSlug,
+  resolveStorefrontMenuRenderState,
+  StorefrontMenuCoordinatorContext,
+  type StorefrontMenuCoordinator,
+} from '@/lib/storefront-navigation-state';
 import { isLightColor } from '@/lib/theme-contrast';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -150,33 +154,53 @@ export default function StorefrontMenuPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
+  const searchParamsString = searchParams.toString();
 
   const qrTableIdParam = searchParams.get('tableId');
   const qrTableSigParam = searchParams.get('sig');
   const qrTableParam = searchParams.get('table');
   const langParam = searchParams.get('lang');
   const srcParam = searchParams.get('src');
-  // Only real table-QR entries count as scan_table (door page already logged scan_door)
-  const isTableQrEntry =
-    srcParam !== 'door' &&
-    (srcParam === 'table' || Boolean(qrTableIdParam) || Boolean(qrTableParam));
 
-  const [shop, setShop] = useState<Shop | null>(null);
-  const [resolvedRequestSlug, setResolvedRequestSlug] = useState<string | null>(
-    null
+  const routerRef = useRef(router);
+  routerRef.current = router;
+
+  const injectedCoordinator = useContext(StorefrontMenuCoordinatorContext);
+  const ownedCoordinatorRef = useRef<StorefrontMenuCoordinator | null>(null);
+  if (!injectedCoordinator && !ownedCoordinatorRef.current) {
+    ownedCoordinatorRef.current = createStorefrontMenuCoordinator({
+      initialSlug: slug,
+      onReplaceUrl: (url) => routerRef.current.replace(url),
+    });
+  }
+  const coordinator = injectedCoordinator ?? ownedCoordinatorRef.current!;
+
+  const snapshot = useSyncExternalStore(
+    coordinator.subscribe,
+    coordinator.getSnapshot,
+    coordinator.getSnapshot
   );
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [items, setItems] = useState<CatalogItem[]>([]);
-  const [tables, setTables] = useState<ShopTable[]>([]);
-  const [tablesLoadError, setTablesLoadError] = useState<string | null>(null);
-  const [tableQrVerification, setTableQrVerification] =
-    useState<ScopedTableQrVerification | null>(null);
-  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(
-    DEFAULT_STOREFRONT_LOCALES
-  );
-  const [locale, setLocale] = useState<SupportedLocale>('vi');
+  const {
+    shop,
+    categories,
+    items,
+    tables,
+    tablesLoadError,
+    tableQrVerification,
+    allowedLangs,
+    locale,
+    isLoading: loading,
+    isPromoPopupOpen,
+  } = resolveStorefrontMenuRenderState(snapshot, {
+    slug,
+    tableId: qrTableIdParam,
+    sig: qrTableSigParam,
+  });
+
   useEffect(() => {
-    document.documentElement.lang = locale;
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = locale;
+    }
   }, [locale]);
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | 'all'>(
@@ -186,7 +210,6 @@ export default function StorefrontMenuPage() {
   const [activeItem, setActiveItem] = useState<CatalogItem | null>(null);
   const [cart, setCart] = useState<CartSelection[]>([]);
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
-  const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<ShopOrder | null>(null);
   const [editingOrder, setEditingOrder] = useState<ShopOrder | null>(null);
   const [userTableChoice, setUserTableChoice] =
@@ -198,7 +221,6 @@ export default function StorefrontMenuPage() {
     requestType: ServiceRequestType;
     tableLabel: string;
   } | null>(null);
-  const [loading, setLoading] = useState(true);
   // Minute ticker so the opening-hours banner flips without a reload
   const [clockTick, setClockTick] = useState(() => Date.now());
   useEffect(() => {
@@ -206,15 +228,6 @@ export default function StorefrontMenuPage() {
     return () => clearInterval(timer);
   }, []);
 
-  const currentVerificationKey = useMemo(
-    () =>
-      buildTableQrVerificationKey({
-        shopSlug: slug,
-        tableId: qrTableIdParam,
-        sig: qrTableSigParam,
-      }),
-    [slug, qrTableIdParam, qrTableSigParam]
-  );
   const currentTableQueryKey = useMemo(
     () =>
       buildStorefrontTableQueryKey({
@@ -227,58 +240,50 @@ export default function StorefrontMenuPage() {
   );
 
   const activeSlugRef = useRef(slug);
-  const activeTableIdRef = useRef(qrTableIdParam);
-  const activeTableSigRef = useRef(qrTableSigParam);
-  const activeVerificationKeyRef = useRef(currentVerificationKey);
   activeSlugRef.current = slug;
-  activeTableIdRef.current = qrTableIdParam;
-  activeTableSigRef.current = qrTableSigParam;
-  activeVerificationKeyRef.current = currentVerificationKey;
 
   const previousSlugRef = useRef(slug);
   const previousTableQueryKeyRef = useRef(currentTableQueryKey);
   const restoredOrderShopRef = useRef<string | null>(null);
-  const requestSeqRef = useRef(0);
-  const initializedSlugRef = useRef<string | null>(null);
-  const trackedTableScanKeyRef = useRef<string | null>(null);
-  const inFlightFetchRef = useRef(false);
-  const lastFetchedAtRef = useRef(0);
 
-  // Reset shop-scoped cart/order/selection state when navigating to a different shop slug,
-  // and clear stale table QR verification / manual choice when table query params change on the same slug.
+  // Reset shop-scoped cart/order/modal/selection state when navigating to a different shop slug,
+  // and clear stale manual table choice / feedback when table query params change on the same slug.
   useEffect(() => {
-    const slugChanged = previousSlugRef.current !== slug;
+    const prevNormalized = normalizeStorefrontSlug(previousSlugRef.current);
+    const nextNormalized = normalizeStorefrontSlug(slug);
+    const slugChanged = prevNormalized !== nextNormalized;
     const tableQueryChanged =
       previousTableQueryKeyRef.current !== currentTableQueryKey;
 
     if (slugChanged) {
-      const prevNormalized = previousSlugRef.current.trim().toLowerCase();
-      const nextNormalized = slug.trim().toLowerCase();
+      const currentSnapshot = coordinator.getSnapshot();
       const isCanonicalizingSameShop =
-        Boolean(shop?.slug) &&
-        shop?.slug.trim().toLowerCase() === nextNormalized &&
-        resolvedRequestSlug === prevNormalized;
+        isCanonicalizingLoadedShop({
+          shop: currentSnapshot.shop,
+          resolvedRequestSlug: currentSnapshot.resolvedRequestSlug,
+          previousSlug: prevNormalized,
+          nextSlug: nextNormalized,
+        }) ||
+        normalizeStorefrontSlug(currentSnapshot.shop?.slug) === nextNormalized;
 
       previousSlugRef.current = slug;
       previousTableQueryKeyRef.current = currentTableQueryKey;
 
       if (isCanonicalizingSameShop) {
-        setResolvedRequestSlug(nextNormalized);
         return;
       }
 
+      restoredOrderShopRef.current = null;
       setCart([]);
       setLastOrder(null);
       setEditingOrder(null);
       setUserTableChoice(null);
       setServiceRequestFeedback(null);
+      setSubmittingServiceRequest(null);
       setSelectedCategoryId('all');
       setSearchQuery('');
-      setTables([]);
-      setTablesLoadError(null);
-      setTableQrVerification(null);
-      setResolvedRequestSlug(null);
-      setLoading(true);
+      setActiveItem(null);
+      setIsStaffModalOpen(false);
       return;
     }
 
@@ -286,212 +291,37 @@ export default function StorefrontMenuPage() {
       previousTableQueryKeyRef.current = currentTableQueryKey;
       setUserTableChoice(null);
       setServiceRequestFeedback(null);
-      setTableQrVerification((prev) => {
-        if (!prev) return null;
-        const stillMatches =
-          resolveScopedTableQrVerification(prev, {
-            shopSlug: slug,
-            shopId: shop?.id,
-            tableId: qrTableIdParam,
-            sig: qrTableSigParam,
-          }) !== null;
-        return stillMatches ? prev : null;
-      });
     }
-  }, [
-    slug,
-    currentTableQueryKey,
-    qrTableIdParam,
-    qrTableSigParam,
-    resolvedRequestSlug,
-    shop?.id,
-    shop?.slug,
-  ]);
-
-  const fetchCatalogData = useCallback(
-    async (isInitial = false) => {
-      const currentSlug = slug;
-      const requestedTableId = (qrTableIdParam ?? '').trim();
-      const requestedTableSig = (qrTableSigParam ?? '').trim();
-      const requestedVerificationKey = buildTableQrVerificationKey({
-        shopSlug: currentSlug,
-        tableId: requestedTableId,
-        sig: requestedTableSig,
-      });
-      const seq = ++requestSeqRef.current;
-      const isStaleRequest = () =>
-        activeSlugRef.current !== currentSlug ||
-        activeVerificationKeyRef.current !== requestedVerificationKey ||
-        seq !== requestSeqRef.current;
-
-      try {
-        inFlightFetchRef.current = true;
-        const shopUrlParams = new URLSearchParams({
-          slug: currentSlug,
-          view: 'menu',
-        });
-        if (requestedTableId) {
-          shopUrlParams.set('tableId', requestedTableId);
-          if (requestedTableSig) {
-            shopUrlParams.set('sig', requestedTableSig);
-          }
-        }
-        const res = await fetch(`/api/shops?${shopUrlParams.toString()}`, {
-          cache: 'no-store',
-        });
-        if (isStaleRequest()) {
-          return;
-        }
-        if (!res.ok) {
-          if (isInitial) setLoading(false);
-          return;
-        }
-        const data = await res.json();
-        if (isStaleRequest()) {
-          return;
-        }
-        lastFetchedAtRef.current = Date.now();
-
-        const loadedShop: Shop = data.shop;
-        // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
-        const planLangs = getAllowedLocalesForPlan(
-          data.ownerPlan || 'free',
-          normalizeShopSupportedLangs(loadedShop.supported_langs)
-        );
-
-        let loadedTables: ShopTable[] = [];
-        if (Array.isArray(data.tables)) {
-          loadedTables = data.tables;
-          setTablesLoadError(null);
-        } else if (loadedShop?.id) {
-          try {
-            const tblRes = await fetch(
-              `/api/tables?shopId=${encodeURIComponent(loadedShop.id)}`,
-              { cache: 'no-store' }
-            );
-            if (tblRes.ok) {
-              const tblData = await tblRes.json();
-              loadedTables = Array.isArray(tblData.tables)
-                ? tblData.tables
-                : [];
-              setTablesLoadError(null);
-            } else {
-              const errData = await tblRes.json().catch(() => null);
-              setTablesLoadError(
-                errData?.error ||
-                  'Không thể tải danh sách bàn của quán. Vui lòng thử lại.'
-              );
-            }
-          } catch {
-            setTablesLoadError(
-              'Không thể tải danh sách bàn của quán. Vui lòng thử lại.'
-            );
-          }
-        }
-
-        if (isStaleRequest()) {
-          return;
-        }
-
-        const activeOnlyTables = loadedTables.filter(
-          (t) =>
-            t &&
-            t.shop_id === loadedShop.id &&
-            Boolean(t.is_active) &&
-            !t.is_archived
-        );
-
-        const canonicalRedirect = resolveStorefrontCanonicalRedirect({
-          requestedSlug: currentSlug,
-          canonicalSlug: loadedShop.slug,
-          view: 'menu',
-          searchParams: searchParams.toString(),
-        });
-
-        setShop(loadedShop);
-        setResolvedRequestSlug(currentSlug.trim().toLowerCase());
-        setCategories(data.categories || []);
-        setItems(data.items || []);
-        setTables(activeOnlyTables);
-        setTableQrVerification(
-          createScopedTableQrVerification({
-            shopSlug: currentSlug,
-            canonicalSlug: loadedShop.slug,
-            shopId: loadedShop.id,
-            tableId: requestedTableId,
-            sig: requestedTableSig,
-            tableQrVerified:
-              typeof data.tableQrVerified === 'boolean'
-                ? data.tableQrVerified
-                : null,
-            activeSlug: activeSlugRef.current,
-            activeTableId: activeTableIdRef.current,
-            activeSig: activeTableSigRef.current,
-          })
-        );
-        setAllowedLangs(planLangs);
-
-        if (canonicalRedirect?.isAlias) {
-          router.replace(canonicalRedirect.canonicalUrl);
-        }
-
-        if (isInitial || initializedSlugRef.current !== loadedShop.id) {
-          initializedSlugRef.current = loadedShop.id;
-          const detected = detectVisitorLocale(planLangs, langParam);
-          setLocale(detected);
-          setLoading(false);
-
-          // Auto-open Welcome Popup if enabled and not dismissed in this session
-          const popupCfg = loadedShop.theme_config?.welcomePopup;
-          if (popupCfg?.enabled && popupCfg.title?.trim()) {
-            const seenKey = `qlaok_popup_seen_${loadedShop.id}`;
-            if (!sessionStorage.getItem(seenKey)) {
-              setIsPromoPopupOpen(true);
-            }
-          }
-
-          // Track QR Table Scan (skip door-page / explore navigation to avoid double counting)
-          const tableScanKey = `${loadedShop.id}:${requestedTableId}:${requestedTableSig}:${qrTableParam || ''}`;
-          if (isTableQrEntry && trackedTableScanKeyRef.current !== tableScanKey) {
-            trackedTableScanKeyRef.current = tableScanKey;
-            fetch('/api/analytics/track', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                shop_id: loadedShop.id,
-                event_type: 'scan_table',
-                visitor_lang: detected,
-              }),
-            }).catch(() => {});
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch storefront menu:', err);
-        if (isInitial && activeSlugRef.current === currentSlug) {
-          setLoading(false);
-        }
-      } finally {
-        if (seq === requestSeqRef.current) {
-          inFlightFetchRef.current = false;
-        }
-      }
-    },
-    [
-      slug,
-      router,
-      searchParams,
-      langParam,
-      isTableQrEntry,
-      qrTableIdParam,
-      qrTableSigParam,
-      qrTableParam,
-    ]
-  );
+  }, [coordinator, slug, currentTableQueryKey]);
 
   useEffect(() => {
-    lastFetchedAtRef.current = 0;
-    fetchCatalogData(true);
+    void coordinator.navigate({
+      slug,
+      searchParams: searchParamsString,
+      tableId: qrTableIdParam,
+      sig: qrTableSigParam,
+      table: qrTableParam,
+      langParam,
+      srcParam,
+    });
+  }, [
+    coordinator,
+    slug,
+    searchParamsString,
+    qrTableIdParam,
+    qrTableSigParam,
+    qrTableParam,
+    langParam,
+    srcParam,
+  ]);
 
+  useEffect(() => {
+    return () => {
+      coordinator.cancelInFlight();
+    };
+  }, [coordinator]);
+
+  useEffect(() => {
     const refreshIfEligible = (minAgeMs: number) => {
       const visibilityState =
         typeof document !== 'undefined' ? document.visibilityState : 'visible';
@@ -503,13 +333,13 @@ export default function StorefrontMenuPage() {
         shouldRefreshStorefrontCatalog({
           visibilityState,
           isOnline,
-          isFetchInFlight: inFlightFetchRef.current,
-          lastFetchedAtMs: lastFetchedAtRef.current,
+          isFetchInFlight: coordinator.isFetchInFlight(),
+          lastFetchedAtMs: coordinator.getLastFetchedAtMs(),
           nowMs: Date.now(),
           minAgeMs,
         })
       ) {
-        void fetchCatalogData(false);
+        void coordinator.refresh();
       }
     };
 
@@ -517,7 +347,7 @@ export default function StorefrontMenuPage() {
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       bc = new BroadcastChannel('qlaok_realtime_sync');
       bc.onmessage = () => {
-        void fetchCatalogData(false);
+        void coordinator.refresh();
       };
     }
 
@@ -551,7 +381,7 @@ export default function StorefrontMenuPage() {
       }
       clearInterval(interval);
     };
-  }, [fetchCatalogData]);
+  }, [coordinator]);
 
   // Refresh catalog/table availability when opening the order modal if data is stale
   useEffect(() => {
@@ -566,24 +396,35 @@ export default function StorefrontMenuPage() {
       shouldRefreshStorefrontCatalog({
         visibilityState,
         isOnline,
-        isFetchInFlight: inFlightFetchRef.current,
-        lastFetchedAtMs: lastFetchedAtRef.current,
+        isFetchInFlight: coordinator.isFetchInFlight(),
+        lastFetchedAtMs: coordinator.getLastFetchedAtMs(),
         nowMs: Date.now(),
         minAgeMs: STOREFRONT_MENU_STALE_REFRESH_MS,
       })
     ) {
-      void fetchCatalogData(false);
+      void coordinator.refresh();
     }
-  }, [isStaffModalOpen, fetchCatalogData]);
+  }, [isStaffModalOpen, coordinator]);
 
-  const normalizedCurrentSlug = slug.trim().toLowerCase();
-  const currentShopId =
-    shop &&
-    (!shop.slug ||
-      shop.slug.trim().toLowerCase() === normalizedCurrentSlug ||
-      resolvedRequestSlug === normalizedCurrentSlug)
-      ? shop.id
-      : null;
+  const currentShopId = shop?.id ?? null;
+
+  const refreshCatalog = useCallback(() => {
+    void coordinator.refresh();
+  }, [coordinator]);
+
+  const setLocale = useCallback(
+    (nextLocale: SupportedLocale) => {
+      coordinator.setLocale(nextLocale);
+    },
+    [coordinator]
+  );
+
+  const setIsPromoPopupOpen = useCallback(
+    (open: boolean) => {
+      coordinator.setPromoPopupOpen(open);
+    },
+    [coordinator]
+  );
 
   // Active tables sorted for display
   const activeTables = useMemo(() => {
@@ -650,6 +491,7 @@ export default function StorefrontMenuPage() {
     const stored = readStoredGuestOrder(shop.id);
     if (!stored) return;
     const shopId = shop.id;
+    const requestSlug = normalizeStorefrontSlug(slug);
     const controller = new AbortController();
     (async () => {
       try {
@@ -671,7 +513,9 @@ export default function StorefrontMenuPage() {
           clearStoredGuestOrder(shopId);
           return;
         }
-        if (activeSlugRef.current !== slug) return;
+        if (normalizeStorefrontSlug(activeSlugRef.current) !== requestSlug) {
+          return;
+        }
         setLastOrder((prev) =>
           prev ? prev : { ...data.order, tracking_token: stored.trackingToken }
         );
@@ -695,12 +539,9 @@ export default function StorefrontMenuPage() {
     setEditingOrder(null);
   }, [shop?.id]);
 
-  const handleClosePopup = () => {
-    setIsPromoPopupOpen(false);
-    if (shop && typeof window !== 'undefined') {
-      sessionStorage.setItem(`qlaok_popup_seen_${shop.id}`, '1');
-    }
-  };
+  const handleClosePopup = useCallback(() => {
+    coordinator.closePromoPopup();
+  }, [coordinator]);
 
   // Compute effective items with Flash Sale / Selected Item Discounts applied
   const effectiveItems: CatalogItem[] = useMemo(() => {
@@ -923,6 +764,7 @@ export default function StorefrontMenuPage() {
       return;
     }
 
+    const requestSlug = normalizeStorefrontSlug(slug);
     setSubmittingServiceRequest(requestType);
     try {
       const res = await fetch('/api/service-requests', {
@@ -937,6 +779,9 @@ export default function StorefrontMenuPage() {
         }),
       });
       const data = await res.json().catch(() => null);
+      if (normalizeStorefrontSlug(activeSlugRef.current) !== requestSlug) {
+        return;
+      }
       if (!res.ok || !data?.serviceRequest) {
         setServiceRequestFeedback({
           kind: 'error',
@@ -966,13 +811,18 @@ export default function StorefrontMenuPage() {
         }
       }
     } catch {
+      if (normalizeStorefrontSlug(activeSlugRef.current) !== requestSlug) {
+        return;
+      }
       setServiceRequestFeedback({
         kind: 'error',
         requestType,
         tableLabel: lockedTable.name,
       });
     } finally {
-      setSubmittingServiceRequest(null);
+      if (normalizeStorefrontSlug(activeSlugRef.current) === requestSlug) {
+        setSubmittingServiceRequest(null);
+      }
     }
   };
   const hasActivePopup = Boolean(
@@ -1390,7 +1240,7 @@ export default function StorefrontMenuPage() {
           <span>⚠️ {localizedTablesLoadError}</span>
           <button
             type="button"
-            onClick={() => fetchCatalogData(false)}
+            onClick={refreshCatalog}
             className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-rose-600 px-2.5 py-1 text-[11px] font-black text-white hover:bg-rose-500"
           >
             <RefreshCw className="h-3 w-3" />
@@ -1609,7 +1459,7 @@ export default function StorefrontMenuPage() {
         tableResolutionError={tableState.error}
         tablesLoadError={localizedTablesLoadError}
         onSelectTable={handleSelectTableChoice}
-        onRetryLoadTables={() => fetchCatalogData(false)}
+        onRetryLoadTables={refreshCatalog}
         initialTableLabel={
           tableState.selectedTable?.name ||
           (tableState.isTakeawaySelected ? 'Mang về' : '')
@@ -1622,7 +1472,7 @@ export default function StorefrontMenuPage() {
         onClearCart={() => setCart([])}
         onOrderCreated={(createdOrder) => {
           setLastOrder(createdOrder);
-          fetchCatalogData(false);
+          refreshCatalog();
         }}
         onDismissOrder={handleDismissGuestOrder}
       />

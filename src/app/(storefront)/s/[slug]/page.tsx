@@ -1,6 +1,12 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -16,16 +22,12 @@ import {
   ShoppingBag,
   Gift,
 } from 'lucide-react';
-import { Post, Shop, SupportedLocale } from '@/types/qlaok';
+import { SupportedLocale } from '@/types/qlaok';
 import {
   checkShopOpenStatus,
-  DEFAULT_STOREFRONT_LOCALES,
-  normalizeShopSupportedLangs,
-  detectVisitorLocale,
   tField,
   UI_LABELS,
 } from '@/lib/i18n-helper';
-import { getAllowedLocalesForPlan } from '@/lib/plan-limits';
 import { getContrastTextColor } from '@/lib/theme-contrast';
 import { LanguageSwitcher } from '@/components/storefront/LanguageSwitcher';
 import { WifiBadge } from '@/components/storefront/WifiBadge';
@@ -36,100 +38,68 @@ import {
   StorefrontPromoBanner,
   StorefrontWelcomePopup,
 } from '@/components/storefront/StorefrontCustomDecor';
-import { CatalogItem } from '@/types/qlaok';
-import { resolveStorefrontCanonicalRedirect } from '@/lib/table-helpers';
+import {
+  createStorefrontDoorCoordinator,
+  resolveStorefrontDoorRenderState,
+  StorefrontDoorCoordinatorContext,
+  type StorefrontDoorCoordinator,
+} from '@/lib/storefront-navigation-state';
 
 export default function StorefrontDoorPage() {
   const params = useParams<{ slug: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
   const slug = params?.slug || 'pho-hoi-an';
+  const searchParamsString = searchParams.toString();
+  const langParam = searchParams.get('lang');
 
-  const [shop, setShop] = useState<Shop | null>(null);
-  const [items, setItems] = useState<CatalogItem[]>([]);
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [allowedLangs, setAllowedLangs] = useState<SupportedLocale[]>(DEFAULT_STOREFRONT_LOCALES);
-  const [locale, setLocale] = useState<SupportedLocale>('vi');
-  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
-  const [loading, setLoading] = useState(true);
-  const [isPromoPopupOpen, setIsPromoPopupOpen] = useState(false);
-  const trackedScanShopIdRef = useRef<string | null>(null);
+  const routerRef = useRef(router);
+  routerRef.current = router;
 
-  const loadStorefront = useCallback(
-    async (isInitial = false) => {
-      try {
-        const res = await fetch(`/api/shops?slug=${encodeURIComponent(slug)}`, {
-          cache: 'no-store',
-        });
-        if (!res.ok) {
-          setLoading(false);
-          return;
-        }
-        const data = await res.json();
-        const loadedShop: Shop = data.shop;
-        const canonicalRedirect = resolveStorefrontCanonicalRedirect({
-          requestedSlug: slug,
-          canonicalSlug: loadedShop.slug,
-          view: 'door',
-          searchParams: searchParams.toString(),
-        });
-        if (canonicalRedirect?.isAlias) {
-          router.replace(canonicalRedirect.canonicalUrl);
-        }
+  const injectedCoordinator = useContext(StorefrontDoorCoordinatorContext);
+  const ownedCoordinatorRef = useRef<StorefrontDoorCoordinator | null>(null);
+  if (!injectedCoordinator && !ownedCoordinatorRef.current) {
+    ownedCoordinatorRef.current = createStorefrontDoorCoordinator({
+      initialSlug: slug,
+      onReplaceUrl: (url) => routerRef.current.replace(url),
+    });
+  }
+  const coordinator = injectedCoordinator ?? ownedCoordinatorRef.current!;
 
-        // Respect the shop's configured supported_langs (default ['vi','en']), capped by plan
-        const planLangs = getAllowedLocalesForPlan(
-          data.ownerPlan || 'free',
-          normalizeShopSupportedLangs(loadedShop.supported_langs)
-        );
-
-        setShop(loadedShop);
-        setItems(data.items || []);
-        setPosts(data.posts || []);
-        setAllowedLangs(planLangs);
-
-        if (isInitial) {
-          const detected = detectVisitorLocale(
-            planLangs,
-            searchParams.get('lang')
-          );
-          setLocale(detected);
-          setLoading(false);
-
-          // Auto-open Welcome Popup if enabled and not dismissed in this session
-          const popupCfg = loadedShop.theme_config?.welcomePopup;
-          if (popupCfg?.enabled && popupCfg.title?.trim()) {
-            const seenKey = `qlaok_popup_seen_${loadedShop.id}`;
-            if (!sessionStorage.getItem(seenKey)) {
-              setIsPromoPopupOpen(true);
-            }
-          }
-
-          if (trackedScanShopIdRef.current !== loadedShop.id) {
-            trackedScanShopIdRef.current = loadedShop.id;
-            // Track QR Door Scan
-            fetch('/api/analytics/track', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                shop_id: loadedShop.id,
-                event_type: 'scan_door',
-                visitor_lang: detected,
-              }),
-            }).catch(() => {});
-          }
-        }
-      } catch (err) {
-        console.error('Error loading storefront:', err);
-        setLoading(false);
-      }
-    },
-    [slug, router, searchParams]
+  const snapshot = useSyncExternalStore(
+    coordinator.subscribe,
+    coordinator.getSnapshot,
+    coordinator.getSnapshot
   );
+  const {
+    shop,
+    items,
+    posts,
+    allowedLangs,
+    locale,
+    isLoading: loading,
+    isPromoPopupOpen,
+  } = resolveStorefrontDoorRenderState(snapshot, slug);
 
   useEffect(() => {
-    loadStorefront(true);
-  }, [loadStorefront]);
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = locale;
+    }
+  }, [locale]);
+
+  useEffect(() => {
+    void coordinator.navigate({
+      slug,
+      searchParams: searchParamsString,
+      langParam,
+    });
+  }, [coordinator, slug, searchParamsString, langParam]);
+
+  useEffect(() => {
+    return () => {
+      coordinator.cancelInFlight();
+    };
+  }, [coordinator]);
 
   // Listen for live theme / promotion updates from owner dashboard
   useEffect(() => {
@@ -140,18 +110,29 @@ export default function StorefrontDoorPage() {
         ev.data?.type === 'shop_updated' ||
         ev.data?.type === 'catalog_changed'
       ) {
-        loadStorefront(false);
+        void coordinator.refresh();
       }
     };
     return () => bc.close();
-  }, [loadStorefront]);
+  }, [coordinator]);
 
-  const handleClosePopup = () => {
-    setIsPromoPopupOpen(false);
-    if (shop && typeof window !== 'undefined') {
-      sessionStorage.setItem(`qlaok_popup_seen_${shop.id}`, '1');
-    }
-  };
+  const setLocale = useCallback(
+    (nextLocale: SupportedLocale) => {
+      coordinator.setLocale(nextLocale);
+    },
+    [coordinator]
+  );
+
+  const setIsPromoPopupOpen = useCallback(
+    (open: boolean) => {
+      coordinator.setPromoPopupOpen(open);
+    },
+    [coordinator]
+  );
+
+  const handleClosePopup = useCallback(() => {
+    coordinator.closePromoPopup();
+  }, [coordinator]);
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
 
