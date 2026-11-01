@@ -9,7 +9,7 @@
 | Web Next.js 15 / React 19 / TypeScript | `src/app`, `src/components` | Marketing, auth, merchant dashboard, storefront, Super Admin |
 | Backend App Router | `src/app/api` | Xác thực, quyền, catalog, đơn, pricing, thanh toán, AI, upload |
 | Mobile Expo SDK 52 / React 18 / RN 0.76 | `mobile/App.tsx`, `mobile/src` | Đăng nhập kép Chủ quán (Supabase JWT) & Nhân viên (`staff-session` / `staff-api`), chọn shop cho chủ quán và gọi món hộ tại bàn cố định theo quán (`StaffWorkspace` + `AssistedOrderScreen`) |
-| Supabase | `supabase/migrations` | PostgreSQL, Auth, RLS, RPC atomic, Realtime |
+| Supabase | `supabase/migrations` | PostgreSQL, Auth, RLS, RPC atomic; order-event notifications via `LISTEN/NOTIFY` into the server SSE broker |
 | Tích hợp | `src/lib/gemini.ts`, `src/lib/r2.ts`, `src/lib/garage-storage.ts` | Gateway AI text/vision, OCR; ảnh dùng Garage object storage `qlaok-media`, R2 chỉ là fallback |
 | Kiểm tra/triển khai | `tests`, `mobile/tests`, `.github/workflows`, `scripts` | Regression cô lập, fixtures, migration và deploy |
 
@@ -20,16 +20,15 @@ flowchart TD
   Guest[Khách quét QR] --> API[Next API]
   Merchant[Dashboard và POS] --> API
   Admin[Super Admin] --> API
-  Mobile[Expo với Supabase JWT] --> API
+  Mobile[Expo: owner JWT cho SSE, staff session cho API nhân viên] --> API
   API --> Auth[server-auth và shop-permissions]
   API --> Core[db / mpos-store / order-pricing]
   Core --> DB[(Supabase PostgreSQL và RPC)]
-  DB --> Broker[order-events server broker]
+  DB --> Broker[PostgreSQL LISTEN/NOTIFY]
   Broker --> SSE[orders/events SSE]
   SSE --> Guest
   SSE --> Merchant
-  DB --> JWT[Realtime với JWT]
-  JWT --> Mobile
+  SSE --> Mobile
 ```
 
 ## Bản đồ route
@@ -127,11 +126,11 @@ Báo cáo doanh thu/tồn kho ở `computeShopRevenueAndInventoryStats` và `dbC
 
 ## Realtime
 
-Web dùng fetch SSE để gửi header auth. Merchant stream theo shop có `orders.view`; guest stream theo order có token riêng ở `x-tracking-token`. Broker server dùng backend key đăng ký Postgres Changes, phát event tối thiểu để client gọi API canonical; không gửi dữ liệu khách/thanh toán trong event.
+Web và owner-mobile dùng SSE để nhận order invalidation; merchant stream theo shop cần `orders.view`, guest stream theo order dùng token riêng ở `x-tracking-token`, còn mobile gửi owner access token qua header Bearer. Broker server mở kết nối PostgreSQL và `LISTEN/NOTIFY` theo migration 022, phát event tối thiểu để client gọi API canonical; không gửi dữ liệu khách/thanh toán trong event. Luồng order này không dùng Supabase Realtime/Postgres Changes trực tiếp.
 
 Heartbeat giữ socket, không scan DB. Quyền được tái kiểm định kỳ; stream có lifetime hữu hạn, queue bounded và cleanup. Kết nối upstream thật mới được báo ready. Khi lỗi, client fallback 30 giây; hidden tab ngắt kết nối. Đổi shop loại response cũ, đổi ngôn ngữ không dựng lại subscription. Xem [REALTIME_NOTES](REALTIME_NOTES.md).
 
-Mobile `useShopRealtimeOrders` kết nối SSE đã xác thực (`GET /api/orders/events?shopId=...`) bằng Bearer token phiên chủ quán (`getOwnerAccessToken()`), debounce 200ms, canonical reload qua API, fallback 30 giây khi mất kết nối/HTTP sync lỗi và dừng khi background.
+Mobile `useShopRealtimeOrders` kết nối SSE đã xác thực (`GET /api/orders/events?shopId=...`) bằng owner Supabase access token (`getOwnerAccessToken()`) trong header Bearer, debounce 200ms, canonical reload qua API, fallback 30 giây khi mất kết nối/HTTP sync lỗi và dừng khi background.
 
 ## Hai miền ngôn ngữ
 
@@ -143,7 +142,7 @@ Chi tiết: [I18N_NOTES](I18N_NOTES.md). Gói Free/Basic/Premium hiện có maxL
 
 ## Schema và rollout
 
-Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`; 010 shop_order_stats_summary thêm index tổng hợp và RPC `public.get_shop_order_stats_summary` (chỉ server thực thi) tính doanh thu/số lượng đơn toàn lịch sử và cửa sổ 7 ngày theo giờ Việt Nam (`UTC+7`); 011 sepay_order_reconciliation thêm `public.shop_sepay_configs` (lưu secret mã hóa AES-256-GCM với RLS server-only), trigger chặn ghi secret SePay vào `shops.theme_config`, bảng sổ sự kiện idempotent `public.sepay_webhook_events` và RPC nguyên tử `public.reconcile_sepay_order_payment_atomic`; 012 table_floor_plan thêm tọa độ bàn và index; 013 opening_hours_confirmed lưu xác nhận giờ mở cửa; 014 shop_slug_aliases bảo lưu bí danh slug; 015 atomic_payment_completion hoàn tất thanh toán SaaS nguyên tử; 016 order_workflow_and_label_printing thêm trường quy trình và in tem; 017 order_workflow_rpc cập nhật RPC lưu các trường đó; 018 shop_staff_accounts bổ sung tài khoản nhân viên và giới hạn đăng nhập; 019 revoke_staff_trigger_execute thu hồi EXECUTE trên trigger tài khoản nhân viên; 020 remove_legacy_base64_images xóa URI ảnh Base64 khỏi cột ảnh; 021 zitadel_identity_mapping ánh xạ `zitadel_sub`; 022 postgres_realtime_notifications phát sự kiện `LISTEN/NOTIFY`; 023 restore_record_staff_login_failure_atomic khôi phục RPC ghi nhận thất bại đăng nhập nhân viên nguyên tử; 20261028000100 analytics_atomic_view_count tăng lượt xem món nguyên tử; 20261028000200 floor_plan_active_orders_index giới hạn index sơ đồ bàn cho đơn còn hiệu lực/chưa thanh toán; 20261028000300 orders_order_code_unique ngăn collision mã đơn đồng thời và dừng an toàn nếu mã lịch sử trùng; 20261028000400 orders_pos_idempotency_prefix_unique chống đụng độ idempotency POS; 20261029000100 bulk_set_items_availability_atomic cập nhật trạng thái còn hàng hàng loạt nguyên tử; 20261030000100 order_audit_logs_subjects mở rộng `public.order_audit_logs` cho đơn/yêu cầu phục vụ bàn và tạo `public.admin_audit_logs` append-only, chỉ service role ghi/đọc; 20261030000200 reload_postgrest_schema_cache phát `NOTIFY pgrst, 'reload schema'` idempotent không đổi dữ liệu để làm mới schema cache PostgREST; 20261030000300 admin_owner_invitation_claims đánh dấu lời mời chủ quán do Super Admin tạo và chặn client tự thay đổi cờ mời.
+Migration theo thứ tự README: 001 nền tảng; 002 orders/stock; 002z archive/reconcile bank refs legacy; 003 RLS và atomic mPOS; 004 memberships/billing/payments/audit; 005 order commit; 006 orders realtime publication; 007 shop_tables, orders.table_id và mở rộng RPC để giữ định danh bàn; 008 mobile_push_tokens lưu Expo push token với RLS server-only; 009 table_service_requests lưu yêu cầu phục vụ/xin hóa đơn tại bàn với RLS cho nhân sự `orders.view`, trigger chặn client mutate trực tiếp và thêm vào publication `supabase_realtime`; 010 shop_order_stats_summary thêm index tổng hợp và RPC `public.get_shop_order_stats_summary` (chỉ server thực thi) tính doanh thu/số lượng đơn toàn lịch sử và cửa sổ 7 ngày theo giờ Việt Nam (`UTC+7`); 011 sepay_order_reconciliation thêm `public.shop_sepay_configs` (lưu secret mã hóa AES-256-GCM với RLS server-only), trigger chặn ghi secret SePay vào `shops.theme_config`, bảng sổ sự kiện idempotent `public.sepay_webhook_events` và RPC nguyên tử `public.reconcile_sepay_order_payment_atomic`; 012 table_floor_plan thêm tọa độ bàn và index; 013 opening_hours_confirmed lưu xác nhận giờ mở cửa; 014 shop_slug_aliases bảo lưu bí danh slug; 015 atomic_payment_completion hoàn tất thanh toán SaaS nguyên tử; 016 order_workflow_and_label_printing thêm trường quy trình và in tem; 017 order_workflow_rpc cập nhật RPC lưu các trường đó; 018 shop_staff_accounts bổ sung tài khoản nhân viên và giới hạn đăng nhập; 019 revoke_staff_trigger_execute thu hồi EXECUTE trên trigger tài khoản nhân viên; 020 remove_legacy_base64_images xóa URI ảnh Base64 khỏi cột ảnh; 021 zitadel_identity_mapping ánh xạ `zitadel_sub`; 022 postgres_realtime_notifications phát sự kiện `LISTEN/NOTIFY`; 023 restore_record_staff_login_failure_atomic khôi phục RPC ghi nhận thất bại đăng nhập nhân viên nguyên tử; 20261028000100 analytics_atomic_view_count tăng lượt xem món nguyên tử; 20261028000200 floor_plan_active_orders_index giới hạn index sơ đồ bàn cho đơn còn hiệu lực/chưa thanh toán; 20261028000300 orders_order_code_unique ngăn collision mã đơn đồng thời và dừng an toàn nếu mã lịch sử trùng; 20261028000400 orders_pos_idempotency_prefix_unique chống đụng độ idempotency POS; 20261029000100 bulk_set_items_availability_atomic cập nhật trạng thái còn hàng hàng loạt nguyên tử; 20261030000100 order_audit_logs_subjects mở rộng `public.order_audit_logs` cho đơn/yêu cầu phục vụ bàn và tạo `public.admin_audit_logs` append-only, chỉ service role ghi/đọc; 20261030000200 reload_postgrest_schema_cache phát `NOTIFY pgrst, 'reload schema'` idempotent không đổi dữ liệu để làm mới schema cache PostgREST; 20261030000300 admin_owner_invitation_claims đánh dấu lời mời chủ quán do Super Admin tạo và chặn client tự thay đổi cờ mời; 20261101000100 analytics_event_view_count_atomic ghi analytics event và tăng lượt xem món trong cùng RPC nguyên tử.
 
 Đọc SQL trực tiếp vì SQL không nằm trong graph hiện tại. Chạy `test:sql` trên PGlite để kiểm migration/RLS mà không sửa DB thật. Chuyển từ legacy local orders cần backup/đối chiếu dữ liệu; archive bank-ref không tự xác nhận giao dịch đúng/sai.
 
@@ -155,7 +154,7 @@ CI verify → migrate → deploy đúng SHA, sau restart kiểm subscription th�
 - Thay đổi catalog độc lập chưa có luồng stream riêng; entry/manual refresh vẫn cần thiết.
 - Payment ledger/audit transaction hoàn chỉnh cho chốt ca chưa xong; không mô tả là hệ thống kế toán hoàn chỉnh.
 - Chưa chứng minh máy in, iOS/Android thật và đối soát ngân hàng qua test local.
-- `npm run lint` cần chỉnh toolchain riêng; hiện không phải gate đã kiểm chứng.
+- `npm run lint` hiện chạy local và pass với 0 lỗi, 37 warnings ở lần kiểm tra 2026-11-01. GitHub Actions không có step `npm run lint` riêng; `next build` vẫn chạy lint/type checks.
 
 ## Quản lý bàn, QR, sơ đồ mặt bằng và báo cáo (22/10/2026)
 

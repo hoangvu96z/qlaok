@@ -15,7 +15,7 @@ Read and follow [CODEGRAPH_WORKFLOW.md](docs/CODEGRAPH_WORKFLOW.md) before any c
 - Read README.md, ARCHITECTURE.md, and relevant domain docs before changing behavior.
 - The server controls pricing, inventory, membership permissions, discounts, and financial state transitions. Fulfillment and payment are independent; completing service must not mark an order paid.
 - Never report successful writes after DB failures or restore permissions from local fallback. Never weaken RLS to enable realtime.
-- Web realtime uses the SSE broker; mobile uses Supabase JWT. Language changes must not reset drafts or recreate subscriptions.
+- Web and owner-mobile order realtime use the `/api/orders/events` SSE broker; mobile authenticates that stream with the owner's Supabase JWT as a Bearer token. The server emits order invalidations from PostgreSQL `LISTEN/NOTIFY`; do not use Supabase Realtime/Postgres Changes for order updates. Language changes must not reset drafts or recreate subscriptions.
 - Never log or commit `.env`, tokens, service-role keys, or `.local-db` data. Never expose backend keys through `NEXT_PUBLIC_*` or `EXPO_PUBLIC_*`.
 - Run relevant README checks; update docs when routes, schema, env, scripts, or behavior change. Do not commit, push, deploy, or migrate production unless requested; pushing main triggers deployment.
 
