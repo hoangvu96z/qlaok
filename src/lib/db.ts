@@ -2008,14 +2008,13 @@ export async function dbGetShopPosts(shopId: string): Promise<Post[]> {
 
 export async function dbUpsertPost(
   post: Partial<Post> & { shop_id: string }
-): Promise<Post> {
+): Promise<Post | null> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
+  const suppliedId = typeof post.id === 'string' ? post.id.trim() : '';
 
   const payload: Post = {
-    id:
-      post.id ||
-      `post-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: suppliedId || `post-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     shop_id: post.shop_id,
     title_i18n: post.title_i18n || { vi: '' },
     content_i18n: post.content_i18n || { vi: '' },
@@ -2025,12 +2024,37 @@ export async function dbUpsertPost(
     created_at: post.created_at || new Date().toISOString(),
   };
 
+  if (suppliedId) {
+    const { data: existing, error: lookupError } = await sb
+      .from('posts')
+      .select('id, shop_id')
+      .eq('id', suppliedId)
+      .maybeSingle();
+
+    if (lookupError) throw new Error(lookupError.message);
+    if (!existing || existing.shop_id !== payload.shop_id) return null;
+
+    const { data, error } = await sb
+      .from('posts')
+      .update(payload)
+      .eq('id', suppliedId)
+      .eq('shop_id', payload.shop_id)
+      .select('*')
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    return (data as Post | null) ?? null;
+  }
+
+  // Only requests without an ID create posts. Explicit IDs are update identities,
+  // so a missing or cross-shop ID cannot turn into a create or re-parenting upsert.
   const { data, error } = await sb
     .from('posts')
-    .upsert(payload, { onConflict: 'id' })
+    .insert(payload)
     .select('*')
     .single();
 
+  if (error?.code === '23505') return null;
   if (error) throw new Error(error.message);
   return data as Post;
 }

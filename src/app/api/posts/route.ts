@@ -5,7 +5,10 @@ import {
   dbUpsertPost,
   getSupabaseDbClient,
 } from '@/lib/db';
-import { requireShopOwnerOrAdmin } from '@/lib/server-auth';
+import {
+  requireAuthenticatedUser,
+  requireShopOwnerOrAdmin,
+} from '@/lib/server-auth';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -28,6 +31,9 @@ export async function POST(req: Request) {
     if (auth.errorResponse) return auth.errorResponse;
 
     const post = await dbUpsertPost(body);
+    if (!post) {
+      return NextResponse.json({ error: 'Post not found' }, { status: 404 });
+    }
     return NextResponse.json({ post });
   } catch (error) {
     const message =
@@ -43,6 +49,9 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: 'Missing postId' }, { status: 400 });
   }
 
+  const authentication = await requireAuthenticatedUser(req);
+  if (authentication.errorResponse) return authentication.errorResponse;
+
   const sb = getSupabaseDbClient();
   const { data: post } = await sb
     .from('posts')
@@ -55,7 +64,12 @@ export async function DELETE(req: Request) {
   }
 
   const auth = await requireShopOwnerOrAdmin(req, post.shop_id);
-  if (auth.errorResponse) return auth.errorResponse;
+  if (auth.errorResponse) {
+    if (auth.errorResponse.status === 403) {
+      return NextResponse.json({ error: 'Post not found' }, { status: 404 });
+    }
+    return auth.errorResponse;
+  }
 
   const deleted = await dbDeletePost(postId);
   return NextResponse.json({ deleted });

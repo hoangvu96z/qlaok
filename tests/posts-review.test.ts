@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GET as getPosts } from '@/app/api/posts/route';
-import { dbGetShopPosts, setSupabaseDbClientForTests } from '@/lib/db';
+import {
+  DELETE as deletePost,
+  GET as getPosts,
+  POST as savePost,
+} from '@/app/api/posts/route';
+import {
+  dbGetShopPosts,
+  dbUpsertPost,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
+import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
+import { issueSessionToken } from '@/lib/server-auth';
 import type { Post } from '@/types/qlaok';
 
 function cloneJson<T>(value: T): T {
@@ -13,9 +23,14 @@ interface MockQueryLog {
   filters: Array<{ column: string; value: unknown }>;
   orders: Array<{ column: string; ascending?: boolean }>;
   limitCount: number | null;
+  operation: 'select' | 'insert' | 'update';
+  payload?: Record<string, unknown>;
 }
 
-function createPostDbMock(initialPosts: Post[]) {
+function createPostDbMock(
+  initialPosts: Post[],
+  options: { forceInsertConflict?: boolean } = {}
+) {
   const queryLogs: MockQueryLog[] = [];
   const posts = initialPosts.map(cloneJson);
 
@@ -25,12 +40,26 @@ function createPostDbMock(initialPosts: Post[]) {
     private orders: Array<{ column: string; ascending?: boolean }> = [];
     private limitCount: number | null = null;
     private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
+    private operation: 'select' | 'insert' | 'update' = 'select';
+    private mutationPayload: Record<string, unknown> | null = null;
 
     constructor(table: string) {
       this.table = table;
     }
 
     select(_cols = '*') {
+      return this;
+    }
+
+    insert(payload: Record<string, unknown>) {
+      this.operation = 'insert';
+      this.mutationPayload = cloneJson(payload);
+      return this;
+    }
+
+    update(payload: Record<string, unknown>) {
+      this.operation = 'update';
+      this.mutationPayload = cloneJson(payload);
       return this;
     }
 
@@ -59,12 +88,17 @@ function createPostDbMock(initialPosts: Post[]) {
       return this.execute();
     }
 
-    private execute(): Promise<{ data: unknown; error: null }> {
+    private execute(): Promise<{
+      data: unknown;
+      error: { code: string; message: string } | null;
+    }> {
       queryLogs.push({
         table: this.table,
         filters: [...this.filters],
         orders: [...this.orders],
         limitCount: this.limitCount,
+        operation: this.operation,
+        ...(this.mutationPayload ? { payload: cloneJson(this.mutationPayload) } : {}),
       });
 
       if (this.table === 'shops') {
@@ -76,11 +110,36 @@ function createPostDbMock(initialPosts: Post[]) {
       }
 
       if (this.table === 'posts') {
+        if (this.operation === 'insert') {
+          const incoming = this.mutationPayload as unknown as Post;
+          const hasDuplicateId =
+            options.forceInsertConflict || posts.some((p) => p.id === incoming.id);
+          if (hasDuplicateId) {
+            return Promise.resolve({
+              data: null,
+              error: { code: '23505', message: 'duplicate key value' },
+            });
+          }
+          const inserted = cloneJson(incoming);
+          posts.push(inserted);
+          return Promise.resolve({ data: inserted, error: null });
+        }
+
         let matched = posts.filter((p) => {
           return this.filters.every((f) => {
             return (p as unknown as Record<string, unknown>)[f.column] === f.value;
           });
         });
+
+        if (this.operation === 'update') {
+          for (const post of matched) {
+            Object.assign(post, cloneJson(this.mutationPayload || {}));
+          }
+          if (this.singleMode !== 'none') {
+            return Promise.resolve({ data: matched[0] ?? null, error: null });
+          }
+          return Promise.resolve({ data: matched, error: null });
+        }
 
         matched = [...matched].sort((a, b) => {
           for (const ord of this.orders) {
@@ -115,7 +174,10 @@ function createPostDbMock(initialPosts: Post[]) {
 
     then<TResult1 = unknown, TResult2 = never>(
       onfulfilled?:
-        | ((value: { data: unknown; error: null }) => TResult1 | PromiseLike<TResult1>)
+        | ((value: {
+            data: unknown;
+            error: { code: string; message: string } | null;
+          }) => TResult1 | PromiseLike<TResult1>)
         | null,
       onrejected?:
         | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
@@ -197,6 +259,151 @@ test('dbGetShopPosts returns empty array without querying database when shopId i
     const whitespaceResult = await dbGetShopPosts('   ');
     assert.deepEqual(whitespaceResult, []);
     assert.equal(queryLogs.length, 0, 'Must not query any table when shopId is whitespace');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('dbUpsertPost never reparents an existing post to another shop', async () => {
+  const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS);
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const result = await dbUpsertPost({
+      id: 'post-5-other-shop-active',
+      shop_id: 'shop-alpha',
+      title_i18n: { vi: 'Attempted overwrite' },
+      content_i18n: { vi: 'Attempted cross-shop change' },
+    });
+
+    assert.equal(result, null);
+    assert.equal(
+      queryLogs.some((query) => query.operation === 'insert' || query.operation === 'update'),
+      false,
+      'A post owned by another shop must not be mutated'
+    );
+
+    const shopBetaPosts = await dbGetShopPosts('shop-beta');
+    assert.equal(shopBetaPosts[0]?.id, 'post-5-other-shop-active');
+    assert.equal(shopBetaPosts[0]?.title_i18n.vi, 'Bài của quán Beta');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('dbUpsertPost updates an existing post only with matching id and shop_id filters', async () => {
+  const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS);
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const result = await dbUpsertPost({
+      id: 'post-1-active-pinned',
+      shop_id: 'shop-alpha',
+      title_i18n: { vi: 'Updated title' },
+      content_i18n: { vi: 'Updated content' },
+    });
+
+    assert.equal(result?.id, 'post-1-active-pinned');
+    assert.equal(result?.shop_id, 'shop-alpha');
+    assert.deepEqual(
+      queryLogs.find((query) => query.operation === 'update')?.filters,
+      [
+        { column: 'id', value: 'post-1-active-pinned' },
+        { column: 'shop_id', value: 'shop-alpha' },
+      ]
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('dbUpsertPost creates posts with server IDs and does not overwrite on a primary-key race', async () => {
+  const createdMock = createPostDbMock([]);
+  setSupabaseDbClientForTests(createdMock.client as never);
+
+  try {
+    const created = await dbUpsertPost({
+      shop_id: 'shop-alpha',
+      title_i18n: { vi: 'New post' },
+      content_i18n: { vi: 'New content' },
+    });
+    assert.match(created?.id || '', /^post-/);
+    assert.equal(
+      createdMock.queryLogs.some((query) => query.operation === 'insert'),
+      true
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  const conflictMock = createPostDbMock([], { forceInsertConflict: true });
+  setSupabaseDbClientForTests(conflictMock.client as never);
+
+  try {
+    const conflicted = await dbUpsertPost({
+      shop_id: 'shop-alpha',
+      title_i18n: { vi: 'Must not replace a concurrent row' },
+    });
+    assert.equal(conflicted, null);
+    assert.equal(
+      conflictMock.queryLogs.some((query) => query.operation === 'update'),
+      false
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/posts maps cross-shop ID conflicts to a generic 404', async () => {
+  const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS);
+  setSupabaseDbClientForTests(client as never);
+  const adminToken = issueSessionToken({
+    id: 'posts-review-admin',
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+  });
+
+  try {
+    const response = await savePost(
+      new Request('http://localhost/api/posts', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: 'post-5-other-shop-active',
+          shop_id: 'shop-alpha',
+          title_i18n: { vi: 'Attempted overwrite' },
+          content_i18n: { vi: 'Attempted cross-shop change' },
+        }),
+      })
+    );
+
+    const missingIdResponse = await savePost(
+      new Request('http://localhost/api/posts', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: 'post-id-does-not-exist',
+          shop_id: 'shop-alpha',
+          title_i18n: { vi: 'Missing ID probe' },
+          content_i18n: { vi: 'Must not create an explicitly identified post' },
+        }),
+      })
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'Post not found' });
+    assert.equal(missingIdResponse.status, 404);
+    assert.deepEqual(await missingIdResponse.json(), { error: 'Post not found' });
+    assert.equal(
+      queryLogs.some((query) => query.operation === 'insert' || query.operation === 'update'),
+      false
+    );
   } finally {
     setSupabaseDbClientForTests(null);
   }
@@ -301,6 +508,30 @@ test('GET /api/posts returns 200 with only active posts for valid shopId', async
       assert.equal(post.shop_id, 'shop-alpha');
       assert.equal(post.is_active, true);
     }
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('DELETE /api/posts authenticates before looking up post IDs', async () => {
+  const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS);
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const existingPost = await deletePost(
+      new Request('http://localhost/api/posts?postId=post-2-inactive-pinned')
+    );
+    const missingPost = await deletePost(
+      new Request('http://localhost/api/posts?postId=post-does-not-exist')
+    );
+
+    assert.equal(existingPost.status, 401);
+    assert.equal(missingPost.status, 401);
+    assert.equal(
+      queryLogs.length,
+      0,
+      'Unauthenticated post ID checks must not query the database'
+    );
   } finally {
     setSupabaseDbClientForTests(null);
   }
