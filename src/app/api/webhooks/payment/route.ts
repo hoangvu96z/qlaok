@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
@@ -23,6 +22,13 @@ import {
   normalizeReceivingAccount,
 } from '@/lib/saas-bank-accounts';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
+import {
+  extractPayOSOrderCodeFromDescription,
+  getSaasPaymentWebhookPayload,
+  isPayOSWebhookEnvelope,
+  isSuccessfulPayOSWebhook,
+  verifySaasPaymentWebhookAuthentication,
+} from '@/lib/saas-payment-webhook';
 import type { PlanTier, ShopRole } from '@/types/qlaok';
 
 function isVerifiedSuperAdmin(
@@ -276,53 +282,15 @@ function getConfiguredWebhookSecret(): string | null {
 
 function verifyWebhookSignatureOrSecret(
   req: Request,
-  rawBody: string
+  rawBody: string,
+  body: unknown
 ): { valid: boolean; status?: number; reason?: string } {
-  const configuredSecret = getConfiguredWebhookSecret();
-  if (!configuredSecret) {
-    return {
-      valid: false,
-      status: 503,
-      reason:
-        'Webhook thanh toán chưa được cấu hình (thiếu PAYMENT_WEBHOOK_SECRET). Từ chối mọi callback.',
-    };
-  }
-
-  const headerSecret =
-    req.headers.get('x-webhook-secret') ||
-    req.headers
-      .get('authorization')
-      ?.replace(/^Apikey\s+/i, '')
-      .trim();
-
-  const headerSignature = req.headers.get('x-webhook-signature');
-
-  if (headerSignature) {
-    const expectedHmac = crypto
-      .createHmac('sha256', configuredSecret)
-      .update(rawBody, 'utf8')
-      .digest('hex');
-    const a = Buffer.from(headerSignature.trim(), 'utf8');
-    const b = Buffer.from(expectedHmac, 'utf8');
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      return { valid: false, reason: 'Chữ ký Webhook (HMAC) không hợp lệ.' };
-    }
-    return { valid: true };
-  }
-
-  if (headerSecret) {
-    const a = Buffer.from(headerSecret, 'utf8');
-    const b = Buffer.from(configuredSecret, 'utf8');
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      return { valid: false, reason: 'Webhook Secret không hợp lệ.' };
-    }
-    return { valid: true };
-  }
-
-  return {
-    valid: false,
-    reason: 'Thiếu chữ ký hoặc khóa xác thực Webhook (x-webhook-secret / x-webhook-signature).',
-  };
+  return verifySaasPaymentWebhookAuthentication(
+    req,
+    rawBody,
+    body,
+    getConfiguredWebhookSecret()
+  );
 }
 
 export async function GET(req: Request) {
@@ -345,6 +313,8 @@ export async function POST(req: Request) {
     const rawBody = await req.text();
     const body = rawBody ? JSON.parse(rawBody) : {};
     const { action, ownerId } = body;
+    const payOSWebhook = isPayOSWebhookEnvelope(body);
+    const paymentPayload = getSaasPaymentWebhookPayload(body);
 
     // 1. Authenticated Shop/Profile Owner or Verified Super Admin creates a pending payment order (server decides price)
     if (action === 'create_order') {
@@ -407,7 +377,7 @@ export async function POST(req: Request) {
       sessionUser?.role !== 'staff';
 
     if (!isSuperAdminCaller && !isDevSandboxSimulator) {
-      const verification = verifyWebhookSignatureOrSecret(req, rawBody);
+      const verification = verifyWebhookSignatureOrSecret(req, rawBody, body);
       if (!verification.valid) {
         return NextResponse.json(
           { error: verification.reason || 'Unauthorized webhook request' },
@@ -416,12 +386,28 @@ export async function POST(req: Request) {
       }
     }
 
+    if (payOSWebhook && !isSuccessfulPayOSWebhook(body)) {
+      return NextResponse.json(
+        {
+          error: 'Webhook PayOS không xác nhận giao dịch thành công.',
+          code: 'UNSUCCESSFUL_PAYMENT_EVENT',
+        },
+        { status: 400 }
+      );
+    }
+
+    const orderCodeCandidate = payOSWebhook
+      ? extractPayOSOrderCodeFromDescription(paymentPayload)
+      : paymentPayload.orderCode ||
+        paymentPayload.code ||
+        (typeof paymentPayload.content === 'string'
+          ? paymentPayload.content.match(/QLAOK[A-Z0-9]+/i)?.[0]
+          : null);
     const orderCode =
-      body.orderCode ||
-      body.code ||
-      (typeof body.content === 'string'
-        ? body.content.match(/QLAOK[A-Z0-9]+/i)?.[0]
-        : null);
+      typeof orderCodeCandidate === 'string' ||
+      typeof orderCodeCandidate === 'number'
+        ? String(orderCodeCandidate).trim()
+        : '';
 
     if (!orderCode) {
       return NextResponse.json(
@@ -445,13 +431,14 @@ export async function POST(req: Request) {
     }
 
     const hasTransferType =
-      body.transferType !== undefined || body.transfer_type !== undefined;
+      paymentPayload.transferType !== undefined ||
+      paymentPayload.transfer_type !== undefined;
 
     if (hasTransferType) {
       const rawTransferType =
-        body.transferType !== undefined
-          ? body.transferType
-          : body.transfer_type;
+        paymentPayload.transferType !== undefined
+          ? paymentPayload.transferType
+          : paymentPayload.transfer_type;
       const normalizedTransferType =
         typeof rawTransferType === 'string'
           ? rawTransferType.trim().toLowerCase()
@@ -471,12 +458,12 @@ export async function POST(req: Request) {
     let verifiedTransferAmount: number | undefined;
 
     if (!isDevSandboxSimulator) {
-      const hasTransferAmount = body.transferAmount !== undefined;
-      const hasAmount = body.amount !== undefined;
+      const hasTransferAmount = paymentPayload.transferAmount !== undefined;
+      const hasAmount = paymentPayload.amount !== undefined;
       const rawAmount = hasTransferAmount
-        ? body.transferAmount
+        ? paymentPayload.transferAmount
         : hasAmount
-          ? body.amount
+          ? paymentPayload.amount
           : undefined;
 
       if (rawAmount === undefined || rawAmount === null || rawAmount === '') {
@@ -511,7 +498,9 @@ export async function POST(req: Request) {
       verifiedTransferAmount = parsedAmount;
     } else {
       const rawAmount =
-        body.transferAmount !== undefined ? body.transferAmount : body.amount;
+        paymentPayload.transferAmount !== undefined
+          ? paymentPayload.transferAmount
+          : paymentPayload.amount;
       if (rawAmount !== undefined && rawAmount !== null && rawAmount !== '') {
         const candidate =
           typeof rawAmount === 'number'
@@ -539,9 +528,9 @@ export async function POST(req: Request) {
       }
 
       const rawAccountNumber =
-        body.accountNumber !== undefined
-          ? body.accountNumber
-          : body.account_number;
+        paymentPayload.accountNumber !== undefined
+          ? paymentPayload.accountNumber
+          : paymentPayload.account_number;
 
       if (
         rawAccountNumber === undefined ||
@@ -578,9 +567,19 @@ export async function POST(req: Request) {
       }
     }
 
+    const rawBankReference =
+      paymentPayload.referenceCode ||
+      paymentPayload.bankRefId ||
+      paymentPayload.reference;
+    const bankReference =
+      typeof rawBankReference === 'string' ||
+      typeof rawBankReference === 'number'
+        ? String(rawBankReference).trim() || undefined
+        : undefined;
+
     const result = await dbCompletePaymentWebhook(
       orderCode,
-      body.referenceCode || body.bankRefId,
+      bankReference,
       {
         verifiedTransferAmount,
         allowUnverifiedAmount: Boolean(isDevSandboxSimulator),
