@@ -498,6 +498,11 @@ function readLocalTablesStore(): ShopTable[] {
     throw new Error('LOCAL_TABLES_STORE_READ_FAILED', { cause: error });
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    // A missing local store must not masquerade as the demo table seed.
+    throw new Error('LOCAL_TABLES_STORE_MISSING');
+  }
+
   const seeded = SEED_SHOP_TABLES.map((t) => ({ ...t }));
   writeLocalTablesStore(seeded);
   return seeded;

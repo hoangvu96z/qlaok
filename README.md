@@ -135,7 +135,7 @@ Migration `20261030000100_order_audit_logs_subjects.sql` mở rộng audit đơn
 
 Migration `020` xóa URI ảnh Base64 cũ khỏi `items.image_url`, `shops.logo_url` và phần tử Base64 trong `shops.cover_urls`; URL ảnh bên ngoài cùng các bản ghi và trường khác được giữ nguyên. Nội dung ảnh Base64 bị xóa, không được chuyển sang Storage.
 
-Khi có cấu hình DB, orders đọc DB làm nguồn chính; lỗi DB không được coi là ghi thành công hoặc ghép đơn local vào dữ liệu thật. `.local-db` còn phục vụ một số phần legacy/dev; không phải cơ chế offline đồng bộ đầy đủ.
+Khi có cấu hình DB, orders đọc DB làm nguồn chính; lỗi DB không được coi là ghi thành công hoặc ghép đơn local vào dữ liệu thật. `.local-db` còn phục vụ một số phần legacy/dev; không phải cơ chế offline đồng bộ đầy đủ. Local tables store chỉ tự tạo bảng seed khi khởi tạo ngoài production; ở `NODE_ENV=production`, thiếu `.local-db/shop-tables.json` sẽ báo `LOCAL_TABLES_STORE_MISSING` thay vì trả dữ liệu demo.
 
 **Web và mobile:** PostgreSQL triggers `LISTEN/NOTIFY` → broker server → `/api/orders/events` SSE có xác thực → client tải lại dữ liệu qua API. Staff cần quyền shop; guest cần header `x-tracking-token`. Không mở public orders/RLS để client đăng ký trực tiếp. Mobile dùng polling 30 giây khi SSE lỗi và dừng subscription/polling theo trạng thái màn hình/app. Xem [REALTIME_NOTES.md](REALTIME_NOTES.md).
 
