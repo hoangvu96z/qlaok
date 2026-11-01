@@ -16,6 +16,8 @@
 
 > **Cập nhật mục 164:** AGY Flash và Codex replay lại ma trận trang chủ/API production ở commit `774dc65`: **44 PASS, 0 FAIL, 3 ghi production bị guard chặn**; safety suite **6/6 PASS**, không rò mutation. Owner flag và guest checkout có bằng chứng riêng ở mục 163/140; alias row production chưa thử vì sẽ để lại dữ liệu bền. Callback PayOS hoãn theo yêu cầu.
 
+> **Cập nhật mục 171 — 2026-11-02:** P2-18 đã được xác minh trực tiếp trên production bằng Playwright độc lập của Codex và AGY. Trang reset mở với `?lang=vi`, nút EN đổi nhãn sang tiếng Anh trong khi URL vẫn giữ `lang=vi`, và nút VI đổi lại được; không reload/navigation. Guard chỉ cho GET/HEAD; một beacon Cloudflare RUM POST bị chặn trước mạng. Không nhập email hoặc gửi form.
+
 ---
 
 ## 1. Kết luận tổng quát
@@ -40,7 +42,7 @@ Nghiêm trọng nhất về nghiệp vụ là một nhóm lỗi mà lớp bảo 
 | Test coverage | Khá (69 file test) nhưng CI đang đỏ; **0 test cho vòng hydrate/ghi của UI** |
 | Realtime | Tốt (SSE + LISTEN/NOTIFY, payload tối thiểu) |
 | Mobile | Tốt (fail closed, không chạm `*.supabase.co`); **auth flow ghim prod host (P2-16)** |
-| i18n | Trung bình — P3-18/P3-19 đã đóng ở §167, P3-20 đã đóng ở §168; `?lang=` vẫn khoá switcher (P2-18). P3-29 đã được rút lại sau khi đối chiếu renderer storefront và mobile preview |
+| i18n | Trung bình — P3-18/P3-19 đã đóng ở §167, P3-20 đã đóng ở §168; P2-18 production-verified ở §171; P2-19/P2-20 đã đối chiếu source ở §83. P3-29 đã được rút lại sau khi đối chiếu renderer storefront và mobile preview |
 | **Vận hành / backup** | **Yếu — không có backup tự động nào cho PostgreSQL tự host; deploy rollback `.local-db`** |
 | Audit trail | **Yếu — ghi mà không ai đọc, không rotate, quyền 644** |
 | Repo hygiene | Trung bình (tracked zip/tsbuildinfo, `.agy-runs` lọt lint, `mobile/src/lib/auth-recovery.ts` chết) |
@@ -180,7 +182,7 @@ Hai miền locale tách rõ và **không** trộn: storefront 8 ngôn ngữ (`vi
 2. **Chuỗi người dùng tạo ra bị đóng băng vào tiếng Việt** — banner khuyến mãi (`PromotionsTab.tsx:80-92`) và text giảm giá trong POS (`PosCounterWorkspace.tsx:729`) sinh chuỗi VI rồi **lưu vào DB** hoặc ghi vào `custom_note` của đơn. Đây không phải lỗi dịch mà là lỗi dữ liệu: nó không thể sửa bằng cách thêm bản dịch sau này.
 3. **Định dạng tiền tệ hardcode** — `formatCurrency` luôn `vi-VN` + `đ` (P3-18), nên không có đường nào hiển thị VND theo locale khác dù UI đã đổi ngôn ngữ.
 
-Ngoài ra `?lang=` bị áp lại mỗi render (P2-18) làm switcher thành nút chết trên đúng trang mà email dẫn tới — lỗi nhỏ nhưng nằm ngay cửa vào của toàn bộ luồng đăng ký/đặt lại mật khẩu.
+Finding `?lang=` bị áp lại mỗi render (P2-18) đã được sửa bằng ref guard và xác minh trên production ở §171; switcher trên link đặt lại mật khẩu giờ đổi được ngôn ngữ mà không bị query ghi đè.
 
 ### 2.9 Mobile — fail closed đúng, nhưng cấu hình build làm hỏng hai tính năng
 
@@ -523,7 +525,9 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 - **Tác động:** một `.env` bị đặt `EXPO_PUBLIC_API_URL=http://...` trên bản build production sẽ khiến token owner + mật khẩu nhân viên đi trên kênh rõ. Hiện chỉ có một lớp phòng vệ (mobile từ chối `*.supabase.co` ở `:109,:142`) — lớp đó không giúp gì cho PostgREST tự host.
 - **Hướng sửa:** trong `!__DEV__`, từ chối mọi base URL không phải `https:`; trong `__DEV__` cho phép `http:` nhưng chỉ với host loopback/RFC1918.
 
-#### P2-18. `?lang=` trên trang login khoá luôn bộ chuyển ngôn ngữ và ghi đè lựa chọn của người dùng
+#### P2-18. [ĐÃ ĐÓNG — §83, production QA §171] `?lang=` trên trang login từng khoá bộ chuyển ngôn ngữ
+
+- **Trạng thái hiện tại:** ref `didApplyInitialLocaleRef` giới hạn việc áp `lang`/`locale` vào lúc khởi tạo. Codex và AGY đã xác minh trên production rằng người dùng vẫn đổi VI↔EN được khi URL giữ `?lang=vi`; xem §171. Nội dung dưới đây ghi lại lỗi trước khi fix.
 
 - **Vị trí:** `src/app/(auth)/login/page.tsx:258-265`
 - **Bằng chứng:**
@@ -537,14 +541,18 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 - **Tác động:** link email (`/login?mode=reset&lang=vi`, `auth-email-templates.ts:223, :294`) biến bộ chuyển ngôn ngữ thành nút không hoạt động. Người dùng nhận email tiếng Việt không thể đọc form bằng tiếng Anh.
 - **Hướng sửa:** chỉ áp `lang` **một lần** khi mount (dùng `useRef` guard hoặc đọc initial state), không phụ thuộc `locale`.
 
-#### P2-19. Lỗi bàn ăn trả nguyên văn message nội bộ ra storefront
+#### P2-19. [ĐÃ ĐÓNG Ở SOURCE — §83] Lỗi bàn ăn từng trả nguyên văn message nội bộ ra storefront
+
+- **Trạng thái hiện tại:** route trả nhãn chung và mã lỗi; mapper storefront dùng thông báo đã localize hoặc fallback chung. §83 đã đối chiếu đường đi này và chạy unit suite. Mô tả bên dưới là lỗi trước khi sửa.
 
 - **Vị trí:** `src/app/api/tables/route.ts:126-133` (server trả `error.message` thô) → `src/app/(storefront)/s/[slug]/menu/page.tsx:379-385` (lưu nguyên `errData.error` vào state) → `src/lib/i18n-helper.ts:1189-1242` (`localizeStorefrontTableError` trả nguyên `error` nếu không khớp danh sách trắng)
 - **Bằng chứng:** route `catch` dựng `message` từ `error.message` rồi trả thẳng; storefront đọc `errData?.error` và gán vào `tablesLoadError`; hàm localize chỉ map đúng **hai** chuỗi đã biết (`UI_LABELS.vi/en.tableQrInvalidError`) và hai regex nhãn bàn, mọi lỗi khác `return error`.
 - **Tác động:** khách quét QR thấy chuỗi PostgREST/PostgreSQL (`permission denied for table shop_tables`, `relation ... does not exist`, chi tiết connection) — vừa rò rỉ schema, vừa không dùng được. Đi ngược quy ước repo: `localizeGuestOrderError` (`i18n-helper.ts:1557-1563`) map từ `code`/HTTP status và có comment "Never returns raw server text" — đây là ngoại lệ duy nhất vi phạm chính quy ước đó.
 - **Hướng sửa:** route trả `{ error: <nhãn chung>, code }` thay vì `error.message`; localize trả `tablesLoadError` cho **mọi** trường hợp không khớp danh sách trắng; log message gốc ở server.
 
-#### P2-20. Banner "8 ngôn ngữ" hardcode, không phụ thuộc `allowedLangs` của gói
+#### P2-20. [ĐÃ ĐÓNG Ở SOURCE — §83] Banner "8 ngôn ngữ" từng hardcode, không phụ thuộc `allowedLangs` của gói
+
+- **Trạng thái hiện tại:** danh sách cờ trên shop door được render từ `allowedLangs` theo plan; §83 đã đối chiếu `getAllowedLocalesForPlan` và caller storefront. Mô tả bên dưới là lỗi trước khi sửa.
 
 - **Vị trí:** `src/app/(storefront)/s/[slug]/page.tsx:360`
 - **Bằng chứng:** `🇻🇳 🇬🇧 🇰🇷 🇯🇵 🇨🇳 🇪🇸 🇮🇹 🇷🇺 • Multi-language Menu` là chuỗi literal, trong khi trang đã có `allowedLangs` từ `getAllowedLocalesForPlan` và gói Free/Pro giới hạn `maxLangs` 1/3.
@@ -681,7 +689,7 @@ Sắp theo **rủi ro mất dữ liệu/sai tiền/phơi bí mật trước**, t
 15. Xoá nhánh credential owner chết. (P2-13)
 16. **Siết quyền ở tầng UI**: truyền cờ quyền xuống `QuickItemRow` và `PosCounterWorkspace` (P2-15); kiểm quyền Settings theo nhóm field + sửa `dashboard-nav` (P2-14).
 17. **Mobile: bỏ ghim `PRODUCTION_API_URL`** trong `AuthScreen` (P2-16) và bắt buộc HTTPS khi `!__DEV__` (P2-17) — sửa trước khi phát hành build tiếp theo.
-18. Chống enumeration ở `register_start` (P2-21); `?lang=` chỉ áp một lần (P2-18); `localizeStorefrontTableError` trả nhãn i18n cho mọi lỗi (P2-19); banner theo `allowedLangs` (P2-20).
+18. Chống enumeration ở `register_start` (P2-21); P2-18/P2-19/P2-20 đã được đối chiếu implementation ở §83, riêng P2-18 đã có production QA ở §171.
 19. Sửa WIP để CI xanh: đồng bộ `auth-email-templates` với test, thêm `.agy-runs/**` vào eslint ignores, sửa `tests/e2e.test.mjs` (bỏ cloud ref + `dataSource`) **rồi** thêm e2e vào CI. (mục 6)
 20. Thêm cửa sổ ±5 phút cho timestamp SePay; `writeStore`/`writeLocalTablesStore` throw; floor-plan lọc đơn ở query. (P2-5, P2-6, P2-7, P3-9)
 21. Bổ sung `REVOKE EXECUTE` cho 8 hàm trigger (007/008/011×2/014×3/022). (3.4)
@@ -2256,3 +2264,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Artifacts:** runner, JSON, screenshots và report chỉ nằm trong Git-ignored `.agy-runs/qa/`; report tổng hợp là `.agy-runs/qa/language-switcher-public-qa-2026-11-02-report.md`.
 - **Claude CLI:** lần peer-review focused dừng ở gateway `unrecognized_model` (`model=deepseek`), không có verdict. Không tính là review hoàn tất.
 - **CodeGraph:** `codegraph status`; explore `storefront header locale selector language dropdown duplicate language buttons row menu page`; `codegraph query LanguageSwitcher`; `codegraph callers LanguageSwitcher`; node `LanguageSwitcher`; node `src/app/(storefront)/s/[slug]/page.tsx --offset 230 --limit 160`. Ảnh hưởng đã kiểm: `LanguageSwitcher` và callers ở shop door/menu; marketing header được phân biệt bằng replay riêng. Không đổi source, API, test, schema, migration hoặc production data.
+
+## 171. P2-18: production xác minh query `lang` chỉ khởi tạo locale một lần (2026-11-02)
+
+- **Codex Playwright QA:** mở `https://qlaok.vunph.click/login?mode=reset&lang=vi` trong browser cô lập; guard tiếp tục GET/HEAD và abort mọi HTTP method khác trước mạng. Trang ban đầu hiển thị tiếng Việt. Bấm EN chuyển heading, mô tả, nút và `documentElement.lang` sang tiếng Anh trong cùng URL vẫn có `lang=vi`; bấm VI chuyển lại tiếng Việt. Không có reload hoặc navigation.
+- **AGY Gemini 3.8 Flash Medium:** run `2026-11-01T17-23-13-775Z-4834d96f`, conversation `0f6781b0-fad8-4104-b9b2-416277bd947b`, terminal `SUCCESS`. Browser Chrome cô lập 1280×800; 33 GET được phép, beacon `POST /cdn-cgi/rum` bị abort trước mạng. Không nhập email, gửi form, đăng nhập hoặc gọi owner API. AGY ghi nhận 0 ứng dụng console/runtime error.
+- **Đối chiếu source:** ref `didApplyInitialLocaleRef` trong `LoginContent` chỉ áp query ở lần khởi tạo; `git blame` xác nhận guard thuộc commit `93e12182` ngày 28/10. CodeGraph status đồng bộ; explore/node cho `LoginContent`, effect locale và `AppLanguageSwitcher`/header.
+- **Codex kiểm chứng độc lập:** Playwright CLI xác nhận initial VI → EN → VI, URL không đổi và trạng thái locale cập nhật; không có yêu cầu business mutation. Console ghi một `ERR_BLOCKED_BY_CLIENT` cho Cloudflare RUM POST bị guard chặn, không phải lỗi JavaScript của ứng dụng. Kết quả khớp với AGY về hành vi và request bị chặn.
+- **Artifacts:** report AGY đã khử dữ liệu ở `.agy-runs/qa/p2-18-production-qa-2026-11-02-report.md`; task, report, snapshot và log browser đều trong Git-ignored `.agy-runs/`/`.playwright-cli/`.
+- **Giới hạn:** chỉ kiểm tra view yêu cầu reset mật khẩu và thao tác locale VI↔EN; không submit email hoặc xác minh delivery email. Không sửa source, test, schema, migration, cấu hình hay production data; chỉ cập nhật tài liệu này. Không chạy test/build ứng dụng.
