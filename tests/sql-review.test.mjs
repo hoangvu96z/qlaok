@@ -30,6 +30,35 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       }
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
+
+    const revokedTriggerFunctionSignatures = [
+      'public.enforce_shop_table_boundaries()',
+      'public.enforce_mobile_push_tokens_boundaries()',
+      'public.enforce_shop_sepay_configs_boundaries()',
+      'public.enforce_sepay_webhook_events_boundaries()',
+      'public.enforce_shop_slug_aliases_boundaries()',
+      'public.validate_shop_slug_and_aliases()',
+      'public.record_shop_slug_alias_on_update()',
+      'public.notify_order_events()',
+    ];
+
+    const assertTriggerFunctionsExecuteRevoked = async () => {
+      for (const fnSignature of revokedTriggerFunctionSignatures) {
+        const { rows } = await db.query(
+          `SELECT
+             has_function_privilege('anon', $1, 'EXECUTE') AS anon_exec,
+             has_function_privilege('authenticated', $1, 'EXECUTE') AS authenticated_exec`,
+          [fnSignature]
+        );
+        assert.deepEqual(
+          rows[0],
+          { anon_exec: false, authenticated_exec: false },
+          `Expected EXECUTE to be revoked from anon and authenticated on ${fnSignature}`
+        );
+      }
+    };
+
+    await assertTriggerFunctionsExecuteRevoked();
     const pendingOwnerInvitations = (
       await db.query(
         "SELECT id, owner_invite_pending FROM profiles WHERE id IN ('owner-00000000-0000-4000-8000-000000000001', 'owner-demo-001', 'owner-not-uuid') ORDER BY id"
@@ -1969,6 +1998,27 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
         'member without reports.view must not read order_audit_logs'
       );
     }
+
+    // 13. Verify 20261102000100_revoke_trigger_function_execute.sql:
+    // Ordering, privilege revocation after all migrations/trigger operations, and idempotent re-application
+    await db.exec('RESET ROLE');
+    const idxRevokeTriggers = migrations.indexOf(
+      '20261102000100_revoke_trigger_function_execute.sql'
+    );
+    assert.ok(
+      idxRevokeTriggers >
+        migrations.indexOf('20261101000100_analytics_event_view_count_atomic.sql'),
+      '20261102000100_revoke_trigger_function_execute.sql must sort after prior migrations'
+    );
+    await assertTriggerFunctionsExecuteRevoked();
+
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261102000100_revoke_trigger_function_execute.sql',
+        'utf8'
+      )
+    );
+    await assertTriggerFunctionsExecuteRevoked();
 
   } finally { await db.close(); }
 });

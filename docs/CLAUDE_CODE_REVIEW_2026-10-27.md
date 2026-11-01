@@ -22,6 +22,8 @@
 
 > **Cập nhật mục 182 — 2026-11-02:** hoàn tất toàn bộ P2-15 trên trang Catalog (`QuickItemRow`, `DashboardCatalogPage`, `CatalogExcelImportModal`, `catalog-excel.ts`): huy hiệu `⚙️ N nhóm tùy chọn` chỉ là `<button>` mở `TranslationEditorModal` khi có `catalog.manage` (ngược lại render `<span>` chỉ đọc); ẩn `Thêm món mới`, `Quét ảnh thực đơn`, banner giới hạn tạo món và khóa các handler cá nhân/modal khi thiếu `catalog.manage`; giới hạn liên kết `/dashboard/billing` cho `owner`; bỏ fallback lạc quan `: true` khi `activeMembership` thiếu/không active để fail-closed; và truyền `canManageCatalog` xuống `CatalogExcelImportModal` + `parseAndValidateCatalogExcel` / `buildCatalogExcelBulkUpdateItems` (`{ allowPriceChanges }`) để thành viên chỉ có `inventory.adjust` nhập tồn kho hàng loạt mà không bắt buộc/xác thực cột Giá bán, phân loại dòng chỉ đổi giá vào `unchangedRows` (chặn no-op mutation), không hiển thị delta giá trái phép trên bảng xem trước và tuyệt đối không gửi trường `price` lên `POST /api/catalog` (`bulk_update_price_stock`), trong khi giữ nguyên nhập giá + tồn kho cho `catalog.manage`. Các assertion `QuickItemRow` được siết bằng `data-testid` và `aria-label` tiếng Việt đối xứng dương/âm. Regression `tests/catalog-pos-permission-controls-review.test.ts` **6/6 PASS**, `tests/catalog-excel-and-pagination.test.ts` **37/37 PASS**, `test:unit` **144/144 PASS**, `test:review` **466/466 PASS**, `typecheck`, `lint` và `build` đều PASS.
 
+> **Cập nhật mục 183 — 2026-11-02:** đóng finding SQL 3.4 bằng migration tiến tới `supabase/migrations/20261102000100_revoke_trigger_function_execute.sql`, thu hồi quyền `EXECUTE` trực tiếp khỏi `PUBLIC`, `anon` và `authenticated` trên đủ 8 hàm trigger `SECURITY DEFINER` không tham số của các migration `007`, `008`, `011`, `014` và `022` mà không sửa lại các migration cũ và giữ nguyên toàn bộ hành vi trigger. PGlite harness `tests/sql-review.test.mjs` xác nhận `has_function_privilege` trả `false` cho cả `anon` và `authenticated` trên cả 8 hàm ngay sau khi chạy toàn bộ migration và sau khi áp lại migration mới (idempotent); `npm run test:sql` **13/13 PASS**, `npm run test:db-reset` **53/53 PASS** (`26/26` + `21/21` + `6/6`).
+
 ---
 
 ## 1. Kết luận tổng quát
@@ -38,7 +40,7 @@ Nghiêm trọng nhất về nghiệp vụ là một nhóm lỗi mà lớp bảo 
 | Authorization theo endpoint | Tốt, có vài lỗ hổng công khai |
 | **Authorization ở tầng UI** | **Trung bình — nút hiện không khớp quyền server (P2-14, P2-15)** |
 | Database schema & index | Tốt |
-| RLS & SECURITY DEFINER | Rất tốt (8 hàm trigger chưa `REVOKE`, rủi ro thấp) |
+| RLS & SECURITY DEFINER | Rất tốt (8 hàm trigger mục 3.4 đã đóng tại §183 qua `20261102000100_revoke_trigger_function_execute.sql`) |
 | Chất lượng SQL / migration | Tốt, có checksum guard; **runner thiếu transaction** |
 | Cách dùng Supabase client | Tốt (gatekey rõ ràng) |
 | **Bất biến nghiệp vụ ở UI (payment/giảm giá)** | **Yếu — 3 lỗi P1 ở POS + admin** |
@@ -141,7 +143,7 @@ GET /api/health                       → 200, dataSource=self-hosted-postgres, 
 - Trigger `AFTER ... RETURN NULL`, `SECURITY DEFINER` + `SET search_path = public, pg_temp`, không đột biến dữ liệu nghiệp vụ, không đổi RLS (đúng ràng buộc "never weaken RLS to enable realtime").
 - Vòng đời: stream 120s, heartbeat 15s, revalidate quyền 45s, queue có giới hạn, client fallback 30s.
 
-Không có điểm trừ đáng kể. Một lưu ý: trigger này là `SECURITY DEFINER` nhưng **không có `REVOKE EXECUTE`** — xem mục 3.4.
+Không có điểm trừ đáng kể. Một lưu ý tại thời điểm snapshot: trigger này là `SECURITY DEFINER` nhưng chưa có `REVOKE EXECUTE` — **đã đóng tại mục 3.4 / §183** (`20261102000100_revoke_trigger_function_execute.sql`).
 
 ### 2.6 Vận hành: CI/CD, migration, backup
 
@@ -239,9 +241,11 @@ Mô hình tiến hoá đúng hướng:
 
 Có test SQL thật cho RLS: `tests/shop-permissions-and-rls.test.ts` + `tests/sql-review.test.mjs` khẳng định member chỉ đọc được đơn được gán, đọc được toàn bộ `shop_tables`, và bị `permission denied` khi gọi thẳng `commit_order_with_inventory` hay đọc `payment_bank_ref_conflicts`.
 
-### 3.4 SECURITY DEFINER — kỷ luật tốt, 8 hàm trigger còn hở
+### 3.4 SECURITY DEFINER — kỷ luật tốt, 8 hàm trigger còn hở (Đã đóng — §183)
 
-Đếm lại đầy đủ bằng script trên 14 file migration: **33 hàm `SECURITY DEFINER`**, trong đó **21 hàm có `REVOKE ... ON FUNCTION` + `GRANT EXECUTE ... TO service_role`**, 2 hàm helper RLS (`004` `user_is_shop_owner`, `user_has_shop_permission`) cố ý grant cho `anon/authenticated` — đúng. **8 hàm còn lại không có revoke cấp hàm:**
+> **Trạng thái 2026-11-02: đã đóng (§183).** Migration tiến tới `supabase/migrations/20261102000100_revoke_trigger_function_execute.sql` đã thu hồi `EXECUTE` khỏi `PUBLIC`, `anon` và `authenticated` trên đủ 8 chữ ký hàm trigger không tham số bên dưới mà không sửa lại các migration lịch sử. Được kiểm chứng tự động trong `tests/sql-review.test.mjs` (`has_function_privilege` trả `false` cho `anon` và `authenticated` trên cả 8 hàm sau toàn bộ chuỗi migration và sau khi áp lại migration mới, đồng thời toàn bộ bài test hành vi trigger hiện có vẫn pass) cùng `tests/preflight-demo-reset.test.mjs`.
+
+Ảnh chụp audit gốc trước migration `20261102000100`: đếm trên 14 file migration cho thấy **33 hàm `SECURITY DEFINER`**, trong đó **21 hàm có `REVOKE ... ON FUNCTION` + `GRANT EXECUTE ... TO service_role`**, 2 hàm helper RLS (`004` `user_is_shop_owner`, `user_has_shop_permission`) cố ý grant cho `anon/authenticated` — đúng. **Tám hàm dưới đây lúc đó chưa có revoke cấp hàm; trạng thái hiện tại đã được xử lý tại §183:**
 
 | Migration | Hàm | Kiểu trả về |
 | --- | --- | --- |
@@ -252,7 +256,7 @@ Có test SQL thật cho RLS: `tests/shop-permissions-and-rls.test.ts` + `tests/s
 | `014_shop_slug_aliases.sql:40,83,142` | `enforce_shop_slug_aliases_boundaries()`, `validate_shop_slug_and_aliases()`, `record_shop_slug_alias_on_update()` | `TRIGGER` |
 | `022_postgres_realtime_notifications.sql:18` | `notify_order_events()` | `trigger` |
 
-Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiếp** hàm `RETURNS trigger` ngoài ngữ cảnh trigger (`ERROR: trigger functions can only be called as triggers`), nên rủi ro thực tế **thấp**. Nhưng đây là sai lệch so với chuẩn nội bộ mà chính repo đặt ra: `019_revoke_staff_trigger_execute.sql:8-9` đã phải revoke đúng loại hàm này cho `018`. Nên bổ sung cho đồng nhất, và để nếu sau này ai đổi signature sang hàm thường thì không mở lỗ.
+Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiếp** hàm `RETURNS trigger` ngoài ngữ cảnh trigger (`ERROR: trigger functions can only be called as triggers`), nên rủi ro thực tế **thấp**. Nhưng đây là sai lệch so với chuẩn nội bộ mà chính repo đặt ra: `019_revoke_staff_trigger_execute.sql:8-9` đã revoke đúng loại hàm này cho `018`. Khuyến nghị của audit gốc là bổ sung revoke cho đồng nhất; đã triển khai tại §183.
 
 `REVOKE` hiện có đúng và đủ cho toàn bộ hàm nghiệp vụ: `005`/`007`/`017` (commit/update order, settle table bill), `009`, `010`, `011` reconcile, `015`, `018` (8 hàm), `023`.
 
@@ -698,7 +702,7 @@ Sắp theo **rủi ro mất dữ liệu/sai tiền/phơi bí mật trước**, t
 18. Chống enumeration ở `register_start` (P2-21); P2-18/P2-19/P2-20 đã được đối chiếu implementation ở §83, riêng P2-18 đã có production QA ở §171.
 19. Sửa WIP để CI xanh: đồng bộ `auth-email-templates` với test, thêm `.agy-runs/**` vào eslint ignores, sửa `tests/e2e.test.mjs` (bỏ cloud ref + `dataSource`) **rồi** thêm e2e vào CI. (mục 6)
 20. P2-5/P2-6/P2-7/P3-9 đã được xử lý và kiểm tra tại §§49, 94, 95, 172.
-21. Bổ sung `REVOKE EXECUTE` cho 8 hàm trigger (007/008/011×2/014×3/022). (3.4)
+21. Bổ sung `REVOKE EXECUTE` cho 8 hàm trigger (007/008/011×2/014×3/022). (3.4 — đã đóng tại §183)
 22. Dọn P3: `getAuthHeaders` cho `handleTranslatePost` (P3-16); `formatCurrency` theo locale (P3-18); `errorTrackingToken` cho 5 locale (P3-19); `<html lang>` theo `params.lang` (P3-20); gộp hai hàm resolve origin (P3-21); push unregister giữ state tới khi DELETE xong (P3-22); prune membership (P3-23); callback URL chỉ đánh dấu sau khi exchange thành công (P3-24); mobile catalog đọc lại body + revert (P3-25); xoá `auth-recovery.ts` (P3-26); điền `eas.projectId` (P3-27).
 23. Thu hẹp `/api/health` (P2-8); bỏ tracked `qlaok-handoff.zip` + `tsconfig.tsbuildinfo` (P3-2); unique constraint `orders.order_code` (P3-5); cập nhật README/ARCHITECTURE tới `023` và ghi `SMTP_*` vào `.env.example` (P3-12, P3-13).
 
@@ -2408,3 +2412,25 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
   - `npm run build` → **PASS**
   - `git diff --check` → **PASS**
 - **Giới hạn / chưa xác minh:** chưa đăng nhập trình duyệt production bằng tài khoản nhân viên chỉ có `inventory.adjust` để tải thử file Excel trực tiếp trên giao diện đã deploy (chưa commit/deploy theo yêu cầu task). Không sửa API, schema, migration hay dữ liệu production.
+
+## 183. Đóng 3.4: thu hồi EXECUTE trực tiếp trên 8 hàm trigger SECURITY DEFINER (2026-11-02)
+
+- **Triển khai:** thêm migration tiến tới `supabase/migrations/20261102000100_revoke_trigger_function_execute.sql` (không viết lại các migration cũ) để `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC, anon, authenticated` trên đúng 8 chữ ký hàm trigger `SECURITY DEFINER` không tham số nêu ở mục 3.4:
+  - `public.enforce_shop_table_boundaries()` (`007_shop_tables.sql`)
+  - `public.enforce_mobile_push_tokens_boundaries()` (`008_mobile_push_tokens.sql`)
+  - `public.enforce_shop_sepay_configs_boundaries()` (`011_sepay_order_reconciliation.sql`)
+  - `public.enforce_sepay_webhook_events_boundaries()` (`011_sepay_order_reconciliation.sql`)
+  - `public.enforce_shop_slug_aliases_boundaries()` (`014_shop_slug_aliases.sql`)
+  - `public.validate_shop_slug_and_aliases()` (`014_shop_slug_aliases.sql`)
+  - `public.record_shop_slug_alias_on_update()` (`014_shop_slug_aliases.sql`)
+  - `public.notify_order_events()` (`022_postgres_realtime_notifications.sql`)
+- **Kiểm thử PGlite & danh mục migration:**
+  - `tests/sql-review.test.mjs`: kiểm tra `has_function_privilege(role, fn, 'EXECUTE') === false` với cả `anon` và `authenticated` cho toàn bộ 8 hàm ngay sau khi áp đủ chuỗi migration và một lần nữa ở cuối bài test (mục 13, sau toàn bộ các thao tác kiểm chứng trigger `shop_tables`, `mobile_push_tokens`, `shop_sepay_configs`, `sepay_webhook_events`, `shop_slug_aliases`/`shops` và `LISTEN/NOTIFY` `qlaok_order_events`), sau đó áp lại `20261102000100_revoke_trigger_function_execute.sql` để xác nhận tính idempotent.
+  - `tests/preflight-demo-reset.test.mjs`: cập nhật kiểm kê `getExpectedMigrationFilenames` lên 34 migration (bao gồm `20261102000100_revoke_trigger_function_execute.sql`).
+  - Cập nhật danh sách migration trong `README.md` và mục `Schema và rollout` trong `ARCHITECTURE.md`.
+- **CodeGraph:** `codegraph status`; `codegraph explore "sql-review PGlite schema_migrations has_function_privilege"`; `codegraph explore "migrate-self-hosted planMigrations supabase migrations"`; `codegraph node tests/sql-review.test.mjs` (đầy đủ theo dải dòng); `codegraph callers getExpectedMigrationFilenames`; `codegraph explore "tests/sql PGlite migrations readdirSync"`; `codegraph node tests/preflight-demo-reset.test.mjs`; `codegraph node tests/self-hosted-migration-runner.test.mjs`; `codegraph explore "shop-permissions-and-rls demo-reset-purge demo-reset-roundtrip supabase/migrations"`; `codegraph node tests/demo-reset-roundtrip.test.mjs`; `codegraph node tests/shop-permissions-and-rls.test.ts`; `codegraph explore "enforce_shop_table_boundaries enforce_mobile_push_tokens_boundaries enforce_shop_sepay_configs_boundaries enforce_sepay_webhook_events_boundaries enforce_shop_slug_aliases_boundaries validate_shop_slug_and_aliases record_shop_slug_alias_on_update notify_order_events"`; `codegraph sync` sau khi sửa. Ảnh hưởng: quyền cấp hàm PostgreSQL trên 8 hàm trigger, bộ test SQL/preflight PGlite và tài liệu schema.
+- **Checks đã chạy:**
+  - `npm run test:sql` → **13/13 PASS**
+  - `npm run test:db-reset` → **53/53 PASS** (`test:backup` 26/26, `preflight-demo-reset` + `demo-reset-runner` 21/21, `test:demo-reset` PGlite full-schema roundtrip 6/6)
+  - `git diff --check` → **PASS**
+- **Giới hạn / chưa xác minh:** chỉ kiểm chứng trên PGlite cục bộ; chưa commit, push, deploy hoặc áp migration `20261102000100_revoke_trigger_function_execute.sql` lên PostgreSQL production/live theo đúng ràng buộc task.
