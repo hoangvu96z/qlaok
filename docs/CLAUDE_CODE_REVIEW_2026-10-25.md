@@ -44,6 +44,7 @@ Baseline của Codex có **13 finding** (2 P1, 10 P2, 1 P3). Lượt review tĩn
 - **Tác động:** Một số ít request lớn có thể tiêu thụ nhiều RAM/CPU hoặc token, làm chậm/đẩy lỗi các request khác. Giới hạn body từ reverse proxy/runtime có thể giảm rủi ro nhưng chưa xác minh cấu hình triển khai.
 - **Khắc phục:** Đọc body có giới hạn byte trước khi parse JSON; giới hạn kích thước ảnh sau decode và số pixel; giới hạn ký tự OCR/translation trước khi gọi model; trả 413/400 nhất quán.
 - **Độ tin cậy:** Cao về thiếu giới hạn ở tầng ứng dụng; mức khai thác phụ thuộc reverse proxy/runtime và quyền AI của tài khoản.
+- **Trạng thái (2026-11-01):** đã xử lý theo [`CLAUDE_CODE_REVIEW_2026-10-27.md` §155](CLAUDE_CODE_REVIEW_2026-10-27.md#155-p3-8-giới-hạn-tài-nguyên-ocr-server-side-2026-11-01); route có trần request/ảnh/text, kiểm tra pixel và MIME/header, cùng regression test 9/9. Chưa gọi Tesseract/provider hay production trong lần xác minh này.
 
 ### [P2 — ĐÃ SỬA VÀ DEPLOY] Form khuyến mãi web có thể lưu mức giảm mặc định hoặc mang cấu hình shop trước sang shop khác
 

@@ -132,6 +132,8 @@ After authentication, the endpoint parses the complete JSON body before its plan
 
 **Evidence:** CodeGraph node `src/app/api/ai/ocr-menu/route.ts:25-79`; no OCR request or provider call was made.
 
+**Status update (2026-11-01):** Addressed in [`CLAUDE_CODE_REVIEW_2026-10-27.md` §155](CLAUDE_CODE_REVIEW_2026-10-27.md#155-p3-8-giới-hạn-tài-nguyên-ocr-server-side-2026-11-01). The route now bounds streamed request bytes, decoded image bytes, OCR text, image dimensions/pixels, and accepts only canonical Base64 for PNG/JPEG/WebP. Focused route regression tests pass 9/9; live Tesseract/provider behavior remains unverified.
+
 ### 11. [P1] Public demo login issues an owner session without a production guard
 
 **Location:** [`src/app/api/auth/route.ts`](../src/app/api/auth/route.ts:439), [`src/app/api/shops/route.ts`](../src/app/api/shops/route.ts:680), [`src/lib/db.ts`](../src/lib/db.ts:1101)
