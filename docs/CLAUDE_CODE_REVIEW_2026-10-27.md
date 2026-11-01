@@ -18,6 +18,8 @@
 
 > **Cập nhật mục 171 — 2026-11-02:** P2-18 đã được xác minh trực tiếp trên production bằng Playwright độc lập của Codex và AGY. Trang reset mở với `?lang=vi`, nút EN đổi nhãn sang tiếng Anh trong khi URL vẫn giữ `lang=vi`, và nút VI đổi lại được; không reload/navigation. Guard chỉ cho GET/HEAD; một beacon Cloudflare RUM POST bị chặn trước mạng. Không nhập email hoặc gửi form.
 
+> **Cập nhật mục 181 — 2026-11-02:** AGY Flash và Codex đã QA chỉ đọc trang Cửa/Menu cùng bốn public GET APIs trên shop Free `test-shop-1`; các trang/APIs trả 200, hai viewport không tràn ngang, tìm kiếm/lọc danh mục hoạt động, không có business mutation. Basic/Premium, English UI và nhiều danh mục vẫn cần fixture phù hợp. Claude CLI full-review chưa có verdict.
+
 ---
 
 ## 1. Kết luận tổng quát
@@ -2364,3 +2366,13 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Codex kiểm chứng độc lập:** `node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/promotions-review.test.ts` **2/2 PASS**; `npm run test:unit` **144/144 PASS**; `git diff --check` sạch.
 - **CodeGraph/ảnh hưởng:** status up-to-date; explore route plan guard, `dbGetShopById`, `dbUpdateShop`, `requireShopPermission`, `setShopMembershipDbClientForTest`, và mock `createInMemoryShopDbMock`. Chỉ test fixture thay đổi, không sửa route, schema, migration, hay dữ liệu production.
 - **Giới hạn:** đây là route regression với in-memory DB; không thay thế thử save/reload bằng tài khoản Basic/Premium thật. Chưa có shop Basic/Premium QA hợp lệ theo mục 179; PayOS production vẫn hoãn.
+
+## 181. QA production chỉ đọc cho trang Cửa/Menu và public APIs bằng tài khoản thử (2026-11-02)
+
+- **AGY Gemini 3.8 Flash Medium:** run `2026-11-01T21-06-07-174Z-34c4b201`, conversation `01926328-29be-4642-9e53-7ed8bfed5766`, terminal **SUCCESS**. Dùng phiên browser QA hiện có trên shop `test-shop-1` gói Free. Báo cáo sanitized nằm trong Git-ignored `.agy-runs/qa/owner-readonly-storefront-qa-2026-11-02.md`.
+- **CodeGraph:** `codegraph status`; explore `StorefrontDoorPage StorefrontMenuPage StorefrontProductImage`; explore các GET route `/api/shops`, `/api/catalog`, `/api/tables`, `/api/posts`; node `src/app/api/shops/route.ts`, `src/app/api/catalog/route.ts`, `src/app/api/posts/route.ts`; explore `LanguageSwitcher` và `getAllowedLocalesForPlan`.
+- **UI:** trang Cửa và Menu trả **HTTP 200** ở viewport `390x844` và `1280x800`, không tràn ngang, 0 uncaught page exceptions. Đã thử tìm kiếm có kết quả/không có kết quả/clear, lọc danh mục/reset, ngôn ngữ VI và menu CTA; không thêm món vào giỏ. Free chỉ cho một locale và shop fixture chỉ có một danh mục tùy chỉnh.
+- **Public GET APIs:** `/api/shops?slug=test-shop-1`, `/api/catalog?shopId=<derived>`, `/api/tables?shopId=<derived>` và `/api/posts?shopId=<derived>` đều trả **200**. Shape và số lượng khớp shop Free: 1 shop, 1 category, 1 item, 1 table, 0 posts.
+- **Network safety:** báo cáo AGY ghi nhận 4 analytics POST được fulfill locally bằng 204, 4 beacon cross-origin bị chặn và 0 business mutation. Codex cài lại guard chỉ cho same-origin GET/HEAD/OPTIONS; analytics chỉ được mock trong browser, request khác bị chặn. Codex xác minh độc lập GET trang Cửa và Menu trả 200, `html[lang]="vi"`, không tràn ngang ở 390/1280px; bốn API GET cũng trả 200.
+- **Giới hạn:** chưa thử English UI trên shop Basic/Premium hoặc lọc qua nhiều danh mục vì không có fixture Basic/Premium và shop Free hiện chỉ có một danh mục. Không sửa source/schema, không ghi dữ liệu production, không commit/deploy trong lượt QA này.
+- **Claude CLI:** phiên tương tác read-only còn chạy nhưng chưa phát hành full-review verdict. Lượt `claude --print` trực tiếp trả gateway `unrecognized_model`; không tính đây là review hoàn tất.
