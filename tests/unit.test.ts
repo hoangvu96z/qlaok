@@ -2426,6 +2426,8 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
           orderId: created.id,
           trackingToken: created.tracking_token,
           customer_note: 'Ít hành, thêm ớt',
+          // Server catalog price is 65,000 VND, so the edited 2-item quote is 130,000 VND.
+          expected_total: 130000,
           items: [
             {
               item_id: 'item-fnb-1',
@@ -2439,7 +2441,11 @@ describe('Suite 9: Shop Memberships, Shared Quote/Discount, Payment Lifecycle & 
         }),
       })
     );
-    assert.equal(validCustomerEditRes.status, 200);
+    assert.equal(
+      validCustomerEditRes.status,
+      200,
+      JSON.stringify(await validCustomerEditRes.clone().json())
+    );
     const editedPayload = await validCustomerEditRes.json();
     assert.equal(editedPayload.order.items[0].quantity, 2);
 
