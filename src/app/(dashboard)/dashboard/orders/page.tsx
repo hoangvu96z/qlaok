@@ -128,6 +128,12 @@ function getVnDateKey(dateInput: Date | string | number = new Date()): string {
 export default function CounterOrdersPage() {
   const { activeShop, profile } = useDashboard();
   const { locale, t, tx } = useAppI18n();
+  const activeShopRef = useRef(activeShop);
+  activeShopRef.current = activeShop;
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const translateRef = useRef(tx);
   translateRef.current = tx;
   const [liveStatus, setLiveStatus] = useState<OrderLiveStatus>('connecting');
@@ -264,7 +270,9 @@ export default function CounterOrdersPage() {
 
   const fetchOrdersAndCatalog = useCallback(
     async function refresh(silent = false): Promise<void> {
-      if (!activeShop || disposedRef.current) return;
+      const initialShop = activeShopRef.current;
+      const shopId = initialShop?.id;
+      if (!shopId || disposedRef.current) return;
       if (inFlight.current?.scope === scopeRef.current) {
         inFlight.current.again = true;
         inFlight.current.catalog ||= !silent;
@@ -276,8 +284,8 @@ export default function CounterOrdersPage() {
       if (!silent) setLoading(true);
       try {
         const ordersUrl = silent
-          ? `/api/orders?shopId=${encodeURIComponent(activeShop.id)}&includeCatalog=0&includeStats=0`
-          : `/api/orders?shopId=${encodeURIComponent(activeShop.id)}`;
+          ? `/api/orders?shopId=${encodeURIComponent(shopId)}&includeCatalog=0&includeStats=0`
+          : `/api/orders?shopId=${encodeURIComponent(shopId)}`;
         const [ordersRes, catRes] = await Promise.all([
           fetch(ordersUrl, {
             cache: 'no-store', headers: getAuthHeaders(),
@@ -285,17 +293,19 @@ export default function CounterOrdersPage() {
           silent
             ? Promise.resolve(null)
             : fetch(
-                `/api/catalog?shopId=${encodeURIComponent(activeShop.id)}`,
+                `/api/catalog?shopId=${encodeURIComponent(shopId)}`,
                 { cache: 'no-store', headers: getAuthHeaders() }
               ).catch(() => null),
         ]);
 
         if (disposedRef.current || scopeRef.current !== scope) return;
+        const currentShop = activeShopRef.current;
+        if (!currentShop || currentShop.id !== shopId) return;
         if (ordersRes.status === 401 || ordersRes.status === 403) {
           setSessionExpired(true);
           setOrdersState((prev) =>
             reconcileCounterOrdersFetch(prev, {
-              shopId: activeShop.id,
+              shopId,
               activeShopId: scopeRef.current.shopId,
               disposed: disposedRef.current,
               ok: false,
@@ -313,7 +323,7 @@ export default function CounterOrdersPage() {
           )} (HTTP ${ordersRes.status})`;
           setOrdersState((prev) =>
             reconcileCounterOrdersFetch(prev, {
-              shopId: activeShop.id,
+              shopId,
               activeShopId: scopeRef.current.shopId,
               disposed: disposedRef.current,
               ok: false,
@@ -369,19 +379,19 @@ export default function CounterOrdersPage() {
                 tableLabel: brandNewOrder.table_label || translateRef.current('Tại quầy', 'Counter'),
                 totalFormatted: formatCurrency(
                   Number(brandNewOrder.total_amount) || 0,
-                  activeShop.currency,
-                  locale
+                  currentShop.currency,
+                  localeRef.current
                 ),
                 itemsSummary,
-                shopName: activeShop.name,
+                shopName: currentShop.name,
               });
             }
             const notifiableServiceReqs = brandNewServiceReqs.filter((request) =>
               shouldNotifyBrowserServiceRequest({
-                rule: activeShop.theme_config?.serviceRequestNotificationRule,
+                rule: currentShop.theme_config?.serviceRequestNotificationRule,
                 requestType: request.request_type,
-                userId: profile?.id,
-                ownerId: activeShop.owner_id,
+                userId: profileRef.current?.id,
+                ownerId: currentShop.owner_id,
               })
             );
             if (!brandNewOrder && notifiableServiceReqs.length > 0) {
@@ -399,7 +409,7 @@ export default function CounterOrdersPage() {
                 requestId: serviceRequest.id,
                 tableLabel: serviceRequest.table_label,
                 requestType: serviceRequest.request_type,
-                shopName: activeShop.name,
+                shopName: currentShop.name,
               });
             }
           }
@@ -413,7 +423,7 @@ export default function CounterOrdersPage() {
           setServiceRequests(fetchedServiceRequests);
           setOrdersState((prev) =>
             reconcileCounterOrdersFetch(prev, {
-              shopId: activeShop.id,
+              shopId,
               activeShopId: scopeRef.current.shopId,
               disposed: disposedRef.current,
               ok: true,
@@ -436,7 +446,7 @@ export default function CounterOrdersPage() {
           setSessionExpired(false);
           setOrdersState((prev) =>
             reconcileCounterOrdersFetch(prev, {
-              shopId: activeShop.id,
+              shopId,
               activeShopId: scopeRef.current.shopId,
               disposed: disposedRef.current,
               ok: false,
@@ -453,21 +463,22 @@ export default function CounterOrdersPage() {
         if (!silent && !disposedRef.current && scopeRef.current === scope) setLoading(false);
       }
     },
-    [activeShop, locale, profile?.id]
+    []
   );
 
   useEffect(() => {
+    const shopId = activeShop?.id;
     isFirstLoadRef.current = true;
     knownOrderIdsRef.current = new Set();
     knownServiceRequestIdsRef.current = new Set();
     setSessionExpired(false);
     setOrders([]);
     setServiceRequests([]);
-    setOrdersState(createInitialCounterOrdersState(activeShop?.id ?? null));
+    setOrdersState(createInitialCounterOrdersState(shopId ?? null));
     setCatalogItems([]);
     setCatalogCategories([]);
     setMembership(null);
-    if (!activeShop?.id) {
+    if (!shopId) {
       setLoading(false);
       return;
     }
@@ -483,7 +494,8 @@ export default function CounterOrdersPage() {
         // Only brand-new orders chime; updates just trigger a silent refresh below.
         const isNewOrderMessage =
           msgType === 'new_order_submitted' || msgType === 'order_created';
-        if (isNewOrderMessage && ev.data?.shopId === activeShop?.id) {
+        const currentShop = activeShopRef.current;
+        if (isNewOrderMessage && ev.data?.shopId === currentShop?.id) {
           const msgOrder: Partial<ShopOrder> | undefined =
             ev.data?.order && typeof ev.data.order === 'object'
               ? ev.data.order
@@ -513,18 +525,18 @@ export default function CounterOrdersPage() {
               tableLabel: tableLabel || translateRef.current('Tại quầy', 'Counter'),
               totalFormatted: formatCurrency(
                 totalAmount,
-                activeShop?.currency || 'VND'
+                currentShop?.currency || 'VND'
               ),
-              shopName: activeShop?.name,
+              shopName: currentShop?.name,
             });
           }
         }
-        if (ev.data?.shopId === activeShop.id && document.visibilityState !== 'hidden') void fetchOrdersAndCatalog(true);
+        if (ev.data?.shopId === activeShopRef.current?.id && document.visibilityState !== 'hidden') void fetchOrdersAndCatalog(true);
       };
     }
 
     const sync = startOrderLiveSync({
-      query: new URLSearchParams({ shopId: activeShop.id }).toString(),
+      query: new URLSearchParams({ shopId }).toString(),
       headers: getAuthHeaders,
       onChange: () => { void fetchOrdersAndCatalog(true); },
       onStatus: setLiveStatus,
@@ -536,7 +548,7 @@ export default function CounterOrdersPage() {
       sync();
       if (liveSyncRef.current === sync) liveSyncRef.current = null;
     };
-  }, [fetchOrdersAndCatalog, activeShop?.id, activeShop?.name, activeShop?.currency]);
+  }, [fetchOrdersAndCatalog, activeShop?.id]);
 
   // Repeating reminder chime every 10 seconds if there are unaccepted 'new' orders or pending service requests and remindUntilAccepted is enabled
   useEffect(() => {

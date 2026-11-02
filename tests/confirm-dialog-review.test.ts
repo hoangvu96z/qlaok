@@ -44,6 +44,27 @@ test('orders page guards destructive actions and handles expired sessions', () =
   assert.doesNotMatch(qrModalSrc, /payment_status:\s*'paid'/);
 });
 
+test('orders page keeps POS state and SSE lifecycle stable across same-shop render changes', () => {
+  const src = read('src/app/(dashboard)/dashboard/orders/page.tsx');
+  const fetchCallback = src.match(
+    /const fetchOrdersAndCatalog = useCallback\([\s\S]*?\n  \);\n\n  useEffect/
+  );
+  assert.ok(fetchCallback, 'orders fetch callback should be present');
+  assert.match(fetchCallback[0], /activeShopRef\.current/);
+  assert.match(fetchCallback[0], /profileRef\.current\?\.id/);
+  assert.match(fetchCallback[0], /localeRef\.current/);
+  assert.match(fetchCallback[0], /\n    \[\]\n  \);/);
+  assert.doesNotMatch(fetchCallback[0], /\[activeShop, locale, profile\?\.id\]/);
+
+  const lifecycleEffect = src.match(
+    /useEffect\(\(\) => \{\n    const shopId = activeShop\?\.id;[\s\S]*?\n  \}, \[fetchOrdersAndCatalog, activeShop\?\.id\]\);/
+  );
+  assert.ok(lifecycleEffect, 'orders reset and SSE effect should be present');
+  assert.match(lifecycleEffect[0], /startOrderLiveSync\(/);
+  assert.match(lifecycleEffect[0], /activeShopRef\.current/);
+  assert.doesNotMatch(lifecycleEffect[0], /activeShop\?\.(name|currency)/);
+});
+
 test('catalog and posts pages confirm deletes and check res.ok', () => {
   const catalog = read('src/app/(dashboard)/dashboard/catalog/page.tsx');
   assert.match(catalog, /formatPlanLimitError/);
