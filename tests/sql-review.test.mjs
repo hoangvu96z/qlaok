@@ -2020,5 +2020,452 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     );
     await assertTriggerFunctionsExecuteRevoked();
 
+    // 14. Verify 20261102000200_admin_delete_owner_shop_atomic.sql:
+    // Ordering, privilege boundaries, client-context guard, conflict preservation, and atomic cascade deletes
+    await db.exec('RESET ROLE');
+    const idxAdminDeleteAtomic = migrations.indexOf(
+      '20261102000200_admin_delete_owner_shop_atomic.sql'
+    );
+    assert.ok(
+      idxAdminDeleteAtomic > idxRevokeTriggers,
+      '20261102000200_admin_delete_owner_shop_atomic.sql must sort after 20261102000100_revoke_trigger_function_execute.sql'
+    );
+
+    const assertAdminDeleteAtomicRpcPrivileges = async () => {
+      await db.exec('RESET ROLE');
+      const privRows = (
+        await db.query(`
+          SELECT
+            fn.signature,
+            r.role_name,
+            has_function_privilege(r.role_name, fn.signature, 'EXECUTE') AS can_execute
+          FROM (
+            VALUES
+              ('public.admin_delete_owner_atomic(text)'),
+              ('public.admin_delete_shop_atomic(text)')
+          ) AS fn(signature)
+          CROSS JOIN (
+            VALUES ('anon'), ('authenticated'), ('service_role')
+          ) AS r(role_name)
+        `)
+      ).rows;
+      assert.equal(privRows.length, 6);
+      for (const row of privRows) {
+        const expected = row.role_name === 'service_role';
+        assert.equal(
+          row.can_execute,
+          expected,
+          `expected EXECUTE=${expected} for ${row.role_name} on ${row.signature}`
+        );
+      }
+
+      const procRows = (
+        await db.query(`
+          SELECT proname, prosecdef, provolatile, proconfig
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public'
+            AND p.proname IN ('admin_delete_owner_atomic', 'admin_delete_shop_atomic')
+          ORDER BY proname ASC
+        `)
+      ).rows;
+      assert.equal(procRows.length, 2);
+      for (const proc of procRows) {
+        assert.equal(proc.prosecdef, true, `${proc.proname} must be SECURITY DEFINER`);
+        assert.equal(proc.provolatile, 'v', `${proc.proname} must be VOLATILE`);
+        assert.ok(
+          Array.isArray(proc.proconfig) &&
+            proc.proconfig.includes('search_path=public, pg_temp'),
+          `${proc.proname} must set search_path = public, pg_temp`
+        );
+      }
+
+      for (const roleName of ['anon', 'authenticated']) {
+        await db.exec(`RESET ROLE; SET ROLE ${roleName};`);
+        await assert.rejects(
+          db.query("SELECT public.admin_delete_owner_atomic('any-owner')"),
+          /permission denied for function admin_delete_owner_atomic/i
+        );
+        await assert.rejects(
+          db.query("SELECT public.admin_delete_shop_atomic('any-shop')"),
+          /permission denied for function admin_delete_shop_atomic/i
+        );
+      }
+
+      await db.exec(`
+        RESET ROLE;
+        SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"spoofed"}', false);
+      `);
+      await assert.rejects(
+        db.query("SELECT public.admin_delete_owner_atomic('any-owner')"),
+        /FORBIDDEN_CLIENT_RPC/
+      );
+      await assert.rejects(
+        db.query("SELECT public.admin_delete_shop_atomic('any-shop')"),
+        /FORBIDDEN_CLIENT_RPC/
+      );
+      await db.exec(`
+        RESET ROLE;
+        SELECT set_config('request.jwt.claim.role', '', false);
+        SELECT set_config('request.jwt.claim.sub', '', false);
+        SELECT set_config('request.jwt.claims', '', false);
+      `);
+    };
+
+    await assertAdminDeleteAtomicRpcPrivileges();
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261102000200_admin_delete_owner_shop_atomic.sql',
+        'utf8'
+      )
+    );
+    await assertAdminDeleteAtomicRpcPrivileges();
+
+    // Execute functional outcomes as service_role with server-only context
+    await db.exec(`
+      RESET ROLE;
+      SELECT set_config('request.jwt.claim.role', 'service_role', false);
+      SELECT set_config('request.jwt.claim.sub', '', false);
+      SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+      SET ROLE service_role;
+    `);
+
+    const missingOwnerRes = (
+      await db.query(
+        "SELECT public.admin_delete_owner_atomic('missing-owner-id') AS result"
+      )
+    ).rows[0].result;
+    assert.deepEqual(missingOwnerRes, {
+      ok: false,
+      deleted: false,
+      code: 'OWNER_NOT_FOUND',
+      error: 'Không tìm thấy tài khoản.',
+    });
+
+    const missingShopRes = (
+      await db.query(
+        "SELECT public.admin_delete_shop_atomic('missing-shop-id') AS result"
+      )
+    ).rows[0].result;
+    assert.deepEqual(missingShopRes, {
+      ok: false,
+      deleted: false,
+      code: 'SHOP_NOT_FOUND',
+      error: 'Không tìm thấy cửa hàng.',
+    });
+
+    // Root Super Admin guard by ID and by normalized email
+    await db.exec(`
+      RESET ROLE;
+      INSERT INTO public.profiles (id, email, full_name) VALUES
+        ('admin-hoangvu96z', 'root-alias@test.local', 'Root By ID'),
+        ('owner-root-email', '  HoangVu96z@gmail.com ', 'Root By Email');
+      SET ROLE service_role;
+    `);
+    const rootByIdRes = (
+      await db.query(
+        "SELECT public.admin_delete_owner_atomic('admin-hoangvu96z') AS result"
+      )
+    ).rows[0].result;
+    assert.equal(rootByIdRes.ok, false);
+    assert.equal(rootByIdRes.deleted, false);
+    assert.equal(rootByIdRes.code, 'SUPER_ADMIN_PROTECTED');
+
+    const rootByEmailRes = (
+      await db.query(
+        "SELECT public.admin_delete_owner_atomic('owner-root-email') AS result"
+      )
+    ).rows[0].result;
+    assert.equal(rootByEmailRes.ok, false);
+    assert.equal(rootByEmailRes.deleted, false);
+    assert.equal(rootByEmailRes.code, 'SUPER_ADMIN_PROTECTED');
+
+    const remainingRootProfiles = (
+      await db.query(
+        "SELECT id FROM public.profiles WHERE id IN ('admin-hoangvu96z', 'owner-root-email') ORDER BY id ASC"
+      )
+    ).rows;
+    assert.equal(remainingRootProfiles.length, 2);
+
+    // Owner payment_transactions conflict preserves profile, shop, categories, and slug aliases
+    await db.exec(`
+      RESET ROLE;
+      INSERT INTO public.profiles (id, email, full_name)
+      VALUES ('del-owner-pay', 'del-owner-pay@test.local', 'Pay Owner');
+      INSERT INTO public.shops (id, owner_id, slug, name)
+      VALUES ('del-shop-pay', 'del-owner-pay', 'del-shop-pay', 'Pay Shop');
+      INSERT INTO public.categories (id, shop_id, sort_order, name_i18n)
+      VALUES ('cat-pay', 'del-shop-pay', 1, '{"vi":"Coffee"}');
+      INSERT INTO public.shop_slug_aliases (slug, shop_id)
+      VALUES ('del-shop-pay-old', 'del-shop-pay');
+      INSERT INTO public.payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('pt-del-1', 'del-owner-pay', 'REF-DEL-1', 'basic', 150000, 'pending');
+      SET ROLE service_role;
+    `);
+
+    const ownerPaymentConflict = (
+      await db.query(
+        "SELECT public.admin_delete_owner_atomic('del-owner-pay') AS result"
+      )
+    ).rows[0].result;
+    assert.deepEqual(ownerPaymentConflict, {
+      ok: false,
+      deleted: false,
+      code: 'OWNER_HAS_PAYMENT_HISTORY',
+      email: 'del-owner-pay@test.local',
+      shop_ids: ['del-shop-pay'],
+      error: 'Không thể xóa tài khoản vì còn lịch sử thanh toán gắn với tài khoản này.',
+    });
+    assert.equal(
+      (await db.query("SELECT id FROM public.profiles WHERE id = 'del-owner-pay'")).rows.length,
+      1
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.shops WHERE id = 'del-shop-pay'")).rows.length,
+      1
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.categories WHERE id = 'cat-pay'")).rows.length,
+      1
+    );
+    assert.equal(
+      (await db.query("SELECT slug FROM public.shop_slug_aliases WHERE slug = 'del-shop-pay-old'")).rows.length,
+      1
+    );
+
+    // Each independently seedable shop history table blocks both delete RPCs.
+    // order_audit_logs rows require a parent order/service request and cascade with
+    // that parent, so the audit fixture keeps its order and exercises both rows.
+    const historyFixtures = [
+      {
+        suffix: 'orders',
+        seedSql: `
+          INSERT INTO public.orders (id, shop_id, order_code, table_label, status, payment_status, total_amount)
+          VALUES ('ord-del-hist', 'del-shop-orders', 'ORD-HIST-1', 'T1', 'new', 'unpaid', 25000);
+        `,
+      },
+      {
+        suffix: 'audit',
+        seedSql: `
+          INSERT INTO public.orders (id, shop_id, order_code, table_label, status, payment_status, total_amount)
+          VALUES ('ord-for-audit', 'del-shop-audit', 'ORD-AUD-1', 'T1', 'cancelled', 'unpaid', 25000);
+          INSERT INTO public.order_audit_logs (id, shop_id, order_id, actor_user_id, actor_role, action)
+          VALUES ('aud-del-hist', 'del-shop-audit', 'ord-for-audit', 'del-owner-audit', 'owner', 'order.cancelled');
+        `,
+      },
+      {
+        suffix: 'sepay',
+        seedSql: `
+          INSERT INTO public.sepay_webhook_events (id, shop_id, sepay_transaction_id, payload_hash, outcome, reason_code, raw_payload)
+          VALUES ('sepay-del-hist', 'del-shop-sepay', '999001', 'hash-999001', 'rejected', 'ORDER_NOT_FOUND', '{"id":999001}'::jsonb);
+        `,
+      },
+      {
+        suffix: 'tsr',
+        seedSql: `
+          INSERT INTO public.table_service_requests (id, shop_id, table_id, table_code, table_label, request_type, status)
+          VALUES ('tsr-del-hist', 'del-shop-tsr', 'tbl-tsr', 'B1', 'Bàn 1', 'call_staff', 'pending');
+        `,
+      },
+    ];
+
+    for (const fixture of historyFixtures) {
+      const ownerId = `del-owner-${fixture.suffix}`;
+      const shopId = `del-shop-${fixture.suffix}`;
+      const catId = `cat-${fixture.suffix}`;
+      const itemId = `item-${fixture.suffix}`;
+      const tableId = `tbl-${fixture.suffix}`;
+      const aliasSlug = `alias-${fixture.suffix}`;
+
+      await db.exec(`
+        RESET ROLE;
+        INSERT INTO public.profiles (id, email, full_name)
+        VALUES ('${ownerId}', '${ownerId}@test.local', 'Owner ${fixture.suffix}');
+        INSERT INTO public.shops (id, owner_id, slug, name)
+        VALUES ('${shopId}', '${ownerId}', '${shopId}', 'Shop ${fixture.suffix}');
+        INSERT INTO public.categories (id, shop_id, sort_order, name_i18n)
+        VALUES ('${catId}', '${shopId}', 1, '{"vi":"Menu"}');
+        INSERT INTO public.items (id, shop_id, category_id, name_i18n, price)
+        VALUES ('${itemId}', '${shopId}', '${catId}', '{"vi":"Item"}', 20000);
+        INSERT INTO public.shop_tables (id, shop_id, table_code, name, is_active, is_archived)
+        VALUES ('${tableId}', '${shopId}', 'B1', 'Bàn 1', true, false);
+        INSERT INTO public.shop_slug_aliases (slug, shop_id)
+        VALUES ('${aliasSlug}', '${shopId}');
+        ${fixture.seedSql}
+        SET ROLE service_role;
+      `);
+
+      if (fixture.suffix === 'audit') {
+        assert.equal(
+          (
+            await db.query(
+              "SELECT id FROM public.order_audit_logs WHERE id = 'aud-del-hist' AND shop_id = 'del-shop-audit'"
+            )
+          ).rows.length,
+          1,
+          'audit history fixture must retain its parent order under the existing ON DELETE CASCADE FK'
+        );
+      }
+
+      const shopConflict = (
+        await db.query(
+          `SELECT public.admin_delete_shop_atomic('${shopId}') AS result`
+        )
+      ).rows[0].result;
+      assert.deepEqual(shopConflict, {
+        ok: false,
+        deleted: false,
+        code: 'SHOP_HAS_HISTORY',
+        shop_id: shopId,
+        error: 'Không thể xóa cửa hàng vì còn đơn hàng hoặc dữ liệu lịch sử.',
+      });
+
+      const ownerConflict = (
+        await db.query(
+          `SELECT public.admin_delete_owner_atomic('${ownerId}') AS result`
+        )
+      ).rows[0].result;
+      assert.deepEqual(ownerConflict, {
+        ok: false,
+        deleted: false,
+        code: 'OWNER_HAS_BUSINESS_HISTORY',
+        email: `${ownerId}@test.local`,
+        shop_ids: [shopId],
+        error: 'Không thể xóa tài khoản vì cửa hàng còn đơn hàng hoặc dữ liệu lịch sử.',
+      });
+
+      assert.equal(
+        (await db.query(`SELECT id FROM public.profiles WHERE id = '${ownerId}'`)).rows.length,
+        1,
+        `profile must remain after ${fixture.suffix} conflict`
+      );
+      assert.equal(
+        (await db.query(`SELECT id FROM public.shops WHERE id = '${shopId}'`)).rows.length,
+        1,
+        `shop must remain after ${fixture.suffix} conflict`
+      );
+      assert.equal(
+        (await db.query(`SELECT id FROM public.categories WHERE id = '${catId}'`)).rows.length,
+        1,
+        `category must not cascade after ${fixture.suffix} conflict`
+      );
+      assert.equal(
+        (await db.query(`SELECT id FROM public.items WHERE id = '${itemId}'`)).rows.length,
+        1,
+        `item must not cascade after ${fixture.suffix} conflict`
+      );
+      assert.equal(
+        (await db.query(`SELECT id FROM public.shop_tables WHERE id = '${tableId}'`)).rows.length,
+        1,
+        `shop_table must not cascade after ${fixture.suffix} conflict`
+      );
+      assert.equal(
+        (await db.query(`SELECT slug FROM public.shop_slug_aliases WHERE slug = '${aliasSlug}'`)).rows.length,
+        1,
+        `shop_slug_alias must not cascade after ${fixture.suffix} conflict`
+      );
+    }
+
+    // Empty-history shop delete cascades non-history children while keeping owner profile
+    await db.exec(`
+      RESET ROLE;
+      INSERT INTO public.profiles (id, email, full_name)
+      VALUES ('del-owner-clean-shop', 'clean-shop-owner@test.local', 'Clean Shop Owner');
+      INSERT INTO public.shops (id, owner_id, slug, name)
+      VALUES ('del-shop-clean', 'del-owner-clean-shop', 'del-shop-clean', 'Clean Shop');
+      INSERT INTO public.categories (id, shop_id, sort_order, name_i18n)
+      VALUES ('cat-clean-shop', 'del-shop-clean', 1, '{"vi":"Tea"}');
+      INSERT INTO public.items (id, shop_id, category_id, name_i18n, price)
+      VALUES ('item-clean-shop', 'del-shop-clean', 'cat-clean-shop', '{"vi":"Oolong"}', 30000);
+      INSERT INTO public.shop_tables (id, shop_id, table_code, name, is_active, is_archived)
+      VALUES ('tbl-clean-shop', 'del-shop-clean', 'A1', 'Table A1', true, false);
+      INSERT INTO public.shop_slug_aliases (slug, shop_id)
+      VALUES ('del-shop-clean-old', 'del-shop-clean');
+      SET ROLE service_role;
+    `);
+
+    const cleanShopDeleted = (
+      await db.query(
+        "SELECT public.admin_delete_shop_atomic('del-shop-clean') AS result"
+      )
+    ).rows[0].result;
+    assert.deepEqual(cleanShopDeleted, {
+      ok: true,
+      deleted: true,
+      shop_id: 'del-shop-clean',
+    });
+    assert.equal(
+      (await db.query("SELECT id FROM public.profiles WHERE id = 'del-owner-clean-shop'")).rows.length,
+      1,
+      'owner profile must remain when only deleting a shop'
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.shops WHERE id = 'del-shop-clean'")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.categories WHERE id = 'cat-clean-shop'")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.items WHERE id = 'item-clean-shop'")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.shop_tables WHERE id = 'tbl-clean-shop'")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT slug FROM public.shop_slug_aliases WHERE slug = 'del-shop-clean-old'")).rows.length,
+      0
+    );
+
+    // Empty-history owner delete with multiple shops locks/returns deterministic shop_ids and cascades all owned rows
+    await db.exec(`
+      RESET ROLE;
+      INSERT INTO public.profiles (id, email, full_name)
+      VALUES ('del-owner-clean-multi', 'clean-multi@test.local', 'Clean Multi Owner');
+      INSERT INTO public.shops (id, owner_id, slug, name) VALUES
+        ('del-shop-z', 'del-owner-clean-multi', 'del-shop-z', 'Shop Z'),
+        ('del-shop-a', 'del-owner-clean-multi', 'del-shop-a', 'Shop A');
+      INSERT INTO public.categories (id, shop_id, sort_order, name_i18n) VALUES
+        ('cat-multi-z', 'del-shop-z', 1, '{"vi":"Cat Z"}'),
+        ('cat-multi-a', 'del-shop-a', 1, '{"vi":"Cat A"}');
+      INSERT INTO public.shop_slug_aliases (slug, shop_id) VALUES
+        ('del-shop-z-old', 'del-shop-z'),
+        ('del-shop-a-old', 'del-shop-a');
+      SET ROLE service_role;
+    `);
+
+    const cleanOwnerDeleted = (
+      await db.query(
+        "SELECT public.admin_delete_owner_atomic('del-owner-clean-multi') AS result"
+      )
+    ).rows[0].result;
+    assert.deepEqual(cleanOwnerDeleted, {
+      ok: true,
+      deleted: true,
+      owner_id: 'del-owner-clean-multi',
+      email: 'clean-multi@test.local',
+      shop_ids: ['del-shop-a', 'del-shop-z'],
+    });
+    assert.equal(
+      (await db.query("SELECT id FROM public.profiles WHERE id = 'del-owner-clean-multi'")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.shops WHERE id IN ('del-shop-a', 'del-shop-z')")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM public.categories WHERE id IN ('cat-multi-a', 'cat-multi-z')")).rows.length,
+      0
+    );
+    assert.equal(
+      (await db.query("SELECT slug FROM public.shop_slug_aliases WHERE slug IN ('del-shop-a-old', 'del-shop-z-old')")).rows.length,
+      0
+    );
+
   } finally { await db.close(); }
 });

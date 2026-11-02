@@ -8204,17 +8204,197 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       ],
     ]);
 
+    const secondShopId = 'shop-del-owner-cascade-test';
     const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
     const failAliasUpsert = false;
     let failShopDelete = false;
+    let failOwnerDelete = false;
     const childDeleteTables: string[] = [];
+    const directTableDeletes: string[] = [];
+    const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+    const recordedAdminAuditRows: Array<Record<string, unknown>> = [];
     let existingHistoryTable: string | null = null;
     let historyQueryFailureTable: string | null = null;
     let profileExists = true;
     let ownerProfileEmail = 'owner-delete-review@example.test';
 
     const mockSupabase = {
+      async rpc(fnName: string, args: Record<string, unknown>) {
+        rpcCalls.push({ fn: fnName, args });
+
+        if (fnName === 'admin_delete_owner_atomic') {
+          const requestedOwnerId =
+            typeof args.p_owner_id === 'string' ? args.p_owner_id.trim() : '';
+          if (failOwnerDelete || historyQueryFailureTable) {
+            return {
+              data: null,
+              error: {
+                message: `Simulated atomic RPC failure for ${
+                  historyQueryFailureTable || 'admin_delete_owner_atomic'
+                }`,
+              },
+            };
+          }
+          if (!profileExists || requestedOwnerId !== targetOwnerId) {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'OWNER_NOT_FOUND',
+                error: 'Không tìm thấy tài khoản.',
+              },
+              error: null,
+            };
+          }
+          if (
+            ownerProfileEmail.trim().toLowerCase() ===
+            SUPER_ADMIN_EMAIL.toLowerCase()
+          ) {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'SUPER_ADMIN_PROTECTED',
+                email: ownerProfileEmail,
+                error: 'Không thể xóa tài khoản Super Admin tối cao!',
+              },
+              error: null,
+            };
+          }
+
+          const ownedShopIds = Array.from(shopsStore.values())
+            .filter((s) => s.owner_id === requestedOwnerId)
+            .map((s) => String(s.id))
+            .sort((a, b) => a.localeCompare(b));
+
+          if (existingHistoryTable === 'payment_transactions') {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'OWNER_HAS_PAYMENT_HISTORY',
+                email: ownerProfileEmail,
+                shop_ids: ownedShopIds,
+                error:
+                  'Không thể xóa tài khoản vì còn lịch sử thanh toán gắn với tài khoản này.',
+              },
+              error: null,
+            };
+          }
+
+          if (
+            ownedShopIds.length > 0 &&
+            (existingHistoryTable === 'orders' ||
+              existingHistoryTable === 'order_audit_logs' ||
+              existingHistoryTable === 'sepay_webhook_events' ||
+              existingHistoryTable === 'table_service_requests')
+          ) {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'OWNER_HAS_BUSINESS_HISTORY',
+                email: ownerProfileEmail,
+                shop_ids: ownedShopIds,
+                error:
+                  'Không thể xóa tài khoản vì cửa hàng còn đơn hàng hoặc dữ liệu lịch sử.',
+              },
+              error: null,
+            };
+          }
+
+          profileExists = false;
+          for (const sid of ownedShopIds) {
+            shopsStore.delete(sid);
+            for (const [slug, alias] of aliasesStore.entries()) {
+              if (alias.shop_id === sid) aliasesStore.delete(slug);
+            }
+          }
+
+          return {
+            data: {
+              ok: true,
+              deleted: true,
+              owner_id: requestedOwnerId,
+              email: ownerProfileEmail,
+              shop_ids: ownedShopIds,
+            },
+            error: null,
+          };
+        }
+
+        if (fnName === 'admin_delete_shop_atomic') {
+          const requestedShopId =
+            typeof args.p_shop_id === 'string' ? args.p_shop_id.trim() : '';
+          if (failShopDelete || historyQueryFailureTable) {
+            return {
+              data: null,
+              error: {
+                message: `Simulated atomic RPC failure for ${
+                  historyQueryFailureTable || 'admin_delete_shop_atomic'
+                }`,
+              },
+            };
+          }
+          if (!shopsStore.has(requestedShopId)) {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'SHOP_NOT_FOUND',
+                error: 'Không tìm thấy cửa hàng.',
+              },
+              error: null,
+            };
+          }
+          if (
+            existingHistoryTable === 'orders' ||
+            existingHistoryTable === 'order_audit_logs' ||
+            existingHistoryTable === 'sepay_webhook_events' ||
+            existingHistoryTable === 'table_service_requests'
+          ) {
+            return {
+              data: {
+                ok: false,
+                deleted: false,
+                code: 'SHOP_HAS_HISTORY',
+                shop_id: requestedShopId,
+                error:
+                  'Không thể xóa cửa hàng vì còn đơn hàng hoặc dữ liệu lịch sử.',
+              },
+              error: null,
+            };
+          }
+
+          shopsStore.delete(requestedShopId);
+          for (const [slug, alias] of aliasesStore.entries()) {
+            if (alias.shop_id === requestedShopId) aliasesStore.delete(slug);
+          }
+
+          return {
+            data: {
+              ok: true,
+              deleted: true,
+              shop_id: requestedShopId,
+            },
+            error: null,
+          };
+        }
+
+        return {
+          data: null,
+          error: { message: `Unexpected RPC: ${fnName}` },
+        };
+      },
       from(table: string) {
+        if (table === 'admin_audit_logs') {
+          return {
+            insert(payload: Record<string, unknown>) {
+              recordedAdminAuditRows.push({ ...payload });
+              return Promise.resolve({ data: payload, error: null });
+            },
+          };
+        }
         if (table === 'shops') {
           return {
             select() {
@@ -8319,30 +8499,15 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               };
             },
             delete() {
-              let targetId = '';
+              directTableDeletes.push('shops');
               const chain = {
-                eq(_col: string, idVal: string) {
-                  targetId = idVal;
-                  return chain;
-                },
-                select() {
-                  return chain;
-                },
+                eq: () => chain,
+                select: () => chain,
                 then(resolve: (value: unknown) => unknown) {
-                  if (failShopDelete) {
-                    return Promise.resolve({
-                      data: null,
-                      error: { message: 'Simulated DB failure deleting shop' },
-                    }).then(resolve);
-                  }
-                  if (!shopsStore.has(targetId)) {
-                    return Promise.resolve({ data: [], error: null }).then(resolve);
-                  }
-                  shopsStore.delete(targetId);
-                  for (const [slug, alias] of aliasesStore.entries()) {
-                    if (alias.shop_id === targetId) aliasesStore.delete(slug);
-                  }
-                  return Promise.resolve({ data: [{ id: targetId }], error: null }).then(resolve);
+                  return Promise.resolve({
+                    data: null,
+                    error: { message: 'Direct shops.delete() should not be called' },
+                  }).then(resolve);
                 },
               };
               return chain;
@@ -8420,46 +8585,6 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           };
         }
 
-        if (
-          table === 'orders' ||
-          table === 'order_audit_logs' ||
-          table === 'sepay_webhook_events' ||
-          table === 'table_service_requests' ||
-          table === 'payment_transactions'
-        ) {
-          const filters: Array<[string, unknown]> = [];
-          const chain = {
-            eq(col: string, val: unknown) {
-              filters.push([col, val]);
-              return chain;
-            },
-            limit: () => chain,
-            maybeSingle: async () => {
-              if (historyQueryFailureTable === table) {
-                return {
-                  data: null,
-                  error: { message: `Simulated preflight query failure for ${table}` },
-                };
-              }
-              const expectedColumn =
-                table === 'payment_transactions' ? 'user_id' : 'shop_id';
-              const expectedValue =
-                table === 'payment_transactions' ? targetOwnerId : targetShopId;
-              const matchesTarget = filters.some(
-                ([col, value]) => col === expectedColumn && value === expectedValue
-              );
-              return {
-                data:
-                  existingHistoryTable === table && matchesTarget
-                    ? { id: `${table}-history` }
-                    : null,
-                error: null,
-              };
-            },
-          };
-          return { select: () => chain };
-        }
-
         if (table === 'profiles') {
           return {
             select() {
@@ -8478,21 +8603,14 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               return chain;
             },
             delete() {
-              let targetId = '';
+              directTableDeletes.push('profiles');
               const chain = {
-                eq(_col: string, idVal: string) {
-                  targetId = idVal;
-                  return chain;
-                },
+                eq: () => chain,
                 select: () => chain,
                 then(resolve: (value: unknown) => unknown) {
-                  if (!profileExists || targetId !== targetOwnerId) {
-                    return Promise.resolve({ data: [], error: null }).then(resolve);
-                  }
-                  profileExists = false;
                   return Promise.resolve({
-                    data: [{ id: targetId }],
-                    error: null,
+                    data: null,
+                    error: { message: 'Direct profiles.delete() should not be called' },
                   }).then(resolve);
                 },
               };
@@ -8519,6 +8637,7 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               eq: () => chain,
               then: (resolve: (v: unknown) => unknown) => {
                 childDeleteTables.push(table);
+                directTableDeletes.push(table);
                 return Promise.resolve({ error: null }).then(resolve);
               },
             };
@@ -8563,7 +8682,43 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       );
       assert.ok(aliasesStore.has('initial-del-slug'));
 
-      // The Super Admin guard uses the server profile email, not a spoofed body email.
+      // Missing parent checks return 404 without clearing aliases or cascading.
+      const missingOwnerDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_owner',
+            ownerId: 'missing-owner-id',
+          }),
+        })
+      );
+      assert.equal(missingOwnerDeleteRes.status, 404);
+      assert.ok(profileExists);
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+
+      const missingShopDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_shop',
+            shopId: 'missing-shop-id',
+          }),
+        })
+      );
+      assert.equal(missingShopDeleteRes.status, 404);
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+
+      // The Super Admin guard uses the server profile email from the locked row, not a spoofed body email.
       ownerProfileEmail = SUPER_ADMIN_EMAIL;
       const protectedOwnerDeleteRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
@@ -8583,6 +8738,22 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       assert.ok(shopsStore.has(targetShopId));
       assert.ok(aliasesStore.has('initial-del-slug'));
       ownerProfileEmail = 'owner-delete-review@example.test';
+
+      // Direct SUPER_ADMIN_ID is also blocked with 400.
+      const protectedAdminIdDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_owner',
+            ownerId: SUPER_ADMIN_ID,
+          }),
+        })
+      );
+      assert.equal(protectedAdminIdDeleteRes.status, 400);
 
       // Owner deletion must retain profile-level billing history and every
       // shop-level order, audit, service-request, and SePay ledger row.
@@ -8615,11 +8786,12 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
         assert.ok(shopsStore.has(targetShopId));
         assert.ok(aliasesStore.has('initial-del-slug'));
         assert.deepEqual(childDeleteTables, []);
+        assert.deepEqual(directTableDeletes, []);
       }
       existingHistoryTable = null;
 
       historyQueryFailureTable = 'order_audit_logs';
-      const ownerPreflightFailureRes = await adminPost(
+      const ownerRpcFailureRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
           method: 'POST',
           headers: {
@@ -8632,17 +8804,17 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           }),
         })
       );
-      assert.equal(ownerPreflightFailureRes.status, 503);
+      assert.equal(ownerRpcFailureRes.status, 500);
       assert.equal(
-        (await ownerPreflightFailureRes.json()).code,
-        'OWNER_DELETE_PREFLIGHT_FAILED'
+        (await ownerRpcFailureRes.json()).code,
+        'OWNER_DELETE_FAILED'
       );
       assert.ok(profileExists);
       assert.ok(shopsStore.has(targetShopId));
       assert.ok(aliasesStore.has('initial-del-slug'));
       historyQueryFailureTable = null;
 
-      // 2. Failure case: shop deletion fails
+      // 2. Failure case: shop deletion RPC fails
       failShopDelete = true;
       const failDeleteRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
@@ -8674,30 +8846,43 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       );
       assert.ok(shopsStore.has(targetShopId), 'Shop must still exist after failed deletion');
       assert.deepEqual(childDeleteTables, [], 'Failed parent delete must not pre-delete child rows');
+      assert.deepEqual(directTableDeletes, [], 'Route must use atomic RPC rather than direct table delete');
 
-      // Any SePay event or other shop history blocks deletion before mutation.
-      existingHistoryTable = 'sepay_webhook_events';
-      const blockedDeleteRes = await adminPost(
-        new Request('http://localhost:3000/api/admin', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${adminToken}`,
-          },
-          body: JSON.stringify({
-            action: 'delete_shop',
-            shopId: targetShopId,
-          }),
-        })
-      );
-      assert.equal(blockedDeleteRes.status, 409);
-      assert.equal((await blockedDeleteRes.json()).code, 'SHOP_HAS_HISTORY');
-      assert.ok(shopsStore.has(targetShopId));
-      assert.ok(aliasesStore.has('initial-del-slug'));
+      // Every shop history table (orders, order_audit_logs, sepay_webhook_events, table_service_requests)
+      // blocks shop deletion with 409 SHOP_HAS_HISTORY before any mutation.
+      failShopDelete = false;
+      const shopHistoryTables = [
+        'orders',
+        'order_audit_logs',
+        'sepay_webhook_events',
+        'table_service_requests',
+      ] as const;
+      for (const table of shopHistoryTables) {
+        existingHistoryTable = table;
+        const blockedDeleteRes = await adminPost(
+          new Request('http://localhost:3000/api/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({
+              action: 'delete_shop',
+              shopId: targetShopId,
+            }),
+          })
+        );
+        assert.equal(blockedDeleteRes.status, 409);
+        assert.equal((await blockedDeleteRes.json()).code, 'SHOP_HAS_HISTORY');
+        assert.ok(shopsStore.has(targetShopId));
+        assert.ok(aliasesStore.has('initial-del-slug'));
+        assert.deepEqual(childDeleteTables, []);
+        assert.deepEqual(directTableDeletes, []);
+      }
       existingHistoryTable = null;
 
       historyQueryFailureTable = 'table_service_requests';
-      const shopPreflightFailureRes = await adminPost(
+      const shopRpcFailureRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
           method: 'POST',
           headers: {
@@ -8710,17 +8895,16 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           }),
         })
       );
-      assert.equal(shopPreflightFailureRes.status, 503);
+      assert.equal(shopRpcFailureRes.status, 500);
       assert.equal(
-        (await shopPreflightFailureRes.json()).code,
-        'SHOP_DELETE_PREFLIGHT_FAILED'
+        (await shopRpcFailureRes.json()).code,
+        'SHOP_DELETE_FAILED'
       );
       assert.ok(shopsStore.has(targetShopId));
       assert.ok(aliasesStore.has('initial-del-slug'));
       historyQueryFailureTable = null;
 
       // 3. Success case: shop deletion succeeds
-      failShopDelete = false;
       const successDeleteRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
           method: 'POST',
@@ -8750,6 +8934,40 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       );
       assert.equal(aliasesStore.has('initial-del-slug'), false);
 
+      // Add a second shop with an alias for this owner to verify delete_owner
+      // cleans up in-memory alias caches for all owned shops on confirmed success
+      // and records the authoritative profile email in the admin audit log.
+      shopsStore.set(secondShopId, {
+        id: secondShopId,
+        owner_id: targetOwnerId,
+        slug: 'owner-second-shop-v1',
+        name: 'Owner Second Shop',
+        vertical: 'fnb',
+        is_published: true,
+        supported_langs: ['vi', 'en'],
+        currency: 'VND',
+      });
+      const renameSecondRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'update_shop',
+            shopId: secondShopId,
+            patch: { slug: 'owner-second-shop-v2' },
+          }),
+        })
+      );
+      assert.equal(renameSecondRes.status, 200);
+      assert.deepEqual(
+        (await dbGetShopSlugAliases(secondShopId)).map((a) => a.slug),
+        ['owner-second-shop-v1']
+      );
+
+      failOwnerDelete = false;
       const successOwnerDeleteRes = await adminPost(
         new Request('http://localhost:3000/api/admin', {
           method: 'POST',
@@ -8760,11 +8978,29 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           body: JSON.stringify({
             action: 'delete_owner',
             ownerId: targetOwnerId,
+            email: 'spoofed-audit-email@example.test',
           }),
         })
       );
       assert.equal(successOwnerDeleteRes.status, 200);
       assert.equal(profileExists, false);
+      assert.equal(shopsStore.has(secondShopId), false);
+      assert.deepEqual(await dbGetShopSlugAliases(secondShopId), []);
+      assert.deepEqual(directTableDeletes, []);
+      assert.ok(
+        rpcCalls.some((c) => c.fn === 'admin_delete_shop_atomic') &&
+          rpcCalls.some((c) => c.fn === 'admin_delete_owner_atomic'),
+        'Both delete_shop and delete_owner must execute via atomic PostgreSQL RPCs'
+      );
+      const ownerDeleteAudit = recordedAdminAuditRows.find(
+        (row) => row.action === 'delete_owner'
+      );
+      assert.ok(ownerDeleteAudit, 'Confirmed owner delete must record admin audit log');
+      assert.equal(
+        (ownerDeleteAudit?.details as { email?: string } | undefined)?.email,
+        ownerProfileEmail,
+        'Admin audit log must record the authoritative profile email from the locked row'
+      );
     } finally {
       setSupabaseDbClientForTests(null);
       dbClearShopSlugAliasesForTests();

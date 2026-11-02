@@ -22,6 +22,8 @@ Tài liệu này mô tả cấu hình Qlaok đang chạy trên PostgreSQL 14 t�
   - Thêm trigger PostgreSQL `LISTEN/NOTIFY` cho đơn hàng và yêu cầu phục vụ; web/mobile nhận sự kiện qua SSE của Qlaok.
 - **Migration 023**: [`023_restore_record_staff_login_failure_atomic.sql`](../supabase/migrations/023_restore_record_staff_login_failure_atomic.sql)
   - Khôi phục RPC ghi nhận thất bại đăng nhập nhân viên theo cách nguyên tử.
+- **Migration 20261102000200**: [`20261102000200_admin_delete_owner_shop_atomic.sql`](../supabase/migrations/20261102000200_admin_delete_owner_shop_atomic.sql)
+  - Thêm `public.admin_delete_owner_atomic(text)` và `public.admin_delete_shop_atomic(text)` để kiểm tra lịch sử rồi xóa owner/shop trong cùng transaction. Hai RPC khóa profile/shop trước khi kiểm tra, chặn insert tham chiếu khóa ngoại chen vào giữa lúc kiểm tra và xóa; quyền `EXECUTE` chỉ cấp cho `service_role`, còn API Super Admin kiểm tra quyền trước khi gọi.
 - **Migrations 20261028000100 và 20261028000200**:
   [`20261028000100_analytics_atomic_view_count.sql`](../supabase/migrations/20261028000100_analytics_atomic_view_count.sql) và [`20261028000200_floor_plan_active_orders_index.sql`](../supabase/migrations/20261028000200_floor_plan_active_orders_index.sql)
   - Tăng lượt xem món nguyên tử và giới hạn index sơ đồ bàn cho đơn còn hiệu lực/chưa thanh toán.
@@ -79,11 +81,12 @@ WHERE id = '<existing_qlaok_user_uuid>';
    - `service_role` có `BYPASSRLS` nên **chỉ** được sử dụng ở backend server đáng tin cậy; tuyệt đối không cấp token `service_role` cho người dùng cuối hoặc đưa vào `NEXT_PUBLIC_*` / `EXPO_PUBLIC_*`.
 3. **Bảo vệ dữ liệu nhạy cảm & bất biến nghiệp vụ**:
    - Các bảng chỉ dành cho server (`schema_migrations`, `payment_bank_ref_conflicts`, `mobile_push_tokens`, `shop_sepay_configs`, `sepay_webhook_events`, `shop_staff_credentials`, `staff_login_rate_limits`) bị `REVOKE ALL` khỏi `PUBLIC`, `anon`, `authenticated`.
+   - Hai RPC xóa owner/shop mới là `SECURITY DEFINER`, `VOLATILE`, dùng `search_path` cố định, chỉ cấp `EXECUTE` cho `service_role`; API Super Admin gọi sau bước xác thực và kiểm quyền hiện hành.
    - Toàn bộ RLS policies và bất biến định giá, tồn kho, trạng thái phục vụ (`status`) tách biệt với thanh toán (`payment_status`) trong các migration `001`–`020` được giữ nguyên.
 
 ## 4. Trạng thái cắt chuyển và vận hành
 
-1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261030000300_admin_owner_invitation_claims.sql` được chạy bằng `scripts/migrate-self-hosted.mjs` theo hợp đồng một transaction mỗi file, đối chiếu checksum trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất; migration runner không gọi Supabase Management API.
+1. **PostgreSQL và RLS**: PostgreSQL 14 trên VPS là nguồn dữ liệu ứng dụng; PostgREST phục vụ API tương thích ở `https://qlaok.vunph.click/rest/v1`. Các migration tới `20261102000200_admin_delete_owner_shop_atomic.sql` được chạy bằng `scripts/migrate-self-hosted.mjs` theo hợp đồng một transaction mỗi file, đối chiếu checksum trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất; migration runner không gọi Supabase Management API. Hai API xóa Super Admin gọi RPC nguyên tử; nếu shop/owner có payment, order/audit, SePay event hoặc service request thì trả conflict và giữ nguyên các hàng liên quan.
 2. **JWT/RLS**: backend xác minh phiên Qlaok hoặc Zitadel rồi chỉ cấp PostgREST JWT ngắn hạn `role: 'authenticated'` với UUID `public.profiles.id` đã xác thực. `service_role` chỉ tồn tại trong server config; client không nhận khóa bypass RLS.
 3. **Realtime**: PostgreSQL triggers phát `LISTEN/NOTIFY`; broker web và ứng dụng mobile dùng SSE có xác thực qua API Qlaok. Mobile giữ polling 30 giây làm phương án phục hồi khi SSE gián đoạn.
 4. **Object storage**: upload ứng dụng dùng Garage S3 trên `https://s3.vunph.click`, bucket `qlaok-media`, public media dưới `/media/`. Cloudflare R2 chỉ còn là đường dự phòng nếu được cấu hình; production hiện không cấu hình R2.
