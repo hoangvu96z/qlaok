@@ -6,7 +6,9 @@ import {
 } from '@/lib/r2';
 import {
   ALLOWED_IMAGE_MIME_TYPES,
+  MAX_BASE64_UPLOAD_LENGTH,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_REQUEST_BYTES,
   createGaragePresignedUploadUrl,
   isGarageConfigured,
   uploadBufferToGarage,
@@ -19,6 +21,44 @@ import {
 const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set(
   ALLOWED_IMAGE_MIME_TYPES
 );
+const MAX_UPLOAD_FILENAME_LENGTH = 120;
+const DEFAULT_UPLOAD_FILENAME = 'image.webp';
+
+function sanitizeUploadFileName(rawFileName: unknown): string {
+  if (typeof rawFileName !== 'string') {
+    return DEFAULT_UPLOAD_FILENAME;
+  }
+
+  const replaced = rawFileName
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/\.{2,}/g, '_');
+
+  const extMatch = /(\.[a-zA-Z0-9]{1,10})$/.exec(replaced);
+  if (extMatch) {
+    const ext = extMatch[1];
+    const rawStem = replaced.slice(0, -ext.length);
+    const stemBudget = MAX_UPLOAD_FILENAME_LENGTH - ext.length;
+    const boundedStem = (
+      rawStem.length > stemBudget ? rawStem.slice(-stemBudget) : rawStem
+    ).replace(/^[._-]+|[._-]+$/g, '');
+
+    if (boundedStem && /[a-zA-Z0-9]/.test(boundedStem)) {
+      return `${boundedStem}${ext}`;
+    }
+    return DEFAULT_UPLOAD_FILENAME;
+  }
+
+  const bounded = (
+    replaced.length > MAX_UPLOAD_FILENAME_LENGTH
+      ? replaced.slice(-MAX_UPLOAD_FILENAME_LENGTH)
+      : replaced
+  ).replace(/^[._-]+|[._-]+$/g, '');
+
+  return bounded && /[a-zA-Z0-9]/.test(bounded)
+    ? bounded
+    : DEFAULT_UPLOAD_FILENAME;
+}
 
 function getSafeUploadErrorCode(error: unknown): string {
   if (!error || typeof error !== 'object' || !('code' in error)) {
@@ -54,6 +94,96 @@ declare global {
   var __uploadRouteTestHooks: UploadRouteTestHooks | undefined;
 }
 
+function buildUploadFileTooLargeResponse() {
+  return NextResponse.json(
+    {
+      error: 'Image is too large',
+      code: 'UPLOAD_FILE_TOO_LARGE',
+    },
+    { status: 413 }
+  );
+}
+
+async function readBoundedUploadJson(req: Request): Promise<
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; response: NextResponse }
+> {
+  const rawContentLength = req.headers.get('content-length')?.trim();
+  if (rawContentLength) {
+    const declaredBytes = Number(rawContentLength);
+    if (
+      Number.isFinite(declaredBytes) &&
+      declaredBytes > MAX_UPLOAD_REQUEST_BYTES
+    ) {
+      try {
+        await req.body?.cancel();
+      } catch {
+        // Ignore stream cancellation error
+      }
+      return {
+        ok: false,
+        response: buildUploadFileTooLargeResponse(),
+      };
+    }
+  }
+
+  const reader = req.body?.getReader();
+  if (!reader) {
+    throw new Error('Missing request body');
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      const chunk =
+        typeof value === 'string'
+          ? Buffer.from(value, 'utf8')
+          : Buffer.isBuffer(value)
+            ? value
+            : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+      if (chunk.byteLength === 0) continue;
+
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_UPLOAD_REQUEST_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore stream cancellation error
+        }
+        return {
+          ok: false,
+          response: buildUploadFileTooLargeResponse(),
+        };
+      }
+
+      chunks.push(chunk);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Ignore reader lock release error
+    }
+  }
+
+  const rawText = Buffer.concat(chunks, totalBytes).toString('utf8');
+  const parsed = JSON.parse(rawText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Invalid JSON payload');
+  }
+
+  return {
+    ok: true,
+    body: parsed as Record<string, unknown>,
+  };
+}
+
 export async function POST(req: Request) {
   const auth = await requireAuthenticatedUser(req);
   if (auth.errorResponse) return auth.errorResponse;
@@ -73,15 +203,21 @@ export async function POST(req: Request) {
   }
 
   try {
-    const body = await req.json();
+    const parsedRequest = await readBoundedUploadJson(req);
+    if (!parsedRequest.ok) {
+      return parsedRequest.response;
+    }
+
     const {
       fileName = 'image.webp',
       contentType = 'image/webp',
       base64Data,
-    } = body as {
-      fileName?: string;
-      contentType?: string;
-      base64Data?: string;
+      contentLength,
+    } = parsedRequest.body as {
+      fileName?: unknown;
+      contentType?: unknown;
+      base64Data?: unknown;
+      contentLength?: unknown;
     };
 
     const normalizedContentType =
@@ -93,8 +229,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const safeFileName = typeof fileName === 'string' ? fileName : 'image.webp';
-    const safeName = safeFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = sanitizeUploadFileName(fileName);
     const key = `uploads/${Date.now()}-${safeName}`;
     const hooks = globalThis.__uploadRouteTestHooks;
     const r2Configured = hooks?.isR2Configured
@@ -121,7 +256,7 @@ export async function POST(req: Request) {
       const rawBase64 = dataUrlMatch
         ? base64Data.slice(dataUrlMatch[0].length)
         : base64Data;
-      const maxBase64Length = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
+      const maxBase64Length = MAX_BASE64_UPLOAD_LENGTH;
       if (
         rawBase64.length > maxBase64Length ||
         !/^[A-Za-z0-9+/]*={0,2}$/.test(rawBase64) ||
@@ -144,13 +279,7 @@ export async function POST(req: Request) {
         );
       }
       if (buffer.length > MAX_UPLOAD_BYTES) {
-        return NextResponse.json(
-          {
-            error: 'Image is too large',
-            code: 'UPLOAD_FILE_TOO_LARGE',
-          },
-          { status: 413 }
-        );
+        return buildUploadFileTooLargeResponse();
       }
 
       let garageUrl: string | null = null;
@@ -212,6 +341,31 @@ export async function POST(req: Request) {
       );
     }
 
+    if (base64Data !== undefined && base64Data !== null) {
+      return NextResponse.json(
+        { error: 'Invalid image payload', code: 'UPLOAD_INVALID_PAYLOAD' },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof contentLength !== 'number' ||
+      !Number.isInteger(contentLength) ||
+      contentLength < 1
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Invalid or missing contentLength',
+          code: 'UPLOAD_INVALID_PAYLOAD',
+        },
+        { status: 400 }
+      );
+    }
+
+    if (contentLength > MAX_UPLOAD_BYTES) {
+      return buildUploadFileTooLargeResponse();
+    }
+
     if (garageConfigured) {
       try {
         const presignedFn =
@@ -219,6 +373,7 @@ export async function POST(req: Request) {
         const presigned = await presignedFn({
           key,
           contentType: normalizedContentType,
+          contentLength,
         });
         if (presigned) {
           return NextResponse.json({
@@ -238,6 +393,7 @@ export async function POST(req: Request) {
         const presigned = await presignedFn({
           key,
           contentType: normalizedContentType,
+          contentLength,
         });
         if (presigned) {
           return NextResponse.json({

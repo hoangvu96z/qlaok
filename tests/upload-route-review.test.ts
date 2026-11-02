@@ -1,15 +1,25 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { S3Client } from '@aws-sdk/client-s3';
+import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { POST } from '@/app/api/upload/route';
 import {
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_REQUEST_BYTES,
+  PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+  PRESIGNED_UPLOAD_SIGNABLE_HEADERS,
   GARAGE_UPLOAD_BUCKET,
   isGarageConfigured,
   getGarageClient,
+  getGaragePresignerClient,
   uploadBufferToGarage,
   createGaragePresignedUploadUrl,
 } from '@/lib/garage-storage';
+import {
+  getR2Client,
+  getR2PresignerClient,
+  createR2PresignedUploadUrl,
+} from '@/lib/r2';
 import {
   issueSessionToken,
   SESSION_COOKIE_NAME,
@@ -363,6 +373,7 @@ test('Garage presigned upload URL generates path-style URL and public URL when c
     const res = await createGaragePresignedUploadUrl({
       key: 'uploads/123-banner.webp',
       contentType: 'image/webp',
+      contentLength: 4096,
     });
 
     assert.ok(res);
@@ -372,6 +383,13 @@ test('Garage presigned upload URL generates path-style URL and public URL when c
     );
     // Path-style addressing puts the bucket in the path:
     assert.ok(res.uploadUrl.startsWith('https://s3.vunph.click/qlaok-media/uploads/123-banner.webp'));
+    const parsedUrl = new URL(res.uploadUrl);
+    const signedHeaders = (parsedUrl.searchParams.get('X-Amz-SignedHeaders') || '').split(';');
+    assert.ok(signedHeaders.includes('content-length'));
+    assert.ok(signedHeaders.includes('content-type'));
+    const expires = Number(parsedUrl.searchParams.get('X-Amz-Expires'));
+    assert.ok(Number.isInteger(expires) && expires > 0 && expires <= 300);
+    assert.equal(expires, PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS);
   } finally {
     if (origEndpoint !== undefined) process.env.S3_ENDPOINT = origEndpoint; else delete process.env.S3_ENDPOINT;
     if (origRegion !== undefined) process.env.S3_REGION = origRegion; else delete process.env.S3_REGION;
@@ -588,9 +606,10 @@ test('presigned upload URL rejects anonymous requests and succeeds for verified 
   let presignedCalls = 0;
   globalThis.__uploadRouteTestHooks = {
     isR2Configured: () => true,
-    r2Presigned: async ({ key, contentType }) => {
+    r2Presigned: async ({ key, contentType, contentLength }) => {
       presignedCalls += 1;
       assert.equal(contentType, 'image/webp');
+      assert.equal(contentLength, 2048);
       return {
         uploadUrl: `https://r2.example.test/upload/${key}`,
         publicUrl: `https://cdn.example.test/${key}`,
@@ -601,6 +620,7 @@ test('presigned upload URL rejects anonymous requests and succeeds for verified 
   const presignedPayload = {
     fileName: 'banner.webp',
     contentType: 'image/webp',
+    contentLength: 2048,
   };
 
   // 1. Anonymous -> 401 and no presigned call
@@ -634,14 +654,16 @@ test('presigned uploads prefer Garage when configured and retain R2 as fallback'
   const presignedPayload = {
     fileName: 'banner.webp',
     contentType: 'image/webp',
+    contentLength: 4096,
   };
 
   globalThis.__uploadRouteTestHooks = {
     isGarageConfigured: () => true,
     isR2Configured: () => true,
-    garagePresigned: async ({ key, contentType }) => {
+    garagePresigned: async ({ key, contentType, contentLength }) => {
       garageCalls += 1;
       assert.equal(contentType, 'image/webp');
+      assert.equal(contentLength, 4096);
       return {
         uploadUrl: `https://s3.vunph.click/qlaok-media/${key}?signature=garage`,
         publicUrl: `https://s3.vunph.click/media/${key}`,
@@ -673,8 +695,9 @@ test('presigned uploads prefer Garage when configured and retain R2 as fallback'
     garagePresigned: async () => {
       throw new Error('private Garage credentials');
     },
-    r2Presigned: async () => {
+    r2Presigned: async ({ contentLength }) => {
       r2Calls += 1;
+      assert.equal(contentLength, 4096);
       return {
         uploadUrl: 'https://cdn.example.test/r2-upload',
         publicUrl: 'https://cdn.example.test/r2-image',
@@ -698,10 +721,624 @@ test('presigned upload without a configured object store returns 503', async () 
 
   const response = await POST(
     createUploadRequest(
-      { fileName: 'banner.webp', contentType: 'image/webp' },
+      { fileName: 'banner.webp', contentType: 'image/webp', contentLength: 1024 },
       { token: validOwnerToken }
     )
   );
   assert.equal(response.status, 503);
   assert.equal((await response.json()).code, 'UPLOAD_STORAGE_UNAVAILABLE');
+});
+
+// ---------------------------------------------------------------------------
+// Bounded Raw JSON Parsing & Presigned Content-Length Regression Tests
+// ---------------------------------------------------------------------------
+
+test('POST /api/upload rejects declared Content-Length over MAX_UPLOAD_REQUEST_BYTES with 413 before reading stream', async () => {
+  let pullCount = 0;
+  let storageCalls = 0;
+
+  try {
+    globalThis.__uploadRouteTestHooks = {
+      isGarageConfigured: () => true,
+      isR2Configured: () => true,
+      garageUploader: async () => {
+        storageCalls += 1;
+        return 'https://s3.vunph.click/media/never.webp';
+      },
+      r2Uploader: async () => {
+        storageCalls += 1;
+        return 'https://cdn.example.test/never.webp';
+      },
+    };
+
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pullCount += 1;
+          controller.enqueue(new Uint8Array(64 * 1024));
+        },
+      },
+      { highWaterMark: 0 }
+    );
+
+    const req = new Request('http://localhost/api/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(MAX_UPLOAD_REQUEST_BYTES + 1),
+        Authorization: `Bearer ${validOwnerToken}`,
+      },
+      body: stream,
+      // @ts-expect-error Node fetch Request duplex option for streaming body
+      duplex: 'half',
+    });
+
+    const response = await POST(req);
+    assert.equal(response.status, 413);
+    assert.deepEqual(await response.json(), {
+      error: 'Image is too large',
+      code: 'UPLOAD_FILE_TOO_LARGE',
+    });
+    assert.equal(pullCount, 0);
+    assert.equal(storageCalls, 0);
+  } finally {
+    delete globalThis.__uploadRouteTestHooks;
+  }
+});
+
+test('POST /api/upload enforces MAX_UPLOAD_REQUEST_BYTES while streaming when Content-Length is absent or falsified without buffering entire body', async () => {
+  const chunkSize = 1024 * 1024; // 1 MiB per chunk
+  const totalChunks = 12; // 12 MiB total if fully buffered
+  const expectedMaxChunksRead = Math.floor(MAX_UPLOAD_REQUEST_BYTES / chunkSize) + 1;
+
+  for (const declaredHeader of [undefined, '128']) {
+    let chunksPulled = 0;
+    let streamCancelled = false;
+    let storageCalls = 0;
+
+    try {
+      globalThis.__uploadRouteTestHooks = {
+        isGarageConfigured: () => true,
+        isR2Configured: () => true,
+        garageUploader: async () => {
+          storageCalls += 1;
+          return 'https://s3.vunph.click/media/never.webp';
+        },
+        r2Uploader: async () => {
+          storageCalls += 1;
+          return 'https://cdn.example.test/never.webp';
+        },
+      };
+
+      const chunk = Buffer.alloc(chunkSize, 'a');
+      const stream = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            chunksPulled += 1;
+            if (chunksPulled > totalChunks) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk);
+          },
+          cancel() {
+            streamCancelled = true;
+          },
+        },
+        { highWaterMark: 0 }
+      );
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${validOwnerToken}`,
+      };
+      if (declaredHeader !== undefined) {
+        headers['Content-Length'] = declaredHeader;
+      }
+
+      const req = new Request('http://localhost/api/upload', {
+        method: 'POST',
+        headers,
+        body: stream,
+        // @ts-expect-error Node fetch Request duplex option for streaming body
+        duplex: 'half',
+      });
+
+      const response = await POST(req);
+      assert.equal(response.status, 413);
+      assert.deepEqual(await response.json(), {
+        error: 'Image is too large',
+        code: 'UPLOAD_FILE_TOO_LARGE',
+      });
+      assert.equal(streamCancelled, true);
+      assert.equal(chunksPulled, expectedMaxChunksRead);
+      assert.ok(chunksPulled < totalChunks);
+      assert.equal(storageCalls, 0);
+    } finally {
+      delete globalThis.__uploadRouteTestHooks;
+    }
+  }
+});
+
+test('POST /api/upload presigned branch validates contentLength in 1..MAX_UPLOAD_BYTES before signing', async () => {
+  let presignedCalls = 0;
+
+  try {
+    globalThis.__uploadRouteTestHooks = {
+      isGarageConfigured: () => true,
+      isR2Configured: () => true,
+      garagePresigned: async ({ key, contentType, contentLength }) => {
+        presignedCalls += 1;
+        return {
+          uploadUrl: `https://s3.vunph.click/qlaok-media/${key}?len=${contentLength}&type=${encodeURIComponent(contentType)}`,
+          publicUrl: `https://s3.vunph.click/media/${key}`,
+        };
+      },
+      r2Presigned: async () => {
+        presignedCalls += 1;
+        return {
+          uploadUrl: 'https://r2.example.test/never',
+          publicUrl: 'https://cdn.example.test/never',
+        };
+      },
+    };
+
+    const invalidLengths: unknown[] = [
+      undefined,
+      null,
+      0,
+      -1,
+      -500,
+      1.5,
+      '1024',
+      NaN,
+      true,
+      {},
+    ];
+
+    for (const invalidLength of invalidLengths) {
+      const payload: Record<string, unknown> = {
+        fileName: 'banner.webp',
+        contentType: 'image/webp',
+      };
+      if (invalidLength !== undefined) {
+        payload.contentLength = invalidLength;
+      }
+      const res = await POST(createUploadRequest(payload));
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.code, 'UPLOAD_INVALID_PAYLOAD');
+    }
+    assert.equal(presignedCalls, 0);
+
+    const oversizedRes = await POST(
+      createUploadRequest({
+        fileName: 'banner.webp',
+        contentType: 'image/webp',
+        contentLength: MAX_UPLOAD_BYTES + 1,
+      })
+    );
+    assert.equal(oversizedRes.status, 413);
+    assert.deepEqual(await oversizedRes.json(), {
+      error: 'Image is too large',
+      code: 'UPLOAD_FILE_TOO_LARGE',
+    });
+    assert.equal(presignedCalls, 0);
+
+    // Boundary 1 byte and MAX_UPLOAD_BYTES succeed
+    for (const validLength of [1, MAX_UPLOAD_BYTES]) {
+      const okRes = await POST(
+        createUploadRequest({
+          fileName: 'banner.webp',
+          contentType: 'image/webp',
+          contentLength: validLength,
+        })
+      );
+      assert.equal(okRes.status, 200);
+      const okBody = await okRes.json();
+      assert.equal(okBody.mode, 'garage-presigned');
+      assert.ok(okBody.uploadUrl.includes(`len=${validLength}`));
+    }
+    assert.equal(presignedCalls, 2);
+  } finally {
+    delete globalThis.__uploadRouteTestHooks;
+  }
+});
+
+test('Garage and R2 presigners sign exact ContentLength and ContentType with WHEN_REQUIRED checksum calculation, omit empty-body checksum query params, keep expiry <= 300s, reject out-of-bounds sizes, and preserve direct-upload client checksum defaults', async () => {
+  const savedEnv = {
+    S3_ENDPOINT: process.env.S3_ENDPOINT,
+    S3_REGION: process.env.S3_REGION,
+    S3_BUCKET_NAME: process.env.S3_BUCKET_NAME,
+    S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID,
+    S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY,
+    S3_PUBLIC_URL: process.env.S3_PUBLIC_URL,
+    R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+    R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+    R2_BUCKET_NAME: process.env.R2_BUCKET_NAME,
+    R2_PUBLIC_URL: process.env.R2_PUBLIC_URL,
+  };
+
+  function parseAmzSigningDate(amzDate: string | null): Date {
+    assert.ok(amzDate, 'Expected X-Amz-Date query parameter');
+    const iso = amzDate.replace(
+      /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/,
+      '$1-$2-$3T$4:$5:$6.000Z'
+    );
+    const parsed = new Date(iso);
+    assert.equal(Number.isNaN(parsed.getTime()), false);
+    return parsed;
+  }
+
+  try {
+    process.env.S3_ENDPOINT = 'https://s3.vunph.click';
+    process.env.S3_REGION = 'garage';
+    process.env.S3_BUCKET_NAME = 'qlaok-media';
+    process.env.S3_ACCESS_KEY_ID = 'test-garage-access-key';
+    process.env.S3_SECRET_ACCESS_KEY = 'test-garage-secret-key';
+    process.env.S3_PUBLIC_URL = 'https://s3.vunph.click/media';
+
+    process.env.R2_ACCOUNT_ID = 'test-r2-account';
+    process.env.R2_ACCESS_KEY_ID = 'test-r2-access-key';
+    process.env.R2_SECRET_ACCESS_KEY = 'test-r2-secret-key';
+    process.env.R2_BUCKET_NAME = 'qlaok-assets';
+    process.env.R2_PUBLIC_URL = 'https://cdn.qlaok.vn';
+
+    // Callers cannot pass a second clientOverride argument to reintroduce default-checksum signing
+    assert.equal(createGaragePresignedUploadUrl.length, 1);
+    assert.equal(createR2PresignedUploadUrl.length, 1);
+
+    // Direct-upload clients retain default WHEN_SUPPORTED checksum behavior,
+    // while dedicated presigner clients use WHEN_REQUIRED.
+    const garageDirectClient = getGarageClient();
+    const garagePresignerClient = getGaragePresignerClient();
+    const r2DirectClient = getR2Client();
+    const r2PresignerClient = getR2PresignerClient();
+    assert.ok(garageDirectClient);
+    assert.ok(garagePresignerClient);
+    assert.ok(r2DirectClient);
+    assert.ok(r2PresignerClient);
+
+    assert.equal(
+      await garageDirectClient.config.requestChecksumCalculation(),
+      'WHEN_SUPPORTED'
+    );
+    assert.equal(
+      await garagePresignerClient.config.requestChecksumCalculation(),
+      'WHEN_REQUIRED'
+    );
+    assert.equal(
+      await r2DirectClient.config.requestChecksumCalculation(),
+      'WHEN_SUPPORTED'
+    );
+    assert.equal(
+      await r2PresignerClient.config.requestChecksumCalculation(),
+      'WHEN_REQUIRED'
+    );
+
+    // Invalid contentLengths rejected before signing by both helpers
+    for (const badLen of [0, -1, 1.25, Number.NaN, MAX_UPLOAD_BYTES + 1]) {
+      await assert.rejects(
+        () =>
+          createGaragePresignedUploadUrl({
+            key: 'uploads/bad.webp',
+            contentType: 'image/webp',
+            contentLength: badLen,
+          }),
+        /contentLength/i
+      );
+      await assert.rejects(
+        () =>
+          createR2PresignedUploadUrl({
+            key: 'uploads/bad.webp',
+            contentType: 'image/webp',
+            contentLength: badLen,
+          }),
+        /contentLength/i
+      );
+    }
+
+    // Boundary contentLengths (1 byte and MAX_UPLOAD_BYTES) succeed on both helpers
+    for (const boundaryLen of [1, MAX_UPLOAD_BYTES]) {
+      const garageBoundary = await createGaragePresignedUploadUrl({
+        key: `uploads/boundary-${boundaryLen}.webp`,
+        contentType: 'image/webp',
+        contentLength: boundaryLen,
+      });
+      assert.ok(garageBoundary);
+      const r2Boundary = await createR2PresignedUploadUrl({
+        key: `uploads/boundary-${boundaryLen}.webp`,
+        contentType: 'image/webp',
+        contentLength: boundaryLen,
+      });
+      assert.ok(r2Boundary);
+    }
+
+    // Real-SDK Garage presigning check (123456 bytes)
+    const garageSigned = await createGaragePresignedUploadUrl({
+      key: 'uploads/exact-garage.webp',
+      contentType: 'image/webp',
+      contentLength: 123456,
+    });
+    assert.ok(garageSigned);
+    assert.equal(
+      garageSigned.publicUrl,
+      'https://s3.vunph.click/media/uploads/exact-garage.webp'
+    );
+    const garageUrl = new URL(garageSigned.uploadUrl);
+    const garageSignedHeaders = (
+      garageUrl.searchParams.get('X-Amz-SignedHeaders') || ''
+    ).split(';');
+    assert.ok(garageSignedHeaders.includes('content-length'));
+    assert.ok(garageSignedHeaders.includes('content-type'));
+    assert.ok(garageSignedHeaders.includes('host'));
+    assert.equal(
+      garageUrl.searchParams.has('x-amz-checksum-crc32'),
+      false,
+      'Garage presigned URL must not include empty-body x-amz-checksum-crc32'
+    );
+    assert.equal(
+      garageUrl.searchParams.has('x-amz-sdk-checksum-algorithm'),
+      false,
+      'Garage presigned URL must not include x-amz-sdk-checksum-algorithm'
+    );
+    assert.equal(
+      [...garageUrl.searchParams.keys()].some((k) => /checksum/i.test(k)),
+      false,
+      'Garage presigned URL must not include any checksum query parameter'
+    );
+    assert.equal(garageSigned.uploadUrl.includes('AAAAAA=='), false);
+    const garageExpires = Number(garageUrl.searchParams.get('X-Amz-Expires'));
+    assert.ok(garageExpires > 0 && garageExpires <= 300);
+    assert.equal(garageExpires, PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS);
+
+    // Verify cryptographically that Garage signature binds exact ContentLength=123456 and ContentType=image/webp
+    const garageSigningDate = parseAmzSigningDate(
+      garageUrl.searchParams.get('X-Amz-Date')
+    );
+    const garageExpectedUrl = new URL(
+      await getSignedUrl(
+        garagePresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-media',
+          Key: 'uploads/exact-garage.webp',
+          ContentType: 'image/webp',
+          ContentLength: 123456,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: garageSigningDate,
+        }
+      )
+    );
+    const garageWrongLengthUrl = new URL(
+      await getSignedUrl(
+        garagePresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-media',
+          Key: 'uploads/exact-garage.webp',
+          ContentType: 'image/webp',
+          ContentLength: 123457,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: garageSigningDate,
+        }
+      )
+    );
+    const garageWrongTypeUrl = new URL(
+      await getSignedUrl(
+        garagePresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-media',
+          Key: 'uploads/exact-garage.webp',
+          ContentType: 'image/png',
+          ContentLength: 123456,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: garageSigningDate,
+        }
+      )
+    );
+    assert.equal(
+      garageUrl.searchParams.get('X-Amz-Signature'),
+      garageExpectedUrl.searchParams.get('X-Amz-Signature')
+    );
+    assert.notEqual(
+      garageUrl.searchParams.get('X-Amz-Signature'),
+      garageWrongLengthUrl.searchParams.get('X-Amz-Signature')
+    );
+    assert.notEqual(
+      garageUrl.searchParams.get('X-Amz-Signature'),
+      garageWrongTypeUrl.searchParams.get('X-Amz-Signature')
+    );
+
+    // Real-SDK R2 presigning check (654321 bytes)
+    const r2Signed = await createR2PresignedUploadUrl({
+      key: 'uploads/exact-r2.webp',
+      contentType: 'image/webp',
+      contentLength: 654321,
+    });
+    assert.ok(r2Signed);
+    assert.equal(
+      r2Signed.publicUrl,
+      'https://cdn.qlaok.vn/uploads/exact-r2.webp'
+    );
+    const r2Url = new URL(r2Signed.uploadUrl);
+    const r2SignedHeaders = (
+      r2Url.searchParams.get('X-Amz-SignedHeaders') || ''
+    ).split(';');
+    assert.ok(r2SignedHeaders.includes('content-length'));
+    assert.ok(r2SignedHeaders.includes('content-type'));
+    assert.ok(r2SignedHeaders.includes('host'));
+    assert.equal(
+      r2Url.searchParams.has('x-amz-checksum-crc32'),
+      false,
+      'R2 presigned URL must not include empty-body x-amz-checksum-crc32'
+    );
+    assert.equal(
+      r2Url.searchParams.has('x-amz-sdk-checksum-algorithm'),
+      false,
+      'R2 presigned URL must not include x-amz-sdk-checksum-algorithm'
+    );
+    assert.equal(
+      [...r2Url.searchParams.keys()].some((k) => /checksum/i.test(k)),
+      false,
+      'R2 presigned URL must not include any checksum query parameter'
+    );
+    assert.equal(r2Signed.uploadUrl.includes('AAAAAA=='), false);
+    const r2Expires = Number(r2Url.searchParams.get('X-Amz-Expires'));
+    assert.ok(r2Expires > 0 && r2Expires <= 300);
+    assert.equal(r2Expires, PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS);
+
+    // Verify cryptographically that R2 signature binds exact ContentLength=654321 and ContentType=image/webp
+    const r2SigningDate = parseAmzSigningDate(
+      r2Url.searchParams.get('X-Amz-Date')
+    );
+    const r2ExpectedUrl = new URL(
+      await getSignedUrl(
+        r2PresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-assets',
+          Key: 'uploads/exact-r2.webp',
+          ContentType: 'image/webp',
+          ContentLength: 654321,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: r2SigningDate,
+        }
+      )
+    );
+    const r2WrongLengthUrl = new URL(
+      await getSignedUrl(
+        r2PresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-assets',
+          Key: 'uploads/exact-r2.webp',
+          ContentType: 'image/webp',
+          ContentLength: 654322,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: r2SigningDate,
+        }
+      )
+    );
+    const r2WrongTypeUrl = new URL(
+      await getSignedUrl(
+        r2PresignerClient,
+        new PutObjectCommand({
+          Bucket: 'qlaok-assets',
+          Key: 'uploads/exact-r2.webp',
+          ContentType: 'image/png',
+          ContentLength: 654321,
+        }),
+        {
+          expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+          signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+          signingDate: r2SigningDate,
+        }
+      )
+    );
+    assert.equal(
+      r2Url.searchParams.get('X-Amz-Signature'),
+      r2ExpectedUrl.searchParams.get('X-Amz-Signature')
+    );
+    assert.notEqual(
+      r2Url.searchParams.get('X-Amz-Signature'),
+      r2WrongLengthUrl.searchParams.get('X-Amz-Signature')
+    );
+    assert.notEqual(
+      r2Url.searchParams.get('X-Amz-Signature'),
+      r2WrongTypeUrl.searchParams.get('X-Amz-Signature')
+    );
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test('POST /api/upload sanitizes and bounds long or degenerate fileName values before constructing the storage key', async () => {
+  const capturedKeys: string[] = [];
+
+  try {
+    globalThis.__uploadRouteTestHooks = {
+      isGarageConfigured: () => true,
+      isR2Configured: () => false,
+      garageUploader: async ({ key }) => {
+        capturedKeys.push(key);
+        return `https://s3.vunph.click/media/${key}`;
+      },
+      garagePresigned: async ({ key }) => {
+        capturedKeys.push(key);
+        return {
+          uploadUrl: `https://s3.vunph.click/qlaok-media/${key}?sig=1`,
+          publicUrl: `https://s3.vunph.click/media/${key}`,
+        };
+      },
+    };
+
+    // 1. Long filename (> 1,024 bytes) with extension on direct upload
+    const longWithExt = `${'a'.repeat(1800)}-special-dish.webp`;
+    const res1 = await POST(
+      createUploadRequest({
+        fileName: longWithExt,
+        contentType: 'image/webp',
+        base64Data: 'data:image/webp;base64,aGVsbG8=',
+      })
+    );
+    assert.equal(res1.status, 200);
+    const key1 = capturedKeys[0]!;
+    assert.ok(key1);
+    assert.match(key1, /^uploads\/\d+-[a-zA-Z0-9._-]+$/);
+    assert.ok(key1.endsWith('-special-dish.webp'));
+    assert.ok(Buffer.byteLength(key1, 'utf8') <= 1024);
+    assert.ok(key1.length <= 150);
+
+    // 2. Long filename (> 1,024 bytes) without extension on presigned upload
+    const longNoExt = 'b'.repeat(1800);
+    const res2 = await POST(
+      createUploadRequest({
+        fileName: longNoExt,
+        contentType: 'image/webp',
+        contentLength: 2048,
+      })
+    );
+    assert.equal(res2.status, 200);
+    const key2 = capturedKeys[1]!;
+    assert.ok(key2);
+    assert.match(key2, /^uploads\/\d+-b+$/);
+    assert.ok(Buffer.byteLength(key2, 'utf8') <= 1024);
+    assert.ok(key2.length <= 150);
+
+    // 3. Degenerate filenames fall back to image.webp
+    for (const degenerate of ['', '   ', '...', '___', '../..', '.webp']) {
+      const prevLen = capturedKeys.length;
+      const resDegenerate = await POST(
+        createUploadRequest({
+          fileName: degenerate,
+          contentType: 'image/webp',
+          contentLength: 512,
+        })
+      );
+      assert.equal(resDegenerate.status, 200);
+      const degKey = capturedKeys[prevLen]!;
+      assert.match(degKey, /^uploads\/\d+-image\.webp$/);
+    }
+  } finally {
+    delete globalThis.__uploadRouteTestHooks;
+  }
 });

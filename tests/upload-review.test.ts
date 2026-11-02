@@ -183,15 +183,19 @@ test('POST /api/upload returns 200 and r2-direct mode with CDN publicUrl on succ
 
 test('POST /api/upload preserves presigned upload URL behavior when base64Data is omitted and R2 is configured', async () => {
   setIsR2ConfiguredForTests(() => true);
-  setR2PresignedForTests(async ({ key }) => ({
-    uploadUrl: `https://mock-account.r2.cloudflarestorage.com/qlaok-assets/${key}?mock-sig=123`,
-    publicUrl: `https://cdn.qlaok.vn/${key}`,
-  }));
+  setR2PresignedForTests(async ({ key, contentLength }) => {
+    assert.equal(contentLength, 4096);
+    return {
+      uploadUrl: `https://mock-account.r2.cloudflarestorage.com/qlaok-assets/${key}?mock-sig=123`,
+      publicUrl: `https://cdn.qlaok.vn/${key}`,
+    };
+  });
 
   const res = await POST(
     createJsonRequest({
       fileName: 'banner.webp',
       contentType: 'image/webp',
+      contentLength: 4096,
     })
   );
 
@@ -208,6 +212,7 @@ test('POST /api/upload returns 503 when presigned upload is requested without co
   const res = await POST(
     createJsonRequest({
       fileName: 'banner.webp',
+      contentLength: 1024,
     })
   );
 
@@ -259,7 +264,7 @@ test('No error response ever returns a data: URI or mode: inline-webp', async ()
 
   // 4. Presigned-upload request with no configured object store
   setIsR2ConfiguredForTests(() => false);
-  const res4 = await POST(createJsonRequest({}));
+  const res4 = await POST(createJsonRequest({ contentLength: 1024 }));
   const text4 = await res4.text();
   assert.doesNotMatch(text4, /data:\s*image/i);
   assert.doesNotMatch(text4, /inline-webp/);

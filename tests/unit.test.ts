@@ -36,11 +36,13 @@ import {
 import {
   isR2Configured,
   getR2Client,
+  getR2PresignerClient,
   createR2PresignedUploadUrl,
 } from '@/lib/r2';
 import {
   isGarageConfigured,
   getGarageClient,
+  getGaragePresignerClient,
   createGaragePresignedUploadUrl,
 } from '@/lib/garage-storage';
 import {
@@ -751,44 +753,88 @@ describe('Suite 5: Cloudflare R2 Storage Helper (r2.ts)', () => {
 
     assert.equal(isR2Configured(), false);
     assert.equal(getR2Client(), null);
+    assert.equal(getR2PresignerClient(), null);
 
     if (savedAccount !== undefined) process.env.R2_ACCOUNT_ID = savedAccount;
   });
 
   test('5.2 createR2PresignedUploadUrl returns null when R2 is not configured', async () => {
     const savedAccount = process.env.R2_ACCOUNT_ID;
-    delete process.env.R2_ACCOUNT_ID;
+    try {
+      delete process.env.R2_ACCOUNT_ID;
 
-    const res = await createR2PresignedUploadUrl({
-      key: 'shops/test.webp',
-      contentType: 'image/webp',
-    });
-    assert.equal(res, null);
-
-    if (savedAccount !== undefined) process.env.R2_ACCOUNT_ID = savedAccount;
+      const res = await createR2PresignedUploadUrl({
+        key: 'shops/test.webp',
+        contentType: 'image/webp',
+        contentLength: 1024,
+      });
+      assert.equal(res, null);
+    } finally {
+      if (savedAccount !== undefined) process.env.R2_ACCOUNT_ID = savedAccount;
+      else delete process.env.R2_ACCOUNT_ID;
+    }
   });
 
   test('5.3 createR2PresignedUploadUrl generates valid signed URL when R2 credentials are set', async () => {
-    process.env.R2_ACCOUNT_ID = 'demo-account-123';
-    process.env.R2_ACCESS_KEY_ID = 'demo-access-key';
-    process.env.R2_SECRET_ACCESS_KEY = 'demo-secret-key';
-    process.env.R2_BUCKET_NAME = 'qlaok-assets';
-    process.env.R2_PUBLIC_URL = 'https://cdn.qlaok.vn/';
+    const saved = {
+      R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+      R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+      R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+      R2_BUCKET_NAME: process.env.R2_BUCKET_NAME,
+      R2_PUBLIC_URL: process.env.R2_PUBLIC_URL,
+    };
+    try {
+      process.env.R2_ACCOUNT_ID = 'demo-account-123';
+      process.env.R2_ACCESS_KEY_ID = 'demo-access-key';
+      process.env.R2_SECRET_ACCESS_KEY = 'demo-secret-key';
+      process.env.R2_BUCKET_NAME = 'qlaok-assets';
+      process.env.R2_PUBLIC_URL = 'https://cdn.qlaok.vn/';
 
-    assert.equal(isR2Configured(), true);
-    const res = await createR2PresignedUploadUrl({
-      key: 'items/pho-bo.webp',
-      contentType: 'image/webp',
-    });
-    assert.ok(res);
-    assert.ok(res.uploadUrl.includes('demo-account-123.r2.cloudflarestorage.com'));
-    assert.equal(res.publicUrl, 'https://cdn.qlaok.vn/items/pho-bo.webp');
+      assert.equal(isR2Configured(), true);
+      const directClient = getR2Client();
+      const presignerClient = getR2PresignerClient();
+      assert.ok(directClient);
+      assert.ok(presignerClient);
+      assert.equal(
+        await directClient.config.requestChecksumCalculation(),
+        'WHEN_SUPPORTED'
+      );
+      assert.equal(
+        await presignerClient.config.requestChecksumCalculation(),
+        'WHEN_REQUIRED'
+      );
 
-    delete process.env.R2_ACCOUNT_ID;
-    delete process.env.R2_ACCESS_KEY_ID;
-    delete process.env.R2_SECRET_ACCESS_KEY;
-    delete process.env.R2_BUCKET_NAME;
-    delete process.env.R2_PUBLIC_URL;
+      const res = await createR2PresignedUploadUrl({
+        key: 'items/pho-bo.webp',
+        contentType: 'image/webp',
+        contentLength: 2048,
+      });
+      assert.ok(res);
+      assert.ok(res.uploadUrl.includes('demo-account-123.r2.cloudflarestorage.com'));
+      const parsedUrl = new URL(res.uploadUrl);
+      const signedHeaders = (
+        parsedUrl.searchParams.get('X-Amz-SignedHeaders') || ''
+      ).split(';');
+      assert.ok(signedHeaders.includes('content-type'));
+      assert.ok(signedHeaders.includes('content-length'));
+      assert.equal(parsedUrl.searchParams.get('X-Amz-Expires'), '300');
+      assert.equal(parsedUrl.searchParams.has('x-amz-checksum-crc32'), false);
+      assert.equal(
+        parsedUrl.searchParams.has('x-amz-sdk-checksum-algorithm'),
+        false
+      );
+      assert.equal(
+        [...parsedUrl.searchParams.keys()].some((k) => /checksum/i.test(k)),
+        false
+      );
+      assert.equal(res.uploadUrl.includes('AAAAAA=='), false);
+      assert.equal(res.publicUrl, 'https://cdn.qlaok.vn/items/pho-bo.webp');
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v !== undefined) process.env[k] = v;
+        else delete process.env[k];
+      }
+    }
   });
 });
 
@@ -798,58 +844,103 @@ describe('Suite 5: Cloudflare R2 Storage Helper (r2.ts)', () => {
 describe('Suite 5.B: Garage Object Storage Helper (garage-storage.ts)', () => {
   test('5.B.1 isGarageConfigured returns false and getGarageClient returns null when env vars are missing', () => {
     const savedEndpoint = process.env.S3_ENDPOINT;
-    delete process.env.S3_ENDPOINT;
+    try {
+      delete process.env.S3_ENDPOINT;
 
-    assert.equal(isGarageConfigured(), false);
-    assert.equal(getGarageClient(), null);
-
-    if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+      assert.equal(isGarageConfigured(), false);
+      assert.equal(getGarageClient(), null);
+      assert.equal(getGaragePresignerClient(), null);
+    } finally {
+      if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+      else delete process.env.S3_ENDPOINT;
+    }
   });
 
   test('5.B.2 createGaragePresignedUploadUrl returns null when Garage is not configured', async () => {
     const savedEndpoint = process.env.S3_ENDPOINT;
-    delete process.env.S3_ENDPOINT;
+    try {
+      delete process.env.S3_ENDPOINT;
 
-    const res = await createGaragePresignedUploadUrl({
-      key: 'items/pho-bo.webp',
-      contentType: 'image/webp',
-    });
-    assert.equal(res, null);
-
-    if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+      const res = await createGaragePresignedUploadUrl({
+        key: 'items/pho-bo.webp',
+        contentType: 'image/webp',
+        contentLength: 1024,
+      });
+      assert.equal(res, null);
+    } finally {
+      if (savedEndpoint !== undefined) process.env.S3_ENDPOINT = savedEndpoint;
+      else delete process.env.S3_ENDPOINT;
+    }
   });
 
   test('5.B.3 Garage storage generates valid signed URL and path-style client when credentials are set', async () => {
-    process.env.S3_ENDPOINT = 'https://s3.vunph.click';
-    process.env.S3_REGION = 'garage';
-    process.env.S3_BUCKET_NAME = 'qlaok-media';
-    process.env.S3_ACCESS_KEY_ID = 'demo-garage-key';
-    process.env.S3_SECRET_ACCESS_KEY = 'demo-garage-secret';
-    process.env.S3_PUBLIC_URL = 'https://s3.vunph.click/media';
+    const saved = {
+      S3_ENDPOINT: process.env.S3_ENDPOINT,
+      S3_REGION: process.env.S3_REGION,
+      S3_BUCKET_NAME: process.env.S3_BUCKET_NAME,
+      S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID,
+      S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY,
+      S3_PUBLIC_URL: process.env.S3_PUBLIC_URL,
+    };
+    try {
+      process.env.S3_ENDPOINT = 'https://s3.vunph.click';
+      process.env.S3_REGION = 'garage';
+      process.env.S3_BUCKET_NAME = 'qlaok-media';
+      process.env.S3_ACCESS_KEY_ID = 'demo-garage-key';
+      process.env.S3_SECRET_ACCESS_KEY = 'demo-garage-secret';
+      process.env.S3_PUBLIC_URL = 'https://s3.vunph.click/media';
 
-    assert.equal(isGarageConfigured(), true);
-    const client = getGarageClient();
-    assert.ok(client);
-    assert.equal(client.config.forcePathStyle, true);
+      assert.equal(isGarageConfigured(), true);
+      const client = getGarageClient();
+      const presignerClient = getGaragePresignerClient();
+      assert.ok(client);
+      assert.ok(presignerClient);
+      assert.equal(client.config.forcePathStyle, true);
+      assert.equal(presignerClient.config.forcePathStyle, true);
+      assert.equal(
+        await client.config.requestChecksumCalculation(),
+        'WHEN_SUPPORTED'
+      );
+      assert.equal(
+        await presignerClient.config.requestChecksumCalculation(),
+        'WHEN_REQUIRED'
+      );
 
-    const res = await createGaragePresignedUploadUrl({
-      key: 'items/pho-bo.webp',
-      contentType: 'image/webp',
-    });
-    assert.ok(res);
-    assert.ok(
-      res.uploadUrl.startsWith(
-        'https://s3.vunph.click/qlaok-media/items/pho-bo.webp'
-      )
-    );
-    assert.equal(res.publicUrl, 'https://s3.vunph.click/media/items/pho-bo.webp');
-
-    delete process.env.S3_ENDPOINT;
-    delete process.env.S3_REGION;
-    delete process.env.S3_BUCKET_NAME;
-    delete process.env.S3_ACCESS_KEY_ID;
-    delete process.env.S3_SECRET_ACCESS_KEY;
-    delete process.env.S3_PUBLIC_URL;
+      const res = await createGaragePresignedUploadUrl({
+        key: 'items/pho-bo.webp',
+        contentType: 'image/webp',
+        contentLength: 2048,
+      });
+      assert.ok(res);
+      assert.ok(
+        res.uploadUrl.startsWith(
+          'https://s3.vunph.click/qlaok-media/items/pho-bo.webp'
+        )
+      );
+      const parsedUrl = new URL(res.uploadUrl);
+      const signedHeaders = (
+        parsedUrl.searchParams.get('X-Amz-SignedHeaders') || ''
+      ).split(';');
+      assert.ok(signedHeaders.includes('content-type'));
+      assert.ok(signedHeaders.includes('content-length'));
+      assert.equal(parsedUrl.searchParams.get('X-Amz-Expires'), '300');
+      assert.equal(parsedUrl.searchParams.has('x-amz-checksum-crc32'), false);
+      assert.equal(
+        parsedUrl.searchParams.has('x-amz-sdk-checksum-algorithm'),
+        false
+      );
+      assert.equal(
+        [...parsedUrl.searchParams.keys()].some((k) => /checksum/i.test(k)),
+        false
+      );
+      assert.equal(res.uploadUrl.includes('AAAAAA=='), false);
+      assert.equal(res.publicUrl, 'https://s3.vunph.click/media/items/pho-bo.webp');
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v !== undefined) process.env[k] = v;
+        else delete process.env[k];
+      }
+    }
   });
 });
 

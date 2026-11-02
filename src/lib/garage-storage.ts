@@ -21,6 +21,24 @@ export const GARAGE_UPLOAD_ALLOWED_MIME_TYPES = [
 
 export const MAX_UPLOAD_BYTES = MAX_GARAGE_UPLOAD_BYTES;
 export const ALLOWED_IMAGE_MIME_TYPES = GARAGE_UPLOAD_ALLOWED_MIME_TYPES;
+export const MAX_BASE64_UPLOAD_LENGTH = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
+export const UPLOAD_JSON_METADATA_OVERHEAD_BYTES = 4 * 1024;
+export const MAX_UPLOAD_REQUEST_BYTES =
+  MAX_BASE64_UPLOAD_LENGTH + UPLOAD_JSON_METADATA_OVERHEAD_BYTES;
+export const PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS = 300;
+export const PRESIGNED_UPLOAD_SIGNABLE_HEADERS = [
+  'content-type',
+  'content-length',
+] as const;
+
+export function isValidUploadContentLength(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_UPLOAD_BYTES
+  );
+}
 
 // Aliases for backward compatibility
 export const MAX_SUPABASE_UPLOAD_BYTES = MAX_UPLOAD_BYTES;
@@ -70,6 +88,28 @@ export function getGarageClient(): S3Client | null {
 export const getS3Client = getGarageClient;
 
 /**
+ * Creates a dedicated AWS SDK v3 S3Client instance for presigning direct client uploads to Garage S3.
+ * Configured with `requestChecksumCalculation: 'WHEN_REQUIRED'` so PutObject presigning does not
+ * precompute and sign an empty-body CRC32 checksum (`x-amz-checksum-crc32=AAAAAA==`) into the URL.
+ */
+export function getGaragePresignerClient(): S3Client | null {
+  if (!isGarageConfigured()) return null;
+
+  return new S3Client({
+    region: process.env.S3_REGION || 'garage',
+    endpoint: process.env.S3_ENDPOINT!,
+    forcePathStyle: true,
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    credentials: {
+      accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+    },
+  });
+}
+
+export const getS3PresignerClient = getGaragePresignerClient;
+
+/**
  * Uploads an image buffer to Garage object storage and returns its stable public URL.
  * Throws on failure or misconfiguration without leaking raw credentials.
  */
@@ -105,14 +145,16 @@ export const uploadBufferToS3 = uploadBufferToGarage;
 /**
  * Creates a presigned upload URL for direct client upload to Garage.
  */
-export async function createGaragePresignedUploadUrl(
-  params: {
-    key: string;
-    contentType: string;
-  },
-  clientOverride?: S3Client
-): Promise<{ uploadUrl: string; publicUrl: string } | null> {
-  const client = clientOverride ?? getGarageClient();
+export async function createGaragePresignedUploadUrl(params: {
+  key: string;
+  contentType: string;
+  contentLength: number;
+}): Promise<{ uploadUrl: string; publicUrl: string } | null> {
+  if (!isValidUploadContentLength(params.contentLength)) {
+    throw new Error('Invalid or oversized upload contentLength');
+  }
+
+  const client = getGaragePresignerClient();
   if (!client) return null;
 
   const bucket = process.env.S3_BUCKET_NAME || 'qlaok-media';
@@ -120,9 +162,13 @@ export async function createGaragePresignedUploadUrl(
     Bucket: bucket,
     Key: params.key,
     ContentType: params.contentType,
+    ContentLength: params.contentLength,
   });
 
-  const uploadUrl = await getSignedUrl(client, command, { expiresIn: 3600 });
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: PRESIGNED_UPLOAD_EXPIRES_IN_SECONDS,
+    signableHeaders: new Set(PRESIGNED_UPLOAD_SIGNABLE_HEADERS),
+  });
   const publicBase = (process.env.S3_PUBLIC_URL || '').replace(/\/$/, '');
   const publicUrl = `${publicBase}/${params.key}`;
 
