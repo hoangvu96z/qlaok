@@ -109,6 +109,16 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
         ('staff', 'sql-shop', '${staff}', 'staff', '["orders.view","orders.fulfill","members.manage","settings.manage"]'),
         ('cashier', 'sql-shop', '${cashier}', 'cashier', '["orders.view","payment.collect"]');
       INSERT INTO orders (id, order_code, shop_id, total_amount) VALUES ('sql-order', 'SQL-1', 'sql-shop', 100000);`);
+    await db.exec(`GRANT UPDATE (price) ON TABLE public.items TO authenticated;
+      GRANT INSERT (user_agent) ON TABLE public.analytics_events TO anon;`);
+    // The fixture grant simulates legacy/default PostgREST grants. Reapply the
+    // forward migration afterward to prove it removes table and column writes.
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261103000100_harden_postgrest_direct_writes.sql',
+        'utf8'
+      )
+    );
     await db.exec('SET ROLE service_role');
     const serverCreatedInvitation = await db.query(
       "INSERT INTO profiles (id, email, owner_invite_pending) VALUES ('server-created-invitation', 'server@example.test', TRUE) RETURNING owner_invite_pending"
@@ -2465,6 +2475,153 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     assert.equal(
       (await db.query("SELECT slug FROM public.shop_slug_aliases WHERE slug IN ('del-shop-a-old', 'del-shop-z-old')")).rows.length,
       0
+    );
+
+    // Direct PostgREST write privileges are removed after the legacy grants.
+    const directWritePrivileges = (
+      await db.query(`SELECT
+        has_table_privilege('authenticated', 'public.items', 'INSERT') AS auth_item_insert,
+        has_table_privilege('authenticated', 'public.items', 'UPDATE') AS auth_item_update,
+        has_table_privilege('authenticated', 'public.items', 'DELETE') AS auth_item_delete,
+        has_any_column_privilege('authenticated', 'public.items', 'INSERT') AS auth_item_column_insert,
+        has_any_column_privilege('authenticated', 'public.items', 'UPDATE') AS auth_item_column_update,
+        has_table_privilege('authenticated', 'public.shops', 'DELETE') AS auth_shop_delete,
+        has_table_privilege('anon', 'public.analytics_events', 'INSERT') AS anon_analytics_insert,
+        has_table_privilege('authenticated', 'public.analytics_events', 'INSERT') AS auth_analytics_insert,
+        has_any_column_privilege('anon', 'public.analytics_events', 'INSERT') AS anon_analytics_column_insert,
+        has_any_column_privilege('authenticated', 'public.analytics_events', 'INSERT') AS auth_analytics_column_insert,
+        has_sequence_privilege('anon', 'public.analytics_events_id_seq', 'USAGE') AS anon_analytics_sequence,
+        has_sequence_privilege('authenticated', 'public.analytics_events_id_seq', 'USAGE') AS auth_analytics_sequence,
+        has_function_privilege('anon', 'public.check_item_plan_limit()', 'EXECUTE') AS anon_plan_trigger_execute,
+        has_function_privilege('authenticated', 'public.check_item_plan_limit()', 'EXECUTE') AS auth_plan_trigger_execute`)
+    ).rows[0];
+    assert.deepEqual(directWritePrivileges, {
+      auth_item_insert: false,
+      auth_item_update: false,
+      auth_item_delete: false,
+      auth_item_column_insert: false,
+      auth_item_column_update: false,
+      auth_shop_delete: false,
+      anon_analytics_insert: false,
+      auth_analytics_insert: false,
+      anon_analytics_column_insert: false,
+      auth_analytics_column_insert: false,
+      anon_analytics_sequence: false,
+      auth_analytics_sequence: false,
+      anon_plan_trigger_execute: false,
+      auth_plan_trigger_execute: false,
+    });
+
+    const planTrigger = (
+      await db.query(`SELECT p.prosecdef, p.proconfig,
+        (r.rolsuper OR r.rolbypassrls) AS owner_bypasses_rls
+        FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
+        WHERE p.oid = 'public.check_item_plan_limit()'::regprocedure`)
+    ).rows[0];
+    assert.equal(planTrigger.prosecdef, true, 'plan trigger must bypass caller RLS only to read authoritative plan/item counts');
+    assert.equal(planTrigger.owner_bypasses_rls, true, 'plan trigger owner must bypass RLS');
+    assert.ok(
+      planTrigger.proconfig?.includes('search_path=pg_catalog, public, pg_temp'),
+      'SECURITY DEFINER plan trigger must pin a safe search_path'
+    );
+
+    const inventoryAdjustUser = '00000000-0000-0000-0000-000000000004';
+    await db.exec(`RESET ROLE; SET ROLE service_role;
+      INSERT INTO profiles (id) VALUES ('${inventoryAdjustUser}');
+      INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions)
+        VALUES ('inventory-adjust', 'sql-shop', '${inventoryAdjustUser}', 'staff', '["inventory.adjust"]');
+      RESET ROLE;
+      SET ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${inventoryAdjustUser}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${inventoryAdjustUser}"}', false);`);
+    assert.equal(
+      (await db.query("SELECT public.user_has_shop_permission('sql-shop', 'inventory.adjust') AS allowed")).rows[0].allowed,
+      true,
+      'fixture must represent a member with inventory.adjust'
+    );
+    assert.equal(
+      (await db.query("SELECT id FROM items WHERE id = 'sql-item'")).rows.length,
+      1,
+      'inventory.adjust members must retain catalog read access on unpublished shops'
+    );
+    await assert.rejects(
+      db.query("UPDATE items SET price = 1 WHERE id = 'sql-item' RETURNING id"),
+      /permission denied/i
+    );
+    await assert.rejects(
+      db.query("DELETE FROM items WHERE id = 'sql-item' RETURNING id"),
+      /permission denied/i
+    );
+
+    const catalogManageUser = '00000000-0000-0000-0000-000000000005';
+    await db.exec(`RESET ROLE; SET ROLE service_role;
+      INSERT INTO profiles (id) VALUES ('${catalogManageUser}');
+      INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions)
+        VALUES ('catalog-manage', 'sql-shop', '${catalogManageUser}', 'staff', '["catalog.manage"]');
+      RESET ROLE;
+      SET ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${catalogManageUser}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${catalogManageUser}"}', false);`);
+    assert.equal(
+      (await db.query("SELECT id FROM items WHERE id = 'sql-item'")).rows.length,
+      1,
+      'catalog.manage members must retain catalog read access on unpublished shops'
+    );
+    await assert.rejects(
+      db.query("UPDATE items SET price = 1 WHERE id = 'sql-item' RETURNING id"),
+      /permission denied/i
+    );
+
+    await db.exec(`RESET ROLE; SET ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${owner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}"}', false);`);
+    await assert.rejects(
+      db.query("DELETE FROM shops WHERE id = 'sql-shop' RETURNING id"),
+      /permission denied/i
+    );
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claims', '{\"role\":\"anon\"}', false); SET ROLE anon");
+    await assert.rejects(
+      db.query(`INSERT INTO analytics_events (shop_id, event_type, visitor_lang, user_agent)
+        VALUES ('sql-pub-shop', 'scan_door', 'vi', 'direct-client')`),
+      /permission denied/i
+    );
+
+    // The API's trusted service-role writes and analytics RPC remain available.
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role");
+    assert.equal(
+      (await db.query("UPDATE items SET price = 12000 WHERE id = 'sql-item' RETURNING id")).rows.length,
+      1,
+      'server-side catalog updates must continue to work'
+    );
+    await db.query("SELECT public.record_analytics_event_atomic('sql-pub-shop', 'scan_door', NULL, 'vi', 'sql-review')");
+    assert.equal(
+      (await db.query("SELECT id FROM analytics_events WHERE shop_id = 'sql-pub-shop' AND user_agent = 'sql-review'")).rows.length,
+      1,
+      'analytics RPC remains available to trusted server writes'
+    );
+
+    // Exercise Free and Basic boundaries with isolated shops after all other fixtures.
+    await db.exec(`
+      INSERT INTO profiles (id, plan) VALUES ('plan-limit-owner', 'free');
+      INSERT INTO shops (id, owner_id, slug, name, is_published)
+        VALUES ('plan-limit-shop', 'plan-limit-owner', 'plan-limit-shop', 'Plan limit fixture', false);
+      INSERT INTO categories (id, shop_id, sort_order, name_i18n)
+        VALUES ('plan-limit-category', 'plan-limit-shop', 1, '{"vi":"Test"}');
+      INSERT INTO items (id, shop_id, category_id, price)
+        SELECT 'free-limit-' || n, 'plan-limit-shop', 'plan-limit-category', 10000
+        FROM generate_series(1, 5) AS n;
+    `);
+    await assert.rejects(
+      db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('free-limit-6', 'plan-limit-shop', 'plan-limit-category', 10000)"),
+      /PLAN_LIMIT_REACHED/i
+    );
+    await db.query("UPDATE profiles SET plan = 'basic' WHERE id = 'plan-limit-owner'");
+    await db.query(`INSERT INTO items (id, shop_id, category_id, price)
+      SELECT 'basic-limit-' || n, 'plan-limit-shop', 'plan-limit-category', 10000
+      FROM generate_series(6, 25) AS n`);
+    await assert.rejects(
+      db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('basic-limit-26', 'plan-limit-shop', 'plan-limit-category', 10000)"),
+      /PLAN_LIMIT_REACHED/i
     );
 
   } finally { await db.close(); }
