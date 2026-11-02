@@ -2811,7 +2811,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
   3. Owner/admin HMAC session token không bị thu hồi khi logout và `sync_user` có thể cấp token mới 7 ngày từ bearer cũ; PostgREST JWT ngắn hạn cũng được nhận trong luồng sync. Staff đã có `session_version`, owner chưa có.
   4. `plan_expires_at` được ghi nhưng không được dùng để tính entitlement; gói trả phí tiếp tục có hiệu lực sau ngày hết hạn. Cần đối chiếu product rule trước khi đổi hành vi.
   5. `POST /api/shops` nhận `...newShop` và bỏ qua plan restriction/validators của PATCH; owner Free có thể tạo cấu hình vượt entitlement. Allowlist payload và áp dụng cùng validator/plan gate như PATCH.
-  6. Mobile assisted-order key `assist-*` không ràng buộc cart; nếu response mất sau commit rồi nhân viên sửa giỏ và retry, server trả order cũ như thành công, món mới không tới bếp. Cần digest intent hoặc cấp key mới khi intent đổi.
+  6. Mobile assisted-order key `assist-*` không ràng buộc cart; nếu response mất sau commit rồi nhân viên sửa giỏ và retry, server trả order cũ như thành công, món mới không tới bếp. **Đã xử lý ở mục 219:** server ràng buộc attempt với intent và trả 409 khi nội dung đổi.
   7. Thử mật khẩu sai 5 lần khóa tài khoản nhân viên 15 phút theo shop+username, không theo IP (`src/lib/staff-accounts.ts:2033-2050`), cho phép người biết username công khai gây lockout. Cần thêm bucket theo IP và giới hạn account-only cao hơn.
 - **P3 đã xác nhận:**
   - `POST /api/orders` không allowlist `payment_method`; giá trị lạ bị thống kê như VietQR (`src/app/api/orders/route.ts`, `src/lib/mpos-store.ts`).
@@ -2871,3 +2871,14 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `status`; `explore "E2E migration runner applying disposable PostgreSQL auth.jwt session revocation migration"`; `explore "scripts/run-e2e-ci.sh disposable PostgreSQL E2E migration auth schema"`; `node tests/sql-review.test.mjs --offset 8 --limit 34`. `node scripts/run-e2e-ci.sh` không có file trong index (shell); shell runner và SQL migration được đọc trực tiếp sau truy vấn CodeGraph.
 - **Kiểm tra:** `npm run test:sql` **13/13 PASS** sau regression; `npm run test:db-reset` PASS (backup **26/26**, preflight/demo runner **21/21**, migration roundtrip **6/6**); `git diff --check` PASS. AGY Gemini 4 Argon Medium, read-only run `2026-11-02T22-36-54-319Z-81257962`, kết luận **No confirmed issue**.
 - **Chưa xác minh:** máy local không có Docker nên không chạy được `scripts/run-e2e-ci.sh`; Actions mới cho commit sửa sẽ xác nhận migration và deploy.
+
+## 219. P2-6: ràng buộc idempotency của mobile assisted-order (2026-11-03)
+
+- **Sửa:** key attempt mới được scope theo shop, staff đã xác thực và raw attempt key; fingerprint ràng buộc cart/table/order intent, bỏ `visitor_lang` để đổi ngôn ngữ vẫn retry được. Cùng key/cùng intent trả lại đơn đã tạo; cùng key/intent khác trả HTTP 409. Legacy `assist-*` chỉ replay khi đúng hình dạng payload mobile cũ và khớp cart/table; request có field order khác bị từ chối. Partial unique index trên tiền tố attempt ngăn hai intent khác nhau cùng commit khi có request đồng thời.
+- **Regression:** kiểm tra locale đổi, cart đổi, shop/staff scoping, legacy customer note, malformed key trả HTTP 400, chỉ một order/inventory/audit side effect và unique prefix index.
+- **CodeGraph:** `status`; `explore "POST src/app/api/orders/route.ts counter_pos rawIdempotencyKey buildScopedPosWebIdempotencyKey dbCreateOrder"`; `explore "dbCreateOrder dbGetOrderByShopIdempotencyKey isPosIdempotencyPrefixUniqueViolation src/lib/mpos-store.ts"`; `explore "AssistedOrderScreen handleSubmitOrder generateAssistedOrderIdempotencyKey mobile/src/lib/staff-ordering.ts"`; `sync` sau sửa.
+- **AGY:** Gemini 4 Argon Medium, review read-only run `2026-11-02T23-21-00-066Z-e9dc7e8e`, kết luận **NO CONFIRMED FINDINGS**; không sửa file. Một lượt kiểm tra sớm hơn của cùng review bị dừng vì lặp CodeGraph/source reads; test command do agent tự dựng kết thúc 1, nên không được tính là test pass.
+- **Claude CLI:** v2.1.316, TUI plan mode hiển thị `deepseek · API Usage Billing`; đã đọc một phần source/test nhưng bị dừng do thời lượng, không trả verdict. Không tính là approval.
+- **Codex kiểm tra:** focused `tests/pos-idempotency-replay-review.test.ts` **4/4 PASS**; `npm run test:sql` **13/13 PASS**; `npm run typecheck` **PASS**; ESLint trên route/store/test và `git diff --check` **PASS**.
+- **Chưa xác minh:** unique index và replay race chỉ được kiểm tra bằng isolated PGlite, chưa chạy trên production/PostgreSQL nhiều kết nối; migration chưa deploy.
+- **Trạng thái:** local change, chưa commit/push/deploy.

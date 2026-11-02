@@ -900,6 +900,15 @@ function isPosIdempotencyPrefixUniqueViolation(error: unknown): boolean {
   );
 }
 
+function isAssistedOrderIdempotencyUniqueViolation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return (
+    /(?:idx_orders_shop_assistv1_idempotency_prefix|idx_orders_shop_idempotency)/i.test(
+      message
+    ) && /(23505|duplicate key|unique constraint)/i.test(message)
+  );
+}
+
 function orderStockDemand(order: ShopOrder): Map<string, number> {
   const demand = new Map<string, number>();
   if (order.status === 'cancelled' && !order.waste_recorded) return demand;
@@ -1830,7 +1839,20 @@ export async function dbGetOrderById(
 export const RESERVED_POS_WEB_IDEMPOTENCY_PREFIX = 'pos-web:';
 const STORED_POS_WEB_IDEMPOTENCY_PREFIX = 'posv1:';
 const POS_WEB_STORED_PREFIX_LEN = 48;
+const STORED_ASSISTED_ORDER_IDEMPOTENCY_PREFIX = 'assistv1:';
+const ASSISTED_ORDER_STORED_PREFIX_LEN = 51;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 120;
+
+export function isReservedAssistedOrderIdempotencyKey(
+  rawKey: string | null | undefined
+): boolean {
+  return (
+    typeof rawKey === 'string' &&
+    rawKey.trim().toLowerCase().startsWith(
+      STORED_ASSISTED_ORDER_IDEMPOTENCY_PREFIX
+    )
+  );
+}
 
 export function isReservedPosWebIdempotencyKey(
   rawKey: string | null | undefined
@@ -1869,6 +1891,28 @@ export function computePosOrderIntentFingerprint(
   requestBody: unknown
 ): string {
   const canonicalPayload = canonicalizeJsonIntentValue(requestBody, true);
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex')
+    .slice(0, 24);
+}
+
+/**
+ * Assisted mobile orders intentionally ignore the display locale when binding
+ * a retry key to its order intent. Switching VI/EN must not turn the same cart
+ * into a different attempt.
+ */
+export function computeAssistedOrderIntentFingerprint(
+  requestBody: unknown
+): string {
+  const requestRecord =
+    requestBody && typeof requestBody === 'object' && !Array.isArray(requestBody)
+      ? (requestBody as Record<string, unknown>)
+      : {};
+  const canonicalPayload = canonicalizeJsonIntentValue(
+    { ...requestRecord, visitor_lang: undefined },
+    true
+  );
   return createHash('sha256')
     .update(JSON.stringify(canonicalPayload))
     .digest('hex')
@@ -1923,6 +1967,64 @@ export function buildScopedPosWebIdempotencyKey(params: {
     .slice(0, 24);
   const keyLookupPrefix = `${STORED_POS_WEB_IDEMPOTENCY_PREFIX}${actorScopeHash}:${rawKeyHash}:`;
   const scopedKey = `${keyLookupPrefix}${cleanFingerprint}`;
+  return { scopedKey, keyLookupPrefix };
+}
+
+/**
+ * Server scope for mobile assisted-order retries. The stable prefix binds an
+ * attempt to one shop, staff actor, and raw client key; the suffix binds the
+ * request intent. The partial unique index on the prefix closes cross-process
+ * races where two changed carts reuse the same attempt key.
+ */
+export function buildScopedAssistedOrderIdempotencyKey(params: {
+  shopId: string;
+  actorUserId: string;
+  rawIdempotencyKey: string;
+  intentFingerprint: string;
+}): {
+  scopedKey: string;
+  keyLookupPrefix: string;
+} {
+  const cleanShopId = String(params.shopId || '').trim();
+  const cleanUserId = String(params.actorUserId || '').trim();
+  const cleanRawKey = String(params.rawIdempotencyKey || '').trim();
+  const cleanFingerprint = String(params.intentFingerprint || '').trim();
+  const lowerRawKey = cleanRawKey.toLowerCase();
+
+  if (
+    !cleanShopId ||
+    !cleanUserId ||
+    cleanRawKey.length > MAX_IDEMPOTENCY_KEY_LENGTH ||
+    !lowerRawKey.startsWith('assist-') ||
+    lowerRawKey.startsWith(STORED_ASSISTED_ORDER_IDEMPOTENCY_PREFIX) ||
+    !cleanRawKey.slice('assist-'.length).trim() ||
+    !/^[a-f0-9]{24}$/i.test(cleanFingerprint)
+  ) {
+    throw new Error(
+      'INVALID_ASSISTED_ORDER_IDEMPOTENCY_KEY: Khóa chống trùng đơn gọi món không hợp lệ.'
+    );
+  }
+
+  const actorScopeHash = createHash('sha256')
+    .update(`${cleanShopId}|${cleanUserId}`)
+    .digest('hex')
+    .slice(0, 16);
+  const rawKeyHash = createHash('sha256')
+    .update(`${cleanShopId}|${cleanUserId}|${cleanRawKey}`)
+    .digest('hex')
+    .slice(0, 24);
+  const keyLookupPrefix = `${STORED_ASSISTED_ORDER_IDEMPOTENCY_PREFIX}${actorScopeHash}:${rawKeyHash}:`;
+  const scopedKey = `${keyLookupPrefix}${cleanFingerprint.toLowerCase()}`;
+
+  if (
+    keyLookupPrefix.length !== ASSISTED_ORDER_STORED_PREFIX_LEN ||
+    scopedKey.length > MAX_IDEMPOTENCY_KEY_LENGTH
+  ) {
+    throw new Error(
+      'INVALID_ASSISTED_ORDER_IDEMPOTENCY_KEY: Khóa chống trùng đơn gọi món vượt giới hạn.'
+    );
+  }
+
   return { scopedKey, keyLookupPrefix };
 }
 
@@ -2318,6 +2420,13 @@ export async function dbCreateOrder(params: {
       cleanIdempKey.length >= POS_WEB_STORED_PREFIX_LEN
         ? cleanIdempKey.slice(0, POS_WEB_STORED_PREFIX_LEN)
         : undefined;
+    const assistedOrderKeyPrefix =
+      cleanIdempKey.startsWith(
+        STORED_ASSISTED_ORDER_IDEMPOTENCY_PREFIX
+      ) && cleanIdempKey.length >= ASSISTED_ORDER_STORED_PREFIX_LEN
+        ? cleanIdempKey.slice(0, ASSISTED_ORDER_STORED_PREFIX_LEN)
+        : undefined;
+    const idempotencyLookupPrefix = posKeyPrefix || assistedOrderKeyPrefix;
     // 0. Validate managed table identity BEFORE stock deduction
     const resolvedTable =
       params.resolved_table_identity ??
@@ -2357,7 +2466,9 @@ export async function dbCreateOrder(params: {
       const directLookup = await dbGetOrderByShopIdempotencyKey(
         params.shop_id,
         cleanIdempKey,
-        posKeyPrefix ? { keyLookupPrefix: posKeyPrefix } : undefined
+        idempotencyLookupPrefix
+          ? { keyLookupPrefix: idempotencyLookupPrefix }
+          : undefined
       );
       if (directLookup.payloadMismatch) {
         throw new Error(
@@ -2371,12 +2482,12 @@ export async function dbCreateOrder(params: {
 
     // Idempotency key deduplication for the local fallback store.
     if (cleanIdempKey) {
-      if (posKeyPrefix) {
+      if (idempotencyLookupPrefix) {
         const existingPrefixMatch = store.orders.find(
           (o) =>
             o.shop_id === params.shop_id &&
             typeof o.idempotency_key === 'string' &&
-            o.idempotency_key.startsWith(posKeyPrefix)
+            o.idempotency_key.startsWith(idempotencyLookupPrefix)
         );
         if (existingPrefixMatch) {
           if (existingPrefixMatch.idempotency_key !== cleanIdempKey) {
@@ -2603,7 +2714,7 @@ export async function dbCreateOrder(params: {
       items: validatedItems,
       source: orderSource,
       tracking_token: trackingToken,
-      idempotency_key: params.idempotency_key?.trim() || undefined,
+      idempotency_key: cleanIdempKey || undefined,
       payment_idempotency_key: isPaid
         ? params.payment_idempotency_key?.trim() ||
           `pay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -2632,12 +2743,17 @@ export async function dbCreateOrder(params: {
           });
           break;
         } catch (error) {
-          if (isPosIdempotencyPrefixUniqueViolation(error)) {
-            if (posKeyPrefix) {
+          const isScopedIdempotencyUniqueViolation =
+            Boolean(posKeyPrefix) &&
+            isPosIdempotencyPrefixUniqueViolation(error) ||
+            Boolean(assistedOrderKeyPrefix) &&
+            isAssistedOrderIdempotencyUniqueViolation(error);
+          if (isScopedIdempotencyUniqueViolation) {
+            if (idempotencyLookupPrefix) {
               const concurrentLookup = await dbGetOrderByShopIdempotencyKey(
                 params.shop_id,
                 cleanIdempKey,
-                { keyLookupPrefix: posKeyPrefix }
+                { keyLookupPrefix: idempotencyLookupPrefix }
               );
               if (
                 concurrentLookup.order &&

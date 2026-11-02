@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
+  buildScopedAssistedOrderIdempotencyKey,
   buildScopedPosWebIdempotencyKey,
+  computeAssistedOrderIntentFingerprint,
   computePosOrderIntentFingerprint,
   dbComputeShopRevenueAndInventoryStats,
   dbCreateOrder,
@@ -13,6 +15,7 @@ import {
   dbRecordOrderPrint,
   dbSettleTableBill,
   dbUpdateOrderStatus,
+  isReservedAssistedOrderIdempotencyKey,
   isReservedPosWebIdempotencyKey,
   quoteOrderPricing,
   wasOrderNewlyCreated,
@@ -127,6 +130,101 @@ function matchesGuestOrderIdempotencyIntent(
   return (
     suppliedBytes.length === expectedBytes.length &&
     timingSafeEqual(suppliedBytes, expectedBytes)
+  );
+}
+
+function serializeAssistedOrderLinesIntent(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const normalizedLines: Array<{
+    item_id: string;
+    quantity: number;
+    selected_choice_ids: string[];
+    custom_note: string;
+  }> = [];
+
+  for (const rawLine of value) {
+    if (!rawLine || typeof rawLine !== 'object' || Array.isArray(rawLine)) {
+      return null;
+    }
+    const line = rawLine as Record<string, unknown>;
+    const itemId = typeof line.item_id === 'string' ? line.item_id.trim() : '';
+    const quantity = Number(line.quantity);
+    if (!itemId || !Number.isSafeInteger(quantity) || quantity < 1) return null;
+
+    const selectedChoiceIds: string[] = [];
+    if (line.selected_choices !== undefined && !Array.isArray(line.selected_choices)) {
+      return null;
+    }
+    for (const rawChoice of (line.selected_choices as unknown[] | undefined) || []) {
+      if (!rawChoice || typeof rawChoice !== 'object' || Array.isArray(rawChoice)) {
+        return null;
+      }
+      const choiceId = (rawChoice as Record<string, unknown>).id;
+      if (typeof choiceId !== 'string' || !choiceId.trim()) return null;
+      selectedChoiceIds.push(choiceId.trim());
+    }
+
+    normalizedLines.push({
+      item_id: itemId,
+      quantity,
+      selected_choice_ids: selectedChoiceIds.sort(),
+      custom_note:
+        typeof line.custom_note === 'string' ? line.custom_note.trim() : '',
+    });
+  }
+
+  return JSON.stringify(normalizedLines);
+}
+
+function matchesLegacyAssistedOrderIntent(
+  order: ShopOrder,
+  requestBody: Record<string, unknown>
+): boolean {
+  const legacyMobilePayloadKeys = new Set([
+    'shop_id',
+    'source',
+    'table_id',
+    'table_label',
+    'visitor_lang',
+    'idempotency_key',
+    'items',
+  ]);
+  if (
+    Object.keys(requestBody).some((key) => !legacyMobilePayloadKeys.has(key)) ||
+    order.source !== 'counter_pos' ||
+    requestBody.source !== 'counter_pos' ||
+    order.shop_id !== requestBody.shop_id
+  ) {
+    return false;
+  }
+
+  const rawTableId =
+    requestBody.table_id !== undefined
+      ? requestBody.table_id
+      : requestBody.tableId;
+  const requestTableId =
+    typeof rawTableId === 'string' && rawTableId.trim()
+      ? rawTableId.trim()
+      : rawTableId === null || rawTableId === undefined
+        ? null
+        : String(rawTableId).trim() || null;
+  if ((order.table_id ?? null) !== requestTableId) return false;
+
+  if (requestTableId === null) {
+    const requestTableLabel = String(
+      requestBody.table_label ?? requestBody.tableLabel ?? 'Bàn khách'
+    )
+      .trim()
+      .toLocaleLowerCase();
+    if (order.table_label.trim().toLocaleLowerCase() !== requestTableLabel) {
+      return false;
+    }
+  }
+
+  return (
+    serializeAssistedOrderLinesIntent(requestBody.items) !== null &&
+    serializeAssistedOrderLinesIntent(requestBody.items) ===
+      serializeAssistedOrderLinesIntent(order.items)
   );
 }
 
@@ -837,6 +935,17 @@ export async function POST(req: Request) {
 
     let resolvedIdempotencyKey = rawIdempotencyKey;
 
+    if (rawIdempotencyKey && isReservedAssistedOrderIdempotencyKey(rawIdempotencyKey)) {
+      return NextResponse.json(
+        {
+          error:
+            'Tiền tố assistv1: chỉ dành cho khóa gọi món do máy chủ tạo.',
+          code: 'RESERVED_ASSISTED_ORDER_IDEMPOTENCY_KEY_FORBIDDEN',
+        },
+        { status: 403 }
+      );
+    }
+
     if (rawIdempotencyKey && isReservedPosWebIdempotencyKey(rawIdempotencyKey)) {
       if (source !== 'counter_pos' || !sessionUser || !hasCreatePerm) {
         return NextResponse.json(
@@ -892,6 +1001,84 @@ export async function POST(req: Request) {
       }
 
       resolvedIdempotencyKey = scopedPosKey.scopedKey;
+    }
+
+    if (
+      rawIdempotencyKey?.toLowerCase().startsWith('assist-') &&
+      source === 'counter_pos'
+    ) {
+      // Read legacy raw keys first so a request that started before this
+      // protocol rollout can still recover its committed order safely.
+      const legacyReplay = await dbGetOrderByShopIdempotencyKey(
+        shop_id,
+        rawIdempotencyKey
+      );
+      if (legacyReplay.order) {
+        if (
+          legacyReplay.order.shop_id !== shop_id ||
+          legacyReplay.order.source !== 'counter_pos'
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Không thể phát lại yêu cầu đơn hàng này.',
+              code: 'IDEMPOTENCY_KEY_SOURCE_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
+        if (!matchesLegacyAssistedOrderIntent(legacyReplay.order, body)) {
+          return NextResponse.json(
+            {
+              error:
+                'Khóa gọi món này đã gắn với một nội dung đơn khác. Hãy kiểm tra đơn cũ trước khi tạo lần thử mới.',
+              code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json({ order: legacyReplay.order }, { status: 201 });
+      }
+
+      const scopedAssistedKey = buildScopedAssistedOrderIdempotencyKey({
+        shopId: shop_id,
+        actorUserId: sessionUser!.sub,
+        rawIdempotencyKey,
+        intentFingerprint: computeAssistedOrderIntentFingerprint(body),
+      });
+      const assistedReplay = await dbGetOrderByShopIdempotencyKey(
+        shop_id,
+        scopedAssistedKey.scopedKey,
+        { keyLookupPrefix: scopedAssistedKey.keyLookupPrefix }
+      );
+      if (assistedReplay.payloadMismatch) {
+        return NextResponse.json(
+          {
+            error:
+              'Khóa gọi món này đã gắn với một nội dung đơn khác. Hãy kiểm tra đơn cũ trước khi tạo lần thử mới.',
+            code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+          },
+          { status: 409 }
+        );
+      }
+      if (assistedReplay.order) {
+        if (
+          assistedReplay.order.shop_id !== shop_id ||
+          assistedReplay.order.source !== 'counter_pos'
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Không thể phát lại yêu cầu đơn hàng này.',
+              code: 'IDEMPOTENCY_KEY_SOURCE_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json(
+          { order: assistedReplay.order },
+          { status: 201 }
+        );
+      }
+      resolvedIdempotencyKey = scopedAssistedKey.scopedKey;
     }
 
     if (body.expected_total !== undefined) {

@@ -8,7 +8,9 @@ import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { POST as postOrders } from '@/app/api/orders/route';
 import { setSupabaseDbClientForTests } from '@/lib/db';
 import {
+  buildScopedAssistedOrderIdempotencyKey,
   buildScopedPosWebIdempotencyKey,
+  computeAssistedOrderIntentFingerprint,
   computePosOrderIntentFingerprint,
   dbCreateOrder,
   dbGetOrderByShopIdempotencyKey,
@@ -398,6 +400,61 @@ test('POS-web idempotency key helpers enforce pos-web:/posv1: prefix only (prese
   );
 });
 
+test('assisted-order idempotency keys ignore locale, bind shop/actor/attempt, and change fingerprint with order intent', () => {
+  const payload = {
+    shop_id: 'shop-1',
+    source: 'counter_pos',
+    table_id: 'table-1',
+    table_label: 'Bàn 1',
+    visitor_lang: 'vi',
+    idempotency_key: 'assist-shop-1-attempt-001',
+    items: [
+      {
+        item_id: 'item-1',
+        quantity: 1,
+        selected_choices: [{ id: 'size-m' }],
+        custom_note: 'Ít đá',
+      },
+    ],
+  };
+  const localeOnlyChange = { ...payload, visitor_lang: 'en' };
+  const cartChange = {
+    ...payload,
+    items: [{ ...payload.items[0], quantity: 2 }],
+  };
+  const intentFingerprint = computeAssistedOrderIntentFingerprint(payload);
+  const localeFingerprint = computeAssistedOrderIntentFingerprint(localeOnlyChange);
+  const changedFingerprint = computeAssistedOrderIntentFingerprint(cartChange);
+  assert.equal(intentFingerprint, localeFingerprint);
+  assert.notEqual(intentFingerprint, changedFingerprint);
+
+  const scoped = buildScopedAssistedOrderIdempotencyKey({
+    shopId: 'shop-1',
+    actorUserId: 'cashier-1',
+    rawIdempotencyKey: payload.idempotency_key,
+    intentFingerprint,
+  });
+  const changedIntentScoped = buildScopedAssistedOrderIdempotencyKey({
+    shopId: 'shop-1',
+    actorUserId: 'cashier-1',
+    rawIdempotencyKey: payload.idempotency_key,
+    intentFingerprint: changedFingerprint,
+  });
+  assert.equal(scoped.keyLookupPrefix.length, 51);
+  assert.ok(scoped.scopedKey.length <= 120);
+  assert.equal(scoped.keyLookupPrefix, changedIntentScoped.keyLookupPrefix);
+  assert.notEqual(scoped.scopedKey, changedIntentScoped.scopedKey);
+  assert.notEqual(
+    scoped.keyLookupPrefix,
+    buildScopedAssistedOrderIdempotencyKey({
+      shopId: 'shop-1',
+      actorUserId: 'cashier-2',
+      rawIdempotencyKey: payload.idempotency_key,
+      intentFingerprint,
+    }).keyLookupPrefix
+  );
+});
+
 test('POST /api/orders POS idempotent replay: recovers committed order after price/stock/table changes, blocks cross-user/shop/QR/modified-payload reuse, and fails closed on DB error', async () => {
   const db = new PGlite({ extensions: { uuid_ossp } });
   const ownerId = '00000000-0000-0000-0000-000000000801';
@@ -461,6 +518,7 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
 
       INSERT INTO items (id, shop_id, category_id, sort_order, price, stock_quantity, sold_count, is_available, name_i18n, desc_i18n) VALUES
         ('item-pos-1', 'pos-shop-1', 'cat-pos-1', 1, 50000, 3, 0, true, '{"vi":"Cà phê kem muối"}'::jsonb, '{"vi":"Thơm béo"}'::jsonb),
+        ('item-assist-1', 'pos-shop-1', 'cat-pos-1', 2, 15000, 8, 0, true, '{"vi":"Trà đá"}'::jsonb, '{"vi":"Trà đá"}'::jsonb),
         ('item-pos-2', 'pos-shop-2', 'cat-pos-2', 1, 50000, 10, 0, true, '{"vi":"Trà đào"}'::jsonb, '{"vi":"Mát lạnh"}'::jsonb);
 
       INSERT INTO shop_tables (id, shop_id, name, table_code, section, capacity, sort_order, is_active, is_archived) VALUES
@@ -1100,6 +1158,239 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
     assert.equal(
       (await conflictRes.json()).code,
       'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+    );
+
+    // 13. A rolling-deploy retry can still find legacy mobile rows that stored
+    // the raw assist-* key before server-scoped fingerprints were introduced.
+    const legacyAssistPayload = {
+      shop_id: 'pos-shop-1',
+      source: 'counter_pos' as const,
+      table_id: 'tbl-pos-1',
+      table_label: 'Bàn 01',
+      visitor_lang: 'vi' as const,
+      idempotency_key: 'assist-pos-shop-1-legacy-attempt-001',
+      items: [
+        {
+          item_id: 'item-assist-1',
+          name_vi: 'Trà đá',
+          quantity: 1,
+          unit_price: 15000,
+          extra_price: 0,
+          selected_choices: [],
+          custom_note: 'Ít đá',
+        },
+      ],
+    };
+    const legacyAssistOrder = await dbCreateOrder({
+      shop_id: legacyAssistPayload.shop_id,
+      table_id: legacyAssistPayload.table_id,
+      table_label: legacyAssistPayload.table_label,
+      visitor_lang: legacyAssistPayload.visitor_lang,
+      source: legacyAssistPayload.source,
+      isStaffAuthorized: true,
+      idempotency_key: legacyAssistPayload.idempotency_key,
+      items: legacyAssistPayload.items,
+    });
+    const legacyAssistReplayRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify(legacyAssistPayload),
+      })
+    );
+    assert.equal(legacyAssistReplayRes.status, 201);
+    assert.equal(
+      ((await legacyAssistReplayRes.json()) as { order: ShopOrder }).order.id,
+      legacyAssistOrder.id
+    );
+    const changedLegacyAssistRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify({
+          ...legacyAssistPayload,
+          items: [{ ...legacyAssistPayload.items[0], quantity: 2 }],
+        }),
+      })
+    );
+    assert.equal(changedLegacyAssistRes.status, 409);
+    assert.equal(
+      (await changedLegacyAssistRes.json()).code,
+      'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+    );
+    const changedLegacyAssistNoteRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify({
+          ...legacyAssistPayload,
+          customer_note: 'Không hành',
+        }),
+      })
+    );
+    assert.equal(changedLegacyAssistNoteRes.status, 409);
+    assert.equal(
+      (await changedLegacyAssistNoteRes.json()).code,
+      'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+    );
+
+    // 14. Exact assisted retries survive locale changes; changed carts using
+    // the same attempt key are rejected without a second order, audit, or stock
+    // decrement.
+    const assistedPayload = {
+      shop_id: 'pos-shop-1',
+      source: 'counter_pos' as const,
+      table_id: 'tbl-pos-1',
+      table_label: 'Bàn 01',
+      visitor_lang: 'vi' as const,
+      idempotency_key: 'assist-pos-shop-1-mobile-attempt-002',
+      items: [
+        {
+          item_id: 'item-assist-1',
+          name_vi: 'Trà đá',
+          quantity: 1,
+          unit_price: 15000,
+          extra_price: 0,
+          selected_choices: [],
+          custom_note: 'Thêm đá',
+        },
+      ],
+    };
+    const malformedAssistKeyRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify({ ...assistedPayload, idempotency_key: 'assist-' }),
+      })
+    );
+    assert.equal(malformedAssistKeyRes.status, 400);
+    assert.equal(
+      (await malformedAssistKeyRes.json()).code,
+      'INVALID_ASSISTED_ORDER_IDEMPOTENCY_KEY'
+    );
+    const assistedCreateRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify(assistedPayload),
+      })
+    );
+    assert.equal(assistedCreateRes.status, 201);
+    const assistedOrder = ((await assistedCreateRes.json()) as { order: ShopOrder }).order;
+    assert.ok(assistedOrder.idempotency_key?.startsWith('assistv1:'));
+    assert.ok((assistedOrder.idempotency_key || '').length <= 120);
+
+    const assistedScoped = buildScopedAssistedOrderIdempotencyKey({
+      shopId: assistedPayload.shop_id,
+      actorUserId: cashierAId,
+      rawIdempotencyKey: assistedPayload.idempotency_key,
+      intentFingerprint: computeAssistedOrderIntentFingerprint(assistedPayload),
+    });
+    const stockBeforeAssistedReplay = (
+      await db.query<{ stock_quantity: number; sold_count: number }>(
+        `SELECT stock_quantity, sold_count FROM items WHERE id = 'item-assist-1'`
+      )
+    ).rows[0];
+    const assistedLocaleReplayRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify({ ...assistedPayload, visitor_lang: 'en' }),
+      })
+    );
+    assert.equal(assistedLocaleReplayRes.status, 201);
+    assert.equal(
+      ((await assistedLocaleReplayRes.json()) as { order: ShopOrder }).order.id,
+      assistedOrder.id
+    );
+
+    const changedAssistedRes = await postOrders(
+      new Request('http://localhost:3000/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierAToken}`,
+        },
+        body: JSON.stringify({
+          ...assistedPayload,
+          items: [{ ...assistedPayload.items[0], quantity: 2 }],
+        }),
+      })
+    );
+    assert.equal(changedAssistedRes.status, 409);
+    assert.equal(
+      (await changedAssistedRes.json()).code,
+      'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+    );
+    assert.equal(
+      (
+        await db.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM orders WHERE shop_id = $1 AND idempotency_key LIKE $2`,
+          [assistedPayload.shop_id, `${assistedScoped.keyLookupPrefix}%`]
+        )
+      ).rows[0]!.count,
+      1
+    );
+    assert.equal(await countAuditEntriesForOrder(assistedOrder.id), 1);
+    assert.deepEqual(
+      (
+        await db.query<{ stock_quantity: number; sold_count: number }>(
+          `SELECT stock_quantity, sold_count FROM items WHERE id = 'item-assist-1'`
+        )
+      ).rows[0],
+      stockBeforeAssistedReplay
+    );
+
+    // 15. The SQL prefix index blocks distinct fingerprints for one attempt,
+    // including a write that bypasses application preflight on another server.
+    const indexProbePrefix =
+      'assistv1:0123456789abcdef:012345678901234567890123:';
+    await db.query(
+      `INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items, source, idempotency_key)
+       VALUES ($1, $2, $3, $4, 'new', 'cash', 'unpaid', 1, 1, '[]'::jsonb, 'counter_pos', $5)`,
+      [
+        'ord-assist-index-probe-a',
+        'ORD-ASSIST-INDEX-A',
+        'pos-shop-1',
+        'Tại quầy',
+        `${indexProbePrefix}${'a'.repeat(24)}`,
+      ]
+    );
+    await assert.rejects(
+      () =>
+        db.query(
+          `INSERT INTO orders (id, order_code, shop_id, table_label, status, payment_method, payment_status, subtotal_amount, total_amount, items, source, idempotency_key)
+           VALUES ($1, $2, $3, $4, 'new', 'cash', 'unpaid', 1, 1, '[]'::jsonb, 'counter_pos', $5)`,
+          [
+            'ord-assist-index-probe-b',
+            'ORD-ASSIST-INDEX-B',
+            'pos-shop-1',
+            'Tại quầy',
+            `${indexProbePrefix}${'b'.repeat(24)}`,
+          ]
+        ),
+      /idx_orders_shop_assistv1_idempotency_prefix/
+    );
+    await db.query(
+      `DELETE FROM orders WHERE id = 'ord-assist-index-probe-a'`
     );
   } finally {
     setOrderAuditLogFileForTests(null);

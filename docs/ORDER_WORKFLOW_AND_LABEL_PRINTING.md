@@ -31,6 +31,12 @@ Both configuration modules are located in the Merchant Web Dashboard:
 - If a catalog item becomes unavailable after an unpaid order reserved it, staff may still edit that order while keeping the requested quantity at or below the existing reservation. Raising the quantity beyond what the order already holds is rejected; the server still recalculates the total and checks the submitted `expected_total` before saving.
 - Fulfillment changes remain independent from payment state. Editing or completing service must not mark an order paid.
 
+### Mobile Assisted-Order Retry Safety
+
+- The staff mobile app submits counter orders with a stable `assist-*` attempt key. The server scopes each new-format attempt to the authenticated staff member and shop, then binds it to the order request intent. A retry with the same cart and order details returns the already-created order; changing the cart or other order intent with the same attempt key returns HTTP 409 (`IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`).
+- `visitor_lang` is excluded from the intent fingerprint, so changing the app language does not create a second order or block a safe retry. After changing an order attempt, the mobile client must generate a fresh attempt key.
+- Legacy raw `assist-*` keys remain replayable only for the original mobile payload shape and matching table/cart. The database prefix index prevents concurrent requests from committing two different intents for one staff/shop attempt.
+
 ---
 
 ## 2. Shipped Workflow Templates & Transitions
