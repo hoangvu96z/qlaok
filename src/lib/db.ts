@@ -481,6 +481,12 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
         }
       }
 
+      if (userMemberships.some((membership) =>
+        membership.is_active && !shopMap.has(membership.shop_id)
+      )) {
+        throw new Error('SHOP_MEMBER_SHOP_SNAPSHOT_INCOMPLETE');
+      }
+
       const primaryMembership = userMemberships.find((m) => m.is_active);
       const fallbackProfile: Profile = primaryMembership
         ? {
@@ -576,12 +582,16 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
       .map((m) => m.shop_id);
 
     if (extraShopIds.length > 0) {
-      const { data: memberShops } = await sb
+      const { data: memberShops, error: memberShopsErr } = await sb
         .from('shops')
         .select('*')
         .in('id', extraShopIds);
 
-      for (const raw of (memberShops || []) as Shop[]) {
+      if (memberShopsErr || !Array.isArray(memberShops)) {
+        throw new Error('SHOP_MEMBER_SHOPS_QUERY_FAILED');
+      }
+
+      for (const raw of memberShops as Shop[]) {
         const hydrated = hydrateShopWithSeedDefaults(raw);
         shopMap.set(hydrated.id, hydrated);
       }
@@ -595,6 +605,10 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
             }
           }
         }
+      }
+
+      if (extraShopIds.some((shopId) => !shopMap.has(shopId))) {
+        throw new Error('SHOP_MEMBER_SHOP_SNAPSHOT_INCOMPLETE');
       }
     }
 

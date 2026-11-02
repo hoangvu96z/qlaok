@@ -62,6 +62,11 @@ import { MobileThemePalette, styles } from './src/styles/mobileStyles';
 import { useMobilePushNotifications } from './src/hooks/useMobilePushNotifications';
 import { useShopRealtimeOrders } from './src/hooks/useShopRealtimeOrders';
 import { useTabNavigation } from './src/hooks/useTabNavigation';
+import {
+  buildOwnerShopSnapshot,
+  getMemberShopIdsToLoad,
+  isValidOwnerShopSnapshotPayload,
+} from './src/lib/owner-shop-snapshot';
 import { AuthScreen } from './src/components/AuthScreen';
 import { StaffWorkspace } from './src/components/staff/StaffWorkspace';
 import {
@@ -775,22 +780,9 @@ function Workspace({ userId }: { userId: string }) {
       const isSilent = Boolean(options?.silent);
       const preserveDrafts = Boolean(options?.preserveDrafts);
       const previousShopId = scopeRef.current;
-      const requestedShopId = targetShopId || scopeRef.current;
-      if (!isNotificationTap) {
-        scopeRef.current = requestedShopId;
-        if (targetShopId) setActiveShopId(targetShopId);
-      }
+      const requestedShopId = targetShopId || previousShopId;
       if (!isSilent) {
         setLoading(true);
-        setPrintingOrder(null);
-        if (!isNotificationTap) {
-          setOrderFilter('active');
-        }
-        setCategories([]);
-        setItems([]);
-        setEvents([]);
-        setOrders([]);
-        setOrderStats(null);
       }
       try {
         let loadedShops: MobileShop[] = [];
@@ -799,52 +791,84 @@ function Workspace({ userId }: { userId: string }) {
         try {
           const shopsApiRes = await fetchApi('/api/shops?member=1');
           const shopsApiData = await shopsApiRes.json();
-          if (Array.isArray(shopsApiData.shops)) {
-            loadedShops = shopsApiData.shops as MobileShop[];
+          if (!isValidOwnerShopSnapshotPayload(shopsApiData)) {
+            throw new Error('SHOP_SYNC_RESPONSE_INVALID');
           }
-          if (
-            shopsApiData.memberships &&
-            typeof shopsApiData.memberships === 'object'
-          ) {
-            loadedMemberships = shopsApiData.memberships as Record<
-              string,
-              MobileShopMembership
-            >;
-          }
-        } catch (shopsApiErr) {
-          const pgToken = await getOwnerPostgrestToken();
-          if (!pgToken) throw shopsApiErr;
-          const [
-            { data: shopsData, error: shopsErr },
-            { data: membershipsData, error: membershipsErr },
-          ] = await Promise.all([
-            postgrestClient
-              .from('shops')
-              .select('*')
-              .eq('owner_id', userId)
-              .order('created_at', { ascending: true }),
-            postgrestClient
-              .from('shop_memberships')
-              .select('*')
-              .eq('user_id', userId),
-          ]);
-          if (shopsErr) throw shopsErr;
-          if (membershipsErr) throw membershipsErr;
-          loadedShops = (shopsData || []) as MobileShop[];
-          loadedMemberships = Object.fromEntries(
-            ((membershipsData || []) as MobileShopMembership[]).map(
-              (membership) => [membership.shop_id, membership]
-            )
+          loadedShops = shopsApiData.shops as MobileShop[];
+          loadedMemberships = shopsApiData.memberships as Record<
+            string,
+            MobileShopMembership
+          >;
+        } catch {
+          const snapshotError = new Error(
+            translateRef.current('alert.loadShopErrorDesc')
           );
+          try {
+            const pgToken = await getOwnerPostgrestToken();
+            if (!pgToken) throw snapshotError;
+            const [
+              { data: shopsData, error: shopsErr },
+              { data: membershipsData, error: membershipsErr },
+            ] = await Promise.all([
+              postgrestClient
+                .from('shops')
+                .select('*')
+                .eq('owner_id', userId)
+                .order('created_at', { ascending: true }),
+              postgrestClient
+                .from('shop_memberships')
+                .select('*')
+                .eq('user_id', userId),
+            ]);
+            if (
+              shopsErr ||
+              membershipsErr ||
+              !Array.isArray(shopsData) ||
+              !Array.isArray(membershipsData)
+            ) {
+              throw snapshotError;
+            }
+
+            const ownedShops = shopsData as MobileShop[];
+            const membershipRows = membershipsData as MobileShopMembership[];
+            const memberShopIds = getMemberShopIdsToLoad(
+              ownedShops,
+              membershipRows
+            );
+            let memberShops: MobileShop[] = [];
+            if (memberShopIds.length > 0) {
+              const {
+                data: memberShopsData,
+                error: memberShopsError,
+              } = await postgrestClient
+                .from('shops')
+                .select('*')
+                .in('id', memberShopIds);
+              if (memberShopsError || !Array.isArray(memberShopsData)) {
+                throw snapshotError;
+              }
+              memberShops = memberShopsData as MobileShop[];
+            }
+
+            const fallbackSnapshot = buildOwnerShopSnapshot({
+              ownedShops,
+              memberShops,
+              memberships: membershipRows,
+            });
+            loadedShops = fallbackSnapshot.shops;
+            loadedMemberships = fallbackSnapshot.memberships;
+          } catch {
+            // RLS can hide member shops in this direct fallback. Keep the
+            // last known workspace state instead of applying a partial view.
+            throw snapshotError;
+          }
         }
 
         if (generation !== loadGeneration.current) return;
-        setShops(loadedShops);
         const refreshedMemberships = filterMembershipsForShops(
           loadedMemberships,
           loadedShops
         );
-        setMemberships(refreshedMemberships);
         const mergedMemberships = refreshedMemberships;
 
         let currentShop: MobileShop | null = null;
@@ -859,7 +883,15 @@ function Workspace({ userId }: { userId: string }) {
             // Never silently fall back to another shop when notification target is unavailable
             scopeRef.current = '';
             setActiveShopId('');
+            setShops(loadedShops);
+            setMemberships(refreshedMemberships);
             setLiveOrderAlert(null);
+            setPrintingOrder(null);
+            setCategories([]);
+            setItems([]);
+            setEvents([]);
+            setOrders([]);
+            setOrderStats(null);
             const unavailableMsg = translateRef.current(
               'alert.notificationShopUnavailableDesc'
             );
@@ -871,10 +903,6 @@ function Workspace({ userId }: { userId: string }) {
             return;
           }
           currentShop = tapResolution.shop;
-          navigateTab('orders');
-          setOrderFilter('active');
-          setLiveOrderAlert(null);
-          setOrderError('');
         } else {
           currentShop =
             loadedShops.find((s) => s.id === requestedShopId) ||
@@ -883,6 +911,15 @@ function Workspace({ userId }: { userId: string }) {
           if (!currentShop) {
             scopeRef.current = '';
             setActiveShopId('');
+            setShops(loadedShops);
+            setMemberships(refreshedMemberships);
+            setPrintingOrder(null);
+            setOrderFilter('active');
+            setCategories([]);
+            setItems([]);
+            setEvents([]);
+            setOrders([]);
+            setOrderStats(null);
           }
         }
 
@@ -890,15 +927,6 @@ function Workspace({ userId }: { userId: string }) {
           const isSameActiveShop =
             Boolean(previousShopId) && currentShop.id === previousShopId;
           const shouldHydrateDrafts = !(preserveDrafts && isSameActiveShop);
-          scopeRef.current = currentShop.id;
-          setActiveShopId(currentShop.id);
-          if (shouldHydrateDrafts) {
-            setEditShopName(currentShop.name);
-            setEditCity(currentShop.city || '');
-            setEditPhone(currentShop.phone_contact || '');
-            setEditWifiSsid(currentShop.wifi_info?.ssid || '');
-            setEditWifiPass(currentShop.wifi_info?.password || '');
-          }
 
           const shopMembership = mergedMemberships[currentShop.id];
           const canReadAnalytics = shopMembership
@@ -978,6 +1006,30 @@ function Workspace({ userId }: { userId: string }) {
 
           if (generation !== loadGeneration.current) return;
 
+          scopeRef.current = currentShop.id;
+          setActiveShopId(currentShop.id);
+          setShops(loadedShops);
+          setMemberships(refreshedMemberships);
+          if (!isSilent) {
+            setPrintingOrder(null);
+            if (isNotificationTap) {
+              navigateTab('orders');
+              setOrderFilter('active');
+              setLiveOrderAlert(null);
+              setOrderError('');
+            } else {
+              setOrderFilter('active');
+            }
+            setOrders([]);
+            setOrderStats(null);
+          }
+          if (shouldHydrateDrafts) {
+            setEditShopName(currentShop.name);
+            setEditCity(currentShop.city || '');
+            setEditPhone(currentShop.phone_contact || '');
+            setEditWifiSsid(currentShop.wifi_info?.ssid || '');
+            setEditWifiPass(currentShop.wifi_info?.password || '');
+          }
           setCategories(loadedCategories);
           setItems(loadedItems);
           setEvents(loadedEvents);

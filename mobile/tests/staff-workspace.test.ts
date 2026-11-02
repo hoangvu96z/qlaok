@@ -32,6 +32,7 @@ import {
 } from '../src/lib/staff-ordering.ts';
 import * as pushNotificationsModule from '../src/lib/push-notifications.ts';
 import * as ownerSessionModule from '../src/lib/owner-session.ts';
+import * as ownerShopSnapshotModule from '../src/lib/owner-shop-snapshot.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOBILE_ROOT = path.resolve(__dirname, '..');
@@ -39,7 +40,7 @@ const MOBILE_ROOT = path.resolve(__dirname, '..');
 /**
  * Transpiles a mobile `.tsx` module in memory using TypeScript and evaluates its
  * pure exported helpers against real staff-session / staff-api / staff-ordering /
- * push-notifications modules while stubbing React Native UI primitives.
+ * push-notifications / owner-shop-snapshot modules while stubbing React Native UI primitives.
  */
 function loadMobileTsxExports<T>(
   relativePathFromMobileRoot: string,
@@ -143,6 +144,12 @@ function loadMobileTsxExports<T>(
       id.endsWith('/owner-session.ts')
     ) {
       return ownerSessionModule;
+    }
+    if (
+      id.endsWith('/owner-shop-snapshot') ||
+      id.endsWith('/owner-shop-snapshot.ts')
+    ) {
+      return ownerShopSnapshotModule;
     }
     if (id.endsWith('/MobileI18nProvider')) {
       return {
@@ -2618,4 +2625,46 @@ test('P3-25 regression: CatalogTab keeps canonical server price authoritative an
   assert.equal(textInputs[0].props.value, '', 'Draft name must be cleared on success');
   assert.equal(textInputs[1].props.value, '', 'Draft price must be cleared on success');
   assert.equal(textInputs[2].props.value, '', 'Draft stock must be cleared on success');
+});
+
+test('P3-23: owner workspace commits shop scope and clears old data only after its snapshot and catalog load', () => {
+  const source = fs.readFileSync(path.join(MOBILE_ROOT, 'App.tsx'), 'utf8');
+  const loaderStart = source.indexOf('const loadShopsAndData = useCallback(');
+  assert.notEqual(loaderStart, -1, 'Workspace loader must exist');
+
+  const snapshotRequest = source.indexOf(
+    "fetchApi('/api/shops?member=1')",
+    loaderStart
+  );
+  const catalogRequest = source.indexOf('/api/catalog?shopId=', loaderStart);
+  const scopeCommit = source.indexOf(
+    'scopeRef.current = currentShop.id',
+    loaderStart
+  );
+  const activeShopCommit = source.indexOf(
+    'setActiveShopId(currentShop.id)',
+    loaderStart
+  );
+  const shopsCommit = source.indexOf('setShops(loadedShops)', catalogRequest);
+  const membershipsCommit = source.indexOf(
+    'setMemberships(refreshedMemberships)',
+    catalogRequest
+  );
+
+  assert.ok(snapshotRequest > loaderStart);
+  assert.ok(catalogRequest > snapshotRequest);
+  assert.ok(scopeCommit > catalogRequest);
+  assert.ok(activeShopCommit > catalogRequest);
+  assert.ok(shopsCommit > catalogRequest);
+  assert.ok(membershipsCommit > catalogRequest);
+  assert.ok(
+    !source.slice(loaderStart, snapshotRequest).includes('setActiveShopId(targetShopId)'),
+    'A failed membership snapshot must not switch the active shop'
+  );
+  assert.ok(
+    !source
+      .slice(loaderStart, snapshotRequest)
+      .includes('setCategories([])'),
+    'A failed membership snapshot must preserve the last loaded catalog'
+  );
 });

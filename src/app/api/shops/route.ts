@@ -128,11 +128,18 @@ export async function GET(req: Request) {
     let allowUnpublished = sessionUser?.role === 'admin';
     let allowedUnpublishedShopIds: string[] = [];
     if (!allowUnpublished && sessionUser) {
-      const data = await dbGetAllShopsAndProfile(sessionUser.sub);
-      allowedUnpublishedShopIds = data.shops.map((s) => s.id);
-      allowUnpublished = data.shops.some(
-        (s) => s.slug.trim().toLowerCase() === normalizedSlug
-      );
+      try {
+        const data = await dbGetAllShopsAndProfile(sessionUser.sub);
+        allowedUnpublishedShopIds = data.shops.map((s) => s.id);
+        allowUnpublished = data.shops.some(
+          (s) => s.slug.trim().toLowerCase() === normalizedSlug
+        );
+      } catch {
+        // Keep published storefronts available, but never authorize unpublished
+        // shop access from an incomplete owner-membership snapshot.
+        allowedUnpublishedShopIds = [];
+        allowUnpublished = false;
+      }
     }
 
     const view = (searchParams.get('view') ?? '').trim().toLowerCase();
@@ -202,7 +209,18 @@ export async function GET(req: Request) {
           { status: 403 }
         );
       }
-      const data = await dbGetAllShopsAndProfile(auth.user.sub);
+      let data;
+      try {
+        data = await dbGetAllShopsAndProfile(auth.user.sub);
+      } catch {
+        return NextResponse.json(
+          {
+            error: 'Không thể tải danh sách cửa hàng. Vui lòng thử lại.',
+            code: 'SHOP_SNAPSHOT_UNAVAILABLE',
+          },
+          { status: 503 }
+        );
+      }
       const scopedShops = data.shops.filter((s) => s.id === boundShopId);
       return NextResponse.json({
         ...data,
@@ -210,7 +228,18 @@ export async function GET(req: Request) {
         memberships: { [boundShopId]: staffCheck.membership },
       });
     }
-    const data = await dbGetAllShopsAndProfile(auth.user.sub);
+    let data;
+    try {
+      data = await dbGetAllShopsAndProfile(auth.user.sub);
+    } catch {
+      return NextResponse.json(
+        {
+          error: 'Không thể tải danh sách cửa hàng. Vui lòng thử lại.',
+          code: 'SHOP_SNAPSHOT_UNAVAILABLE',
+        },
+        { status: 503 }
+      );
+    }
     return NextResponse.json(data);
   }
 
@@ -245,7 +274,18 @@ export async function GET(req: Request) {
           { status: 403 }
         );
       }
-      const data = await dbGetAllShopsAndProfile(ownerId);
+      let data;
+      try {
+        data = await dbGetAllShopsAndProfile(ownerId);
+      } catch {
+        return NextResponse.json(
+          {
+            error: 'Không thể tải danh sách cửa hàng. Vui lòng thử lại.',
+            code: 'SHOP_SNAPSHOT_UNAVAILABLE',
+          },
+          { status: 503 }
+        );
+      }
       const scopedShops = data.shops.filter((s) => s.id === boundShopId);
       return NextResponse.json({
         ...data,
@@ -254,7 +294,18 @@ export async function GET(req: Request) {
       });
     }
 
-    const data = await dbGetAllShopsAndProfile(ownerId);
+    let data;
+    try {
+      data = await dbGetAllShopsAndProfile(ownerId);
+    } catch {
+      return NextResponse.json(
+        {
+          error: 'Không thể tải danh sách cửa hàng. Vui lòng thử lại.',
+          code: 'SHOP_SNAPSHOT_UNAVAILABLE',
+        },
+        { status: 503 }
+      );
+    }
     return NextResponse.json(data);
   }
 
