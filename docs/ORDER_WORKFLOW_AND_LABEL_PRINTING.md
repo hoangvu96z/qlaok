@@ -28,6 +28,7 @@ Both configuration modules are located in the Merchant Web Dashboard:
 - The server recalculates each order from catalog unit prices and verified option extras. `discount_amount` is the aggregate saved amount: `promo_discount_amount + manual_discount_amount`; line-level and order-level manual discounts are included in the manual component.
 - POS edits submit the manual component separately and set `apply_shop_promotions: false`. This preserves the promotion already recorded on an order, even after that promotion expires, without treating the promotion as a manual discount.
 - When an item edit omits an order-level discount, the server preserves the prior order-level manual amount, recalculates line-level discounts from the submitted lines once, and combines them. It does not reuse the old aggregate manual amount as a second order-level discount.
+- If a catalog item becomes unavailable after an unpaid order reserved it, staff may still edit that order while keeping the requested quantity at or below the existing reservation. Raising the quantity beyond what the order already holds is rejected; the server still recalculates the total and checks the submitted `expected_total` before saving.
 - Fulfillment changes remain independent from payment state. Editing or completing service must not mark an order paid.
 
 ---

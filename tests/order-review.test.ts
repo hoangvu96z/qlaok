@@ -2272,6 +2272,181 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       status: 'new',
       payment_status: 'paid',
     });
+
+    // 6. Authenticated POS edits preserve existing reservations after the item sells out.
+    const itemWithOneUnit = await db.query<{
+      stock_quantity: number;
+      sold_count: number;
+      is_available: boolean;
+    }>(
+      `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+    );
+    assert.deepEqual(itemWithOneUnit.rows[0], {
+      stock_quantity: 1,
+      sold_count: 4,
+      is_available: true,
+    });
+
+    const ownerPosItems = [
+      {
+        item_id: 'item-qa-pho',
+        name_vi: 'Phở bò QA',
+        quantity: 1,
+        unit_price: 55000,
+        extra_price: 0,
+        selected_choices: [
+          {
+            group_id: 'size',
+            id: 'size-regular',
+            label_vi: 'Tô thường',
+            extra_price: 0,
+          },
+        ],
+      },
+    ];
+    const ownerPosRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: ownerCookie,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          source: 'counter_pos',
+          table_label: 'Mang về',
+          payment_method: 'cash',
+          items: ownerPosItems,
+        }),
+      })
+    );
+    assert.equal(ownerPosRes.status, 201);
+    const ownerPosOrder = (await ownerPosRes.json()).order;
+    assert.equal(ownerPosOrder.source, 'counter_pos');
+    assert.equal(ownerPosOrder.payment_status, 'unpaid');
+    assert.equal(ownerPosOrder.status, 'new');
+    assert.equal(ownerPosOrder.total_amount, 55000);
+
+    const patchOwnerPosOrder = (
+      expectedTotal: number,
+      customerNote: string,
+      items = ownerPosItems
+    ) =>
+      patchOrdersRoute(
+        new Request('http://localhost/api/orders', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: ownerCookie,
+          },
+          body: JSON.stringify({
+            shop_id: 'shop-qa-storefront',
+            orderId: ownerPosOrder.id,
+            expected_total: expectedTotal,
+            customer_note: customerNote,
+            items,
+          }),
+        })
+      );
+    const assertSoldOutItemUnchanged = async () => {
+      const item = await db.query<{
+        stock_quantity: number;
+        sold_count: number;
+        is_available: boolean;
+      }>(
+        `SELECT stock_quantity, sold_count, is_available FROM items WHERE id = 'item-qa-pho'`
+      );
+      assert.deepEqual(item.rows[0], {
+        stock_quantity: 0,
+        sold_count: 5,
+        is_available: false,
+      });
+    };
+    await assertSoldOutItemUnchanged();
+
+    // The matching reserved quantity remains editable, while total price stays server-checked.
+    const patchSameQtyRes = await patchOwnerPosOrder(
+      55000,
+      'Ghi chú mới cho đơn POS'
+    );
+    assert.equal(patchSameQtyRes.status, 200);
+    const patchSameQtyJson = await patchSameQtyRes.json();
+    assert.equal(patchSameQtyJson.order.id, ownerPosOrder.id);
+    assert.equal(
+      patchSameQtyJson.order.customer_note,
+      'Ghi chú mới cho đơn POS'
+    );
+    assert.equal(patchSameQtyJson.order.total_amount, 55000);
+    assert.equal(patchSameQtyJson.order.status, 'new');
+    assert.equal(patchSameQtyJson.order.payment_status, 'unpaid');
+    assert.equal(patchSameQtyJson.order.items[0]?.quantity, 1);
+
+    await assertSoldOutItemUnchanged();
+
+    // 2) Stale expected_total is rejected with HTTP 409 / PRICE_CHANGED, with no additional order, note, or inventory mutation
+    const ordersCountBeforeStale = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    const stalePatchRes = await patchOwnerPosOrder(
+      99999,
+      'Ghi chú không được lưu do lệch expected_total'
+    );
+    assert.equal(stalePatchRes.status, 409);
+    const stalePatchJson = await stalePatchRes.json();
+    assert.equal(stalePatchJson.code, 'PRICE_CHANGED');
+
+    const ordersCountAfterStale = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    assert.equal(
+      ordersCountAfterStale.rows[0]?.count,
+      ordersCountBeforeStale.rows[0]?.count
+    );
+
+    const orderAfterStalePatch = await dbGetOrderById(ownerPosOrder.id);
+    assert.equal(
+      orderAfterStalePatch?.customer_note,
+      'Ghi chú mới cho đơn POS'
+    );
+    assert.equal(orderAfterStalePatch?.total_amount, 55000);
+    assert.equal(orderAfterStalePatch?.items[0]?.quantity, 1);
+    assert.equal(orderAfterStalePatch?.status, 'new');
+    assert.equal(orderAfterStalePatch?.payment_status, 'unpaid');
+
+    await assertSoldOutItemUnchanged();
+
+    // 3) Increasing the sold-out item quantity beyond existing reservation remains rejected with ITEM_UNAVAILABLE, with no inventory or order mutation
+    const ordersCountBeforeIncrease = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    const increaseSoldOutRes = await patchOwnerPosOrder(
+      110000,
+      'Tăng lên 2 tô khi đã hết hàng',
+      ownerPosItems.map((item) => ({ ...item, quantity: 2 }))
+    );
+    assert.equal(increaseSoldOutRes.status, 400);
+    const increaseSoldOutJson = await increaseSoldOutRes.json();
+    assert.equal(increaseSoldOutJson.code, 'ITEM_UNAVAILABLE');
+
+    const ordersCountAfterIncrease = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    assert.equal(
+      ordersCountAfterIncrease.rows[0]?.count,
+      ordersCountBeforeIncrease.rows[0]?.count
+    );
+
+    const orderAfterIncreaseAttempt = await dbGetOrderById(ownerPosOrder.id);
+    assert.equal(
+      orderAfterIncreaseAttempt?.customer_note,
+      'Ghi chú mới cho đơn POS'
+    );
+    assert.equal(orderAfterIncreaseAttempt?.total_amount, 55000);
+    assert.equal(orderAfterIncreaseAttempt?.items[0]?.quantity, 1);
+    assert.equal(orderAfterIncreaseAttempt?.status, 'new');
+    assert.equal(orderAfterIncreaseAttempt?.payment_status, 'unpaid');
+
+    await assertSoldOutItemUnchanged();
   } finally {
     if (previousSessionSecret === undefined) delete process.env.SESSION_SECRET;
     else process.env.SESSION_SECRET = previousSessionSecret;

@@ -17,10 +17,7 @@ import {
   quoteOrderPricing,
   wasOrderNewlyCreated,
 } from '@/lib/mpos-store';
-import {
-  getStoredManualDiscountAmount,
-  getStoredPromoDiscountAmount,
-} from '@/lib/order-discounts';
+import { getStoredManualDiscountAmount } from '@/lib/order-discounts';
 import {
   dbGetShopCatalog,
   dbGetShopById,
@@ -1243,26 +1240,6 @@ export async function PATCH(req: Request) {
       Array.from(requiredPerms)
     );
     if (auth.errorResponse) return auth.errorResponse;
-
-    if (body.expected_total !== undefined) {
-      const quote = Array.isArray(items) || discount_amount !== undefined
-        ? await quoteOrderPricing({
-            shop_id: existingOrder.shop_id, items: items || existingOrder.items,
-            discount_amount: discount_amount ?? getStoredManualDiscountAmount(existingOrder),
-            apply_shop_promotions:
-              apply_shop_promotions ??
-              Boolean(existingOrder.discount_code || existingOrder.promo_discount_amount),
-            preservedPromoDiscountAmount:
-              apply_shop_promotions === false
-                ? getStoredPromoDiscountAmount(existingOrder)
-                : undefined,
-            canApplyManualDiscount,
-          })
-        : { total_amount: existingOrder.total_amount };
-      if (!Number.isFinite(Number(body.expected_total)) || Number(body.expected_total) !== Number(quote.total_amount)) {
-        return NextResponse.json({ error: 'Tổng tiền đã thay đổi. Vui lòng tải lại đơn trước khi xác nhận.', code: 'PRICE_CHANGED', quote }, { status: 409 });
-      }
-    }
 
     if (status === 'cancelled' && existingOrder.payment_status === 'paid' && payment_status !== 'refunded') {
       return NextResponse.json({ error: 'Đơn đã thu tiền: hãy xác nhận hoàn tiền trước khi hủy.' }, { status: 409 });
