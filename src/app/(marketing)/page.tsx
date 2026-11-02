@@ -913,7 +913,7 @@ export default function MarketingLandingPage() {
                 <LanguageSwitcher
                   currentLocale={demoLocale}
                   onChange={setDemoLocale}
-                  compact={false}
+                  compact
                 />
               </div>
             </div>
