@@ -130,9 +130,15 @@ test("2. Shops API - List, Storefront Bundle & Patch (/api/shops)", async () => 
 });
 
 test("3. AI Translation API - 5 Languages (/api/ai/translate)", async () => {
+  const shop = await fetchJson("/api/shops?slug=pho-hoi-an");
+  assert.equal(shop.status, 200);
+  assert.ok(shop.data.shop?.id, "Demo shop must expose its id");
+
   const { status, data } = await fetchJson("/api/ai/translate", {
     method: "POST",
     body: JSON.stringify({
+      shopId: shop.data.shop.id,
+      purpose: "catalog",
       vertical: "fnb",
       categoryNameVi: "Cà phê Việt Nam",
       itemNameVi: "Bạc xỉu đá",
