@@ -3156,11 +3156,11 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     );
     assert.match(
       ordersPageSource,
-      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}&includeCatalog=0&includeStats=0/
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(shopId\)\}&includeCatalog=0&includeStats=0/
     );
     assert.match(
       ordersPageSource,
-      /\/api\/orders\?shopId=\$\{encodeURIComponent\(activeShop\.id\)\}`/
+      /\/api\/orders\?shopId=\$\{encodeURIComponent\(shopId\)\}`/
     );
   });
 });
