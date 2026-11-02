@@ -1561,7 +1561,9 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
     '@/lib/auth-session'
   );
   const { GET: shopsGet } = await import('@/app/api/shops/route');
-  const { GET: catalogGet } = await import('@/app/api/catalog/route');
+  const { DELETE: catalogDelete, GET: catalogGet } = await import(
+    '@/app/api/catalog/route'
+  );
 
   const shopId = 'test-shop-1';
   const unpublishedShopId = 'test-shop-unpublished';
@@ -1606,6 +1608,7 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
           enabled: true,
           paperSize: 'cup_sticker_50x30',
         },
+        serviceRequestNotificationRule: 'owner_only',
         internalDraftNote: 'PRIVATE_THEME_INTERNAL_SENTINEL',
       },
     },
@@ -1692,6 +1695,7 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
       updated_at: '2026-10-01T00:00:00.000Z',
     },
   ];
+  let failDeleteItemLookup = false;
 
   const mockSupabase = {
     from(table: string) {
@@ -1735,6 +1739,13 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
               error: found ? null : { code: 'PGRST116', message: 'Not found' },
             };
           },
+          then(
+            onFulfilled: (value: { data: unknown[]; error: null }) => unknown
+          ) {
+            return Promise.resolve({ data: matchShops(), error: null }).then(
+              onFulfilled
+            );
+          },
         };
         return chain;
       }
@@ -1759,13 +1770,37 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
 
       if (table === 'items') {
         let targetShop = '';
+        let targetItemId = '';
         const chain = {
           select() {
             return chain;
           },
           eq(col: string, val: string) {
             if (col === 'shop_id') targetShop = val;
+            if (col === 'id') targetItemId = val;
             return chain;
+          },
+          maybeSingle: async () => {
+            if (failDeleteItemLookup) {
+              return {
+                data: null,
+                error: {
+                  code: 'XX000',
+                  message: 'Synthetic item lookup failure',
+                },
+              };
+            }
+            const row =
+              targetItemId === 'item-proj-1'
+                ? rawItemWithInternalCols
+                : targetItemId === 'item-unpub-1'
+                  ? {
+                      ...rawItemWithInternalCols,
+                      id: 'item-unpub-1',
+                      shop_id: unpublishedShopId,
+                    }
+                  : null;
+            return { data: row, error: null };
           },
           order: async () => ({
             data:
@@ -1885,6 +1920,60 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
   setShopMembershipDbClientForTest(mockSupabase);
 
   try {
+    const anonymousDeleteRes = await catalogDelete(
+      new Request('http://localhost:3000/api/catalog?itemId=item-proj-1', {
+        method: 'DELETE',
+      })
+    );
+    assert.equal(anonymousDeleteRes.status, 401);
+
+    const outsiderExistingItemRes = await catalogDelete(
+      new Request('http://localhost:3000/api/catalog?itemId=item-proj-1', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${outsiderToken}` },
+      })
+    );
+    const outsiderMissingItemRes = await catalogDelete(
+      new Request('http://localhost:3000/api/catalog?itemId=missing-item', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${outsiderToken}` },
+      })
+    );
+    assert.equal(outsiderExistingItemRes.status, 404);
+    assert.equal(outsiderMissingItemRes.status, 404);
+
+    failDeleteItemLookup = true;
+    const failedLookupRes = await catalogDelete(
+      new Request('http://localhost:3000/api/catalog?itemId=item-proj-1', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      })
+    );
+    assert.equal(failedLookupRes.status, 500);
+    assert.equal((await failedLookupRes.json()).code, 'ITEM_LOOKUP_FAILED');
+    failDeleteItemLookup = false;
+
+    const directoryRes = await shopsGet(
+      new Request('http://localhost:3000/api/shops')
+    );
+    assert.equal(directoryRes.status, 200);
+    const directoryRawText = await directoryRes.clone().text();
+    const directoryBody = await directoryRes.json();
+    assert.equal(directoryBody.shops.length, 1);
+    const directoryShop = directoryBody.shops[0];
+    assert.equal(directoryShop.id, shopId);
+    assert.deepEqual(directoryShop.wifi_info, { ssid: 'QuanTestWifi' });
+    assert.deepEqual(directoryShop.theme_config, { primaryColor: '#10b981' });
+    assert.equal('owner_id' in directoryShop, false);
+    assert.equal('telegram_chat_id' in directoryShop, false);
+    assert.equal('opening_hours_confirmed' in directoryShop, false);
+    assert.equal(directoryRawText.includes('wifi-password'), false);
+    assert.equal(directoryRawText.includes('SECRET_TELEGRAM_CHAT_999'), false);
+    assert.equal(
+      directoryRawText.includes('PRIVATE_THEME_INTERNAL_SENTINEL'),
+      false
+    );
+
     // 1. Public & nonmember GET /api/shops?shopId=... returns toPublicStorefrontShop allowlist
     for (const headers of [
       undefined,
@@ -1909,6 +1998,12 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
       assert.equal('updated_at' in pubShopBody.shop, false);
       assert.equal('labelPrintConfig' in pubShopBody.shop.theme_config, false);
       assert.equal('internalDraftNote' in pubShopBody.shop.theme_config, false);
+      assert.equal('opening_hours_confirmed' in pubShopBody.shop, false);
+      assert.equal('labelPrintConfig' in pubShopBody.shop.theme_config, false);
+      assert.equal(
+        'serviceRequestNotificationRule' in pubShopBody.shop.theme_config,
+        false
+      );
       assert.equal(pubShopBody.membership, undefined);
       assert.equal(rawShopText.includes('SECRET_TELEGRAM_CHAT_999'), false);
       assert.equal(rawShopText.includes(ownerId), false);
@@ -1990,6 +2085,12 @@ test('Public shop and catalog GET responses enforce allowlist projections for an
       [anonCatalogBody, anonCatalogRawText],
       [outsiderCatalogBody, JSON.stringify(outsiderCatalogBody)],
     ] as const) {
+      assert.equal('opening_hours_confirmed' in body.shop, false);
+      assert.equal('labelPrintConfig' in body.shop.theme_config, false);
+      assert.equal(
+        'serviceRequestNotificationRule' in body.shop.theme_config,
+        false
+      );
       assert.equal(body.items.length, 1);
       const item = body.items[0];
       assert.equal(item.id, 'item-proj-1');

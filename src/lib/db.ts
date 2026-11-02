@@ -437,7 +437,9 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
     if (ownerId) {
       const ownedShops = SEED_SHOPS.filter((s) => s.owner_id === ownerId);
       const ownerProfile = ownerId === SEED_PROFILE.id ? SEED_PROFILE : null;
-      const userMemberships = await dbGetUserShopMemberships(ownerId);
+      const userMemberships = await dbGetUserShopMemberships(ownerId, {
+        includeInactive: true,
+      });
       const shopMap = new Map<string, Shop>();
       const membershipsMap: Record<string, ShopMembership> = {};
       const nowIso = new Date().toISOString();
@@ -445,16 +447,22 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
       for (const raw of ownedShops) {
         const hydrated = hydrateShopWithSeedDefaults(raw);
         shopMap.set(hydrated.id, hydrated);
-        membershipsMap[hydrated.id] = {
-          id: `mem-owner-${hydrated.id}-${ownerId}`,
-          shop_id: hydrated.id,
-          user_id: ownerId,
-          role: 'owner',
-          permissions: [...ALL_SHOP_PERMISSIONS],
-          is_active: true,
-          created_at: nowIso,
-          updated_at: nowIso,
-        };
+        const explicitOwnerMembership = userMemberships.find(
+          (membership) => membership.shop_id === hydrated.id
+        );
+        membershipsMap[hydrated.id] = explicitOwnerMembership &&
+          !explicitOwnerMembership.is_active
+          ? explicitOwnerMembership
+          : {
+              id: `mem-owner-${hydrated.id}-${ownerId}`,
+              shop_id: hydrated.id,
+              user_id: ownerId,
+              role: 'owner',
+              permissions: [...ALL_SHOP_PERMISSIONS],
+              is_active: true,
+              created_at: nowIso,
+              updated_at: nowIso,
+            };
       }
 
       for (const mem of userMemberships) {
@@ -531,7 +539,7 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
         .eq('owner_id', ownerId)
         .order('created_at', { ascending: true }),
       sb.from('profiles').select('*').eq('id', ownerId).maybeSingle(),
-      dbGetUserShopMemberships(ownerId),
+      dbGetUserShopMemberships(ownerId, { includeInactive: true }),
     ]);
 
     if (shopsErr) {
@@ -545,16 +553,22 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
     for (const raw of (ownedShops || []) as Shop[]) {
       const hydrated = hydrateShopWithSeedDefaults(raw);
       shopMap.set(hydrated.id, hydrated);
-      membershipsMap[hydrated.id] = {
-        id: `mem-owner-${hydrated.id}-${ownerId}`,
-        shop_id: hydrated.id,
-        user_id: ownerId,
-        role: 'owner',
-        permissions: [...ALL_SHOP_PERMISSIONS],
-        is_active: true,
-        created_at: nowIso,
-        updated_at: nowIso,
-      };
+      const explicitOwnerMembership = userMemberships.find(
+        (membership) => membership.shop_id === hydrated.id
+      );
+      membershipsMap[hydrated.id] = explicitOwnerMembership &&
+        !explicitOwnerMembership.is_active
+        ? explicitOwnerMembership
+        : {
+            id: `mem-owner-${hydrated.id}-${ownerId}`,
+            shop_id: hydrated.id,
+            user_id: ownerId,
+            role: 'owner',
+            permissions: [...ALL_SHOP_PERMISSIONS],
+            is_active: true,
+            created_at: nowIso,
+            updated_at: nowIso,
+          };
     }
 
     const extraShopIds = userMemberships

@@ -182,6 +182,7 @@ export async function PATCH(req: Request) {
   try {
     const body = await req.json();
     let shopId = String(body?.shop_id || body?.shopId || '').trim();
+    const shopIdWasProvided = Boolean(shopId);
     const tableId = String(
       body?.id || body?.table_id || body?.tableId || ''
     ).trim();
@@ -209,7 +210,15 @@ export async function PATCH(req: Request) {
     }
 
     const auth = await requireShopOwnerOrAdmin(req, shopId);
-    if (auth.errorResponse) return auth.errorResponse;
+    if (auth.errorResponse) {
+      if (!shopIdWasProvided && auth.errorResponse.status === 403) {
+        return NextResponse.json(
+          { error: 'SHOP_TABLE_NOT_FOUND: Không tìm thấy bàn.' },
+          { status: 404 }
+        );
+      }
+      return auth.errorResponse;
+    }
 
     const resolveCoordinate = (value: unknown): number | null | undefined => {
       if (value === undefined) return undefined;
@@ -257,6 +266,15 @@ export async function PATCH(req: Request) {
 
     return NextResponse.json({ table: withTableQrSignature(table) });
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes('FORBIDDEN_CROSS_SHOP_TABLE')
+    ) {
+      return NextResponse.json(
+        { error: 'SHOP_TABLE_NOT_FOUND: Không tìm thấy bàn.' },
+        { status: 404 }
+      );
+    }
     return tableErrorResponse(error);
   }
 }

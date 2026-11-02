@@ -9,7 +9,8 @@ import {
   ArrowRight,
   Store,
 } from 'lucide-react';
-import { BusinessVertical, Shop } from '@/types/qlaok';
+import { BusinessVertical } from '@/types/qlaok';
+import type { PublicShopDirectoryEntry } from '@/lib/public-catalog';
 import { checkShopOpenStatus, LOCALE_META } from '@/lib/i18n-helper';
 import { VIETNAM_PROVINCES_34 } from '@/lib/vietnam-provinces';
 import { FlagIcon } from '@/components/ui/FlagIcon';
@@ -21,7 +22,7 @@ import {
 
 export default function ExploreDirectoryPage() {
   const { t, tx } = useAppI18n();
-  const [shops, setShops] = useState<Shop[]>([]);
+  const [shops, setShops] = useState<PublicShopDirectoryEntry[]>([]);
   const [selectedVertical, setSelectedVertical] = useState<
     BusinessVertical | 'all'
   >('all');

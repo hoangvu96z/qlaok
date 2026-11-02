@@ -8,7 +8,10 @@ import {
   dbUpsertItem,
   getSupabaseDbClient,
 } from '@/lib/db';
-import { requireShopPermission } from '@/lib/server-auth';
+import {
+  requireAuthenticatedUser,
+  requireShopPermission,
+} from '@/lib/server-auth';
 import {
   buildInventoryOnlyItemPatch,
   getCatalogItemUpdatePermissionOptions,
@@ -22,10 +25,31 @@ import {
 import {
   toPublicCatalogCategory,
   toPublicCatalogItem,
+  toPublicStorefrontShop,
 } from '@/lib/public-catalog';
 
 const MAX_BULK_CATALOG_ITEMS = 2000;
 const BULK_SELECT_CHUNK_SIZE = 1000;
+
+async function requireCatalogDeletePermission(
+  req: Request,
+  shopId: string,
+  missingResourceMessage: string
+): Promise<NextResponse | null> {
+  const membership = await requireShopPermission(req, shopId, []);
+  if (membership.errorResponse) {
+    return membership.errorResponse.status === 403
+      ? NextResponse.json({ error: missingResourceMessage }, { status: 404 })
+      : membership.errorResponse;
+  }
+
+  const permission = await requireShopPermission(
+    req,
+    shopId,
+    'catalog.manage'
+  );
+  return permission.errorResponse ?? null;
+}
 
 function isEchoedCatalogItemStockSnapshot(
   incoming: Record<string, unknown>,
@@ -215,32 +239,8 @@ export async function GET(req: Request) {
   const isMemberOrAdmin =
     !auth.errorResponse && Boolean(auth.membership?.is_active);
 
-  const publicShop = {
-    id: shop.id,
-    slug: shop.slug,
-    name: shop.name,
-    vertical: shop.vertical,
-    tagline_i18n: shop.tagline_i18n,
-    description_i18n: shop.description_i18n,
-    logo_url: shop.logo_url,
-    cover_urls: shop.cover_urls,
-    address: shop.address,
-    city: shop.city,
-    google_maps_url: shop.google_maps_url,
-    google_review_url: shop.google_review_url,
-    phone_contact: shop.phone_contact,
-    zalo_phone: shop.zalo_phone,
-    wifi_info: shop.wifi_info,
-    opening_hours: shop.opening_hours,
-    opening_hours_confirmed: shop.opening_hours_confirmed,
-    supported_langs: shop.supported_langs,
-    currency: shop.currency,
-    theme_config: shop.theme_config,
-    is_published: shop.is_published ?? true,
-  };
-
   return NextResponse.json({
-    shop: publicShop,
+    shop: isMemberOrAdmin ? shop : toPublicStorefrontShop(shop),
     categories: isMemberOrAdmin
       ? categories
       : categories.map(toPublicCatalogCategory),
@@ -289,6 +289,16 @@ export async function POST(req: Request) {
           );
         }
         existing = (existingRow as Record<string, unknown> | null) || null;
+        if (existing && existing.shop_id !== targetShopId) {
+          return NextResponse.json(
+            {
+              success: false,
+              code: 'ITEM_NOT_IN_SHOP',
+              error: 'Item does not belong to target shop',
+            },
+            { status: 400 }
+          );
+        }
       }
 
       const permissionOptions = getCatalogItemUpdatePermissionOptions(
@@ -1672,25 +1682,33 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const itemId = searchParams.get('itemId');
   const categoryId = searchParams.get('categoryId');
+  const authentication = await requireAuthenticatedUser(req);
+  if (authentication.errorResponse) return authentication.errorResponse;
   const sb = getSupabaseDbClient();
 
   if (itemId) {
-    const { data: item } = await sb
+    const { data: item, error } = await sb
       .from('items')
       .select('id, shop_id')
       .eq('id', itemId)
       .maybeSingle();
+    if (error) {
+      return NextResponse.json(
+        { deleted: false, error: 'Could not look up item', code: 'ITEM_LOOKUP_FAILED' },
+        { status: 500 }
+      );
+    }
 
     if (!item) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 });
     }
 
-    const auth = await requireShopPermission(
+    const permissionError = await requireCatalogDeletePermission(
       req,
       item.shop_id,
-      'catalog.manage'
+      'Item not found'
     );
-    if (auth.errorResponse) return auth.errorResponse;
+    if (permissionError) return permissionError;
 
     let ok = false;
     try {
@@ -1719,11 +1737,17 @@ export async function DELETE(req: Request) {
   }
 
   if (categoryId) {
-    const { data: category } = await sb
+    const { data: category, error } = await sb
       .from('categories')
       .select('id, shop_id')
       .eq('id', categoryId)
       .maybeSingle();
+    if (error) {
+      return NextResponse.json(
+        { deleted: false, error: 'Could not look up category', code: 'CATEGORY_LOOKUP_FAILED' },
+        { status: 500 }
+      );
+    }
 
     if (!category) {
       return NextResponse.json(
@@ -1732,12 +1756,12 @@ export async function DELETE(req: Request) {
       );
     }
 
-    const auth = await requireShopPermission(
+    const permissionError = await requireCatalogDeletePermission(
       req,
       category.shop_id,
-      'catalog.manage'
+      'Category not found'
     );
-    if (auth.errorResponse) return auth.errorResponse;
+    if (permissionError) return permissionError;
 
     let ok = false;
     try {

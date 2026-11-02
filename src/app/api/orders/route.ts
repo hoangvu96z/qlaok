@@ -29,9 +29,11 @@ import {
 } from '@/lib/guest-order-idempotency';
 import { sendNewGuestOrderPushNotifications } from '@/lib/push-notifications';
 import { dbGetShopServiceRequests } from '@/lib/service-requests';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
 import {
   getRequestShopMembership,
   recordOrderAuditLog,
+  requireAuthenticatedUser,
   requireShopPermission,
 } from '@/lib/server-auth';
 import { hasBusinessStateChanged } from '@/lib/audit-replay';
@@ -296,9 +298,10 @@ export async function GET(req: Request) {
       try {
         const catalog = await dbGetShopCatalog(shopId);
         catalogItems = catalog.items;
-      } catch {
+      } catch (error) {
+        if (isSupabaseConfigured()) throw error;
         const { SEED_ITEMS } = await import('@/lib/seed-data');
-        catalogItems = SEED_ITEMS.filter((i) => i.shop_id === shopId);
+        catalogItems = SEED_ITEMS.filter((item) => item.shop_id === shopId);
       }
     }
 
@@ -476,6 +479,8 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+      const authentication = await requireAuthenticatedUser(req);
+      if (authentication.errorResponse) return authentication.errorResponse;
       const existing = await dbGetOrderById(resolvedOrderId);
       if (!existing) {
         return NextResponse.json(
@@ -490,6 +495,20 @@ export async function POST(req: Request) {
           : ticketType === 'provisional'
             ? 'orders.print_provisional'
             : 'orders.view';
+
+      const shopMembership = await requireShopPermission(
+        req,
+        existing.shop_id,
+        []
+      );
+      if (shopMembership.errorResponse) {
+        return shopMembership.errorResponse.status === 403
+          ? NextResponse.json(
+              { error: 'Không tìm thấy đơn hàng' },
+              { status: 404 }
+            )
+          : shopMembership.errorResponse;
+      }
 
       const auth = await requireShopPermission(
         req,

@@ -54,51 +54,15 @@ import { escapePostgrestIlikePattern } from '@/lib/owner-invitations';
 import {
   toPublicCatalogCategory,
   toPublicCatalogItem,
+  toPublicShopDirectoryEntry,
+  toPublicStorefrontShop,
 } from '@/lib/public-catalog';
-import type { Shop, ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
+import type { ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
 const INVITABLE_MEMBER_ROLES: ShopRole[] = ['cashier', 'staff'];
 
 /** Keep the public storefront response limited to fields used by customers. */
-function toPublicStorefrontShop(shop: Shop) {
-  const theme = shop.theme_config;
-  return {
-    id: shop.id,
-    slug: shop.slug,
-    name: shop.name,
-    vertical: shop.vertical,
-    tagline_i18n: shop.tagline_i18n,
-    description_i18n: shop.description_i18n,
-    logo_url: shop.logo_url,
-    cover_urls: shop.cover_urls,
-    address: shop.address,
-    city: shop.city,
-    google_maps_url: shop.google_maps_url,
-    google_review_url: shop.google_review_url,
-    phone_contact: shop.phone_contact,
-    zalo_phone: shop.zalo_phone,
-    wifi_info: shop.wifi_info,
-    opening_hours: shop.opening_hours,
-    supported_langs: shop.supported_langs,
-    currency: shop.currency,
-    theme_config: {
-      primaryColor: theme?.primaryColor,
-      layout: theme?.layout,
-      fontStyle: theme?.fontStyle,
-      backgroundStyle: theme?.backgroundStyle,
-      backgroundImageUrl: theme?.backgroundImageUrl,
-      backgroundOverlayOpacity: theme?.backgroundOverlayOpacity,
-      promoBanner: theme?.promoBanner,
-      flashSale: theme?.flashSale,
-      welcomePopup: theme?.welcomePopup,
-      paymentConfig: theme?.paymentConfig,
-      paymentQr: theme?.paymentQr,
-      orderWorkflow: theme?.orderWorkflow,
-    },
-  };
-}
-
 async function getShopForMemberAction(
   shopId: string
 ): Promise<Awaited<ReturnType<typeof dbGetShopById>>> {
@@ -301,7 +265,9 @@ export async function GET(req: Request) {
 
   // Public directory (/explore): only return published shops
   return NextResponse.json({
-    shops: data.shops.filter((s) => s.is_published !== false),
+    shops: data.shops
+      .filter((s) => s.is_published !== false)
+      .map(toPublicShopDirectoryEntry),
     source: data.source,
   });
 }

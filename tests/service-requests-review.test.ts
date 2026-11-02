@@ -2803,7 +2803,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
           headers: { Authorization: `Bearer ${token}` },
         })
       );
-      assert.equal(defaultRes.status, 200);
+      assert.equal(defaultRes.status, 200, await defaultRes.clone().text());
       const defaultData = await defaultRes.json();
       assert.deepEqual(
         Object.keys(defaultData).sort(),
@@ -2857,10 +2857,17 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     // 3. Prove helper execution: called by default, skipped when disabled (both together and independently)
     const queriedTables: string[] = [];
     const calledRpcs: string[] = [];
+    let failingCatalogTable: string | null = null;
     const mockDbClient = {
       from(table: string) {
         queriedTables.push(table);
         const makeResult = () => {
+          if (table === failingCatalogTable) {
+            return {
+              data: null,
+              error: { code: 'XX000', message: 'Synthetic catalog read failure' },
+            };
+          }
           if (table === 'shops') {
             return {
               data: [
@@ -2868,6 +2875,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
                   id: SHOP_A,
                   owner_id: 'owner-demo-001',
                   name: 'Phở Hội An',
+                  is_published: true,
                 },
               ],
               error: null,
@@ -2912,6 +2920,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
                 id: SHOP_A,
                 owner_id: 'owner-demo-001',
                 name: 'Phở Hội An',
+                is_published: true,
               },
               error: null,
             };
@@ -2967,6 +2976,60 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     setSupabaseDbClientForTests(mockDbClient);
     setMposDbClientForTests(mockDbClient, true);
     try {
+      const previousSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const previousPublishableKey =
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+      process.env.NEXT_PUBLIC_SUPABASE_URL =
+        'https://qlaok-review.supabase.co';
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'review-publishable-key';
+      setShopMembershipDbClientForTest({
+        from(table: string) {
+          const query: Record<string, unknown> = {};
+          query.select = () => query;
+          query.eq = () => query;
+          query.maybeSingle = () =>
+            Promise.resolve({
+              data:
+                table === 'shops'
+                  ? { id: SHOP_A, owner_id: 'owner-demo-001' }
+                  : null,
+              error: null,
+            });
+          query.then = (resolve: (value: unknown) => unknown) =>
+            Promise.resolve({ data: [], error: null }).then(resolve);
+          return query;
+        },
+      } as never);
+      try {
+        failingCatalogTable = 'items';
+        const catalogReadFailure = await getOrdersRoute(
+          new Request(`http://localhost/api/orders?shopId=${SHOP_A}`, {
+            headers: { Authorization: `Bearer ${OWNER_A_TOKEN}` },
+          })
+        );
+        assert.equal(
+          catalogReadFailure.status,
+          500,
+          await catalogReadFailure.clone().text()
+        );
+        const catalogReadFailureBody = await catalogReadFailure.json();
+        assert.equal(Array.isArray(catalogReadFailureBody.items), false);
+      } finally {
+        failingCatalogTable = null;
+        setShopMembershipDbClientForTest(null);
+        if (previousSupabaseUrl === undefined) {
+          delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+        } else {
+          process.env.NEXT_PUBLIC_SUPABASE_URL = previousSupabaseUrl;
+        }
+        if (previousPublishableKey === undefined) {
+          delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+        } else {
+          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY =
+            previousPublishableKey;
+        }
+      }
+
       // 3a. Default call invokes both dbGetShopCatalog and dbComputeShopRevenueAndInventoryStats
       queriedTables.length = 0;
       calledRpcs.length = 0;

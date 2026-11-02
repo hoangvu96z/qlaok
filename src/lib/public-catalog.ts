@@ -1,4 +1,81 @@
-import type { CatalogItem, Category } from '@/types/qlaok';
+import type { CatalogItem, Category, Shop } from '@/types/qlaok';
+
+export type PublicShopDirectoryEntry = Pick<
+  Shop,
+  | 'id'
+  | 'slug'
+  | 'name'
+  | 'vertical'
+  | 'tagline_i18n'
+  | 'cover_urls'
+  | 'address'
+  | 'city'
+  | 'opening_hours'
+  | 'supported_langs'
+> & {
+  wifi_info: Pick<Shop['wifi_info'], 'ssid'> | null;
+  theme_config: Pick<Shop['theme_config'], 'primaryColor'>;
+};
+
+/** Minimal fields used by /explore. Never return owner, Wi-Fi password, or settings. */
+export function toPublicShopDirectoryEntry(
+  shop: Shop
+): PublicShopDirectoryEntry {
+  return {
+    id: shop.id,
+    slug: shop.slug,
+    name: shop.name,
+    vertical: shop.vertical,
+    tagline_i18n: shop.tagline_i18n,
+    cover_urls: shop.cover_urls,
+    address: shop.address,
+    city: shop.city,
+    opening_hours: shop.opening_hours,
+    supported_langs: shop.supported_langs,
+    wifi_info: shop.wifi_info?.ssid ? { ssid: shop.wifi_info.ssid } : null,
+    theme_config: { primaryColor: shop.theme_config?.primaryColor || '#10b981' },
+  };
+}
+
+/** Explicit customer-facing shop fields used by a single storefront. */
+export function toPublicStorefrontShop(shop: Shop) {
+  const theme = shop.theme_config;
+  return {
+    id: shop.id,
+    slug: shop.slug,
+    name: shop.name,
+    vertical: shop.vertical,
+    tagline_i18n: shop.tagline_i18n,
+    description_i18n: shop.description_i18n,
+    logo_url: shop.logo_url,
+    cover_urls: shop.cover_urls,
+    address: shop.address,
+    city: shop.city,
+    google_maps_url: shop.google_maps_url,
+    google_review_url: shop.google_review_url,
+    phone_contact: shop.phone_contact,
+    zalo_phone: shop.zalo_phone,
+    wifi_info: shop.wifi_info,
+    opening_hours: shop.opening_hours,
+    supported_langs: shop.supported_langs,
+    currency: shop.currency,
+    theme_config: {
+      primaryColor: theme?.primaryColor,
+      layout: theme?.layout,
+      fontStyle: theme?.fontStyle,
+      backgroundStyle: theme?.backgroundStyle,
+      backgroundImageUrl: theme?.backgroundImageUrl,
+      backgroundOverlayOpacity: theme?.backgroundOverlayOpacity,
+      promoBanner: theme?.promoBanner,
+      flashSale: theme?.flashSale,
+      welcomePopup: theme?.welcomePopup,
+      paymentConfig: theme?.paymentConfig,
+      paymentQr: theme?.paymentQr,
+      orderWorkflow: theme?.orderWorkflow,
+    },
+    is_published: shop.is_published ?? true,
+  };
+}
 
 export type PublicCatalogItem = Pick<
   CatalogItem,

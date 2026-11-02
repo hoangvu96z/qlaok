@@ -624,10 +624,11 @@ export async function dbGetShopMemberships(
   return Array.from(byUser.values());
 }
 
-export async function dbGetUserShopMemberships(
+export async function dbGetShopMembershipForUser(
+  shopId: string,
   userId: string
-): Promise<ShopMembership[]> {
-  if (!userId) return [];
+): Promise<ShopMembership | null> {
+  if (!shopId || !userId) return null;
 
   if (isShopMembershipDbAuthoritative()) {
     try {
@@ -635,28 +636,70 @@ export async function dbGetUserShopMemberships(
       const { data, error } = await sb
         .from('shop_memberships')
         .select('*')
-        .eq('user_id', userId)
-        .eq('is_active', true);
+        .eq('shop_id', shopId)
+        .eq('user_id', userId);
+      if (error) {
+        throw new Error('SHOP_MEMBERSHIP_QUERY_FAILED');
+      }
+      const row = Array.isArray(data) ? data[0] : null;
+      return row && typeof row === 'object'
+        ? normalizeMembershipRow(row as Record<string, unknown>)
+        : null;
+    } catch {
+      throw new Error('SHOP_MEMBERSHIP_QUERY_FAILED');
+    }
+  }
+
+  return (
+    readLocalMemberships().find(
+      (membership) =>
+        membership.shop_id === shopId && membership.user_id === userId
+    ) || null
+  );
+}
+
+export async function dbGetUserShopMemberships(
+  userId: string,
+  options?: { includeInactive?: boolean }
+): Promise<ShopMembership[]> {
+  if (!userId) return [];
+  const includeInactive = options?.includeInactive === true;
+
+  if (isShopMembershipDbAuthoritative()) {
+    try {
+      const sb = getMembershipDbClient();
+      let query = sb
+        .from('shop_memberships')
+        .select('*')
+        .eq('user_id', userId);
+      if (!includeInactive) query = query.eq('is_active', true);
+      const { data, error } = await query;
       if (error || !Array.isArray(data)) {
+        if (includeInactive) {
+          throw new Error('SHOP_MEMBERSHIP_QUERY_FAILED');
+        }
         return [];
       }
       const byShop = new Map<string, ShopMembership>();
       for (const row of data) {
         if (!row || typeof row !== 'object' || !('shop_id' in row)) continue;
         const norm = normalizeMembershipRow(row as Record<string, unknown>);
-        if (norm.is_active) {
+        if (norm.is_active || includeInactive) {
           byShop.set(norm.shop_id, norm);
         }
       }
       return Array.from(byShop.values());
     } catch {
+      if (includeInactive) {
+        throw new Error('SHOP_MEMBERSHIP_QUERY_FAILED');
+      }
       // Fail closed when Supabase is configured
       return [];
     }
   }
 
   const local = readLocalMemberships().filter(
-    (m) => m.user_id === userId && m.is_active
+    (m) => m.user_id === userId && (m.is_active || includeInactive)
   );
   const byShop = new Map<string, ShopMembership>();
   for (const m of local) {
@@ -925,6 +968,11 @@ export async function resolveUserShopMembership(params: {
   }
 
   if (!isStaffAccount && ownerId && ownerId === userId) {
+    const explicitMembership = await dbGetShopMembershipForUser(
+      shopId,
+      userId
+    );
+    if (explicitMembership && !explicitMembership.is_active) return null;
     return {
       id: `mem-owner-${shopId}-${userId}`,
       shop_id: shopId,

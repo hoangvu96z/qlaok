@@ -18,6 +18,7 @@ import {
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   dbGetShopMemberships,
+  dbGetShopMembershipForUser,
   getMembershipDbClient,
   hasShopPermission,
   isShopMembershipDbAuthoritative,
@@ -935,21 +936,23 @@ export async function requireShopOwnerOrAdmin(
     };
   }
 
-  const explicitMemberships = await dbGetShopMemberships(shopId);
-  const explicitRow = explicitMemberships.find((m) => m.user_id === user.sub);
-  if (explicitRow && !explicitRow.is_active) {
-    return {
-      errorResponse: NextResponse.json(
-        {
-          error:
-            'Tài khoản chủ quán hiện đang bị vô hiệu hóa tại cửa hàng này.',
-        },
-        { status: 403 }
-      ),
-    };
-  }
-
-  if (shop.owner_id !== user.sub) {
+  if (shop.owner_id === user.sub) {
+    const explicitMembership = await dbGetShopMembershipForUser(
+      shopId,
+      user.sub
+    );
+    if (explicitMembership && !explicitMembership.is_active) {
+      return {
+        errorResponse: NextResponse.json(
+          {
+            error:
+              'Tài khoản chủ quán hiện đang bị vô hiệu hóa tại cửa hàng này.',
+          },
+          { status: 403 }
+        ),
+      };
+    }
+  } else {
     const membership = await resolveUserShopMembership({
       userId: user.sub,
       shopId,

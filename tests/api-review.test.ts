@@ -15,6 +15,7 @@ const { dbUpsertShopMembership } = await import('@/lib/shop-permissions');
 const { GET: analyticsGet } = await import('@/app/api/analytics/track/route');
 const { GET: shopsGet, POST: shopsPost, PATCH: shopsPatch } = await import('@/app/api/shops/route');
 const { POST: ordersPost, PATCH: ordersPatch, GET: ordersGet } = await import('@/app/api/orders/route');
+const { DELETE: catalogDelete } = await import('@/app/api/catalog/route');
 const { GET: tablesGet, POST: tablesPost, PATCH: tablesPatch, DELETE: tablesDelete } = await import('@/app/api/tables/route');
 const { dbCreateOrder } = await import('@/lib/mpos-store');
 const { getGuestOrderIdempotencyKey } = await import('@/lib/guest-order-idempotency');
@@ -84,6 +85,25 @@ test('unknown ticket types are rejected before a print counter mutation', async 
   assert.equal(response.status, 400);
 });
 
+test('record_print authenticates before looking up an order ID', async () => {
+  for (const orderId of ['ord-seed-101', 'missing-order-id']) {
+    const response = await ordersPost(request('/api/orders', null, {
+      action: 'record_print', orderId, ticketType: 'label',
+    }, 'POST'));
+    assert.equal(response.status, 401);
+  }
+});
+
+test('catalog deletion authenticates before looking up item or category IDs', async () => {
+  for (const query of ['itemId=item-fnb-1', 'categoryId=cat-fnb-1']) {
+    const response = await catalogDelete(new Request(
+      `http://localhost/api/catalog?${query}`,
+      { method: 'DELETE' }
+    ));
+    assert.equal(response.status, 401);
+  }
+});
+
 test('receipt text escapes user-controlled markup and quoted attributes', () => {
   assert.equal(escapeHtml('<img src=x onerror="alert(1)">'), '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
   assert.equal(escapeHtml("A&B's"), 'A&amp;B&#39;s');
@@ -113,7 +133,7 @@ test('/api/tables enforces owner-only mutations, archive-only DELETE guard, and 
   const deleteRes = await tablesDelete();
   assert.equal(deleteRes.status, 405);
 
-  // Owner can create a table, duplicate active name returns 409, cross-shop PATCH returns 403
+  // Owner can create a table, duplicate active name returns 409, and a foreign table ID is hidden as 404
   const ownerCreateRes = await tablesPost(request('/api/tables', ownerToken, {
     shop_id: 'shop-fnb-001', name: 'Bàn Sân Thượng 1', table_code: 'ROOF-1', section: 'Sân thượng', capacity: 6,
   }, 'POST'));
@@ -130,7 +150,7 @@ test('/api/tables enforces owner-only mutations, archive-only DELETE guard, and 
   const crossShopPatchRes = await tablesPatch(request('/api/tables', ownerToken, {
     id: createdTable.id, shop_id: 'shop-service-002', name: 'Hijack Shop',
   }, 'PATCH'));
-  assert.equal(crossShopPatchRes.status, 403);
+  assert.equal(crossShopPatchRes.status, 404);
 });
 
 test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATCH preservation, and name-reuse settlement isolation', async () => {

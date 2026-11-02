@@ -340,7 +340,7 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
   assert.equal(capturedRequestBody.clientId, '312345678901234567@qlaok');
 
   assert.equal(session.user.id, ownerUuid);
-  assert.equal(session.user.plan, 'pro');
+  assert.equal(session.user.plan, 'basic', 'legacy pro is normalized to the canonical Basic tier');
   assert.equal(session.accessToken, 'qlaok-owner-hmac-payload.signature');
   assert.equal(session.postgrestToken, postgrestJwt);
 
@@ -685,6 +685,37 @@ test('Owner session and Staff session remain strictly isolated in storage, valid
   assert.equal(staffStillPresent.accessToken, 'staff-bearer-token.sig');
 
   await clearStaffSession(storage);
+});
+
+test('validateOwnerSession preserves Basic plan and normalizes legacy pro', () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ownerUuid = 'd6f4e9ab-0a25-4848-a674-3af2ab11bf1c';
+  const base = {
+    accessToken: 'owner-basic-token.sig',
+    expiresAt: nowSec + 3600,
+    user: {
+      id: ownerUuid,
+      email: 'basic@qlaok.vn',
+      full_name: 'Basic Owner',
+      role: 'owner',
+    },
+    isAdmin: false,
+  };
+
+  assert.equal(
+    validateOwnerSession(
+      { ...base, user: { ...base.user, plan: 'basic' } },
+      nowSec
+    )?.user.plan,
+    'basic'
+  );
+  assert.equal(
+    validateOwnerSession(
+      { ...base, user: { ...base.user, plan: 'pro' } },
+      nowSec
+    )?.user.plan,
+    'basic'
+  );
 });
 
 test('owner createExpoSecureStoreAdapter persists, loads, and clears native owner session with SecureStore and rejects web platform', async () => {

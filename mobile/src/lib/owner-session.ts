@@ -61,7 +61,7 @@ export interface MobileOwnerProfile {
   email: string;
   full_name: string;
   phone?: string;
-  plan: 'free' | 'pro' | 'premium';
+  plan: 'free' | 'basic' | 'premium';
   plan_expires_at?: string | null;
   role: 'owner' | 'admin';
   is_admin?: boolean;
@@ -1037,12 +1037,14 @@ export function validateOwnerSession(
     Boolean(candidate.isAdmin) ||
     Boolean(rawUser.is_admin) ||
     rawUser.role === 'admin';
-  const plan: 'free' | 'pro' | 'premium' =
-    rawUser.plan === 'premium' || rawUser.plan === 'pro'
-      ? rawUser.plan
-      : isAdmin
-        ? 'premium'
-        : 'free';
+  const plan: MobileOwnerProfile['plan'] =
+    rawUser.plan === 'premium'
+      ? 'premium'
+      : rawUser.plan === 'basic' || rawUser.plan === 'pro'
+        ? 'basic'
+        : isAdmin
+          ? 'premium'
+          : 'free';
 
   const validatedPostgrest = validatePostgrestTokenClaims(
     candidate.postgrestToken,

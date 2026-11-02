@@ -814,13 +814,28 @@ function Workspace({ userId }: { userId: string }) {
         } catch (shopsApiErr) {
           const pgToken = await getOwnerPostgrestToken();
           if (!pgToken) throw shopsApiErr;
-          const { data: shopsData, error: shopsErr } = await postgrestClient
-            .from('shops')
-            .select('*')
-            .eq('owner_id', userId)
-            .order('created_at', { ascending: true });
+          const [
+            { data: shopsData, error: shopsErr },
+            { data: membershipsData, error: membershipsErr },
+          ] = await Promise.all([
+            postgrestClient
+              .from('shops')
+              .select('*')
+              .eq('owner_id', userId)
+              .order('created_at', { ascending: true }),
+            postgrestClient
+              .from('shop_memberships')
+              .select('*')
+              .eq('user_id', userId),
+          ]);
           if (shopsErr) throw shopsErr;
+          if (membershipsErr) throw membershipsErr;
           loadedShops = (shopsData || []) as MobileShop[];
+          loadedMemberships = Object.fromEntries(
+            ((membershipsData || []) as MobileShopMembership[]).map(
+              (membership) => [membership.shop_id, membership]
+            )
+          );
         }
 
         if (generation !== loadGeneration.current) return;
