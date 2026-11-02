@@ -1851,7 +1851,7 @@ export async function completeZitadelRegistrationVerification(params: {
         mapError: (status, payload) => {
           const msg = JSON.stringify(payload || {}).toLowerCase();
           if (status === 404) {
-            return new ZitadelLoginUiError('REGISTRATION_EXPIRED', 400);
+            return new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
           }
           if (status === 400) {
             if (msg.includes('expired') || msg.includes('timeout')) {

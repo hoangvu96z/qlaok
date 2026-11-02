@@ -385,27 +385,12 @@ export async function POST(req: Request) {
       const verificationCode =
         typeof body.verificationCode === 'string' ? body.verificationCode : '';
       const password = typeof body.password === 'string' ? body.password : '';
-      let verified: Awaited<
-        ReturnType<typeof completeZitadelRegistrationVerification>
-      >;
-      try {
-        verified = await completeZitadelRegistrationVerification({
-          registrationTicket,
-          verificationCode,
-          password,
-          origin: requestOrigin,
-        });
-      } catch (error) {
-        // A random decoy ticket for an existing account must look exactly like
-        // an incorrect code on a real registration ticket.
-        if (
-          error instanceof ZitadelLoginUiError &&
-          error.code === 'REGISTRATION_EXPIRED'
-        ) {
-          throw new ZitadelLoginUiError('VERIFICATION_CODE_INVALID', 400);
-        }
-        throw error;
-      }
+      const verified = await completeZitadelRegistrationVerification({
+        registrationTicket,
+        verificationCode,
+        password,
+        origin: requestOrigin,
+      });
       return jsonNoStore({
         callbackUrl: verified.callbackUrl,
         email: verified.email,

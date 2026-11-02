@@ -913,6 +913,115 @@ test('custom registration maps duplicate email errors, recovers unverified accou
       'The decoy ticket must not hand out the existing account id'
     );
 
+    // 1b. Decoy registration ticket on POST /api/auth/login-ui (register_verify) must return VERIFICATION_CODE_INVALID and lock out on the 5th failed attempt just like a real ticket, while a genuinely expired ticket must preserve REGISTRATION_EXPIRED
+    const prevIssuerForDecoy = process.env.ZITADEL_ISSUER_URL;
+    const prevPatForDecoy = process.env.ZITADEL_LOGIN_CLIENT_PAT;
+    const prevWebClientForDecoy = process.env.ZITADEL_CLIENT_ID;
+    const prevMobileClientForDecoy = process.env.ZITADEL_MOBILE_CLIENT_ID;
+    const prevFetchForDecoy = globalThis.fetch;
+    process.env.ZITADEL_ISSUER_URL = config.issuerUrl;
+    process.env.ZITADEL_LOGIN_CLIENT_PAT = config.serviceToken;
+    process.env.ZITADEL_CLIENT_ID = config.webClientId;
+    process.env.ZITADEL_MOBILE_CLIENT_ID = config.mobileClientId;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method || 'GET';
+      if (url.includes('/v2/users/') && url.endsWith('/email/verify') && method === 'POST') {
+        return response({ message: 'User not found' }, 404);
+      }
+      throw new Error(`Unexpected fetch during decoy verify: ${method} ${url}`);
+    }) as typeof fetch;
+    try {
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        const decoyVerifyRes = await loginUiPost(
+          new Request('https://qlaok.example.test/api/auth/login-ui', {
+            method: 'POST',
+            headers: {
+              Origin: 'https://qlaok.example.test',
+              'X-Real-IP': `198.51.100.${200 + attempt}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              action: 'register_verify',
+              registrationTicket: verifiedDuplicate.registrationTicket,
+              verificationCode: '123456',
+              password: 'StrongPass1!',
+              lang: 'vi',
+            }),
+          })
+        );
+        assert.equal(decoyVerifyRes.status, 400);
+        assert.equal(
+          (await decoyVerifyRes.json()).code,
+          'VERIFICATION_CODE_INVALID'
+        );
+      }
+      const decoyFifthVerifyRes = await loginUiPost(
+        new Request('https://qlaok.example.test/api/auth/login-ui', {
+          method: 'POST',
+          headers: {
+            Origin: 'https://qlaok.example.test',
+            'X-Real-IP': '198.51.100.205',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'register_verify',
+            registrationTicket: verifiedDuplicate.registrationTicket,
+            verificationCode: '123456',
+            password: 'StrongPass1!',
+            lang: 'vi',
+          }),
+        })
+      );
+      assert.equal(decoyFifthVerifyRes.status, 429);
+      assert.equal(
+        (await decoyFifthVerifyRes.json()).code,
+        'LOGIN_RATE_LIMITED'
+      );
+
+      const expiredTicket = issueZitadelRegistrationTicket({
+        userId: '289911223344556677',
+        email: 'expired-owner@example.test',
+        fullName: 'Nguyễn Văn Hết Hạn',
+        authRequestId,
+        clientKind: 'web',
+        nowSeconds: 1_700_000_000,
+        ttlSeconds: 60,
+      });
+      const expiredVerifyRes = await loginUiPost(
+        new Request('https://qlaok.example.test/api/auth/login-ui', {
+          method: 'POST',
+          headers: {
+            Origin: 'https://qlaok.example.test',
+            'X-Real-IP': '198.51.100.206',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'register_verify',
+            registrationTicket: expiredTicket,
+            verificationCode: '123456',
+            password: 'StrongPass1!',
+            lang: 'vi',
+          }),
+        })
+      );
+      assert.equal(expiredVerifyRes.status, 400);
+      assert.equal(
+        (await expiredVerifyRes.json()).code,
+        'REGISTRATION_EXPIRED'
+      );
+    } finally {
+      globalThis.fetch = prevFetchForDecoy;
+      if (prevIssuerForDecoy === undefined) delete process.env.ZITADEL_ISSUER_URL;
+      else process.env.ZITADEL_ISSUER_URL = prevIssuerForDecoy;
+      if (prevPatForDecoy === undefined) delete process.env.ZITADEL_LOGIN_CLIENT_PAT;
+      else process.env.ZITADEL_LOGIN_CLIENT_PAT = prevPatForDecoy;
+      if (prevWebClientForDecoy === undefined) delete process.env.ZITADEL_CLIENT_ID;
+      else process.env.ZITADEL_CLIENT_ID = prevWebClientForDecoy;
+      if (prevMobileClientForDecoy === undefined) delete process.env.ZITADEL_MOBILE_CLIENT_ID;
+      else process.env.ZITADEL_MOBILE_CLIENT_ID = prevMobileClientForDecoy;
+    }
+
     // 2. Duplicate email with existing UNVERIFIED ZITADEL user -> resends verification code and issues a fresh ticket for that userId
     let resendBodyForUnverified: Record<string, unknown> | undefined;
     const recovered = await startZitadelRegistration({
