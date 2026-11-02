@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { canRunMutatingE2e, resolveE2eBaseUrl } from "./e2e-safety.mjs";
 import { SUPER_ADMIN_EMAIL } from "../src/lib/auth-session.ts";
 import { issueSessionToken } from "../src/lib/server-auth.ts";
+import { getGuestOrderIdempotencyKey } from "../src/lib/guest-order-idempotency.ts";
 
 const BASE_URL = resolveE2eBaseUrl(process.env.TEST_BASE_URL);
 const MUTATING_E2E_SKIP_REASON = canRunMutatingE2e()
@@ -528,33 +529,39 @@ test("13. mPOS Realtime Table Ordering, Inventory Stock Deduction & Revenue Anal
   }
 
   // 13.2 Guest submits a table order for 2x item-fnb-1
+  const orderIntent = {
+    shop_id: shopId,
+    table_label: "Bàn E2E-09",
+    visitor_lang: "ko",
+    customer_note: "Ít hành",
+    payment_method: "vietqr",
+    source: "qr_table",
+    expected_total: targetItem.price * 2,
+    items: [
+      {
+        item_id: "item-fnb-1",
+        name_vi: targetItem.name_i18n.vi,
+        name_i18n: targetItem.name_i18n,
+        quantity: 2,
+        unit_price: targetItem.price,
+        extra_price: 0,
+        selected_choices: [
+          {
+            id: "size-m",
+            label_i18n: { vi: "Tô Vừa (Tiêu chuẩn)" },
+            extra_price: 0,
+          },
+        ],
+      },
+    ],
+  };
+  const orderPayload = {
+    ...orderIntent,
+    idempotency_key: await getGuestOrderIdempotencyKey(orderIntent),
+  };
   const createOrderRes = await fetchJson("/api/orders", {
     method: "POST",
-    body: JSON.stringify({
-      shop_id: shopId,
-      table_label: "Bàn E2E-09",
-      visitor_lang: "ko",
-      customer_note: "Ít hành",
-      payment_method: "vietqr",
-      source: "qr_table",
-      items: [
-        {
-          item_id: "item-fnb-1",
-          name_vi: targetItem.name_i18n.vi,
-          name_i18n: targetItem.name_i18n,
-          quantity: 2,
-          unit_price: targetItem.price,
-          extra_price: 0,
-          selected_choices: [
-            {
-              id: "size-m",
-              label_i18n: { vi: "Tô Vừa (Tiêu chuẩn)" },
-              extra_price: 0,
-            },
-          ],
-        },
-      ],
-    }),
+    body: JSON.stringify(orderPayload),
   });
   assert.equal(createOrderRes.status, 201);
   const createdOrder = createOrderRes.data.order;
