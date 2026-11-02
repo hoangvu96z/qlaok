@@ -1433,7 +1433,7 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
         ('tbl-qa-inactive', 'shop-qa-storefront', 'T02', 'Bàn Khóa', false, 2);
       INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
         ('mem-qa-fulfill', 'shop-qa-storefront', 'staff-qa-fulfill', 'staff', '["orders.view","orders.fulfill"]'::jsonb, true),
-        ('mem-qa-collect', 'shop-qa-storefront', 'cashier-qa-collect', 'cashier', '["orders.view","payment.collect"]'::jsonb, true);
+        ('mem-qa-collect', 'shop-qa-storefront', 'cashier-qa-collect', 'cashier', '["orders.view","orders.create","payment.collect"]'::jsonb, true);
     `);
     await db.query(
       `INSERT INTO items (
@@ -2230,6 +2230,37 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       email: 'cashier-collect@test.local',
       role: 'staff',
     });
+    const ordersBeforeUnauthorizedCompletion = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    const cashierCompleteRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          cookie: `${SESSION_COOKIE_NAME}=${cashierToken}`,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-storefront',
+          source: 'counter_pos',
+          markCompletedImmediately: true,
+          items: [],
+        }),
+      })
+    );
+    assert.equal(cashierCompleteRes.status, 403);
+    assert.equal(
+      (await cashierCompleteRes.json()).code,
+      'INSUFFICIENT_SHOP_PERMISSION'
+    );
+    const ordersAfterUnauthorizedCompletion = await db.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE shop_id = 'shop-qa-storefront'`
+    );
+    assert.equal(
+      ordersAfterUnauthorizedCompletion.rows[0]?.count,
+      ordersBeforeUnauthorizedCompletion.rows[0]?.count
+    );
+
     const cashierCollectRes = await patchOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'PATCH',

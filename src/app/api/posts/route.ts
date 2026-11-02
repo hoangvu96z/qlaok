@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
   dbDeletePost,
+  dbGetShopById,
   dbGetShopPosts,
   dbUpsertPost,
   getSupabaseDbClient,
@@ -19,8 +20,20 @@ export async function GET(req: Request) {
       { status: 400 }
     );
   }
-  const posts = await dbGetShopPosts(shopId);
-  return NextResponse.json({ posts: posts.filter((post) => post.is_active) });
+  try {
+    const shop = await dbGetShopById(shopId);
+    if (!shop || shop.is_published === false) {
+      return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
+    }
+
+    const posts = await dbGetShopPosts(shopId);
+    return NextResponse.json({ posts: posts.filter((post) => post.is_active) });
+  } catch {
+    return NextResponse.json(
+      { error: 'Unable to load shop posts', code: 'SHOP_POSTS_QUERY_FAILED' },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: Request) {

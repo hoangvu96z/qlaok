@@ -1286,7 +1286,10 @@ export async function dbGetShopCatalog(shopId?: string) {
 
   let shopQuery = sb.from('shops').select('*').order('created_at', { ascending: true });
   if (shopId) shopQuery = shopQuery.eq('id', shopId);
-  const { data: shops } = await shopQuery.limit(1);
+  const { data: shops, error: shopError } = await shopQuery.limit(1);
+  if (shopError) {
+    throw new Error('SHOP_CATALOG_SHOP_QUERY_FAILED');
+  }
   const shop = shops?.[0] as Shop | undefined;
 
   if (!shop) {
@@ -1299,7 +1302,7 @@ export async function dbGetShopCatalog(shopId?: string) {
     };
   }
 
-  const [{ data: categories }, { data: items }, { data: profiles }, ownerProfileRes] =
+  const [categoriesRes, itemsRes, profilesRes, ownerProfileRes] =
     await Promise.all([
       sb
         .from('categories')
@@ -1325,6 +1328,17 @@ export async function dbGetShopCatalog(shopId?: string) {
         }
       })(),
     ]);
+
+  if (categoriesRes.error) {
+    throw new Error('SHOP_CATALOG_CATEGORIES_QUERY_FAILED');
+  }
+  if (itemsRes.error) {
+    throw new Error('SHOP_CATALOG_ITEMS_QUERY_FAILED');
+  }
+
+  const categories = categoriesRes.data;
+  const items = itemsRes.data;
+  const profiles = profilesRes.data;
 
   let ownerPlan: PlanTier = 'free';
   if (ownerProfileRes && !ownerProfileRes.error && ownerProfileRes.data) {
@@ -1970,13 +1984,17 @@ export async function dbGetShopPosts(shopId: string): Promise<Post[]> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { data } = await sb
+  const { data, error } = await sb
     .from('posts')
     .select('*')
     .eq('shop_id', targetShopId)
     .eq('is_active', true)
     .order('is_pinned', { ascending: false })
     .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error('SHOP_POSTS_QUERY_FAILED');
+  }
 
   return (data || []) as Post[];
 }

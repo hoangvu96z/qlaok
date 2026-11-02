@@ -34,6 +34,8 @@ function createPostDbMock(
     forceInsertConflict?: boolean;
     forceDeleteError?: boolean;
     forceDeleteNoRows?: boolean;
+    forcePostReadError?: boolean;
+    unpublishedShop?: boolean;
   } = {}
 ) {
   const queryLogs: MockQueryLog[] = [];
@@ -112,7 +114,10 @@ function createPostDbMock(
       });
 
       if (this.table === 'shops') {
-        const demoShop = { id: 'fallback-shop-first' };
+        const demoShop = {
+          id: 'shop-alpha',
+          is_published: options.unpublishedShop !== true,
+        };
         if (this.singleMode !== 'none') {
           return Promise.resolve({ data: demoShop, error: null });
         }
@@ -120,6 +125,13 @@ function createPostDbMock(
       }
 
       if (this.table === 'posts') {
+        if (this.operation === 'select' && options.forcePostReadError) {
+          return Promise.resolve({
+            data: null,
+            error: { code: 'XX000', message: 'Simulated post read failure' },
+          });
+        }
+
         if (this.operation === 'insert') {
           const incoming = this.mutationPayload as unknown as Post;
           const hasDuplicateId =
@@ -538,6 +550,48 @@ test('GET /api/posts returns 200 with only active posts for valid shopId', async
       assert.equal(post.shop_id, 'shop-alpha');
       assert.equal(post.is_active, true);
     }
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('GET /api/posts hides active posts for unpublished shops', async () => {
+  const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS, {
+    unpublishedShop: true,
+  });
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const res = await getPosts(
+      new Request('http://localhost/api/posts?shopId=shop-alpha')
+    );
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: 'Shop not found' });
+    assert.equal(
+      queryLogs.some((query) => query.table === 'posts'),
+      false,
+      'The endpoint must not query or disclose posts for an unpublished shop'
+    );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('GET /api/posts returns an error instead of an empty success when the posts query fails', async () => {
+  const { client } = createPostDbMock(FIXTURE_POSTS, {
+    forcePostReadError: true,
+  });
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const res = await getPosts(
+      new Request('http://localhost/api/posts?shopId=shop-alpha')
+    );
+    assert.equal(res.status, 500);
+    assert.deepEqual(await res.json(), {
+      error: 'Unable to load shop posts',
+      code: 'SHOP_POSTS_QUERY_FAILED',
+    });
   } finally {
     setSupabaseDbClientForTests(null);
   }

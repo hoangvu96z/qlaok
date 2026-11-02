@@ -593,6 +593,17 @@ export async function POST(req: Request) {
     const hasCreatePerm = hasShopPermission(membership, 'orders.create');
     const canApplyDiscount = hasShopPermission(membership, 'discount.apply');
     const canCollectPayment = hasShopPermission(membership, 'payment.collect');
+    const canFulfillOrders = hasShopPermission(membership, 'orders.fulfill');
+
+    if (sessionUser && Boolean(markCompletedImmediately) && !canFulfillOrders) {
+      return NextResponse.json(
+        {
+          error: `Tài khoản (${membership?.role || 'staff'}) không có quyền hoàn tất đơn hàng.`,
+          code: 'INSUFFICIENT_SHOP_PERMISSION',
+        },
+        { status: 403 }
+      );
+    }
 
     if (source !== 'counter_pos' && !hasCreatePerm) {
       if (!(await canCreatePublicOrder(shop_id, membership))) {

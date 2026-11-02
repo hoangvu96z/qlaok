@@ -545,6 +545,59 @@ test('POST /api/auth sync_user surfaces Super Admin profile DB errors instead of
   }
 });
 
+test('/api/admin rejects invalid owner plan and duration values before profile writes', async () => {
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+  const queriedTables: string[] = [];
+  const readinessDb = {
+    from(table: string) {
+      queriedTables.push(table);
+      return {
+        select() {
+          return this;
+        },
+        limit() {
+          return Promise.resolve({ data: [{ id: 'existing-shop' }], error: null });
+        },
+      };
+    },
+  };
+  setSupabaseDbClientForTests(readinessDb as never);
+
+  try {
+    for (const [payload, code] of [
+      [{ plan: 'enterprise', durationDays: 30 }, 'INVALID_OWNER_PLAN'],
+      [{ plan: 'premium', durationDays: 1.5 }, 'INVALID_PLAN_DURATION'],
+      [{ plan: 'basic', durationDays: 40000 }, 'INVALID_PLAN_DURATION'],
+    ] as const) {
+      const res = await adminPost(
+        new Request('http://localhost/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'update_owner_plan',
+            ownerId: 'owner-existing',
+            ...payload,
+          }),
+        })
+      );
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, code);
+    }
+
+    assert.deepEqual(queriedTables, ['shops']);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
 test('POST /api/auth rejects direct owner password login/register with OIDC_REQUIRED and keeps cachedAdminClient service_role Authorization untouched on sync_user and /api/admin', async () => {
   setSupabaseDbClientForTests(null);
   const originalFetch = globalThis.fetch;

@@ -50,6 +50,7 @@ import {
 } from '@/lib/plan-limits';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
+import { escapePostgrestIlikePattern } from '@/lib/owner-invitations';
 import type { Shop, ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -331,7 +332,7 @@ export async function POST(req: Request) {
       const { data: profiles, error: profileErr } = await getSupabaseDbClient()
         .from('profiles')
         .select('id, email, full_name')
-        .ilike('email', email)
+        .ilike('email', escapePostgrestIlikePattern(email))
         .limit(1);
       if (profileErr) {
         return NextResponse.json(
@@ -345,7 +346,7 @@ export async function POST(req: Request) {
       const profile = profiles?.[0] as
         | { id: string; email?: string; full_name?: string }
         | undefined;
-      if (!profile) {
+      if (!profile || profile.email?.trim().toLowerCase() !== email) {
         return NextResponse.json(
           {
             error:

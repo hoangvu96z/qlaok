@@ -488,6 +488,26 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+      if (plan !== 'free' && plan !== 'basic' && plan !== 'premium') {
+        return NextResponse.json(
+          { error: 'Gói chủ quán không hợp lệ.', code: 'INVALID_OWNER_PLAN' },
+          { status: 400 }
+        );
+      }
+      if (
+        typeof durationDays !== 'number' ||
+        !Number.isSafeInteger(durationDays) ||
+        durationDays < 0 ||
+        durationDays > 36500
+      ) {
+        return NextResponse.json(
+          {
+            error: 'Thời hạn gói phải là số ngày nguyên từ 0 đến 36500.',
+            code: 'INVALID_PLAN_DURATION',
+          },
+          { status: 400 }
+        );
+      }
 
       let expiresAt: string | null = null;
       if (plan !== 'free' && durationDays > 0) {
