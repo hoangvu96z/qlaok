@@ -1799,6 +1799,27 @@ test('Slice 2: order create/update/print APIs and PostgreSQL RPCs persist workfl
     );
     assert.equal(unpaidReceiptPrint.status, 409);
 
+    // Provisional print without orders.print_provisional returns 403
+    const provisionalWithoutPermRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${fulfillToken}`,
+        },
+        body: JSON.stringify({
+          action: 'record_print',
+          orderId: createdOrder.id,
+          ticketType: 'provisional',
+        }),
+      })
+    );
+    assert.equal(
+      provisionalWithoutPermRes.status,
+      403,
+      'provisional print without orders.print_provisional returns 403'
+    );
+
     // 7. Complete fulfillment (bar_making -> served) by fulfillStaff (no payment.collect permission); order remains unpaid!
     const toServedRes = await patchOrders(
       new Request('http://localhost/api/orders', {
@@ -1847,6 +1868,33 @@ test('Slice 2: order create/update/print APIs and PostgreSQL RPCs persist workfl
     assert.equal(paidOrder.status, 'completed');
     assert.equal(paidOrder.workflow_step_id, 'served');
     assert.equal(paidOrder.label_printed_count, 2);
+
+    // Paid receipt print requires orders.view and returns 200 for paid orders
+    const paidReceiptViewOnlyRes = await postOrders(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${viewOnlyToken}`,
+        },
+        body: JSON.stringify({
+          action: 'record_print',
+          orderId: paidOrder.id,
+          ticketType: 'receipt',
+        }),
+      })
+    );
+    assert.equal(
+      paidReceiptViewOnlyRes.status,
+      200,
+      'paid receipt print requires orders.view and returns 200'
+    );
+    const paidReceiptBody = (await paidReceiptViewOnlyRes.json()) as {
+      order: ShopOrder;
+      ticketType: string;
+    };
+    assert.equal(paidReceiptBody.ticketType, 'receipt');
+    assert.equal(paidReceiptBody.order.receipt_printed_count, 1);
 
     // 9. Counter POS order with markCompletedImmediately keeps fulfillment independent from payment:
     // 9a. Staff without payment.collect can markCompletedImmediately (completed + unpaid) via POST /api/orders

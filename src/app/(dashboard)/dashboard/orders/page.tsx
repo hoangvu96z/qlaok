@@ -2044,11 +2044,15 @@ export default function CounterOrdersPage() {
                         </button>}
 
                         {(order.payment_status === 'paid'
-                          ? hasPermission('orders.print_kitchen')
+                          ? hasPermission('orders.view')
                           : hasPermission('orders.print_provisional')) && <button
                           type="button"
                           onClick={() => {
-                            setPrintingInitialTicketType(undefined);
+                            setPrintingInitialTicketType(
+                              order.payment_status === 'paid'
+                                ? 'receipt'
+                                : 'provisional'
+                            );
                             setPrintingOrder(order);
                           }}
                           className={`inline-flex items-center justify-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-black transition-colors ${
@@ -2225,23 +2229,26 @@ export default function CounterOrdersPage() {
                     </button>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const targetOrder = qrOrderModal;
-                      setQrOrderModal(null);
-                      setPrintingOrder(targetOrder);
-                    }}
-                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
-                  >
-                    <Printer className="h-4 w-4 text-slate-700" />
-                    <span>
-                      {tx(
-                        'In phiếu tạm tính kèm mã QR cho khách',
-                        'Print provisional bill with QR code'
-                      )}
-                    </span>
-                  </button>
+                  {hasPermission('orders.print_provisional') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetOrder = qrOrderModal;
+                        setQrOrderModal(null);
+                        setPrintingInitialTicketType('provisional');
+                        setPrintingOrder(targetOrder);
+                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                    >
+                      <Printer className="h-4 w-4 text-slate-700" />
+                      <span>
+                        {tx(
+                          'In phiếu tạm tính kèm mã QR cho khách',
+                          'Print provisional bill with QR code'
+                        )}
+                      </span>
+                    </button>
+                  )}
 
                   <Link
                     href="/dashboard/settings#payment-qr-settings"
@@ -2680,6 +2687,7 @@ export default function CounterOrdersPage() {
           order={printingOrder}
           shop={activeShop}
           initialTicketType={printingInitialTicketType}
+          hasPermission={hasPermission}
           onClose={() => {
             setPrintingOrder(null);
             setPrintingInitialTicketType(undefined);

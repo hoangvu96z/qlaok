@@ -20,6 +20,7 @@ import type {
   Shop,
   ShopLabelPrintConfig,
   ShopOrder,
+  ShopPermission,
   TicketPrintType,
 } from '@/types/qlaok';
 import { formatCurrency } from '@/lib/i18n-helper';
@@ -32,6 +33,12 @@ import {
   prepareOrderProductionLabelPrint,
   renderProductionLabelDocument,
 } from '@/lib/production-label-template';
+import { useDashboard } from '@/lib/dashboard-context';
+import {
+  canPrintTicketType,
+  getAllowedTicketTypes,
+  resolvePermittedDefaultTicketType,
+} from '@/lib/order-print-permissions';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 
 export { prepareOrderProductionLabelPrint };
@@ -41,6 +48,7 @@ interface ReceiptPrintModalProps {
   shop: Shop;
   initialTicketType?: TicketPrintType;
   canCollectPayment?: boolean;
+  hasPermission?: (permission: ShopPermission) => boolean;
   onClose: () => void;
   onConfirmPaid?: (order: ShopOrder) => Promise<void>;
   onOrderUpdated?: (order: ShopOrder) => void;
@@ -51,14 +59,28 @@ export function ReceiptPrintModal({
   shop,
   initialTicketType,
   canCollectPayment = true,
+  hasPermission: hasPermissionProp,
   onClose,
   onConfirmPaid,
   onOrderUpdated,
 }: ReceiptPrintModalProps) {
   const { locale, t, tx } = useAppI18n();
-  const defaultTicketType: TicketPrintType =
-    initialTicketType ||
-    (order?.payment_status === 'paid' ? 'receipt' : 'provisional');
+  const dashboard = useDashboard();
+  const effectiveHasPermission =
+    hasPermissionProp ||
+    ((permission: ShopPermission) =>
+      Boolean(
+        dashboard?.activeMembership &&
+          (dashboard.activeMembership.role === 'owner' ||
+            dashboard.activeMembership.permissions?.includes(permission))
+      ));
+
+  const initialPermitted = resolvePermittedDefaultTicketType({
+    initialTicketType,
+    paymentStatus: order?.payment_status,
+    hasPermission: effectiveHasPermission,
+  });
+  const defaultTicketType: TicketPrintType = initialPermitted || 'provisional';
 
   const [ticketType, setTicketType] =
     useState<TicketPrintType>(defaultTicketType);
@@ -97,24 +119,69 @@ export function ReceiptPrintModal({
     prevPaymentStatusRef.current = order.payment_status;
 
     if (orderIdChanged || initialTypeChanged) {
-      const nextType =
-        initialTicketType ||
-        (order.payment_status === 'paid' ? 'receipt' : 'provisional');
-      setTicketType(nextType);
-      setIncludeQrOnBill(
-        nextType === 'provisional' && order.payment_status !== 'paid'
-      );
-    } else if (becamePaid && ticketType === 'provisional') {
-      setTicketType('receipt');
-      setIncludeQrOnBill(false);
+      const nextType = resolvePermittedDefaultTicketType({
+        initialTicketType,
+        paymentStatus: order.payment_status,
+        hasPermission: effectiveHasPermission,
+      });
+      if (nextType) {
+        setTicketType(nextType);
+        setIncludeQrOnBill(
+          nextType === 'provisional' && order.payment_status !== 'paid'
+        );
+      }
+    } else if (becamePaid) {
+      if (
+        canPrintTicketType({
+          ticketType: 'receipt',
+          paymentStatus: 'paid',
+          hasPermission: effectiveHasPermission,
+        })
+      ) {
+        setTicketType('receipt');
+        setIncludeQrOnBill(false);
+      }
+    } else if (
+      !canPrintTicketType({
+        ticketType,
+        paymentStatus: order.payment_status,
+        hasPermission: effectiveHasPermission,
+      })
+    ) {
+      const fallback = resolvePermittedDefaultTicketType({
+        paymentStatus: order.payment_status,
+        hasPermission: effectiveHasPermission,
+      });
+      if (fallback) {
+        setTicketType(fallback);
+        setIncludeQrOnBill(
+          fallback === 'provisional' && order.payment_status !== 'paid'
+        );
+      }
     }
-  }, [order, initialTicketType, ticketType]);
+  }, [order, initialTicketType, ticketType, effectiveHasPermission]);
 
   const activeOrder = localOrder || order;
   if (!activeOrder) return null;
 
+  const allowedTicketTypes = getAllowedTicketTypes({
+    paymentStatus: activeOrder.payment_status,
+    hasPermission: effectiveHasPermission,
+  });
+  if (allowedTicketTypes.length === 0) {
+    return null;
+  }
+
   const handleSelectTicketType = (nextType: TicketPrintType) => {
-    if (nextType === 'receipt' && activeOrder.payment_status !== 'paid') return;
+    if (
+      !canPrintTicketType({
+        ticketType: nextType,
+        paymentStatus: activeOrder.payment_status,
+        hasPermission: effectiveHasPermission,
+      })
+    ) {
+      return;
+    }
     setTicketType(nextType);
     // Paid receipts, kitchen tickets, and production labels should NEVER include ordinary bill payment QR by default
     setIncludeQrOnBill(
@@ -192,7 +259,13 @@ export function ReceiptPrintModal({
 
   const handlePrintThermalReceipt = async () => {
     if (typeof window === 'undefined') return;
-    if (ticketType === 'receipt' && activeOrder.payment_status !== 'paid') {
+    if (
+      !canPrintTicketType({
+        ticketType,
+        paymentStatus: activeOrder.payment_status,
+        hasPermission: effectiveHasPermission,
+      })
+    ) {
       return;
     }
 
@@ -574,61 +647,89 @@ export function ReceiptPrintModal({
         </div>
 
         {/* 4 Ticket Type Selector */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-2xl bg-slate-100 p-1 border border-slate-200">
-          <button
-            type="button"
-            data-testid="print-tab-kitchen"
-            onClick={() => handleSelectTicketType('kitchen')}
-            className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
-              ticketType === 'kitchen'
-                ? 'bg-slate-900 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <ChefHat className="h-3.5 w-3.5" />
-            <span>{t('receipt.ticketKitchen')}</span>
-          </button>
-          <button
-            type="button"
-            data-testid="print-tab-provisional"
-            onClick={() => handleSelectTicketType('provisional')}
-            className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
-              ticketType === 'provisional'
-                ? 'bg-amber-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <FileText className="h-3.5 w-3.5" />
-            <span>{t('receipt.ticketProvisional')}</span>
-          </button>
-          <button
-            type="button"
-            data-testid="print-tab-receipt"
-            onClick={() => handleSelectTicketType('receipt')}
-            disabled={activeOrder.payment_status !== 'paid'}
-            className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
-              ticketType === 'receipt'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Receipt className="h-3.5 w-3.5" />
-            <span>{t('receipt.ticketReceipt')}</span>
-          </button>
-          <button
-            type="button"
-            data-testid="print-tab-label"
-            onClick={() => handleSelectTicketType('label')}
-            className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
-              ticketType === 'label'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Tag className="h-3.5 w-3.5" />
-            <span>{tx('Tem món', 'Labels')}</span>
-          </button>
-        </div>
+        {(() => {
+          const canPrintKitchen = canPrintTicketType({
+            ticketType: 'kitchen',
+            paymentStatus: activeOrder.payment_status,
+            hasPermission: effectiveHasPermission,
+          });
+          const canPrintProvisional = canPrintTicketType({
+            ticketType: 'provisional',
+            paymentStatus: activeOrder.payment_status,
+            hasPermission: effectiveHasPermission,
+          });
+          const canPrintReceipt = canPrintTicketType({
+            ticketType: 'receipt',
+            paymentStatus: activeOrder.payment_status,
+            hasPermission: effectiveHasPermission,
+          });
+          const canPrintLabel = canPrintTicketType({
+            ticketType: 'label',
+            paymentStatus: activeOrder.payment_status,
+            hasPermission: effectiveHasPermission,
+          });
+
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-2xl bg-slate-100 p-1 border border-slate-200">
+              <button
+                type="button"
+                data-testid="print-tab-kitchen"
+                onClick={() => handleSelectTicketType('kitchen')}
+                disabled={!canPrintKitchen}
+                className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
+                  ticketType === 'kitchen'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                } disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-600`}
+              >
+                <ChefHat className="h-3.5 w-3.5" />
+                <span>{t('receipt.ticketKitchen')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="print-tab-provisional"
+                onClick={() => handleSelectTicketType('provisional')}
+                disabled={!canPrintProvisional}
+                className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
+                  ticketType === 'provisional'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                } disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-600`}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                <span>{t('receipt.ticketProvisional')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="print-tab-receipt"
+                onClick={() => handleSelectTicketType('receipt')}
+                disabled={!canPrintReceipt}
+                className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
+                  ticketType === 'receipt'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                } disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-600`}
+              >
+                <Receipt className="h-3.5 w-3.5" />
+                <span>{t('receipt.ticketReceipt')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="print-tab-label"
+                onClick={() => handleSelectTicketType('label')}
+                disabled={!canPrintLabel}
+                className={`flex items-center justify-center gap-1 rounded-xl py-2 px-2 text-[11px] font-black transition ${
+                  ticketType === 'label'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                } disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-600`}
+              >
+                <Tag className="h-3.5 w-3.5" />
+                <span>{tx('Tem món', 'Labels')}</span>
+              </button>
+            </div>
+          );
+        })()}
 
         {/* Paper Size & QR Options (Hidden in Label Mode) */}
         {ticketType !== 'label' ? (
@@ -1161,8 +1262,11 @@ export function ReceiptPrintModal({
               type="button"
               data-testid="print-submit-button"
               disabled={
-                (ticketType === 'receipt' &&
-                  activeOrder.payment_status !== 'paid') ||
+                !canPrintTicketType({
+                  ticketType,
+                  paymentStatus: activeOrder.payment_status,
+                  hasPermission: effectiveHasPermission,
+                }) ||
                 (ticketType === 'label' && !labelPreflight.canPrint)
               }
               onClick={handlePrintThermalReceipt}

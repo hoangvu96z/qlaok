@@ -595,7 +595,7 @@ Cả 8 hàm đều `RETURNS TRIGGER`. PostgreSQL **không cho gọi trực tiế
 | P3-12 | **Lệch tài liệu migration**: README liệt kê tới `020` (thiếu `021`, `022`, `023`); `ARCHITECTURE.md:145` và `docs/SELF_HOSTED_POSTGRES_ZITADEL.md:72` dừng ở `022` (thiếu `023`, dù `023` đã được commit). **Không tài liệu nào nhắc `023`**. README nói "`npm run db:migrate` thực thi qua Supabase Management API" trong khi `package.json:11` trỏ `scripts/migrate-self-hosted.mjs`; chính `SELF_HOSTED_POSTGRES_ZITADEL.md:72` lại nói "không gọi Supabase Management API". Cùng file `SELF_HOSTED_POSTGRES_ZITADEL.md` có **hai mục cùng đánh số `6.`** (`:77` và `:78`) | `README.md:110-118`, `ARCHITECTURE.md:145`, `docs/SELF_HOSTED_POSTGRES_ZITADEL.md:72,77,78` |
 | P3-13 | Tính năng email mới (`auth-email.ts`, `auth-email-templates.ts`) không có biến `SMTP_*` nào trong `.env.example` (0 lần) hay `README.md` (0 lần) — chỉ `docs/SELF_HOSTED_POSTGRES_ZITADEL.md` nhắc 2 lần. Deploy mới sẽ rơi vào `EMAIL_SERVICE_NOT_CONFIGURED` (503) mà không có tài liệu chỉ đường | `.env.example`, `README.md` |
 | P3-14 | Hai thư mục rỗng untracked: `src/app/__qa/floor-plan/` và `ops/zitadel-login/locales/` | `git status` |
-| P3-15 | Nút "In tem"/"In tạm tính" trên thẻ đơn không gắn cờ quyền, trong khi `POST /api/orders {action:'record_print'}` yêu cầu `orders.print_kitchen` (kitchen/label) hoặc `orders.print_provisional` (provisional) tuỳ `ticketType` (`orders/route.ts:379-392`). Vai trò `staff` mặc định **không** có `orders.print_provisional` (`shop-permissions.ts:289-295`) ⇒ bấm "In tạm tính" luôn nhận `403` từ `ReceiptPrintModal.tsx:218`. Nút "Mã QR" thuần client (không gọi server) nên không phải lỗi quyền | `(dashboard)/dashboard/orders/page.tsx:2006-2060`; `orders/route.ts:379-392` |
+| P3-15 | **Đã xử lý ở §203:** Đồng bộ toàn diện quyền in giữa UI và API: `kitchen`/`label` yêu cầu `orders.print_kitchen`; `provisional` yêu cầu `orders.print_provisional`; `receipt` yêu cầu cả `orders.view` và đơn đã thanh toán (`payment_status === 'paid'`). Thẻ đơn dùng `orders.view` cho nút in biên lai khi đơn đã trả tiền (thay vì nhầm sang `print_kitchen`), giữ `orders.print_provisional` cho đơn tạm tính và `orders.print_kitchen` cho in tem. Nút "In tạm tính kèm QR" trong modal QR được bảo vệ bằng `orders.print_provisional` và gán `initialTicketType='provisional'`. `ReceiptPrintModal` tự động chọn tab được phép khi tab ban đầu bị cấm, disable các tab không có quyền trong selector, kiểm tra quyền trước mọi print call/network request và render rỗng nếu không có loại in nào được phép. Kiểm chứng bằng 9 test trong `tests/order-print-permissions-review.test.ts` và regression API trong `tests/order-workflow-review.test.ts` | `(dashboard)/dashboard/orders/page.tsx`; `components/dashboard/ReceiptPrintModal.tsx`; `lib/order-print-permissions.ts` |
 | P3-16 | `handleTranslatePost` gọi `/api/ai/translate` bằng `fetch` trần, **không** kèm `getAuthHeaders()` → request thiếu `Authorization`, route trả `401`; nút "Dịch" ở trang khuyến mãi luôn hỏng | `(dashboard)/dashboard/posts/page.tsx:392-403`; `api/ai/translate/route.ts:18` |
 | P3-17 | Toast dùng `setTimeout` không lưu handle, không cleanup khi unmount → `setState` sau unmount; nếu hai toast chồng nhau, timer cũ xoá toast mới | `(dashboard)/dashboard/catalog/page.tsx:189-193`; `components/dashboard/QuickItemRow.tsx:119,155` |
 | P3-18 | `formatCurrency` hardcode `vi-VN` + hậu tố `đ` cho mọi VND, bất kể locale UI — dashboard EN vẫn hiện `1.234.567đ`. Còn sai với số âm/`NaN` (không guard) (**đã đóng, xem §167**) | `src/lib/i18n-helper.ts:147-153` |
@@ -2614,7 +2614,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Codex xác minh bổ sung trên UI thật:** shop mẫu công khai `pho-hoi-an` trả `GET /api/shops?slug=pho-hoi-an` **200**; cấu hình promo và welcome đang bật. Banner và CTA hiện trên trang cửa quán; bấm CTA mở đúng welcome popup. Đây là shop mẫu Premium riêng, không phải tài khoản QA.
 - **Đường gọi:** CodeGraph `StorefrontPromoBanner` xác nhận CTA gọi `onOpenPopup`; callers là trang door và menu. Playwright dùng session có guard chỉ cho phép GET/HEAD/OPTIONS, chặn mutation và mock analytics cục bộ; thao tác CTA chỉ đổi UI, không gửi đơn hoặc ghi dữ liệu nghiệp vụ.
 - **Kết quả:** không phát hiện lỗi ở promo banner → welcome popup trong cấu hình đang chạy. Không sửa source, API, schema, migration hay dữ liệu production; không chạy test/build vì không có thay đổi code.
-- **Giới hạn:** tài khoản QA hiện vẫn là Free; `pho-hoi-an` chỉ là shop mẫu Premium. Không có fixture Basic/Premium thuộc tài khoản QA; flash sale của shop mẫu hiện tắt nên chưa xác minh cấu hình flash sale đang hoạt động trên production.
+- **Giới hạn & lưu ý lịch sử:** tại thời điểm §199, `pho-hoi-an` là shop mẫu Premium công khai riêng biệt. Tài khoản QA owner thật sau đó đã được đăng ký và nâng gói Premium 30 ngày qua admin (ghi nhận tại `.agy-runs/qa/premium-owner-homepage-qa-2026-11-02.md` và §202); tài khoản QA không còn ở trạng thái Free. Flash sale của shop mẫu hiện tắt nên chưa xác minh cấu hình flash sale đang hoạt động trên production.
 
 ## 200. Public shop/catalog APIs không trả raw metadata nội bộ (2026-11-02)
 
@@ -2653,3 +2653,42 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Tài khoản owner Premium thật:** tài khoản QA đã được tạo qua luồng đăng ký và nâng gói Premium 30 ngày bằng admin ở report `.agy-runs/qa/premium-owner-homepage-qa-2026-11-02.md`. Lượt post-deploy mới xác nhận anonymous API của draft tiếp tục 404. Thử đăng nhập browser có guard bằng wait `domcontentloaded` và một auth-only POST nhưng không tới dashboard; `authStatus=UNVERIFIED`, `allowedAuthPosts=1`, `blockedSameOriginMutations=0`, `productionBusinessWrites=0`. Vì vậy dashboard preview của owner ở deployment hiện tại vẫn mở, không được tính là pass.
 - **Claude:** full-repository review vẫn chưa có verdict; CLI trực tiếp với cấu hình hiện tại trả `claude-code:unrecognized_model` cho `deepseek`. Các lượt Claude trước chỉ rà phần giới hạn và không thay thế full review.
 - **Giới hạn còn lại:** không xác minh production checkout, settings write hoặc payment webhook vì sẽ ghi dữ liệu; chưa có Basic owner QA; owner login/post-deploy preview cần phiên auth hợp lệ; native iOS/Android không được kiểm tra trên thiết bị thật. Worktree sản phẩm không đổi; QA runners, logs và report trong `.agy-runs/` được Git-ignore.
+
+## 203. Đồng bộ phân quyền in đơn giữa UI dashboard và API (2026-11-02)
+
+- **Finding/Mục tiêu:** Giải quyết triệt để các điểm lệch phân quyền in đơn ở dashboard web đã được Codex và Claude Code xác nhận tại `.agy-runs/reviews/claude-p3-15-review-2026-11-02.md`:
+  1. Thẻ đơn trên dashboard đòi hỏi `orders.print_kitchen` cho nút in biên lai đã thanh toán, trong khi API `POST /api/orders { action: 'record_print' }` chỉ yêu cầu `orders.view` khi `ticketType === 'receipt'` và đơn đã thanh toán.
+  2. Nút "In phiếu tạm tính kèm mã QR cho khách" trong modal thanh toán QR không được bọc cờ quyền `orders.print_provisional`, mở modal in cho vai trò `staff` mặc định (vốn không có quyền in tạm tính) dẫn đến lỗi HTTP 403 khi in.
+  3. `ReceiptPrintModal` hiển thị tất cả các tab kitchen, provisional, label mà không kiểm tra quyền thành viên (chỉ disable receipt khi đơn unpaid), và mặc định chọn `provisional` trên đơn unpaid bất kể người dùng có quyền in tạm tính hay không.
+- **Sửa mã nguồn:**
+  - `src/lib/order-print-permissions.ts`: Tạo helper tập trung ánh xạ quyền in chuẩn (`PRINT_PERMISSION_BY_TICKET_TYPE`, `canPrintTicketType`, `getAllowedTicketTypes`, `resolvePermittedDefaultTicketType`).
+    - `kitchen` và `label` yêu cầu `orders.print_kitchen`.
+    - `provisional` yêu cầu `orders.print_provisional`.
+    - `receipt` yêu cầu `orders.view` và trạng thái đơn phải là `paid`.
+  - `src/app/(dashboard)/dashboard/orders/page.tsx`:
+    - Nút in biên lai trên thẻ đơn chuyển sang kiểm tra `hasPermission('orders.view')` khi `order.payment_status === 'paid'`; đơn unpaid giữ nguyên `hasPermission('orders.print_provisional')`. Khi click gán tường minh `setPrintingInitialTicketType(paid ? 'receipt' : 'provisional')`.
+    - Nút "In phiếu tạm tính kèm mã QR cho khách" trong modal QR được bọc `{hasPermission('orders.print_provisional') && ...}` và khi click gán `setPrintingInitialTicketType('provisional')`, ngăn chặn việc tái sử dụng `initialTicketType` cũ (ví dụ `'label'`).
+    - Truyền `hasPermission={hasPermission}` xuống `<ReceiptPrintModal />`.
+  - `src/components/dashboard/ReceiptPrintModal.tsx`:
+    - Tự động chọn fallback tab hợp lệ (`resolvePermittedDefaultTicketType`) khi `initialTicketType` được yêu cầu không nằm trong danh sách được phép (ví dụ staff mặc định chuyển sang tab `kitchen` thay vì `provisional`).
+    - Kiểm tra `canPrintTicketType` để vô hiệu hóa (`disabled`) các tab không được phép trong bộ chọn 4 tab (`print-tab-kitchen`, `print-tab-provisional`, `print-tab-receipt`, `print-tab-label`).
+    - Chặn `handleSelectTicketType` và `handlePrintThermalReceipt` ngay trước mọi network fetch `/api/orders` hoặc lệnh in iframe nếu loại phiếu không được phép.
+    - Disable nút in chính (`print-submit-button`) nếu loại phiếu hiện tại không được phép in.
+    - Nếu không có bất kỳ loại in nào được phép (`allowedTicketTypes.length === 0`, ví dụ người dùng view-only mở đơn chưa thanh toán), component trả về `null` (không render modal in).
+- **Kiểm chứng regression:**
+  - `tests/order-print-permissions-review.test.ts`: **9/9 PASS** bao phủ toàn bộ ma trận vai trò (owner, staff mặc định không có provisional, cashier, custom role chỉ có provisional, kitchen-only, view-only) trên cả đơn unpaid và paid; kiểm tra bất biến từ chối receipt khi unpaid; kiểm tra fallback tab mặc định; kiểm tra SSR `ReceiptPrintModal` disabled tabs & render null; kiểm tra source contract cho `orders/page.tsx`.
+  - `tests/order-workflow-review.test.ts`: Thêm regression assertion xác nhận API `POST /api/orders { action: 'record_print' }` trả HTTP 403 khi in `provisional` mà thiếu `orders.print_provisional`, và trả HTTP 200 khi in `receipt` cho tài khoản `orders.view` khi đơn đã thanh toán.
+- **CodeGraph:**
+  - `codegraph status` (332 files, 5.389 nodes, 19.996 edges; engine cũ);
+  - `codegraph explore "ReceiptPrintModal record_print"`;
+  - `codegraph node src/app/api/orders/route.ts --offset 466 --limit 70`;
+  - `codegraph node "src/app/(dashboard)/dashboard/orders/page.tsx"`;
+  - `codegraph node src/components/dashboard/ReceiptPrintModal.tsx`.
+- **Codex & checks:**
+  - `node --experimental-strip-types --import ./tests/register-ts.mjs --import ./tests/tsx-review-loader.mjs --test tests/order-print-permissions-review.test.ts` **9/9 PASS**;
+  - `node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/order-workflow-review.test.ts` **10/10 PASS**;
+  - `npm run test:unit` **144/144 PASS**;
+  - `npm run typecheck` **PASS** (0 errors);
+  - `npm run lint` **PASS** (0 errors, 38 existing warnings);
+  - `git diff --check` **PASS**.
+- **Giới hạn còn lại:** Giữ full-repository review và preview sau deploy của tài khoản Premium owner tiếp tục mở (chưa tính là pass). Không có production write hoặc thay đổi schema DB.
