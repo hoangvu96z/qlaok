@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { startOrderLiveSync } from '@/lib/order-live-sync';
+import { getGuestOrderIdempotencyKey } from '@/lib/guest-order-idempotency';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   X,
@@ -360,6 +361,7 @@ export function ShowToStaffModal({
       ? activeOrderProp
       : null
   );
+  const guestCheckoutIdempotencyKeyRef = useRef<string | null>(null);
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const orderText = SEND_ORDER_LABELS[locale] || SEND_ORDER_LABELS.vi;
@@ -723,10 +725,27 @@ export function ShowToStaffModal({
               items: mappedItems,
             };
 
+      let requestPayload: Record<string, unknown> = { ...requestBody };
+      if (!isEditingExisting) {
+        const guestRequestBody = {
+          ...requestBody,
+          expected_total: grandTotal,
+        };
+        const idempotencyKey = await getGuestOrderIdempotencyKey(
+          guestRequestBody,
+          guestCheckoutIdempotencyKeyRef.current
+        );
+        guestCheckoutIdempotencyKeyRef.current = idempotencyKey;
+        requestPayload = {
+          ...guestRequestBody,
+          idempotency_key: idempotencyKey,
+        };
+      }
+
       const res = await fetch('/api/orders', {
         method: isEditingExisting ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(requestPayload),
       });
       const data = await res.json().catch(() => ({}));
 
@@ -745,6 +764,9 @@ export function ShowToStaffModal({
         tracking_token:
           data.order?.tracking_token || editingOrder?.tracking_token,
       };
+      if (!isEditingExisting) {
+        guestCheckoutIdempotencyKeyRef.current = null;
+      }
       setActiveOrder(savedOrder);
       onOrderCreated?.(savedOrder);
       onCancelEditOrder?.();

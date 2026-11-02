@@ -21,6 +21,7 @@ import {
   setOrderAuditDbClientForTests,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
+import { getGuestOrderIdempotencyKey } from '@/lib/guest-order-idempotency';
 import {
   resetMposStoreForTests,
   setMposDbClientForTests,
@@ -1511,27 +1512,33 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
     );
     assert.equal(printRes.status, 200);
 
+    const guestQrOrderIntent = {
+      shop_id: shopAId,
+      source: 'qr_table',
+      table_id: tableA1Id,
+      table_label: 'Bàn 01',
+      table_qr_sig: tableA1Sig,
+      payment_method: 'cash',
+      expected_total: 50000,
+      items: [
+        {
+          item_id: 'item-audit-a1',
+          name_vi: 'Phở Tái',
+          quantity: 1,
+          unit_price: 50000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    };
     const guestQrOrderRes = await postOrders(
       new Request('http://localhost:3000/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: shopAId,
-          source: 'qr_table',
-          table_id: tableA1Id,
-          table_label: 'Bàn 01',
-          table_qr_sig: tableA1Sig,
-          payment_method: 'cash',
-          items: [
-            {
-              item_id: 'item-audit-a1',
-              name_vi: 'Phở Tái',
-              quantity: 1,
-              unit_price: 50000,
-              extra_price: 0,
-              selected_choices: [],
-            },
-          ],
+          ...guestQrOrderIntent,
+          idempotency_key:
+            await getGuestOrderIdempotencyKey(guestQrOrderIntent),
         }),
       })
     );

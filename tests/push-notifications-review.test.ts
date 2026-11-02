@@ -15,6 +15,7 @@ import {
   sendNewGuestOrderPushNotifications,
   setPushFetchForTests,
 } from '../src/lib/push-notifications';
+import { getGuestOrderIdempotencyKey } from '../src/lib/guest-order-idempotency';
 import { issueSessionToken } from '../src/lib/server-auth';
 import {
   dbDeleteShopMembership,
@@ -289,14 +290,13 @@ test('Guest QR order creation sends localized push only to target shop owner & o
       is_active: true,
     });
 
-    const idempotencyKey = `qr-push-idemp-${Date.now()}`;
-    const orderBody = {
+    const orderIntent = {
       shop_id: SHOP_A,
       table_id: 'tbl-fnb-01',
       table_qr_sig: signTableQr(SHOP_A, 'tbl-fnb-01'),
       table_label: 'Bàn 01',
       source: 'qr_table',
-      idempotency_key: idempotencyKey,
+      expected_total: 65000,
       items: [
         {
           item_id: 'item-fnb-1',
@@ -314,6 +314,10 @@ test('Guest QR order creation sends localized push only to target shop owner & o
           ],
         },
       ],
+    };
+    const orderBody = {
+      ...orderIntent,
+      idempotency_key: await getGuestOrderIdempotencyKey(orderIntent),
     };
 
     const createRes1 = await createOrderRoute(
@@ -426,33 +430,39 @@ test('Push provider HTTP error or network rejection does not turn a created gues
   });
 
   try {
+    const guestOrderIntent = {
+      shop_id: SHOP_A,
+      table_id: 'tbl-fnb-02',
+      table_qr_sig: signTableQr(SHOP_A, 'tbl-fnb-02'),
+      table_label: 'Bàn 02',
+      source: 'qr_table',
+      expected_total: 65000,
+      items: [
+        {
+          item_id: 'item-fnb-1',
+          name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
+          quantity: 1,
+          unit_price: 65000,
+          extra_price: 0,
+          selected_choices: [
+            {
+              id: 'size-m',
+              label_vi: 'Tô Vừa (Tiêu chuẩn)',
+              label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' },
+              extra_price: 0,
+            },
+          ],
+        },
+      ],
+    };
     const res = await createOrderRoute(
       new Request('http://localhost:3000/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: SHOP_A,
-          table_id: 'tbl-fnb-02',
-          table_qr_sig: signTableQr(SHOP_A, 'tbl-fnb-02'),
-          table_label: 'Bàn 02',
-          source: 'qr_table',
-          items: [
-            {
-              item_id: 'item-fnb-1',
-              name_vi: 'Phở Bò Tái Nạm Đặc Biệt',
-              quantity: 1,
-              unit_price: 65000,
-              extra_price: 0,
-              selected_choices: [
-                {
-                  id: 'size-m',
-                  label_vi: 'Tô Vừa (Tiêu chuẩn)',
-                  label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' },
-                  extra_price: 0,
-                },
-              ],
-            },
-          ],
+          ...guestOrderIntent,
+          idempotency_key:
+            await getGuestOrderIdempotencyKey(guestOrderIntent),
         }),
       })
     );

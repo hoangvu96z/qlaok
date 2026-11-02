@@ -36,6 +36,7 @@ import {
 import { issueSessionToken } from '@/lib/server-auth';
 import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
 import { localizeGuestOrderError } from '@/lib/i18n-helper';
+import { getGuestOrderIdempotencyKey } from '@/lib/guest-order-idempotency';
 
 test('table mutations must not report persistence when the DB returns no written row', async () => {
   const existing = { id: 'existing', shop_id: 'review-shop', table_code: 'T01', name: 'Existing', section: '', capacity: 4, sort_order: 1, is_active: true, is_archived: false };
@@ -311,19 +312,25 @@ test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATC
     ];
 
     // 2. Valid signed table QR order succeeds
+    const validGuestIntent = {
+      shop_id: shopId,
+      table_id: table1Id,
+      table_label: 'Bàn 01',
+      qr_table_mode: true,
+      table_qr_sig: sig1,
+      source: 'qr_table',
+      visitor_lang: 'en',
+      expected_total: 65000,
+      items: sampleItems,
+    };
     const validRes = await postOrders(
       new Request('http://localhost/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: shopId,
-          table_id: table1Id,
-          table_label: 'Bàn 01',
-          qr_table_mode: true,
-          table_qr_sig: sig1,
-          source: 'qr_table',
-          visitor_lang: 'en',
-          items: sampleItems,
+          ...validGuestIntent,
+          idempotency_key:
+            await getGuestOrderIdempotencyKey(validGuestIntent),
         }),
       })
     );
@@ -535,16 +542,22 @@ test('table QR HMAC-SHA256 signing secures anonymous table orders and guest PATC
     assert.equal(unsignedTableLabelData.code, 'MISSING_TABLE_QR_SIGNATURE');
 
     // 8. Legitimate anonymous takeaway order (door QR / generic menu) succeeds without table_qr_sig
+    const doorTakeawayIntent = {
+      shop_id: shopId,
+      table_id: null,
+      table_label: 'Mang về',
+      source: 'qr_table',
+      expected_total: 65000,
+      items: sampleItems,
+    };
     const doorTakeawayRes = await postOrders(
       new Request('http://localhost/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: shopId,
-          table_id: null,
-          table_label: 'Mang về',
-          source: 'qr_table',
-          items: sampleItems,
+          ...doorTakeawayIntent,
+          idempotency_key:
+            await getGuestOrderIdempotencyKey(doorTakeawayIntent),
         }),
       })
     );

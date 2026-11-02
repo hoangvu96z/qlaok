@@ -1629,6 +1629,10 @@ export function localizeGuestOrderError(
       return labels.errorOrderAccepted;
     case 'PRICE_CHANGED':
       return labels.errorPriceChanged;
+    case 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH':
+    case 'IDEMPOTENCY_KEY_SOURCE_MISMATCH':
+    case 'GUEST_ORDER_IDEMPOTENCY_KEY_REQUIRED':
+      return labels.errorGeneric;
     case 'INVALID_SHOP_TABLE':
     case 'INVALID_TABLE_SHOP':
     case 'TABLE_NOT_FOUND':

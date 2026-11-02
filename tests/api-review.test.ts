@@ -17,12 +17,19 @@ const { GET: shopsGet, POST: shopsPost, PATCH: shopsPatch } = await import('@/ap
 const { POST: ordersPost, PATCH: ordersPatch, GET: ordersGet } = await import('@/app/api/orders/route');
 const { GET: tablesGet, POST: tablesPost, PATCH: tablesPatch, DELETE: tablesDelete } = await import('@/app/api/tables/route');
 const { dbCreateOrder } = await import('@/lib/mpos-store');
+const { getGuestOrderIdempotencyKey } = await import('@/lib/guest-order-idempotency');
 const { escapeHtml } = await import('@/lib/escape-html');
 
 function request(path: string, token: string | null, body: unknown, method = 'PATCH') {
   return new Request(`http://localhost${path}`, { method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body) });
+}
+async function withGuestIdempotencyKey(intent: Record<string, unknown>) {
+  return {
+    ...intent,
+    idempotency_key: await getGuestOrderIdempotencyKey(intent),
+  };
 }
 const token = issueSessionToken({ id: 'review-settings-staff', email: 'review@example.test' });
 const ownerToken = issueSessionToken({ id: 'owner-demo-001', email: 'chuquan@qlaok.vn', role: 'owner' });
@@ -84,11 +91,11 @@ test('receipt text escapes user-controlled markup and quoted attributes', () => 
 
 
 test('checkout rejects stale displayed totals before creating or collecting payment', async () => {
-  const response = await ordersPost(request('/api/orders', null, {
-    shop_id: 'shop-fnb-001', expected_total: 1,
+  const response = await ordersPost(request('/api/orders', null, await withGuestIdempotencyKey({
+    shop_id: 'shop-fnb-001', table_label: 'Mang về', expected_total: 1,
     items: [{ item_id: 'item-fnb-1', name_vi: 'Phở', quantity: 1, unit_price: 1, extra_price: 0, selected_choices: [{ id: 'size-m', label_i18n: { vi: 'Tô Vừa (Tiêu chuẩn)' }, extra_price: 0 }] }],
-  }, 'POST'));
-  assert.equal(response.status, 409);
+  }), 'POST'));
+  assert.equal(response.status, 409, JSON.stringify(await response.clone().json()));
 });
 
 test('/api/tables enforces owner-only mutations, archive-only DELETE guard, and safe public vs management reads', async () => {
@@ -142,24 +149,26 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   assert.ok(bundle.tables.some((t: { id: string }) => t.id === vipTable.id));
 
   // Guest creates order with table_id and spoofed table_label -> server snapshots canonical 'Bàn VIP 88'
-  const orderCreateRes = await ordersPost(request('/api/orders', null, {
+  const orderCreateRes = await ordersPost(request('/api/orders', null, await withGuestIdempotencyKey({
     shop_id: 'shop-fnb-001',
     table_id: vipTable.id,
     table_qr_sig: vipTable.qr_sig,
     table_label: 'Spoofed Label',
+    expected_total: 55000,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
-  }, 'POST'));
+  }), 'POST'));
   assert.equal(orderCreateRes.status, 201);
   const { order: createdOrder } = await orderCreateRes.json();
   assert.equal(createdOrder.table_id, vipTable.id);
   assert.equal(createdOrder.table_label, 'Bàn VIP 88');
 
   // Cross-shop table_id is rejected on POST /api/orders
-  const crossShopOrderRes = await ordersPost(request('/api/orders', null, {
+  const crossShopOrderRes = await ordersPost(request('/api/orders', null, await withGuestIdempotencyKey({
     shop_id: 'shop-fnb-001',
     table_id: 'tbl-service2-01',
+    expected_total: 55000,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
-  }, 'POST'));
+  }), 'POST'));
   assert.equal(crossShopOrderRes.status, 400);
 
   // Owner renames 'Bàn VIP 88' -> 'Bàn VIP 88 (Mới)'
@@ -204,12 +213,13 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   assert.ok(!publicTables.some((t: { id: string }) => t.id === vipTable.id));
 
   // New order on archived table is rejected with 400
-  const archivedOrderRes = await ordersPost(request('/api/orders', null, {
+  const archivedOrderRes = await ordersPost(request('/api/orders', null, await withGuestIdempotencyKey({
     shop_id: 'shop-fnb-001',
     table_id: vipTable.id,
     table_qr_sig: vipTable.qr_sig,
+    expected_total: 55000,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
-  }, 'POST'));
+  }), 'POST'));
   assert.equal(archivedOrderRes.status, 400);
 
   // Owner creates a new table reusing name 'Bàn VIP 88', guest places order on the new table
@@ -219,13 +229,14 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   assert.equal(reusedTableRes.status, 201);
   const { table: reusedTable } = await reusedTableRes.json();
 
-  const secondOrderRes = await ordersPost(request('/api/orders', null, {
+  const secondOrderRes = await ordersPost(request('/api/orders', null, await withGuestIdempotencyKey({
     shop_id: 'shop-fnb-001',
     table_id: reusedTable.id,
     table_qr_sig: reusedTable.qr_sig,
+    expected_total: 55000,
     items: [{ item_id: 'item-fnb-2', name_vi: 'Phở Tái', quantity: 1, unit_price: 55000, extra_price: 0, selected_choices: [] }],
-  }, 'POST'));
-  assert.equal(secondOrderRes.status, 201);
+  }), 'POST'));
+  assert.equal(secondOrderRes.status, 201, JSON.stringify(await secondOrderRes.clone().json()));
   const { order: secondOrder } = await secondOrderRes.json();
 
   // Settling bill for reusedTable.id only settles secondOrder, not createdOrder from archived vipTable

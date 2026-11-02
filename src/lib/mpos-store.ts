@@ -1155,6 +1155,84 @@ function validateAndPriceOrderLines(
   });
 }
 
+function orderLineDiscountIdentity(line: OrderLineItem): string | null {
+  if (!line.item_id || !Number.isFinite(Number(line.quantity))) return null;
+  const baseUnitPrice = Number(line.original_unit_price ?? line.unit_price);
+  if (!Number.isFinite(baseUnitPrice)) return null;
+
+  const choices = (Array.isArray(line.selected_choices) ? line.selected_choices : [])
+    .map((rawChoice) => {
+      const choice = rawChoice as unknown;
+      if (typeof choice === 'string') return choice.trim().toLowerCase();
+      if (!choice || typeof choice !== 'object') return '';
+      const record = choice as {
+        id?: unknown;
+        label_vi?: unknown;
+        label_i18n?: { vi?: unknown };
+      };
+      return String(record.id || record.label_i18n?.vi || record.label_vi || '')
+        .trim()
+        .toLowerCase();
+    })
+    .sort();
+
+  return JSON.stringify([
+    line.item_id,
+    Number(line.quantity),
+    baseUnitPrice,
+    choices,
+    String(line.custom_note || '').trim(),
+  ]);
+}
+
+function preserveUnchangedOrderLineDiscounts(
+  existingLines: readonly OrderLineItem[],
+  validatedLines: OrderLineItem[]
+): OrderLineItem[] {
+  const existingByIdentity = new Map<string, OrderLineItem[]>();
+  const submittedCountByIdentity = new Map<string, number>();
+  for (const line of existingLines) {
+    const identity = orderLineDiscountIdentity(line);
+    if (!identity) continue;
+    const matches = existingByIdentity.get(identity) || [];
+    matches.push(line);
+    existingByIdentity.set(identity, matches);
+  }
+  for (const line of validatedLines) {
+    const identity = orderLineDiscountIdentity(line);
+    if (identity) {
+      submittedCountByIdentity.set(
+        identity,
+        (submittedCountByIdentity.get(identity) || 0) + 1
+      );
+    }
+  }
+  const existingCountByIdentity = new Map(
+    Array.from(existingByIdentity, ([identity, matches]) => [
+      identity,
+      matches.length,
+    ])
+  );
+
+  return validatedLines.map((line) => {
+    const identity = orderLineDiscountIdentity(line);
+    const isUnambiguousMatch =
+      identity !== null &&
+      existingCountByIdentity.get(identity) ===
+        submittedCountByIdentity.get(identity);
+    const previous = isUnambiguousMatch
+      ? existingByIdentity.get(identity)?.shift()
+      : undefined;
+    if (!previous) return line;
+
+    return {
+      ...line,
+      discount_percent: previous.discount_percent,
+      custom_unit_price: previous.custom_unit_price,
+    };
+  });
+}
+
 function isSyntheticTestBypass(isSynthetic: boolean): boolean {
   return isSynthetic;
 }
@@ -2217,6 +2295,9 @@ export async function dbCreateOrder(params: {
   idempotency_key?: string;
   payment_idempotency_key?: string;
   isStaffAuthorized?: boolean;
+  expected_total?: number;
+  require_guest_checkout_confirmation?: boolean;
+  resolved_table_identity?: { table_id: string | null; table_label: string };
   themeConfigOverride?: ShopThemeConfig | null;
   /** Reference clock for opening-hours enforcement (tests). */
   now?: Date;
@@ -2237,6 +2318,41 @@ export async function dbCreateOrder(params: {
       cleanIdempKey.length >= POS_WEB_STORED_PREFIX_LEN
         ? cleanIdempKey.slice(0, POS_WEB_STORED_PREFIX_LEN)
         : undefined;
+    // 0. Validate managed table identity BEFORE stock deduction
+    const resolvedTable =
+      params.resolved_table_identity ??
+      (await dbResolveOrderTableIdentity({
+        shop_id: params.shop_id,
+        table_id: params.table_id,
+        table_code: params.table_code,
+        table_label: params.table_label,
+        table_qr_sig: params.table_qr_sig,
+        require_table_qr_sig: params.require_table_qr_sig,
+        dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
+      }));
+    const resolvedTableId = resolvedTable.table_id;
+    const normalizedTableLabel =
+      resolvedTable.table_label || (params.table_label || '').trim() || 'Bàn khách';
+
+    const loadedOrders = await loadMergedOrders(params.shop_id);
+    const store = readStore();
+    if (isOrderDbConfigured()) store.orders = loadedOrders;
+
+    // Validate table identity and any required QR signature before revealing an
+    // idempotent replay to a caller.
+    const expectedOrderSource =
+      params.isStaffAuthorized === true && params.source === 'counter_pos'
+        ? 'counter_pos'
+        : 'qr_table';
+    const assertReplaySource = (order: ShopOrder): ShopOrder => {
+      if (order.source !== expectedOrderSource) {
+        throw new Error(
+          'IDEMPOTENCY_KEY_SOURCE_MISMATCH: Khóa chống trùng thuộc một loại đơn hàng khác.'
+        );
+      }
+      return order;
+    };
+
     if (cleanIdempKey) {
       const directLookup = await dbGetOrderByShopIdempotencyKey(
         params.shop_id,
@@ -2249,15 +2365,11 @@ export async function dbCreateOrder(params: {
         );
       }
       if (directLookup.order) {
-        return directLookup.order;
+        return assertReplaySource(directLookup.order);
       }
     }
 
-    const loadedOrders = await loadMergedOrders(params.shop_id);
-    const store = readStore();
-    if (isOrderDbConfigured()) store.orders = loadedOrders;
-
-    // Idempotency key deduplication: return existing order if already processed
+    // Idempotency key deduplication for the local fallback store.
     if (cleanIdempKey) {
       if (posKeyPrefix) {
         const existingPrefixMatch = store.orders.find(
@@ -2272,7 +2384,7 @@ export async function dbCreateOrder(params: {
               'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH: Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.'
             );
           }
-          return normalizeOrderRecord(existingPrefixMatch);
+          return assertReplaySource(normalizeOrderRecord(existingPrefixMatch));
         }
       }
       const existingIdemp = store.orders.find(
@@ -2280,23 +2392,9 @@ export async function dbCreateOrder(params: {
           o.shop_id === params.shop_id && o.idempotency_key === cleanIdempKey
       );
       if (existingIdemp) {
-        return normalizeOrderRecord(existingIdemp);
+        return assertReplaySource(normalizeOrderRecord(existingIdemp));
       }
     }
-
-    // 0. Validate managed table identity BEFORE stock deduction
-    const resolvedTable = await dbResolveOrderTableIdentity({
-      shop_id: params.shop_id,
-      table_id: params.table_id,
-      table_code: params.table_code,
-      table_label: params.table_label,
-      table_qr_sig: params.table_qr_sig,
-      require_table_qr_sig: params.require_table_qr_sig,
-      dbClient: isOrderDbConfigured() ? getActiveDbClient() : undefined,
-    });
-    const resolvedTableId = resolvedTable.table_id;
-    const normalizedTableLabel =
-      resolvedTable.table_label || (params.table_label || '').trim() || 'Bàn khách';
 
     const loaded = await loadShopCatalogAndTheme(params.shop_id);
     const itemMap = loaded.itemMap;
@@ -2314,6 +2412,21 @@ export async function dbCreateOrder(params: {
       if (!openStatus.isOpen) {
         throw new Error(
           'SHOP_CLOSED: Quán hiện đang đóng cửa, chưa thể nhận đơn. Vui lòng quay lại trong giờ mở cửa.'
+        );
+      }
+    }
+    if (params.require_guest_checkout_confirmation) {
+      if (!cleanIdempKey) {
+        throw new Error(
+          'GUEST_ORDER_IDEMPOTENCY_KEY_REQUIRED: Thiếu khóa chống gửi trùng cho đơn hàng khách.'
+        );
+      }
+      if (
+        typeof params.expected_total !== 'number' ||
+        !Number.isFinite(params.expected_total)
+      ) {
+        throw new Error(
+          'PRICE_CHANGED: Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.'
         );
       }
     }
@@ -2358,6 +2471,16 @@ export async function dbCreateOrder(params: {
       manualOrderDiscountAmount: params.discount_amount,
       canApplyManualDiscount: canApplyDiscount,
     });
+
+    if (
+      params.expected_total !== undefined &&
+      (!Number.isFinite(Number(params.expected_total)) ||
+        Number(params.expected_total) !== quote.total_amount)
+    ) {
+      throw new Error(
+        'PRICE_CHANGED: Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.'
+      );
+    }
 
     // 4. Resolve a globally unique order_code BEFORE mutating inventory or committing
     const nowIso = new Date().toISOString();
@@ -2854,7 +2977,7 @@ export async function dbUpdateOrderStatus(
           );
         }
       }
-      const validatedNewItems = validateAndPriceOrderLines(
+      let validatedNewItems = validateAndPriceOrderLines(
         patch.items,
         existing.shop_id,
         itemMap,
@@ -2863,6 +2986,12 @@ export async function dbUpdateOrderStatus(
           allowUnavailableItemQuantities: alreadyReservedQuantities,
         }
       );
+      if (patch.canApplyDiscount !== true) {
+        validatedNewItems = preserveUnchangedOrderLineDiscounts(
+          existing.items || [],
+          validatedNewItems
+        );
+      }
 
       // 1. Temporarily restore old quantities into a working copy of inventory (if order was active)
       const workingInventory: Record<string, InventoryMeta> = JSON.parse(
@@ -2933,14 +3062,11 @@ export async function dbUpdateOrderStatus(
         0
       );
       const existingManualDiscountAmount = getStoredManualDiscountAmount(existing);
-      const preservedOrderManualDiscountAmount =
-        patch.canApplyDiscount === true
-          ? Math.max(
-              0,
-              existingManualDiscountAmount -
-                calculateLineManualDiscountAmount(existing.items || [])
-            )
-          : existingManualDiscountAmount;
+      const preservedOrderManualDiscountAmount = Math.max(
+        0,
+        existingManualDiscountAmount -
+          calculateLineManualDiscountAmount(existing.items || [])
+      );
       const requestedDiscount =
         patch.discount_amount !== undefined
           ? Number(patch.discount_amount)
@@ -2950,7 +3076,7 @@ export async function dbUpdateOrderStatus(
       }
       nextManualDiscountAmount = Math.max(0, Math.round(
         patch.discount_amount !== undefined && patch.canApplyDiscount === false
-          ? existingManualDiscountAmount
+          ? preservedOrderManualDiscountAmount
           : requestedDiscount
       ));
       nextDiscountAmount = nextManualDiscountAmount;
@@ -2987,14 +3113,11 @@ export async function dbUpdateOrderStatus(
 
     if (isChangingItems || patch.discount_amount !== undefined) {
       const existingManualDiscountAmount = getStoredManualDiscountAmount(existing);
-      const preservedOrderManualDiscountAmount =
-        patch.canApplyDiscount === true
-          ? Math.max(
-              0,
-              existingManualDiscountAmount -
-                calculateLineManualDiscountAmount(existing.items || [])
-            )
-          : existingManualDiscountAmount;
+      const preservedOrderManualDiscountAmount = Math.max(
+        0,
+        existingManualDiscountAmount -
+          calculateLineManualDiscountAmount(existing.items || [])
+      );
       const requestedManualDiscountAmount =
         patch.discount_amount !== undefined && patch.canApplyDiscount !== false
           ? Number(patch.discount_amount)
@@ -3150,8 +3273,15 @@ export async function dbUpdateOrderStatus(
 
     if (nextStatus === 'cancelled' && existing.status !== 'cancelled') updated.waste_recorded = patch.restock_items === false;
     if (isOrderDbConfigured()) {
+      const inventoryDeltas = orderInventoryDelta(existing, updated);
+      const deltasForCommit =
+        existing.status !== 'cancelled' && nextStatus === 'cancelled'
+          ? inventoryDeltas.filter(
+              ({ item_id, delta }) => delta >= 0 || itemMap.has(item_id)
+            )
+          : inventoryDeltas;
       const committed = await orderRpc('update_order_with_inventory', {
-        p_order_id: orderId, p_order: updated, p_inventory_deltas: orderInventoryDelta(existing, updated),
+        p_order_id: orderId, p_order: updated, p_inventory_deltas: deltasForCommit,
         p_guards: { expected_updated_at: existing.updated_at, expected_bill_version: existing.bill_version,
           expected_status: existing.status, expected_payment_status: existing.payment_status,
           require_new_unpaid: Boolean(patch.require_new_unpaid) },

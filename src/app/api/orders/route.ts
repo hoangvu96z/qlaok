@@ -23,8 +23,13 @@ import {
 } from '@/lib/order-discounts';
 import {
   dbGetShopCatalog,
+  dbGetShopById,
   dbRecordAnalyticsEvent,
 } from '@/lib/db';
+import {
+  parseGuestOrderIdempotencyKey,
+  serializeGuestOrderIntent,
+} from '@/lib/guest-order-idempotency';
 import { sendNewGuestOrderPushNotifications } from '@/lib/push-notifications';
 import { dbGetShopServiceRequests } from '@/lib/service-requests';
 import {
@@ -34,6 +39,7 @@ import {
 } from '@/lib/server-auth';
 import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import { hasShopPermission } from '@/lib/shop-permissions';
+import { dbResolveOrderTableIdentity } from '@/lib/shop-tables';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import type {
   OrderLineItem,
@@ -95,6 +101,50 @@ function sanitizeCustomerOrderView(order: ShopOrder) {
     ...publicOrderView
   } = order;
   return publicOrderView;
+}
+
+function sanitizeGuestCreateOrderView(order: ShopOrder) {
+  const {
+    idempotency_key: _idempotencyKey,
+    payment_idempotency_key: _paymentIdempotencyKey,
+    paid_by: _paidBy,
+    refunded_by: _refundedBy,
+    ...publicOrderView
+  } = order;
+  return publicOrderView;
+}
+
+function matchesGuestOrderIdempotencyIntent(
+  idempotencyKey: string,
+  requestBody: unknown
+): boolean {
+  const parsed = parseGuestOrderIdempotencyKey(idempotencyKey);
+  if (!parsed) return false;
+  const expectedDigest = createHash('sha256')
+    .update(serializeGuestOrderIntent(requestBody))
+    .digest('hex');
+  const suppliedBytes = Buffer.from(parsed.intentDigest, 'hex');
+  const expectedBytes = Buffer.from(expectedDigest, 'hex');
+  return (
+    suppliedBytes.length === expectedBytes.length &&
+    timingSafeEqual(suppliedBytes, expectedBytes)
+  );
+}
+
+async function canCreatePublicOrder(
+  shopId: string,
+  membership: Awaited<ReturnType<typeof getRequestShopMembership>>['membership']
+): Promise<boolean> {
+  if (hasShopPermission(membership, 'orders.create')) return true;
+  const shop = await dbGetShopById(shopId);
+  return shop?.is_published === true;
+}
+
+function unpublishedShopResponse() {
+  return NextResponse.json(
+    { error: 'Không tìm thấy cửa hàng.', code: 'SHOP_NOT_PUBLISHED' },
+    { status: 404 }
+  );
 }
 
 export async function GET(req: Request) {
@@ -330,6 +380,9 @@ export async function POST(req: Request) {
         );
       }
       const { membership } = await getRequestShopMembership(req, shopId);
+      if (!(await canCreatePublicOrder(shopId, membership))) {
+        return unpublishedShopResponse();
+      }
       const canApplyManualDiscount = hasShopPermission(
         membership,
         'discount.apply'
@@ -544,6 +597,12 @@ export async function POST(req: Request) {
     const canApplyDiscount = hasShopPermission(membership, 'discount.apply');
     const canCollectPayment = hasShopPermission(membership, 'payment.collect');
 
+    if (source !== 'counter_pos' && !hasCreatePerm) {
+      if (!(await canCreatePublicOrder(shop_id, membership))) {
+        return unpublishedShopResponse();
+      }
+    }
+
     // Counter POS orders require an authenticated shop member with 'orders.create'
     if (source === 'counter_pos') {
       if (!sessionUser) {
@@ -639,6 +698,110 @@ export async function POST(req: Request) {
       Boolean(qr_table_mode || qrTableMode) ||
       (!hasCreatePerm && !isAnonymousTakeaway);
 
+    const resolvedGuestTable =
+      source !== 'counter_pos'
+        ? await dbResolveOrderTableIdentity({
+            shop_id,
+            table_id: rawTableId,
+            table_code: rawTableCode,
+            table_label,
+            table_qr_sig: resolvedTableQrSig,
+            require_table_qr_sig: requireTableQrSig,
+          })
+        : undefined;
+
+    const isGuestUsingReservedPosKey = Boolean(
+      source !== 'counter_pos' &&
+        rawIdempotencyKey &&
+        isReservedPosWebIdempotencyKey(rawIdempotencyKey)
+    );
+
+    if (
+      source !== 'counter_pos' &&
+      rawIdempotencyKey &&
+      !isGuestUsingReservedPosKey &&
+      !matchesGuestOrderIdempotencyIntent(rawIdempotencyKey, body)
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Khóa chống trùng không hợp lệ hoặc nội dung đơn đã thay đổi.',
+          code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+        },
+        { status: 409 }
+      );
+    }
+
+    if (
+      source !== 'counter_pos' &&
+      rawIdempotencyKey &&
+      !isGuestUsingReservedPosKey
+    ) {
+      const guestReplay = await dbGetOrderByShopIdempotencyKey(
+        shop_id,
+        rawIdempotencyKey
+      );
+      if (guestReplay.payloadMismatch) {
+        return NextResponse.json(
+          {
+            error:
+              'Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác. Không thể gửi lại với nội dung hoặc số tiền thay đổi.',
+            code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+          },
+          { status: 409 }
+        );
+      }
+      if (guestReplay.order) {
+        const existingGuestOrder = guestReplay.order;
+        if (
+          existingGuestOrder.shop_id !== shop_id ||
+          existingGuestOrder.source !== 'qr_table' ||
+          !existingGuestOrder.tracking_token
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Không thể phát lại yêu cầu đơn hàng này.',
+              code: 'IDEMPOTENCY_KEY_SOURCE_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
+
+        const replayTable = resolvedGuestTable!;
+        const replayTableMatches =
+          (replayTable.table_id ?? null) ===
+            (existingGuestOrder.table_id ?? null) &&
+          (replayTable.table_id !== null ||
+            replayTable.table_label.trim().toLowerCase() ===
+              existingGuestOrder.table_label.trim().toLowerCase());
+        if (!replayTableMatches) {
+          return NextResponse.json(
+            {
+              error:
+                'Khóa idempotency_key này đã gắn với một yêu cầu đơn hàng khác.',
+              code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
+
+        if (Number(body.expected_total) !== Number(existingGuestOrder.total_amount)) {
+          return NextResponse.json(
+            {
+              error:
+                'Giá hoặc ưu đãi đã thay đổi. Vui lòng kiểm tra lại tổng tiền.',
+              code: 'PRICE_CHANGED',
+            },
+            { status: 409 }
+          );
+        }
+
+        return NextResponse.json(
+          { order: sanitizeGuestCreateOrderView(existingGuestOrder) },
+          { status: 201 }
+        );
+      }
+    }
+
     let resolvedIdempotencyKey = rawIdempotencyKey;
 
     if (rawIdempotencyKey && isReservedPosWebIdempotencyKey(rawIdempotencyKey)) {
@@ -680,6 +843,15 @@ export async function POST(req: Request) {
       }
 
       if (replayLookup.order && replayLookup.order.shop_id === shop_id) {
+        if (replayLookup.order.source !== 'counter_pos') {
+          return NextResponse.json(
+            {
+              error: 'Không thể phát lại yêu cầu đơn hàng này.',
+              code: 'IDEMPOTENCY_KEY_SOURCE_MISMATCH',
+            },
+            { status: 409 }
+          );
+        }
         return NextResponse.json(
           { order: replayLookup.order },
           { status: 201 }
@@ -721,6 +893,12 @@ export async function POST(req: Request) {
       canCollectPayment,
       paid_by: canCollectPayment ? sessionUser?.sub : undefined,
       idempotency_key: resolvedIdempotencyKey,
+      resolved_table_identity: resolvedGuestTable,
+      require_guest_checkout_confirmation: source !== 'counter_pos',
+      expected_total:
+        typeof body.expected_total === 'number'
+          ? body.expected_total
+          : undefined,
       payment_idempotency_key,
       isStaffAuthorized: hasCreatePerm,
       items,
@@ -766,13 +944,24 @@ export async function POST(req: Request) {
       }).catch(() => {});
     }
 
-    return NextResponse.json({ order }, { status: 201 });
+    return NextResponse.json(
+      {
+        order:
+          source === 'counter_pos'
+            ? order
+            : sanitizeGuestCreateOrderView(order),
+      },
+      { status: 201 }
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Không thể tạo đơn hàng';
     const code = extractOrderErrorCode(message);
     const status =
-      code === 'SHOP_CLOSED' || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+      code === 'SHOP_CLOSED' ||
+      code === 'PRICE_CHANGED' ||
+      code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ||
+      code === 'IDEMPOTENCY_KEY_SOURCE_MISMATCH'
         ? 409
         : code === 'ORDER_IDEMPOTENCY_LOOKUP_FAILED'
           ? 503

@@ -30,6 +30,7 @@ import {
   SESSION_COOKIE_NAME,
   setOrderAuditLogFileForTests,
 } from '@/lib/server-auth';
+import { getGuestOrderIdempotencyKey } from '@/lib/guest-order-idempotency';
 import {
   setShopTablesDbClientForTests,
   signTableQr,
@@ -270,26 +271,81 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
       table_label: 'Line discount fixture',
       discount_amount: 500,
       canApplyDiscount: true,
+      items: [
+        {
+          item_id: 'engine-item',
+          name_vi: 'Fixture',
+          quantity: 1,
+          unit_price: 10000,
+          original_unit_price: 10000,
+          custom_unit_price: 9000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+        {
+          item_id: 'engine-item',
+          name_vi: 'Fixture',
+          quantity: 1,
+          unit_price: 10000,
+          extra_price: 0,
+          selected_choices: [],
+        },
+      ],
+    });
+    assert.equal(lineDiscounted.manual_discount_amount, 1500);
+    assert.equal(lineDiscounted.total_amount, 18500);
+
+    const guestEditPreservesOriginalLineDiscount = await dbUpdateOrderStatus(lineDiscounted.id, {
+      items: lineDiscounted.items,
+      canApplyDiscount: false,
+      expected_total: 18500,
+    });
+    assert.equal(guestEditPreservesOriginalLineDiscount.items[0].custom_unit_price, 9000);
+    assert.equal(guestEditPreservesOriginalLineDiscount.items[1].custom_unit_price, null);
+    assert.equal(guestEditPreservesOriginalLineDiscount.manual_discount_amount, 1500);
+    assert.equal(guestEditPreservesOriginalLineDiscount.total_amount, 18500);
+
+    const removedDiscountedLine = await dbUpdateOrderStatus(lineDiscounted.id, {
       items: [{
-        item_id: 'engine-item',
-        name_vi: 'Fixture',
-        quantity: 2,
+        ...lineDiscounted.items[1],
+        custom_unit_price: 0,
+        discount_percent: 99,
+      }],
+      canApplyDiscount: false,
+      expected_total: 9500,
+    });
+    assert.equal(removedDiscountedLine.items[0].custom_unit_price, null);
+    assert.equal(removedDiscountedLine.items[0].discount_percent, undefined);
+    assert.equal(removedDiscountedLine.manual_discount_amount, 500);
+    assert.equal(removedDiscountedLine.total_amount, 9500);
+
+    const orderWithDeletedCatalogItem = await dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label: 'Deleted item cancellation fixture',
+      items: [{
+        item_id: 'engine-item-options',
+        name_vi: 'Options fixture',
+        quantity: 1,
         unit_price: 10000,
-        original_unit_price: 10000,
-        custom_unit_price: 9000,
         extra_price: 0,
-        selected_choices: [],
+        selected_choices: [selectedOption('size-large', 'Lớn', 3000)],
       }],
     });
-    assert.equal(lineDiscounted.manual_discount_amount, 2500);
-    assert.equal(lineDiscounted.total_amount, 17500);
-
-    const lineDiscountPreserved = await dbUpdateOrderStatus(lineDiscounted.id, {
-      items: lineDiscounted.items,
-      canApplyDiscount: true,
-    });
-    assert.equal(lineDiscountPreserved.manual_discount_amount, 2500);
-    assert.equal(lineDiscountPreserved.total_amount, 17500);
+    await db.query("DELETE FROM items WHERE id='engine-item-options'");
+    const cancellationAfterCatalogDeletion = await dbUpdateOrderStatus(
+      orderWithDeletedCatalogItem.id,
+      { status: 'cancelled' }
+    );
+    assert.equal(cancellationAfterCatalogDeletion.status, 'cancelled');
+    await assert.rejects(
+      dbUpdateOrderStatus(orderWithDeletedCatalogItem.id, { status: 'new' }),
+      /ITEM_NOT_IN_SHOP/
+    );
+    assert.equal(
+      (await dbGetOrderById(orderWithDeletedCatalogItem.id))?.status,
+      'cancelled',
+      'reopening must stay blocked when its catalog item no longer exists'
+    );
   } finally { setMposDbClientForTests(null); await db.close(); }
 });
 
@@ -1361,9 +1417,17 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
         'QA Storefront Shop',
         true,
         '{"mon":{"open":"00:00","close":"23:59","closed":false},"tue":{"open":"00:00","close":"23:59","closed":false},"wed":{"open":"00:00","close":"23:59","closed":false},"thu":{"open":"00:00","close":"23:59","closed":false},"fri":{"open":"00:00","close":"23:59","closed":false},"sat":{"open":"00:00","close":"23:59","closed":false},"sun":{"open":"00:00","close":"23:59","closed":false}}'::jsonb
+      ), (
+        'shop-qa-unpublished',
+        'owner-qa-storefront',
+        'shop-qa-unpublished',
+        'Unpublished QA Shop',
+        false,
+        '{}'::jsonb
       );
       INSERT INTO categories (id, shop_id, name_i18n) VALUES
-        ('cat-qa-main', 'shop-qa-storefront', '{"vi":"Món chính"}');
+        ('cat-qa-main', 'shop-qa-storefront', '{"vi":"Món chính"}'),
+        ('cat-qa-unpublished', 'shop-qa-unpublished', '{"vi":"Món thử"}');
       INSERT INTO shop_tables (id, shop_id, table_code, name, is_active, sort_order) VALUES
         ('tbl-qa-01', 'shop-qa-storefront', 'T01', 'Bàn QA 01', true, 1),
         ('tbl-qa-inactive', 'shop-qa-storefront', 'T02', 'Bàn Khóa', false, 2);
@@ -1379,6 +1443,13 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       )`,
       [optionGroupsJson]
     );
+    await db.query(
+      `INSERT INTO items (
+        id, shop_id, category_id, price, stock_quantity, sold_count, is_available, name_i18n
+      ) VALUES (
+        'item-qa-unpublished', 'shop-qa-unpublished', 'cat-qa-unpublished', 10000, 3, 0, true, '{"vi":"Món thử"}'
+      )`
+    );
 
     resetMposStoreForTests();
     setSupabaseDbClientForTests(pgClient as never);
@@ -1389,6 +1460,81 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     setOrderAuditLogFileForTests(path.join(tempAuditDir, 'order-audit.jsonl'));
 
     // 1. Anonymous dine-in order WITHOUT signed Table QR is rejected (400) with zero DB mutation
+    const unpublishedGuestQuote = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'quote',
+          shop_id: 'shop-qa-unpublished',
+          items: [],
+        }),
+      })
+    );
+    assert.equal(unpublishedGuestQuote.status, 404);
+    assert.equal((await unpublishedGuestQuote.json()).code, 'SHOP_NOT_PUBLISHED');
+
+    const unpublishedGuestCreate = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_id: 'shop-qa-unpublished', items: [] }),
+      })
+    );
+    assert.equal(unpublishedGuestCreate.status, 404);
+    assert.equal((await unpublishedGuestCreate.json()).code, 'SHOP_NOT_PUBLISHED');
+
+    const ownerCookie = `${SESSION_COOKIE_NAME}=${issueSessionToken({
+      id: 'owner-qa-storefront',
+      email: 'owner-qa@test.local',
+    })}`;
+    const unpublishedOwnerQuote = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: ownerCookie,
+        },
+        body: JSON.stringify({
+          action: 'quote',
+          shop_id: 'shop-qa-unpublished',
+          items: [{ item_id: 'item-qa-unpublished', quantity: 1 }],
+        }),
+      })
+    );
+    assert.equal(unpublishedOwnerQuote.status, 200);
+    assert.equal((await unpublishedOwnerQuote.json()).quote.total_amount, 10000);
+
+    const unpublishedOwnerPosOrder = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: ownerCookie,
+        },
+        body: JSON.stringify({
+          shop_id: 'shop-qa-unpublished',
+          source: 'counter_pos',
+          table_label: 'Mang về',
+          items: [
+            {
+              item_id: 'item-qa-unpublished',
+              name_vi: 'Món thử',
+              quantity: 1,
+              unit_price: 10000,
+              extra_price: 0,
+              selected_choices: [],
+            },
+          ],
+        }),
+      })
+    );
+    assert.equal(unpublishedOwnerPosOrder.status, 201);
+    assert.equal(
+      (await unpublishedOwnerPosOrder.json()).order.source,
+      'counter_pos'
+    );
+
     const unsignedGuestRes = await postOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'POST',
@@ -1461,15 +1607,15 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     // 2. Valid anonymous signed Table QR storefront order:
     //    Server overrides tampered unit_price/extra_price/table_label/discount and ignores forged paid/completed flags.
     const validTableSig = signTableQr('shop-qa-storefront', 'tbl-qa-01');
-    const guestQrPayload = {
+    const guestQrIntent = {
       shop_id: 'shop-qa-storefront',
       table_id: 'tbl-qa-01',
       table_qr_sig: validTableSig,
       qr_table_mode: true,
-      idempotency_key: 'guest-qr-idem-001',
       table_label: 'Spoofed VIP Table',
       visitor_lang: 'vi',
       payment_method: 'vietqr',
+      expected_total: 140000,
       payment_status: 'paid',
       markCompletedImmediately: true,
       discount_amount: 40000,
@@ -1492,6 +1638,42 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
         },
       ],
     };
+    const guestQrPayload = {
+      ...guestQrIntent,
+      idempotency_key: await getGuestOrderIdempotencyKey(guestQrIntent),
+    };
+
+    const guestWithoutExpectedTotal: Record<string, unknown> = {
+      ...guestQrIntent,
+    };
+    delete guestWithoutExpectedTotal.expected_total;
+    const missingExpectedTotalRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...guestWithoutExpectedTotal,
+          idempotency_key: await getGuestOrderIdempotencyKey(
+            guestWithoutExpectedTotal
+          ),
+        }),
+      })
+    );
+    assert.equal(missingExpectedTotalRes.status, 409);
+    assert.equal((await missingExpectedTotalRes.json()).code, 'PRICE_CHANGED');
+
+    const missingGuestIdempotencyKeyRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(guestQrIntent),
+      })
+    );
+    assert.equal(missingGuestIdempotencyKeyRes.status, 400);
+    assert.equal(
+      (await missingGuestIdempotencyKeyRes.json()).code,
+      'GUEST_ORDER_IDEMPOTENCY_KEY_REQUIRED'
+    );
 
     const guestQrRes = await postOrdersRoute(
       new Request('http://localhost/api/orders', {
@@ -1549,6 +1731,25 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(replayQrJson.order.order_code, createdQrOrder.order_code);
     assert.equal(replayQrJson.order.tracking_token, createdQrOrder.tracking_token);
     assert.equal(replayQrJson.order.total_amount, 140000);
+    assert.equal('idempotency_key' in replayQrJson.order, false);
+
+    const changedReplayPayload = {
+      ...guestQrIntent,
+      customer_note: 'Đổi nội dung sau lần gửi',
+      idempotency_key: guestQrPayload.idempotency_key,
+    };
+    const changedReplayRes = await postOrdersRoute(
+      new Request('http://localhost/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changedReplayPayload),
+      })
+    );
+    assert.equal(changedReplayRes.status, 409);
+    assert.equal(
+      (await changedReplayRes.json()).code,
+      'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'
+    );
 
     const countsAfterReplay = await db.query<{
       order_count: number;
@@ -1569,32 +1770,37 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
 
     // 4. Stale expected_total is rejected with 409 PRICE_CHANGED without mutating inventory,
     //    then anonymous Takeaway order for remaining 3 units depletes stock to 0 and marks is_available = false
+    const staleQuoteIntent = {
+      shop_id: 'shop-qa-storefront',
+      table_id: null,
+      table_label: 'Mang về',
+      expected_total: 1000,
+      items: [
+        {
+          item_id: 'item-qa-pho',
+          name_vi: 'Phở bò QA',
+          quantity: 3,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [
+            {
+              group_id: 'size',
+              id: 'size-regular',
+              label_vi: 'Tô thường',
+              extra_price: 0,
+            },
+          ],
+        },
+      ],
+    };
     const staleQuoteRes = await postOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: 'shop-qa-storefront',
-          table_id: null,
-          table_label: 'Mang về',
-          expected_total: 1000,
-          items: [
-            {
-              item_id: 'item-qa-pho',
-              name_vi: 'Phở bò QA',
-              quantity: 3,
-              unit_price: 55000,
-              extra_price: 0,
-              selected_choices: [
-                {
-                  group_id: 'size',
-                  id: 'size-regular',
-                  label_vi: 'Tô thường',
-                  extra_price: 0,
-                },
-              ],
-            },
-          ],
+          ...staleQuoteIntent,
+          idempotency_key:
+            await getGuestOrderIdempotencyKey(staleQuoteIntent),
         }),
       })
     );
@@ -1617,34 +1823,37 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(stateAfterStaleQuote.rows[0]?.stock_quantity, 3);
     assert.equal(stateAfterStaleQuote.rows[0]?.sold_count, 2);
 
+    const takeawayIntent = {
+      shop_id: 'shop-qa-storefront',
+      table_id: null,
+      table_label: 'Mang về',
+      expected_total: 165000,
+      payment_method: 'cash',
+      items: [
+        {
+          item_id: 'item-qa-pho',
+          name_vi: 'Phở bò QA',
+          quantity: 3,
+          unit_price: 55000,
+          extra_price: 0,
+          selected_choices: [
+            {
+              group_id: 'size',
+              id: 'size-regular',
+              label_vi: 'Tô thường',
+              extra_price: 0,
+            },
+          ],
+        },
+      ],
+    };
     const takeawayRes = await postOrdersRoute(
       new Request('http://localhost/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          shop_id: 'shop-qa-storefront',
-          table_id: null,
-          table_label: 'Mang về',
-          idempotency_key: 'guest-takeaway-idem-002',
-          expected_total: 165000,
-          payment_method: 'cash',
-          items: [
-            {
-              item_id: 'item-qa-pho',
-              name_vi: 'Phở bò QA',
-              quantity: 3,
-              unit_price: 55000,
-              extra_price: 0,
-              selected_choices: [
-                {
-                  group_id: 'size',
-                  id: 'size-regular',
-                  label_vi: 'Tô thường',
-                  extra_price: 0,
-                },
-              ],
-            },
-          ],
+          ...takeawayIntent,
+          idempotency_key: await getGuestOrderIdempotencyKey(takeawayIntent),
         }),
       })
     );
