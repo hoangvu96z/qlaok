@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -851,6 +852,303 @@ test('P3-24 regression: failed OIDC callback can retry the same callback URL and
   assert.equal(errorCount, 0);
   assert.equal(finallyCount, 0);
   assert.equal(lastHandledRef.current, validCallbackUrl);
+});
+
+test('P3-24 integration regression: processIncomingCallbackUrl composed with completeOwnerOidcCallback retries network failure and deduplicates after success', async () => {
+  const { processIncomingCallbackUrl } =
+    loadMobileTsxExports<AppModuleExports>('App.tsx');
+
+  ownerSessionModule.resetOwnerSessionMemoryForTest();
+  try {
+    const storeMap = new Map<string, string>();
+    const storage: ownerSessionModule.OwnerSessionStorageAdapter = {
+      async getItem(key: string) {
+        return storeMap.get(key) ?? null;
+      },
+      async setItem(key: string, value: string) {
+        storeMap.set(key, value);
+      },
+      async removeItem(key: string) {
+        storeMap.delete(key);
+      },
+    };
+
+    const buildMockPostgrestJwt = (payload: Record<string, unknown>): string => {
+      const headerB64 = Buffer.from(
+        JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
+        'utf8'
+      ).toString('base64url');
+      const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString(
+        'base64url'
+      );
+      const sigB64 = crypto
+        .createHmac('sha256', 'test-postgrest-secret-at-least-32-chars!!')
+        .update(`${headerB64}.${payloadB64}`)
+        .digest('base64url');
+      return `${headerB64}.${payloadB64}.${sigB64}`;
+    };
+
+    const nowMs = 1_760_000_000_000;
+    const nowSec = Math.floor(nowMs / 1000);
+    const ownerUuid = 'a3a30894-e8ae-415d-a3dc-7947b0399dd1';
+
+    // 1. Persist a real pending OIDC transaction and construct matching qlaok:// callback URL
+    const prepared =
+      await ownerSessionModule.prepareOwnerOidcAuthorizationRequest({
+        env: {
+          EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+        },
+        storage,
+        nowMs,
+      });
+    const callbackUrl = `qlaok://auth/callback?code=real-comp-code-123&state=${encodeURIComponent(
+      prepared.transaction.state
+    )}`;
+
+    const postgrestJwt = buildMockPostgrestJwt({
+      sub: ownerUuid,
+      role: 'authenticated',
+      aud: 'authenticated',
+      iss: 'qlaok-postgrest',
+      exp: nowSec + 3600,
+      iat: nowSec,
+    });
+
+    const recordedCalls: Array<{
+      url: string;
+      method: string | undefined;
+      body: unknown;
+    }> = [];
+    let currentNowMs = nowMs + 1000;
+    const fakeFetch: typeof fetch = async (input, init) => {
+      let parsedBody: unknown = null;
+      if (typeof init?.body === 'string') {
+        try {
+          parsedBody = JSON.parse(init.body);
+        } catch {
+          parsedBody = init.body;
+        }
+      }
+      recordedCalls.push({
+        url: String(input),
+        method: init?.method,
+        body: parsedBody,
+      });
+      if (recordedCalls.length === 1) {
+        throw new Error('ECONNRESET');
+      }
+      return new Response(
+        JSON.stringify({
+          user: {
+            id: ownerUuid,
+            email: 'owner@qlaok.vn',
+            full_name: 'Chủ Quán Hội An',
+            plan: 'pro',
+            role: 'owner',
+            is_admin: false,
+          },
+          isAdmin: false,
+          accessToken: 'qlaok-owner-hmac-payload.signature',
+          expiresAt: nowSec + 86400,
+          postgrestToken: postgrestJwt,
+          postgrestExpiresAt: nowSec + 3600,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    const assertExchangeRequest = (
+      callIndex: number,
+      expectedCode: string
+    ) => {
+      const call = recordedCalls[callIndex];
+      assert.ok(call, `Expected recorded fetch call at index ${callIndex}`);
+      assert.equal(call.url, 'https://qlaok.vunph.click/api/auth');
+      assert.equal(call.method, 'POST');
+      assert.deepEqual(call.body, {
+        action: 'oidc_mobile_exchange',
+        code: expectedCode,
+        codeVerifier: prepared.transaction.codeVerifier,
+        redirectUri: prepared.transaction.redirectUri,
+        nonce: prepared.transaction.nonce,
+        state: prepared.transaction.state,
+        expectedState: prepared.transaction.state,
+        clientId: prepared.transaction.clientId,
+      });
+    };
+
+    const lastHandledUrlRef: { current: string | null } = { current: null };
+    let startCount = 0;
+    let successCount = 0;
+    let errorCount = 0;
+    let finallyCount = 0;
+    let capturedError: unknown = null;
+    let capturedSession: ownerSessionModule.MobileOwnerSession | null = null;
+
+    const resetCounters = () => {
+      startCount = 0;
+      successCount = 0;
+      errorCount = 0;
+      finallyCount = 0;
+      capturedError = null;
+      capturedSession = null;
+    };
+
+    const wireRealCompleteCallback = (targetUrl: string) =>
+      ownerSessionModule.completeOwnerOidcCallback(targetUrl, {
+        baseUrl: 'https://qlaok.vunph.click',
+        storage,
+        nowMs: currentNowMs,
+        fetchImpl: fakeFetch,
+      });
+
+    // 2. First attempt throws network error, restores pending transaction, and clears lastHandledUrlRef
+    const firstAttempt = await processIncomingCallbackUrl(callbackUrl, {
+      lastHandledUrlRef,
+      onExchangeStart: () => {
+        startCount += 1;
+      },
+      onExchangeSuccess: (s) => {
+        successCount += 1;
+        capturedSession = s as ownerSessionModule.MobileOwnerSession;
+      },
+      onExchangeError: (err) => {
+        errorCount += 1;
+        capturedError = err;
+      },
+      onExchangeFinally: () => {
+        finallyCount += 1;
+      },
+      completeCallback: wireRealCompleteCallback,
+    });
+
+    assert.equal(firstAttempt, false);
+    assert.equal(recordedCalls.length, 1);
+    assertExchangeRequest(0, 'real-comp-code-123');
+    assert.equal(startCount, 1);
+    assert.equal(successCount, 0);
+    assert.equal(errorCount, 1);
+    assert.equal(finallyCount, 1);
+    assert.ok(
+      capturedError instanceof ownerSessionModule.MobileOwnerOidcError &&
+        capturedError.code === 'OIDC_EXCHANGE_NETWORK_ERROR',
+      'First attempt must report OIDC_EXCHANGE_NETWORK_ERROR'
+    );
+    const restoredRawTx = await storage.getItem(
+      ownerSessionModule.OWNER_OIDC_TX_STORAGE_KEY
+    );
+    assert.ok(restoredRawTx, 'Pending OIDC transaction must be restored after network failure');
+    assert.equal(
+      JSON.parse(restoredRawTx).state,
+      prepared.transaction.state
+    );
+    assert.equal(
+      lastHandledUrlRef.current,
+      null,
+      'lastHandledUrlRef must be cleared after failed exchange'
+    );
+    assert.equal(
+      await ownerSessionModule.loadOwnerSession(storage, nowSec + 1),
+      null
+    );
+
+    // 3. Retry the exact same URL; exchange succeeds, persists owner session, and keeps lastHandledUrlRef set
+    resetCounters();
+    currentNowMs = nowMs + 2000;
+    const secondAttempt = await processIncomingCallbackUrl(callbackUrl, {
+      lastHandledUrlRef,
+      onExchangeStart: () => {
+        startCount += 1;
+      },
+      onExchangeSuccess: (s) => {
+        successCount += 1;
+        capturedSession = s as ownerSessionModule.MobileOwnerSession;
+      },
+      onExchangeError: (err) => {
+        errorCount += 1;
+        capturedError = err;
+      },
+      onExchangeFinally: () => {
+        finallyCount += 1;
+      },
+      completeCallback: wireRealCompleteCallback,
+    });
+
+    assert.equal(secondAttempt, true);
+    assert.equal(recordedCalls.length, 2);
+    assertExchangeRequest(1, 'real-comp-code-123');
+    assert.equal(startCount, 1);
+    assert.equal(successCount, 1);
+    assert.equal(errorCount, 0);
+    assert.equal(finallyCount, 1);
+    assert.equal(capturedError, null);
+    assert.ok(capturedSession);
+    assert.equal(
+      (capturedSession as ownerSessionModule.MobileOwnerSession).user.id,
+      ownerUuid
+    );
+    assert.equal(
+      (capturedSession as ownerSessionModule.MobileOwnerSession).accessToken,
+      'qlaok-owner-hmac-payload.signature'
+    );
+    assert.equal(
+      (capturedSession as ownerSessionModule.MobileOwnerSession).postgrestToken,
+      postgrestJwt
+    );
+    assert.equal(
+      await storage.getItem(ownerSessionModule.OWNER_OIDC_TX_STORAGE_KEY),
+      null,
+      'Consumed OIDC transaction must be removed after successful exchange'
+    );
+    const persistedSession = await ownerSessionModule.loadOwnerSession(
+      storage,
+      nowSec + 10
+    );
+    assert.ok(persistedSession, 'Owner session must be persisted in storage');
+    assert.equal(persistedSession.user.id, ownerUuid);
+    assert.equal(
+      persistedSession.accessToken,
+      'qlaok-owner-hmac-payload.signature'
+    );
+    assert.equal(persistedSession.postgrestToken, postgrestJwt);
+    assert.equal(
+      lastHandledUrlRef.current,
+      callbackUrl,
+      'lastHandledUrlRef must remain set to the completed callback URL'
+    );
+
+    // 4. Third invocation of the same URL is deduplicated without another fetch
+    resetCounters();
+    currentNowMs = nowMs + 3000;
+    const thirdAttempt = await processIncomingCallbackUrl(callbackUrl, {
+      lastHandledUrlRef,
+      onExchangeStart: () => {
+        startCount += 1;
+      },
+      onExchangeSuccess: (s) => {
+        successCount += 1;
+        capturedSession = s as ownerSessionModule.MobileOwnerSession;
+      },
+      onExchangeError: (err) => {
+        errorCount += 1;
+        capturedError = err;
+      },
+      onExchangeFinally: () => {
+        finallyCount += 1;
+      },
+      completeCallback: wireRealCompleteCallback,
+    });
+
+    assert.equal(thirdAttempt, false);
+    assert.equal(recordedCalls.length, 2, 'Deduplicated third call must not trigger another fetch');
+    assert.equal(startCount, 0);
+    assert.equal(successCount, 0);
+    assert.equal(errorCount, 0);
+    assert.equal(finallyCount, 0);
+    assert.equal(lastHandledUrlRef.current, callbackUrl);
+  } finally {
+    ownerSessionModule.resetOwnerSessionMemoryForTest();
+  }
 });
 
 test('StaffWorkspace permission guard: requires active membership and orders.create, and does NOT require orders.view', () => {

@@ -24,6 +24,8 @@
 
 > **Cập nhật mục 183 — 2026-11-02:** đóng finding SQL 3.4 bằng migration tiến tới `supabase/migrations/20261102000100_revoke_trigger_function_execute.sql`, thu hồi quyền `EXECUTE` trực tiếp khỏi `PUBLIC`, `anon` và `authenticated` trên đủ 8 hàm trigger `SECURITY DEFINER` không tham số của các migration `007`, `008`, `011`, `014` và `022` mà không sửa lại các migration cũ và giữ nguyên toàn bộ hành vi trigger. PGlite harness `tests/sql-review.test.mjs` xác nhận `has_function_privilege` trả `false` cho cả `anon` và `authenticated` trên cả 8 hàm ngay sau khi chạy toàn bộ migration và sau khi áp lại migration mới (idempotent); `npm run test:sql` **13/13 PASS**, `npm run test:db-reset` **53/53 PASS** (`26/26` + `21/21` + `6/6`). Commit `197ece3ae5e02080499c7f273daadb2b104d84ef` đã qua Actions #331 (`41359065835`) verify và deploy thành công.
 
+> **Cập nhật P3-24 — 2026-11-03:** regression test tại `mobile/tests/staff-workspace.test.ts` nay ghép `processIncomingCallbackUrl` với `completeOwnerOidcCallback` thật, kiểm tra URL, method và toàn bộ payload trao đổi OIDC sau cả lần lỗi mạng lẫn lần retry; kiểm tra transaction được khôi phục, session đọc lại từ storage, và callback trùng bị chặn. Claude Sonnet review đã tìm hai assertion gap trong bản đầu; AGY Flash đã khép lại. Codex xác minh độc lập `npm test --prefix mobile` **133/133 PASS**, `npm run typecheck --prefix mobile` và `git diff --check` đều PASS. Đây là kiểm chứng regression ở tầng test; chưa thực hiện đăng nhập OIDC thật trên thiết bị.
+
 ---
 
 ## 1. Kết luận tổng quát
