@@ -15,7 +15,9 @@ test('full migration schema accepts demo seed, purge, and reseed in one transact
       CREATE SCHEMA auth;
       CREATE TABLE auth.users (id TEXT PRIMARY KEY);
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
-      $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;`);
+      $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS
+      $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
     await db.exec('CREATE PUBLICATION supabase_realtime');
 
     const files = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();

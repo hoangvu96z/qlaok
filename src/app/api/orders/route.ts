@@ -165,10 +165,12 @@ export async function GET(req: Request) {
         );
       }
 
-      const { membership } = await getRequestShopMembership(
+      const auth = await getRequestShopMembership(
         req,
         order.shop_id
       );
+      if (auth.errorResponse) return auth.errorResponse;
+      const { membership } = auth;
       if (hasShopPermission(membership, 'orders.view')) {
         return NextResponse.json({ order, membership });
       }
@@ -379,7 +381,9 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
-      const { membership } = await getRequestShopMembership(req, shopId);
+      const auth = await getRequestShopMembership(req, shopId);
+      if (auth.errorResponse) return auth.errorResponse;
+      const { membership } = auth;
       if (!(await canCreatePublicOrder(shopId, membership))) {
         return unpublishedShopResponse();
       }
@@ -604,10 +608,12 @@ export async function POST(req: Request) {
       );
     }
 
-    const { user: sessionUser, membership } = await getRequestShopMembership(
+    const auth = await getRequestShopMembership(
       req,
       shop_id
     );
+    if (auth.errorResponse) return auth.errorResponse;
+    const { user: sessionUser, membership } = auth;
 
     const hasCreatePerm = hasShopPermission(membership, 'orders.create');
     const canApplyDiscount = hasShopPermission(membership, 'discount.apply');
@@ -1100,10 +1106,12 @@ export async function PATCH(req: Request) {
       );
     }
 
-    const { membership } = await getRequestShopMembership(
+    const membershipAuth = await getRequestShopMembership(
       req,
       existingOrder.shop_id
     );
+    if (membershipAuth.errorResponse) return membershipAuth.errorResponse;
+    const { membership } = membershipAuth;
 
     const resolvedTrackingToken =
       trackingToken ||

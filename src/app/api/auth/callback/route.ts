@@ -5,6 +5,7 @@ import {
 } from '@/lib/db';
 import {
   attachSessionCookie,
+  getOwnerSessionVersion,
   issueSessionToken,
 } from '@/lib/server-auth';
 import { SEED_SHOPS } from '@/lib/seed-data';
@@ -227,6 +228,24 @@ export async function GET(req: Request) {
       }
     );
 
+    let sessionVersion: number | null;
+    try {
+      sessionVersion = await getOwnerSessionVersion(finalUser.id);
+    } catch {
+      throw new ZitadelOidcError(
+        'OWNER_SESSION_VERSION_UNAVAILABLE',
+        'Không thể xác minh phiên đăng nhập hiện tại. Vui lòng thử lại.',
+        503
+      );
+    }
+    if (sessionVersion === null) {
+      throw new ZitadelOidcError(
+        'OWNER_SESSION_VERSION_UNAVAILABLE',
+        'Không thể xác minh phiên đăng nhập hiện tại. Vui lòng thử lại.',
+        503
+      );
+    }
+
     const { data: ownerShops, error: shopsLookupErr } = await sb
       .from('shops')
       .select('*')
@@ -272,11 +291,18 @@ export async function GET(req: Request) {
       email: finalUser.email,
       role: isAdmin ? 'admin' : 'owner',
       is_admin: isAdmin,
+      session_version: sessionVersion,
     });
+
+    const clientUser = Object.fromEntries(
+      Object.entries(finalUser).filter(
+        ([key]) => key !== 'session_version' && key !== 'sv'
+      )
+    );
 
     if (reqUrl.searchParams.get('format') === 'json') {
       const jsonRes = NextResponse.json({
-        user: finalUser,
+        user: clientUser,
         shops: (ownerShops || []) as Shop[],
         memberShops: memberData.memberShops,
         memberships: memberData.memberships,

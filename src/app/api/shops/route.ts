@@ -11,6 +11,8 @@ import {
   getRequestShopMembership,
   isShopBoundStaffSession,
   isStaffSessionUser,
+  OwnerSessionVersionUnavailableError,
+  ownerSessionVersionUnavailableResponse,
   requireActiveShopOwner,
   requireAuthenticatedUser,
   requireShopOwnerOrAdmin,
@@ -83,7 +85,15 @@ export async function GET(req: Request) {
   const ownerId = searchParams.get('ownerId') || undefined;
   const memberFlag = searchParams.get('member');
   const action = searchParams.get('action');
-  const sessionUser = await verifyRequestUser(req);
+  let sessionUser: Awaited<ReturnType<typeof verifyRequestUser>>;
+  try {
+    sessionUser = await verifyRequestUser(req);
+  } catch (error) {
+    if (error instanceof OwnerSessionVersionUnavailableError) {
+      return ownerSessionVersionUnavailableResponse();
+    }
+    throw error;
+  }
 
   if (action === 'sepay_config' && shopId) {
     const auth = await requireShopOwnerOrAdmin(req, shopId);
@@ -174,7 +184,9 @@ export async function GET(req: Request) {
     if (!shop) {
       return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
     }
-    const { membership } = await getRequestShopMembership(req, shopId);
+    const auth = await getRequestShopMembership(req, shopId);
+    if (auth.errorResponse) return auth.errorResponse;
+    const { membership } = auth;
     const isMemberOrAdmin =
       sessionUser?.role === 'admin' ||
       (!isShopBoundStaffSession(sessionUser) &&

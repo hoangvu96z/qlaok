@@ -796,8 +796,8 @@ test('PATCH /api/shops enforces plan restrictions on custom theme and supported 
     assert.equal(snapshotAfterPremium?.theme_config?.primaryColor, '#7c3aed');
     assert.deepEqual(snapshotAfterPremium?.supported_langs, premiumLanguages);
 
-    // 5. If the owner profile needed for plan lookup is absent, a custom-theme request
-    // fails closed with HTTP 503 and PLAN_ACCESS_CHECK_FAILED; persisted shop state stays unchanged.
+    // 5. A signed owner token whose profile has been removed is no longer
+    // authenticated; the request fails closed before any plan or shop writes.
     mockDb.removeProfile(ownerId);
 
     const missingProfileRes = await patchShops(
@@ -815,11 +815,7 @@ test('PATCH /api/shops enforces plan restrictions on custom theme and supported 
         }),
       })
     );
-    assert.equal(missingProfileRes.status, 503);
-    const missingProfileJson = (await missingProfileRes.json()) as {
-      code?: string;
-    };
-    assert.equal(missingProfileJson.code, 'PLAN_ACCESS_CHECK_FAILED');
+    assert.equal(missingProfileRes.status, 401);
     assert.deepEqual(mockDb.getRawShopSnapshot(shopId), snapshotAfterPremium);
   } finally {
     setSupabaseDbClientForTests(null);

@@ -112,7 +112,9 @@ export async function GET(req: Request) {
       }
 
       if (auth.user.role !== 'admin' && auth.user.sub !== shop.owner_id) {
-        const { membership } = await getRequestShopMembership(req, shopId);
+        const auth = await getRequestShopMembership(req, shopId);
+        if (auth.errorResponse) return auth.errorResponse;
+        const { membership } = auth;
         const canViewManagementList =
           Boolean(membership?.is_active) &&
           (membership?.role === 'owner' ||
@@ -147,7 +149,9 @@ export async function GET(req: Request) {
     }
 
     if (shop.is_published === false) {
-      const { user, membership } = await getRequestShopMembership(req, shopId);
+      const auth = await getRequestShopMembership(req, shopId);
+      if (auth.errorResponse) return auth.errorResponse;
+      const { user, membership } = auth;
       const isMemberOrAdmin =
         user?.role === 'admin' ||
         user?.sub === shop.owner_id ||

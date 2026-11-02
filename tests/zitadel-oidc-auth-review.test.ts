@@ -14,6 +14,7 @@ import {
 import {
   issuePostgrestAuthenticatedJwt,
   issueSessionToken,
+  getRequestShopMembership,
   requireAuthenticatedUser,
   requireSuperAdmin,
   SESSION_COOKIE_NAME,
@@ -127,6 +128,19 @@ function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, i
   const profileWrites: Array<{ op: 'insert' | 'update' | 'upsert'; payload: Record<string, unknown> }> = [];
 
   const client = {
+    rpc(name: string, args: Record<string, unknown>) {
+      if (name !== 'revoke_owner_session') {
+        return Promise.resolve({ data: null, error: { message: 'Unknown RPC' } });
+      }
+      const profile = profiles.find((p) => p.id === args.p_profile_id);
+      const expectedVersion = Number(args.p_expected_version);
+      const currentVersion = Number(profile?.session_version ?? 1);
+      if (!profile || currentVersion !== expectedVersion) {
+        return Promise.resolve({ data: null, error: null });
+      }
+      profile.session_version = currentVersion + 1;
+      return Promise.resolve({ data: currentVersion + 1, error: null });
+    },
     from(table: string) {
       if (table === 'profiles') {
         return {
@@ -295,6 +309,229 @@ function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, i
 
   return { client, profiles, shops, profileWrites };
 }
+
+test('owner logout revokes legacy owner-prefixed profile IDs and blocks token renewal', async () => {
+  const ownerId = `owner-${EXISTING_IMPORTED_UUIDS[0]}`;
+  const postgrestOwnerId = EXISTING_IMPORTED_UUIDS[1];
+  const { client, profiles } = createInMemoryOidcDb([
+    {
+      id: ownerId,
+      email: 'session-owner@example.test',
+      full_name: 'Session Owner',
+      plan: 'free',
+      role: 'owner',
+      session_version: 1,
+    },
+    {
+      id: postgrestOwnerId,
+      email: 'postgrest-owner@example.test',
+      full_name: 'PostgREST Owner',
+      plan: 'free',
+      role: 'owner',
+      session_version: 1,
+    },
+  ]);
+  const previousPostgrestSecret = process.env.PGRST_JWT_SECRET;
+  process.env.PGRST_JWT_SECRET = 'test-postgrest-session-signing-secret';
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const firstSessionToken = issueSessionToken({
+      id: ownerId,
+      email: 'session-owner@example.test',
+      role: 'owner',
+    });
+    assert.equal(verifySessionToken(firstSessionToken)?.sv, undefined);
+    assert.ok(
+      await verifyRequestUser(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          headers: { Authorization: `Bearer ${firstSessionToken}` },
+        })
+      ),
+      'legacy owner-prefixed session should match the default database generation'
+    );
+    const logoutResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${firstSessionToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'logout' }),
+      })
+    );
+    assert.equal(logoutResponse.status, 200);
+    assert.deepEqual(await logoutResponse.json(), { success: true });
+    assert.equal(profiles[0].session_version, 2);
+    assert.match(
+      logoutResponse.headers.get('set-cookie') || '',
+      /qlaok_session=.*Max-Age=0/i
+    );
+
+    const staleRequest = new Request('https://qlaok.vunph.click/api/auth', {
+      headers: { Authorization: `Bearer ${firstSessionToken}` },
+    });
+    assert.equal(await verifyRequestUser(staleRequest), null);
+    const staleSyncResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${firstSessionToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'sync_user' }),
+      })
+    );
+    assert.equal(staleSyncResponse.status, 401);
+
+    const currentSessionToken = issueSessionToken({
+      id: ownerId,
+      email: 'session-owner@example.test',
+      role: 'owner',
+      session_version: 2,
+    });
+    const currentSyncResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${currentSessionToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'sync_user' }),
+      })
+    );
+    assert.equal(currentSyncResponse.status, 200);
+    const currentSyncBody = await currentSyncResponse.json();
+    assert.equal(verifySessionToken(currentSyncBody.accessToken)?.sv, 2);
+    assert.equal(currentSyncBody.user.id, ownerId);
+    assert.equal(Object.hasOwn(currentSyncBody.user, 'session_version'), false);
+    assert.equal(currentSyncBody.postgrestToken, null);
+
+    const postgrestToken = issuePostgrestAuthenticatedJwt({
+      sub: postgrestOwnerId,
+      email: 'postgrest-owner@example.test',
+      sessionVersion: 1,
+    })?.token;
+    assert.ok(postgrestToken);
+    assert.equal(verifyPostgrestAuthenticatedJwt(postgrestToken)?.sv, 1);
+    const postgrestSessionToken = issueSessionToken({
+      id: postgrestOwnerId,
+      email: 'postgrest-owner@example.test',
+      role: 'owner',
+    });
+    const postgrestLogoutResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${postgrestSessionToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'logout' }),
+      })
+    );
+    assert.equal(postgrestLogoutResponse.status, 200);
+    assert.equal(profiles[1].session_version, 2);
+    assert.equal(
+      await verifyRequestUser(
+        new Request('https://qlaok.vunph.click/api/shops', {
+          headers: { Authorization: `Bearer ${postgrestToken}` },
+        })
+      ),
+      null,
+      'PostgREST JWT issued before logout must not authenticate Qlaok APIs afterward'
+    );
+    const refreshedPostgrestToken = issuePostgrestAuthenticatedJwt({
+      sub: postgrestOwnerId,
+      email: 'postgrest-owner@example.test',
+      sessionVersion: 2,
+    })?.token;
+    assert.ok(refreshedPostgrestToken);
+    assert.ok(
+      await verifyRequestUser(
+        new Request('https://qlaok.vunph.click/api/shops', {
+          headers: { Authorization: `Bearer ${refreshedPostgrestToken}` },
+        })
+      ),
+      'PostgREST JWT issued for the current session generation should authenticate'
+    );
+    const postgrestSyncResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${postgrestToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'sync_user' }),
+      })
+    );
+    assert.equal(postgrestSyncResponse.status, 401);
+
+    const failedRpc = client.rpc;
+    client.rpc = async () => ({ data: null, error: { message: 'database unavailable' } }) as never;
+    const failedLogoutResponse = await authPost(
+      new Request('https://qlaok.vunph.click/api/auth', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${currentSessionToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'logout' }),
+      })
+    );
+    assert.equal(failedLogoutResponse.status, 500);
+    assert.equal((await failedLogoutResponse.json()).success, false);
+    assert.equal(profiles[0].session_version, 2);
+    assert.doesNotMatch(
+      failedLogoutResponse.headers.get('set-cookie') || '',
+      /qlaok_session=.*Max-Age=0/i
+    );
+    client.rpc = failedRpc;
+
+    const failingReadClient = {
+      from(table: string) {
+        if (table !== 'profiles') return client.from(table);
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle: async () => ({
+                    data: null,
+                    error: { message: 'database unavailable' },
+                  }),
+                };
+              },
+            };
+          },
+        };
+      },
+    };
+    setSupabaseDbClientForTests(failingReadClient as never);
+    await assert.rejects(
+      () =>
+        verifyRequestUser(
+        new Request('https://qlaok.vunph.click/api/auth', {
+          headers: { Authorization: `Bearer ${currentSessionToken}` },
+        })
+        ),
+      /Could not read the current owner session version/
+    );
+    const membershipResult = await getRequestShopMembership(
+      new Request('https://qlaok.vunph.click/api/shops', {
+        headers: { Authorization: `Bearer ${currentSessionToken}` },
+      }),
+      'shop-test'
+    );
+    assert.equal(membershipResult.errorResponse?.status, 503);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    if (previousPostgrestSecret === undefined) {
+      delete process.env.PGRST_JWT_SECRET;
+    } else {
+      process.env.PGRST_JWT_SECRET = previousPostgrestSecret;
+    }
+  }
+});
 
 test('PKCE S256 challenge, OIDC transaction cookie signing/expiry, and UUID subject validation', () => {
   // 1. S256 PKCE RFC 7636 Appendix B test vector verification
@@ -751,6 +988,7 @@ test('GET /api/auth/callback maps opaque Zitadel subjects to stable Qlaok UUID p
         phone: '0911222333',
         plan: 'pro',
         plan_expires_at: '2028-06-30T23:59:59Z',
+        session_version: 4,
       },
     ],
     [
@@ -846,6 +1084,7 @@ test('GET /api/auth/callback maps opaque Zitadel subjects to stable Qlaok UUID p
       const decodedSession = verifySessionToken(sessionCookie);
       assert.ok(decodedSession);
       assert.equal(decodedSession.sub, existingOwnerUuid);
+      assert.equal(decodedSession.sv, 4, 'OIDC callback must issue the live session version');
       assert.equal(decodedSession.email, 'existing-pro@qlaok.vn');
       assert.equal(
         decodedSession.role,
@@ -1622,6 +1861,7 @@ test('POST /api/auth action=oidc_mobile_exchange enforces qlaok://auth/callback,
     assert.equal(verifiedPgClaims.role, 'authenticated');
     assert.equal(verifiedPgClaims.aud, 'authenticated');
     assert.equal(verifiedPgClaims.iss, 'qlaok-postgrest');
+    assert.equal(verifiedPgClaims.sv, 1);
     assert.equal(verifiedPgClaims.exp - verifiedPgClaims.iat, 3600);
 
     // Verify verifyRequestUser also accepts the issued PostgREST authenticated JWT
@@ -1632,6 +1872,7 @@ test('POST /api/auth action=oidc_mobile_exchange enforces qlaok://auth/callback,
     );
     assert.ok(verifiedFromReq);
     assert.equal(verifiedFromReq.sub, existingOwnerUuid);
+    assert.equal(verifiedFromReq.sv, 1);
     assert.equal(verifiedFromReq.role, 'owner');
 
     // A case-only subject mismatch must fail closed before profile synchronization.

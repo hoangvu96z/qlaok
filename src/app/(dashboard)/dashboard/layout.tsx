@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { DashboardProvider, useDashboard } from '@/lib/dashboard-context';
 import {
-  clearStoredAuthOwner,
+  revokeAndClearStoredAuthOwner,
   getAdminBackupSession,
   getAuthHeaders,
   getStoredAuthOwner,
@@ -157,6 +157,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     refreshDashboard,
   } = useDashboard();
   const [retrying, setRetrying] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState<string | null>(null);
@@ -546,18 +547,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   };
 
   const handleLogout = async () => {
-    clearStoredAuthOwner();
+    setLogoutError(null);
     try {
-      await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ action: 'logout' }),
-      });
+      await revokeAndClearStoredAuthOwner();
+      router.replace('/login');
     } catch {
-      // ignore network error on logout
+      setLogoutError(
+        tx(
+          'Không thể thu hồi phiên đăng nhập. Kiểm tra kết nối rồi thử lại.',
+          'Could not revoke your session. Check your connection and try again.'
+        )
+      );
     }
-    router.replace('/login');
   };
 
   const visibleNavItems = NAV_ITEMS.filter((item) =>
@@ -620,6 +621,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           )}
         </p>
         <p className="text-[11px] text-slate-400 break-all">{dashboardError}</p>
+        {logoutError && <p className="text-sm font-bold text-rose-300">{logoutError}</p>}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1136,6 +1138,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="flex-1 w-full p-3 sm:p-5">
+          {logoutError && (
+            <p role="alert" className="mb-3 rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm font-bold text-rose-800 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+              {logoutError}
+            </p>
+          )}
           <PwaInstallBanner />
           {routeAllowed ? (
             children

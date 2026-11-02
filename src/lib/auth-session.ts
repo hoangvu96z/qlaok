@@ -111,22 +111,48 @@ export function setStoredAuthOwner(profile: Profile, accessToken?: string): void
   }
 }
 
-export function clearStoredAuthOwner(): void {
-  if (typeof window === 'undefined') return;
+function clearStoredAuthOwnerData(): void {
   try {
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(ACTIVE_SHOP_KEY);
     localStorage.removeItem(ADMIN_BACKUP_KEY);
-    // Also clear server HttpOnly session cookie asynchronously
-    fetch('/api/auth', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'logout' }),
-    }).catch(() => {});
   } catch {
     // ignore storage errors
   }
+}
+
+export function clearStoredAuthOwner(): void {
+  if (typeof window === 'undefined') return;
+  clearStoredAuthOwnerData();
+  // Best-effort cleanup for sessions already rejected by the server.
+  void fetch('/api/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ action: 'logout' }),
+  }).catch(() => {});
+}
+
+export async function revokeAndClearStoredAuthOwner(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  const token = getStoredAuthToken();
+  const response = await fetch('/api/auth', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify({ action: 'logout' }),
+  });
+  const result = (await response.json().catch(() => null)) as
+    | { success?: unknown }
+    | null;
+  if (!response.ok || result?.success !== true) {
+    throw new Error('OWNER_SESSION_REVOCATION_FAILED');
+  }
+  clearStoredAuthOwnerData();
 }
 
 export function getAdminBackupSession(): Profile | null {

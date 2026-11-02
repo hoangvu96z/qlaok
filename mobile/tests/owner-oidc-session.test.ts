@@ -105,6 +105,62 @@ test('PKCE S256 challenge matches RFC 7636 test vector and Node crypto SHA-256',
   );
 });
 
+test('owner logout revokes the server session before clearing local credentials', async () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ownerId = 'd6f4e9ab-0a25-4848-a674-3af2ab11bf1c';
+  const makeOwnerSession = () => ({
+    accessToken: 'owner-session-token.signature',
+    expiresAt: nowSec + 3600,
+    postgrestToken: null,
+    postgrestExpiresAt: null,
+    user: {
+      id: ownerId,
+      email: 'owner@example.test',
+      full_name: 'Owner',
+      plan: 'free',
+      role: 'owner',
+    },
+    isAdmin: false,
+  });
+
+  const storage = createMemoryStorage();
+  await saveOwnerSession(makeOwnerSession(), { storage, nowSec });
+  let requestedUrl = '';
+  let requestedAuthorization = '';
+  let requestedBody = '';
+  await clearOwnerSession({
+    storage,
+    reason: 'logout',
+    baseUrl: 'https://qlaok.example.test/',
+    fetchImpl: async (url, init) => {
+      requestedUrl = String(url);
+      requestedAuthorization = new Headers(init?.headers).get('Authorization') || '';
+      requestedBody = String(init?.body || '');
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    },
+  });
+  assert.equal(requestedUrl, 'https://qlaok.example.test/api/auth');
+  assert.equal(requestedAuthorization, 'Bearer owner-session-token.signature');
+  assert.deepEqual(JSON.parse(requestedBody), { action: 'logout' });
+  assert.equal(await loadOwnerSession(storage, nowSec), null);
+
+  const retryStorage = createMemoryStorage();
+  await saveOwnerSession(makeOwnerSession(), { storage: retryStorage, nowSec });
+  await assert.rejects(
+    clearOwnerSession({
+      storage: retryStorage,
+      reason: 'logout',
+      baseUrl: 'https://qlaok.example.test',
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ success: false }), { status: 500 }),
+    }),
+    (error: unknown) =>
+      error instanceof MobileOwnerOidcError &&
+      error.code === 'OWNER_SESSION_REVOCATION_FAILED'
+  );
+  assert.ok(await loadOwnerSession(retryStorage, nowSec));
+});
+
 test('resolveMobileZitadelOidcConfig fails closed when EXPO_PUBLIC_ZITADEL_CLIENT_ID is absent or placeholder', () => {
   const missing = resolveMobileZitadelOidcConfig({});
   assert.equal(missing.ok, false);

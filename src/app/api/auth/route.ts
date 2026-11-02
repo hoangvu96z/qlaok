@@ -4,15 +4,21 @@ import {
   ensureSupabaseReadyAndSeeded,
   getSupabaseDbClient,
 } from '@/lib/db';
-import { isSuperAdminEmail } from '@/lib/auth-session';
+import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
 import {
   attachSessionCookie,
   clearSessionCookie,
+  getOwnerSessionVersion,
+  isImportedOwnerProfileId,
   isShopBoundStaffSession,
   isStaffSessionUser,
   issuePostgrestAuthenticatedJwt,
   issueSessionToken,
+  OwnerSessionVersionUnavailableError,
+  ownerSessionVersionUnavailableResponse,
+  revokeOwnerSessionFromRequest,
   verifyRequestUser,
+  verifyRequestSessionUser,
 } from '@/lib/server-auth';
 import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
 import {
@@ -53,6 +59,12 @@ import {
 import type { Profile, Shop, ShopMembership } from '@/types/qlaok';
 
 const OWNER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+
+function omitServerSessionFields(profile: Profile): Profile {
+  const result = { ...profile } as Profile & { session_version?: unknown };
+  delete result.session_version;
+  return result;
+}
 
 /**
  * Loads shops where the user is an active (non-owner) member so staff and
@@ -363,12 +375,21 @@ async function handleMobileOidcExchange(
 
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAt = nowSec + OWNER_SESSION_TTL_SECONDS;
+  const sessionVersion = await getOwnerSessionVersion(finalUser.id);
+  if (sessionVersion === null) {
+    throw new ZitadelOidcError(
+      'AUTH_SESSION_VERSION_QUERY_FAILED',
+      'Không thể xác minh phiên đăng nhập. Vui lòng thử lại.',
+      500
+    );
+  }
   const accessToken = issueSessionToken(
     {
       id: finalUser.id,
       email: finalUser.email,
       role: isAdmin ? 'admin' : 'owner',
       is_admin: isAdmin,
+      session_version: sessionVersion,
     },
     OWNER_SESSION_TTL_SECONDS
   );
@@ -376,11 +397,12 @@ async function handleMobileOidcExchange(
     sub: finalUser.id,
     email: finalUser.email,
     isAdmin,
+    sessionVersion,
   });
 
   const res = NextResponse.json(
     {
-      user: finalUser,
+      user: omitServerSessionFields(finalUser),
       shops: (ownerShops || []) as Shop[],
       memberShops: memberData.memberShops,
       memberships: memberData.memberships,
@@ -440,6 +462,9 @@ export async function GET(req: Request) {
       session: verified,
     });
   } catch (err) {
+    if (err instanceof OwnerSessionVersionUnavailableError) {
+      return ownerSessionVersionUnavailableResponse();
+    }
     if (err instanceof ZitadelOidcError) {
       return NextResponse.json(
         {
@@ -523,6 +548,20 @@ export async function POST(req: Request) {
     ).trim();
 
     if (action === 'logout') {
+      try {
+        await revokeOwnerSessionFromRequest(req);
+      } catch {
+        const res = NextResponse.json(
+          {
+            success: false,
+            code: 'OWNER_SESSION_REVOCATION_FAILED',
+            error: 'Không thể thu hồi phiên đăng nhập lúc này. Vui lòng thử lại.',
+          },
+          { status: 500 }
+        );
+        clearOidcTransactionCookie(res);
+        return res;
+      }
       const res = NextResponse.json({ success: true });
       clearOidcTransactionCookie(res);
       return clearSessionCookie(res);
@@ -684,7 +723,7 @@ export async function POST(req: Request) {
 
     // Verify caller session on sync_user BEFORE DB access
     const preVerifiedSyncSession =
-      action === 'sync_user' ? await verifyRequestUser(req) : null;
+      action === 'sync_user' ? await verifyRequestSessionUser(req) : null;
     if (action === 'sync_user') {
       if (!preVerifiedSyncSession) {
         return NextResponse.json(
@@ -822,15 +861,19 @@ export async function POST(req: Request) {
       ]);
 
       const resolvedUser = ((demoProfile as Profile) || SEED_PROFILE) as Profile;
+      const demoSessionVersion = await getOwnerSessionVersion(resolvedUser.id);
       const accessToken = issueSessionToken({
         id: resolvedUser.id,
         email: resolvedUser.email,
         role: 'owner',
         is_admin: false,
+        ...(demoSessionVersion !== null
+          ? { session_version: demoSessionVersion }
+          : {}),
       });
 
       const res = NextResponse.json({
-        user: resolvedUser,
+        user: omitServerSessionFields(resolvedUser),
         shops: (demoShops || []) as Shop[],
         isAdmin: false,
         accessToken,
@@ -838,14 +881,13 @@ export async function POST(req: Request) {
       return attachSessionCookie(res, accessToken);
     }
 
-    // 3. Sync authenticated owner/admin session (from Qlaok HttpOnly cookie or Zitadel JWT)
+    // 3. Sync authenticated owner/admin session from a Qlaok signed token.
     if (action === 'sync_user') {
       const verifiedSession = preVerifiedSyncSession!;
       let finalUser: Profile;
 
-      // verifyRequestUser has already resolved raw Zitadel subjects to the
-      // canonical Qlaok profile UUID. Re-read that profile by id here; passing
-      // the UUID back as though it were a Zitadel sub breaks opaque-sub users.
+      // The signed Qlaok session already carries the canonical profile UUID.
+      // Re-read that profile by id before returning its current permissions.
       const verifiedEmail = (
         verifiedSession.email ||
         normalizedEmail ||
@@ -855,11 +897,24 @@ export async function POST(req: Request) {
         .toLowerCase();
       let row: Profile | null = null;
 
-      if (isValidUuidSub(verifiedSession.sub)) {
+      const isDevelopmentSeedProfile =
+        verifiedSession.sub === SEED_PROFILE.id &&
+        process.env.NODE_ENV !== 'production';
+      const shouldReadPersistedProfile =
+        !isDevelopmentSeedProfile &&
+        (isValidUuidSub(verifiedSession.sub) ||
+          isImportedOwnerProfileId(verifiedSession.sub) ||
+          verifiedSession.sub === SUPER_ADMIN_ID);
+      if (shouldReadPersistedProfile) {
         const { data: existingById, error: lookupErr } = await sb
           .from('profiles')
           .select('*')
-          .eq('id', verifiedSession.sub.toLowerCase())
+          .eq(
+            'id',
+            isValidUuidSub(verifiedSession.sub)
+              ? verifiedSession.sub.toLowerCase()
+              : verifiedSession.sub
+          )
           .maybeSingle();
 
         if (lookupErr && lookupErr.code !== 'PGRST116') {
@@ -897,8 +952,8 @@ export async function POST(req: Request) {
         row?.role === 'admin' ||
         row?.is_admin === true;
       finalUser = row || {
-        // Non-UUID local session (e.g. a seeded demo owner) is not a
-        // PostgREST profile identity and remains on its existing local path.
+        // The non-production demo seed is the only session without a required
+        // database profile lookup.
         id: verifiedSession.sub,
         email: verifiedEmail,
         full_name:
@@ -966,12 +1021,18 @@ export async function POST(req: Request) {
 
       const nowSec = Math.floor(Date.now() / 1000);
       const expiresAt = nowSec + OWNER_SESSION_TTL_SECONDS;
+      const sessionVersion =
+        verifiedSession.sv ?? (await getOwnerSessionVersion(finalUser.id));
+      if (sessionVersion === null) {
+        throw new Error('Could not read the current owner session version.');
+      }
       const accessToken = issueSessionToken(
         {
           id: finalUser.id,
           email: finalUser.email,
           role: verifiedIsAdmin ? 'admin' : 'owner',
           is_admin: verifiedIsAdmin,
+          session_version: sessionVersion,
         },
         OWNER_SESSION_TTL_SECONDS
       );
@@ -979,10 +1040,11 @@ export async function POST(req: Request) {
         sub: finalUser.id,
         email: finalUser.email,
         isAdmin: verifiedIsAdmin,
+        sessionVersion,
       });
 
       const res = NextResponse.json({
-        user: finalUser,
+        user: omitServerSessionFields(finalUser),
         shops: (ownerShops || []) as Shop[],
         memberShops: syncMemberData.memberShops,
         memberships: syncMemberData.memberships,
@@ -998,6 +1060,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: 'Invalid auth action' }, { status: 400 });
   } catch (error) {
+    if (error instanceof OwnerSessionVersionUnavailableError) {
+      return ownerSessionVersionUnavailableResponse();
+    }
     if (error instanceof ZitadelOidcError) {
       return NextResponse.json(
         { error: error.message, code: error.code },

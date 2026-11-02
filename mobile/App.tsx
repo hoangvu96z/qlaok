@@ -183,7 +183,8 @@ export async function executeStaffSignOutCleanup(options?: {
       apiCall: options?.ownerApiCall ?? fetchApi,
       signOut:
         options?.signOutOwner ??
-        (() => clearOwnerSession({ reason: 'logout' })),
+        (() =>
+          clearOwnerSession({ reason: 'logout', baseUrl: API_BASE_URL })),
     });
     ownerCleaned = true;
   }
@@ -1088,7 +1089,7 @@ function Workspace({ userId }: { userId: string }) {
 
   const handleConfirmLogout = useCallback(async () => {
     const result = await unregisterPushOnLogout(() =>
-      clearOwnerSession({ reason: 'logout' })
+      clearOwnerSession({ reason: 'logout', baseUrl: API_BASE_URL })
     );
     if (result.signOutError) {
       Alert.alert(t('shell.logoutErrorTitle'), result.signOutError);

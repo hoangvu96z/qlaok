@@ -1169,8 +1169,32 @@ export async function saveOwnerSession(
 export async function clearOwnerSession(options?: {
   storage?: OwnerSessionStorageAdapter;
   reason?: 'logout' | 'expired';
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
 }): Promise<void> {
   const store = options?.storage ?? (await resolveDefaultStorageAdapter());
+  if (options?.reason === 'logout' && options.baseUrl) {
+    const current = await loadOwnerSession(options.storage, Math.floor(Date.now() / 1000));
+    if (current) {
+      const fetchFn = options.fetchImpl ?? fetch;
+      const cleanBaseUrl = options.baseUrl.replace(/\/+$/, '');
+      const response = await fetchFn(`${cleanBaseUrl}/api/auth`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${current.accessToken}`,
+        },
+        body: JSON.stringify({ action: 'logout' }),
+      });
+      if (!response.ok) {
+        throw new MobileOwnerOidcError(
+          'OWNER_SESSION_REVOCATION_FAILED',
+          'Không thể thu hồi phiên đăng nhập lúc này. Vui lòng thử lại.',
+          response.status
+        );
+      }
+    }
+  }
   await store.removeItem(OWNER_SESSION_STORAGE_KEY);
   await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
   if (!options?.storage) {

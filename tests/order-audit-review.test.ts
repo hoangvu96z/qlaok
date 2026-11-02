@@ -1599,7 +1599,8 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
       failAuditSelect = false;
     }
 
-    // Missing service-role configuration is database unavailability, not an internal 500.
+    // Missing service-role configuration also blocks reading the owner's
+    // session generation, so authentication fails closed with service unavailable.
     const previousSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const previousServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     try {
@@ -1613,7 +1614,10 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
         })
       );
       assert.equal(unavailableRes.status, 503);
-      assert.equal((await unavailableRes.json()).code, 'ORDER_AUDIT_QUERY_FAILED');
+      assert.equal(
+        (await unavailableRes.json()).code,
+        'OWNER_SESSION_VERSION_UNAVAILABLE'
+      );
     } finally {
       if (previousSupabaseUrl === undefined) {
         delete process.env.NEXT_PUBLIC_SUPABASE_URL;

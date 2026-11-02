@@ -11,7 +11,9 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
       CREATE SCHEMA auth;
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
-      $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;`);
+      $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS
+      $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
     await db.exec('CREATE PUBLICATION supabase_realtime');
     const migrations = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();
     for (const file of migrations) {
@@ -40,6 +42,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       'public.validate_shop_slug_and_aliases()',
       'public.record_shop_slug_alias_on_update()',
       'public.notify_order_events()',
+      'public.prevent_client_owner_session_version_mutation()',
     ];
 
     const assertTriggerFunctionsExecuteRevoked = async () => {
@@ -95,9 +98,10 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     const owner = '00000000-0000-0000-0000-000000000001';
     const staff = '00000000-0000-0000-0000-000000000002';
     const cashier = '00000000-0000-0000-0000-000000000003';
+    const revocationOwner = '00000000-0000-0000-0000-000000000006';
     await db.exec(`GRANT USAGE ON SCHEMA public, auth TO anon, authenticated, service_role;
       GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-      INSERT INTO profiles (id) VALUES ('${owner}'), ('${staff}'), ('${cashier}');
+      INSERT INTO profiles (id) VALUES ('${owner}'), ('${staff}'), ('${cashier}'), ('${revocationOwner}');
       INSERT INTO shops (id, owner_id, slug, name, is_published) VALUES ('sql-shop', '${owner}', 'sql-shop', 'SQL fixture', false);
       INSERT INTO shops (id, owner_id, slug, name, is_published) VALUES ('sql-pub-shop', '${owner}', 'sql-pub-shop', 'Published SQL fixture', true);
       INSERT INTO shop_tables (id, shop_id, table_code, name, is_active, is_archived) VALUES
@@ -111,6 +115,39 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       INSERT INTO orders (id, order_code, shop_id, total_amount) VALUES ('sql-order', 'SQL-1', 'sql-shop', 100000);`);
     await db.exec(`GRANT UPDATE (price) ON TABLE public.items TO authenticated;
       GRANT INSERT (user_agent) ON TABLE public.analytics_events TO anon;`);
+    const ownerSessionFunctionAcl = await db.query(`
+      SELECT
+        has_function_privilege('anon', 'public.revoke_owner_session(text,integer)', 'EXECUTE') AS anon_exec,
+        has_function_privilege('authenticated', 'public.revoke_owner_session(text,integer)', 'EXECUTE') AS authenticated_exec,
+        has_function_privilege('service_role', 'public.revoke_owner_session(text,integer)', 'EXECUTE') AS service_role_exec
+    `);
+    assert.deepEqual(ownerSessionFunctionAcl.rows[0], {
+      anon_exec: false,
+      authenticated_exec: false,
+      service_role_exec: true,
+    });
+    await db.exec('RESET ROLE; SET ROLE authenticated');
+    await assert.rejects(
+      db.query('SELECT public.revoke_owner_session($1, 1)', [owner]),
+      /permission denied/i
+    );
+    await db.exec('RESET ROLE; SET ROLE service_role');
+    const revokedOwnerSession = await db.query(
+      'SELECT public.revoke_owner_session($1, 1) AS version',
+      [owner]
+    );
+    assert.equal(revokedOwnerSession.rows[0].version, 2);
+    const staleOwnerLogout = await db.query(
+      'SELECT public.revoke_owner_session($1, 1) AS version',
+      [owner]
+    );
+    assert.equal(staleOwnerLogout.rows[0].version, null);
+    assert.equal(
+      (await db.query('SELECT session_version FROM profiles WHERE id=$1', [owner]))
+        .rows[0].session_version,
+      2
+    );
+    await db.exec('RESET ROLE');
     // The fixture grant simulates legacy/default PostgREST grants. Reapply the
     // forward migration afterward to prove it removes table and column writes.
     await db.exec(
@@ -162,12 +199,36 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await assert.rejects(db.query("SELECT settle_table_bill_atomic('sql-shop', NULL, 'review')"), /permission denied/i);
 
     // Owner can manage their own shop_tables via RLS
-    await db.exec(`RESET ROLE; SET ROLE authenticated; SELECT set_config('request.jwt.claim.sub', '${owner}', false);
-      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}"}', false);`);
+    await db.exec(`RESET ROLE; SET ROLE authenticated; SELECT set_config('request.jwt.claim.role', 'authenticated', false); SELECT set_config('request.jwt.claim.sub', '${owner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}","sv":2}', false);`);
     assert.equal(
       (await db.query("INSERT INTO shop_tables (id, shop_id, table_code, name) VALUES ('sql-tbl-owner', 'sql-shop', 'T03', 'Bàn 03') RETURNING id")).rows.length,
       1,
       'owner should be able to create shop_tables'
+    );
+    assert.equal(
+      (await db.query('SELECT public.is_client_request_context() AS is_client')).rows[0]
+        .is_client,
+      true,
+      'authenticated owner writes are identified as client requests'
+    );
+    const profileGuard = await db.query(`
+      SELECT pg_get_functiondef('public.prevent_client_owner_session_version_mutation()'::regprocedure) AS definition
+    `);
+    assert.match(profileGuard.rows[0].definition, /NEW\.session_version IS DISTINCT FROM OLD\.session_version/);
+    assert.equal(
+      (await db.query("SELECT count(*)::int AS count FROM pg_trigger WHERE tgrelid='public.profiles'::regclass AND tgname='trg_prevent_client_owner_session_version_mutation' AND NOT tgisinternal")).rows[0].count,
+      1
+    );
+    await assert.rejects(
+      db.query('UPDATE profiles SET session_version=3 WHERE id=$1 RETURNING id', [owner]),
+      /FORBIDDEN_OWNER_SESSION_VERSION_MUTATION/i
+    );
+    assert.equal(
+      (await db.query('SELECT session_version FROM profiles WHERE id=$1', [owner]))
+        .rows[0].session_version,
+      2,
+      'owner cannot change the server-managed session generation through PostgREST'
     );
 
     await db.exec("RESET ROLE; SELECT set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role");
@@ -240,7 +301,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     );
 
     // Authenticated client cannot read or mutate mobile_push_tokens directly (server-only)
-    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`);
+    await db.exec(`RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false), set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}","sv":2}', false); SET ROLE authenticated`);
     await assert.rejects(
       db.query("SELECT * FROM mobile_push_tokens"),
       /permission denied/i
@@ -1538,7 +1599,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
 
     // 8. Strict RLS & privilege boundaries on shop_staff_credentials, staff_login_rate_limits, and atomic RPCs
     await db.exec(
-      `RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`
+      `RESET ROLE; SELECT set_config('request.jwt.claim.sub', '${owner}', false), set_config('request.jwt.claim.role', 'authenticated', false), set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}","sv":2}', false); SET ROLE authenticated`
     );
     await assert.rejects(
       db.query("SELECT * FROM shop_staff_credentials WHERE shop_id = 'sql-shop'"),
@@ -1942,7 +2003,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       RESET ROLE;
       SET ROLE authenticated;
       SELECT set_config('request.jwt.claim.sub', '${owner}', false);
-      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}"}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}","sv":2}', false);
     `);
 
     const ownerAuditRead = (
@@ -2574,7 +2635,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
 
     await db.exec(`RESET ROLE; SET ROLE authenticated;
       SELECT set_config('request.jwt.claim.sub', '${owner}', false);
-      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}"}', false);`);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${owner}","sv":2}', false);`);
     await assert.rejects(
       db.query("DELETE FROM shops WHERE id = 'sql-shop' RETURNING id"),
       /permission denied/i
@@ -2622,6 +2683,39 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await assert.rejects(
       db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('basic-limit-26', 'plan-limit-shop', 'plan-limit-category', 10000)"),
       /PLAN_LIMIT_REACHED/i
+    );
+
+    // A direct PostgREST JWT must be rejected by RLS after owner logout, while
+    // the newly issued generation can still read the same profile.
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+      SET ROLE service_role;`);
+    const revokedVersion = await db.query(
+      `SELECT public.revoke_owner_session('${revocationOwner}', 1) AS version`
+    );
+    assert.equal(Number(revokedVersion.rows[0]?.version), 2);
+
+    await db.exec(`RESET ROLE; SET ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${revocationOwner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${revocationOwner}"}', false);`);
+    assert.equal(
+      (await db.query(`SELECT id FROM profiles WHERE id = '${revocationOwner}'`)).rows.length,
+      0,
+      'legacy direct PostgREST JWT without sv must be revoked after logout'
+    );
+
+    await db.exec(`SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${revocationOwner}","sv":1}', false);`);
+    assert.equal(
+      (await db.query(`SELECT id FROM profiles WHERE id = '${revocationOwner}'`)).rows.length,
+      0,
+      'stale direct PostgREST JWT must not read rows after logout'
+    );
+
+    await db.exec(`SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${revocationOwner}","sv":2}', false);`);
+    assert.equal(
+      (await db.query(`SELECT id FROM profiles WHERE id = '${revocationOwner}'`)).rows.length,
+      1,
+      'current direct PostgREST JWT should retain its profile access'
     );
 
   } finally { await db.close(); }

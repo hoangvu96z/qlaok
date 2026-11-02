@@ -477,7 +477,7 @@ test('/api/admin surfaces database query errors instead of returning empty fake 
   }
 });
 
-test('POST /api/auth sync_user surfaces Super Admin profile DB errors instead of swallowing them', async () => {
+test('POST /api/auth sync_user returns 503 when the owner session version cannot be read', async () => {
   const failingAuthDbClient = {
     from() {
       return {
@@ -537,9 +537,9 @@ test('POST /api/auth sync_user surfaces Super Admin profile DB errors instead of
         }),
       })
     );
-    assert.equal(res.status, 500);
+    assert.equal(res.status, 503);
     const body = await res.json();
-    assert.match(body.error, /row-level security|Super Admin/i);
+    assert.equal(body.code, 'OWNER_SESSION_VERSION_UNAVAILABLE');
   } finally {
     setSupabaseDbClientForTests(null);
   }
@@ -873,6 +873,13 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     payload: unknown;
   }> = [];
   let shopsRows: Array<Record<string, unknown>> = [];
+  const superAdminSessionProfile: Record<string, unknown> = {
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    session_version: 1,
+    role: 'admin',
+    is_admin: true,
+  };
   let profilesRows: Array<Record<string, unknown>> = [];
   let failWriteOnTable: string | null = null;
   let failWriteError: { code: string; message: string } | null = null;
@@ -1005,11 +1012,13 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
       'public health response must not leak diagnostics'
     );
 
+    profilesRows.push({ ...superAdminSessionProfile });
     const prodAdminToken = issueSessionToken({
       id: SUPER_ADMIN_ID,
       email: SUPER_ADMIN_EMAIL,
       role: 'admin',
       is_admin: true,
+      session_version: 1,
     });
     const healthRes = await healthGet(
       new Request('http://localhost/api/health', {
@@ -1083,7 +1092,7 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
     // 3. In non-production, if any upsert/insert returns a PostgREST { error } object (without throwing),
     // ensureSupabaseReadyAndSeeded and /api/health must NOT report ready/seeded success
     shopsRows = [];
-    profilesRows = [];
+    profilesRows = [{ ...superAdminSessionProfile }];
     writeOperations.length = 0;
     (process.env as Record<string, string | undefined>).NODE_ENV = 'test';
     failWriteOnTable = 'items';
@@ -1102,7 +1111,7 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
 
     // Reset shopsRows so /api/health also hits the failed seed path
     shopsRows = [];
-    profilesRows = [];
+    profilesRows = [{ ...superAdminSessionProfile }];
     const failedHealthRes = await healthGet(
       new Request('http://localhost/api/health', {
         headers: { Authorization: `Bearer ${prodAdminToken}` },
@@ -1120,7 +1129,7 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
 
     // Also verify analytics_events insert error (does not throw) is caught
     shopsRows = [];
-    profilesRows = [];
+    profilesRows = [{ ...superAdminSessionProfile }];
     failWriteOnTable = 'analytics_events';
     failWriteError = {
       code: '23503',
@@ -1136,7 +1145,7 @@ test('ensureSupabaseReadyAndSeeded and /api/health never auto-seed demo shops in
 
     // 4. In non-production with an empty public.shops table and healthy writes, existing auto-seed behavior succeeds
     shopsRows = [];
-    profilesRows = [];
+    profilesRows = [{ ...superAdminSessionProfile }];
     writeOperations.length = 0;
     failWriteOnTable = null;
     failWriteError = null;

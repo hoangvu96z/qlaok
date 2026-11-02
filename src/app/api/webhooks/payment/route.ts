@@ -13,6 +13,8 @@ import { SEED_PROFILE, SEED_SHOPS } from '@/lib/seed-data';
 import {
   requireAuthenticatedUser,
   requireSuperAdmin,
+  OwnerSessionVersionUnavailableError,
+  ownerSessionVersionUnavailableResponse,
   verifyRequestUser,
   type VerifiedSessionUser,
 } from '@/lib/server-auth';
@@ -605,6 +607,9 @@ export async function POST(req: Request) {
       ...result,
     });
   } catch (error) {
+    if (error instanceof OwnerSessionVersionUnavailableError) {
+      return ownerSessionVersionUnavailableResponse();
+    }
     const msg =
       error instanceof Error ? error.message : 'Payment processing failed';
     let status = 500;

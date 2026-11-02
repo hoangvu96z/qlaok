@@ -41,6 +41,7 @@ import {
   startAdminImpersonation,
   stopAdminImpersonation,
   SUPER_ADMIN_EMAIL,
+  revokeAndClearStoredAuthOwner,
 } from '@/lib/auth-session';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import {
@@ -542,12 +543,22 @@ export default function SuperAdminPortalPage() {
     }
   };
 
-  const handleLogout = () => {
-    clearStoredAuthOwner();
-    setData(null);
-    setLoadError(null);
-    setAdminUser(null);
-    router.replace('/login');
+  const handleLogout = async () => {
+    try {
+      await revokeAndClearStoredAuthOwner();
+      setData(null);
+      setLoadError(null);
+      setAdminUser(null);
+      router.replace('/login');
+    } catch {
+      showToastMessage(
+        'error',
+        tx(
+          'Không thể thu hồi phiên đăng nhập. Kiểm tra kết nối rồi thử lại.',
+          'Could not revoke your session. Check your connection and try again.'
+        )
+      );
+    }
   };
 
   if (!authChecked) {

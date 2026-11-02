@@ -15,7 +15,7 @@ import {
   type GetShopOrderAuditLogsFilter,
   type OrderAuditLogInsertRow,
 } from '@/lib/db';
-import { isSuperAdminEmail } from '@/lib/auth-session';
+import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
 import {
   dbGetShopMemberships,
   dbGetShopMembershipForUser,
@@ -54,6 +54,7 @@ export interface PostgrestAuthenticatedJwtClaims {
   iss: typeof POSTGREST_JWT_ISSUER;
   email?: string;
   account_type: 'owner' | 'admin';
+  sv: number;
   iat: number;
   exp: number;
 }
@@ -163,6 +164,7 @@ export function issuePostgrestAuthenticatedJwt(params: {
   sub: string;
   email?: string;
   isAdmin?: boolean;
+  sessionVersion?: number;
   ttlSeconds?: number;
   nowSeconds?: number;
 }): { token: string; expiresAt: number; claims: PostgrestAuthenticatedJwtClaims } | null {
@@ -188,6 +190,10 @@ export function issuePostgrestAuthenticatedJwt(params: {
     typeof params.email === 'string' && params.email.trim()
       ? params.email.trim().toLowerCase()
       : undefined;
+  const sessionVersion = params.sessionVersion ?? 1;
+  if (!Number.isSafeInteger(sessionVersion) || sessionVersion < 1) {
+    return null;
+  }
 
   const claims: PostgrestAuthenticatedJwtClaims = {
     sub: params.sub.trim().toLowerCase(),
@@ -196,6 +202,7 @@ export function issuePostgrestAuthenticatedJwt(params: {
     iss: POSTGREST_JWT_ISSUER,
     ...(emailClean ? { email: emailClean } : {}),
     account_type: params.isAdmin ? 'admin' : 'owner',
+    sv: sessionVersion,
     iat: nowSec,
     exp: expiresAt,
   };
@@ -265,7 +272,16 @@ export function verifyPostgrestAuthenticatedJwt(
       : Math.floor(Date.now() / 1000);
   const exp = typeof payload.exp === 'number' ? payload.exp : NaN;
   const iat = typeof payload.iat === 'number' ? payload.iat : nowSec;
+  const sessionVersion =
+    payload.sv === undefined
+      ? 1
+      : typeof payload.sv === 'number'
+        ? payload.sv
+        : NaN;
   if (!Number.isFinite(exp) || exp <= nowSec) {
+    return null;
+  }
+  if (!Number.isSafeInteger(sessionVersion) || sessionVersion < 1) {
     return null;
   }
   if (
@@ -290,6 +306,7 @@ export function verifyPostgrestAuthenticatedJwt(
     iss: POSTGREST_JWT_ISSUER,
     ...(emailClean ? { email: emailClean } : {}),
     account_type: payload.account_type === 'admin' ? 'admin' : 'owner',
+    sv: sessionVersion,
     iat,
     exp,
   };
@@ -513,6 +530,125 @@ export function extractRequestToken(req: Request): string | null {
   return null;
 }
 
+export function isImportedOwnerProfileId(profileId: string): boolean {
+  return /^owner-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    profileId
+  );
+}
+
+function requiresOwnerSessionVersion(user: VerifiedSessionUser): boolean {
+  // Staff accounts do not own profiles.session_version. Owner IDs created by
+  // Qlaok are UUIDs; invitations use owner-<uuid>.
+  if (isStaffSessionUser(user)) return false;
+  return (
+    user.sv !== undefined ||
+    isValidUuidSub(user.sub) ||
+    isImportedOwnerProfileId(user.sub) ||
+    (user.sub === SUPER_ADMIN_ID && process.env.NODE_ENV === 'production')
+  );
+}
+
+export class OwnerSessionVersionUnavailableError extends Error {
+  readonly code = 'OWNER_SESSION_VERSION_UNAVAILABLE';
+
+  constructor() {
+    super('Could not read the current owner session version.');
+    this.name = 'OwnerSessionVersionUnavailableError';
+  }
+}
+
+export function ownerSessionVersionUnavailableResponse(): NextResponse {
+  return NextResponse.json(
+    {
+      error: 'Could not read the current owner session version.',
+      code: 'OWNER_SESSION_VERSION_UNAVAILABLE',
+    },
+    { status: 503 }
+  );
+}
+
+export async function getOwnerSessionVersion(
+  profileId: string
+): Promise<number | null> {
+  if (!profileId.trim()) return null;
+  let result: { data: unknown; error: unknown };
+  try {
+    result = await getSupabaseDbClient()
+      .from('profiles')
+      .select('session_version')
+      .eq('id', profileId)
+      .maybeSingle();
+  } catch {
+    throw new OwnerSessionVersionUnavailableError();
+  }
+  const { data, error } = result;
+  if (error) throw new OwnerSessionVersionUnavailableError();
+  if (!data) return null;
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { session_version?: unknown }
+    | null;
+  if (!row) return null;
+  // Existing test/demo rows without the new column map to the migration's
+  // default version. A real database query still fails closed if the column
+  // has not been migrated.
+  if (row.session_version === undefined || row.session_version === null) {
+    return 1;
+  }
+  return typeof row.session_version === 'number' &&
+    Number.isSafeInteger(row.session_version) &&
+    row.session_version >= 1
+    ? row.session_version
+    : null;
+}
+
+export async function revokeOwnerSessionFromRequest(
+  req: Request
+): Promise<void> {
+  const signedSession = verifySessionToken(extractRequestToken(req));
+  if (!signedSession || isShopBoundStaffSession(signedSession)) return;
+  if (!requiresOwnerSessionVersion(signedSession)) return;
+
+  const tokenVersion = signedSession.sv ?? 1;
+  const currentVersion = await getOwnerSessionVersion(signedSession.sub);
+  if (currentVersion === null) {
+    throw new Error('Could not read the current owner session version.');
+  }
+  // A repeated logout from an already-revoked session is safe and must not
+  // revoke a newer session created by a later login.
+  if (tokenVersion !== currentVersion) return;
+
+  const { data, error } = await getSupabaseDbClient().rpc(
+    'revoke_owner_session',
+    {
+      p_profile_id: signedSession.sub,
+      p_expected_version: currentVersion,
+    }
+  );
+  if (error) {
+    throw new Error('Could not revoke the owner session.');
+  }
+  if (data === null || data === undefined) return;
+  const nextVersion = Number(data);
+  if (!Number.isSafeInteger(nextVersion) || nextVersion !== currentVersion + 1) {
+    throw new Error('Owner session revocation returned an invalid version.');
+  }
+}
+
+export async function verifyRequestSessionUser(
+  req: Request
+): Promise<VerifiedSessionUser | null> {
+  const signedSession = verifySessionToken(extractRequestToken(req));
+  if (!signedSession) return null;
+  if (isShopBoundStaffSession(signedSession)) return signedSession;
+  if (!requiresOwnerSessionVersion(signedSession)) return signedSession;
+
+  const currentVersion = await getOwnerSessionVersion(signedSession.sub);
+  if (currentVersion === null) return null;
+  const tokenVersion = signedSession.sv ?? 1;
+  if (tokenVersion !== currentVersion) return null;
+  return { ...signedSession, sv: tokenVersion };
+}
+
 /**
  * Verifies the caller's identity using:
  * 1) Qlaok HMAC-signed session token (from HttpOnly cookie or Authorization: Bearer header), OR
@@ -529,7 +665,7 @@ export async function verifyRequestUser(
   if (!token) return null;
 
   // 1. Check Qlaok signed HMAC token
-  const verifiedHmac = verifySessionToken(token);
+  const verifiedHmac = await verifyRequestSessionUser(req);
   if (verifiedHmac) {
     return verifiedHmac;
   }
@@ -596,6 +732,16 @@ export async function verifyRequestUser(
       return null;
     }
 
+    if (postgrestClaims) {
+      const currentSessionVersion = await getOwnerSessionVersion(profileId);
+      if (
+        currentSessionVersion === null ||
+        currentSessionVersion !== postgrestClaims.sv
+      ) {
+        return null;
+      }
+    }
+
     if (profileRow.role === 'cashier' || profileRow.role === 'staff') {
       return null;
     }
@@ -619,12 +765,14 @@ export async function verifyRequestUser(
       // the stable Qlaok profile UUID rather than Zitadel's opaque subject.
       sub: profileId,
       email: emailLower,
+      ...(postgrestClaims ? { sv: postgrestClaims.sv } : {}),
       account_type: isAdmin ? 'admin' : 'owner',
       role: isAdmin ? 'admin' : 'owner',
       iat: claims.iat ?? nowSec,
       exp: claims.exp ?? nowSec + 3600,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof OwnerSessionVersionUnavailableError) throw error;
     return null;
   }
 }
@@ -637,13 +785,16 @@ export async function requireAuthenticatedUser(req: Request): Promise<
   try {
     user = await verifyRequestUser(req);
   } catch (err) {
+    if (err instanceof OwnerSessionVersionUnavailableError) {
+      return { errorResponse: ownerSessionVersionUnavailableResponse() };
+    }
     return {
       errorResponse: NextResponse.json(
         {
           error:
-            err instanceof Error
+            (err instanceof Error
               ? err.message
-              : 'Lỗi cấu hình xác thực phiên trên máy chủ.',
+              : 'Lỗi cấu hình xác thực phiên trên máy chủ.'),
           code: 'SERVER_AUTH_MISCONFIGURED',
         },
         { status: 500 }
@@ -671,14 +822,23 @@ export async function requireSuperAdmin(req: Request): Promise<
   let user: VerifiedSessionUser | null = null;
   try {
     user = await verifyRequestUser(req);
-  } catch {
+  } catch (err) {
+    if (err instanceof OwnerSessionVersionUnavailableError) {
+      console.error('auth.super_admin_session_verification_failed', {
+        code: err.code,
+      });
+      return { errorResponse: ownerSessionVersionUnavailableResponse() };
+    }
     console.error('auth.super_admin_session_verification_failed', {
       code: 'SERVER_AUTH_MISCONFIGURED',
     });
     return {
       errorResponse: NextResponse.json(
         {
-          error: 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
+          error:
+            err instanceof Error
+              ? err.message
+              : 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
           code: 'SERVER_AUTH_MISCONFIGURED',
         },
         { status: 500 }
@@ -759,8 +919,21 @@ export async function getRequestShopMembership(
 ): Promise<{
   user: VerifiedSessionUser | null;
   membership: ShopMembership | null;
+  errorResponse?: NextResponse;
 }> {
-  const user = await verifyRequestUser(req);
+  let user: VerifiedSessionUser | null;
+  try {
+    user = await verifyRequestUser(req);
+  } catch (error) {
+    if (error instanceof OwnerSessionVersionUnavailableError) {
+      return {
+        user: null,
+        membership: null,
+        errorResponse: ownerSessionVersionUnavailableResponse(),
+      };
+    }
+    throw error;
+  }
   if (!user || !shopId) {
     return { user: user || null, membership: null };
   }
