@@ -2607,3 +2607,11 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Checks:** `npm run test:review` **486/486 PASS**; `npm run test:unit` **144/144 PASS**; `npm run typecheck` PASS; `npm run lint` 0 errors and 37 existing warnings; `npm run build` PASS; `git diff --check` PASS; two new standalone test files **4/4 PASS**.
 - **AGY:** Gemini 4 Argon High run `d082c598-84c9-448b-a4c5-815057668d7d` was stopped before producing a verdict or edits after its CodeGraph scans repeatedly expanded into unrelated symbols. No AGY changes were accepted; Codex made and independently verified the fixes above.
 - **Giới hạn:** đây là xác minh và sửa các candidate đã nêu, không phải báo cáo full review repository. Không có DB production write hoặc thay đổi schema trong lượt này.
+
+## 199. Kiểm tra trực tiếp promo CTA trên shop mẫu Premium (2026-11-02)
+
+- **AGY Flash:** production storefront/API baseline trên shop QA Free đạt **18/18**; run `2026-11-02T08-53-05-260Z-b12858f7`. Promo/welcome trong baseline đó dùng fixture RAM khi cấu hình shop QA tắt các phần này.
+- **Codex xác minh bổ sung trên UI thật:** shop mẫu công khai `pho-hoi-an` trả `GET /api/shops?slug=pho-hoi-an` **200**; cấu hình promo và welcome đang bật. Banner và CTA hiện trên trang cửa quán; bấm CTA mở đúng welcome popup. Đây là shop mẫu Premium riêng, không phải tài khoản QA.
+- **Đường gọi:** CodeGraph `StorefrontPromoBanner` xác nhận CTA gọi `onOpenPopup`; callers là trang door và menu. Playwright dùng session có guard chỉ cho phép GET/HEAD/OPTIONS, chặn mutation và mock analytics cục bộ; thao tác CTA chỉ đổi UI, không gửi đơn hoặc ghi dữ liệu nghiệp vụ.
+- **Kết quả:** không phát hiện lỗi ở promo banner → welcome popup trong cấu hình đang chạy. Không sửa source, API, schema, migration hay dữ liệu production; không chạy test/build vì không có thay đổi code.
+- **Giới hạn:** tài khoản QA hiện vẫn là Free; `pho-hoi-an` chỉ là shop mẫu Premium. Không có fixture Basic/Premium thuộc tài khoản QA; flash sale của shop mẫu hiện tắt nên chưa xác minh cấu hình flash sale đang hoạt động trên production.
