@@ -1070,6 +1070,7 @@ test('12. ReceiptPrintModal renders 4th label tab, shows preset/count/max and fi
             order,
             shop: makeShop(labelCfg),
             initialTicketType,
+            hasPermission: () => true,
             onClose: () => {},
           })
         )
