@@ -11,6 +11,7 @@ import {
   shouldShowCatalogLoadErrorBanner,
   shouldShowCatalogLoadErrorState,
 } from '@/lib/dashboard-catalog';
+import { toPublicCatalogItem } from '@/lib/public-catalog';
 import type { CatalogItem, Category, I18nText } from '@/types/qlaok';
 
 const sampleCategory: Category = {
@@ -1540,5 +1541,566 @@ test('Bug 4 & Bug 5 regression: TranslationEditorModal and DashboardCatalogPage 
     );
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('Public shop and catalog GET responses enforce allowlist projections for anonymous/nonmember callers while preserving full shop and item fields for active members and admins', async () => {
+  await import('./tsx-review-loader.mjs');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { VerticalRenderer } = await import(
+    '@/components/storefront/VerticalRenderer'
+  );
+  const { setSupabaseDbClientForTests } = await import('@/lib/db');
+  const { setShopTablesDbClientForTests } = await import('@/lib/shop-tables');
+  const { setShopMembershipDbClientForTest } = await import(
+    '@/lib/shop-permissions'
+  );
+  const { issueSessionToken } = await import('@/lib/server-auth');
+  const { SUPER_ADMIN_EMAIL, SUPER_ADMIN_ID } = await import(
+    '@/lib/auth-session'
+  );
+  const { GET: shopsGet } = await import('@/app/api/shops/route');
+  const { GET: catalogGet } = await import('@/app/api/catalog/route');
+
+  const shopId = 'test-shop-1';
+  const unpublishedShopId = 'test-shop-unpublished';
+  const ownerId = 'owner-proj-001';
+  const staffUserId = 'staff-member-proj-001';
+  const outsiderId = 'outsider-proj-999';
+
+  const shopsMap: Record<string, Record<string, unknown>> = {
+    [shopId]: {
+      id: shopId,
+      owner_id: ownerId,
+      slug: 'test-shop-1',
+      name: 'Quán Test 1',
+      vertical: 'fnb',
+      tagline_i18n: { vi: 'Phở ngon', en: 'Tasty Pho' },
+      description_i18n: { vi: 'Mô tả', en: 'Desc' },
+      logo_url: 'https://cdn.example.com/logo.webp',
+      cover_urls: ['https://cdn.example.com/cover.webp'],
+      address: '123 Lê Lợi',
+      city: 'Đà Nẵng',
+      google_maps_url: 'https://maps.example.com/1',
+      google_review_url: 'https://reviews.example.com/1',
+      phone_contact: '0905111222',
+      zalo_phone: '0905111222',
+      telegram_chat_id: 'SECRET_TELEGRAM_CHAT_999',
+      wifi_info: { ssid: 'QuanTestWifi', password: 'wifi-password' },
+      opening_hours: {
+        mon: { open: '08:00', close: '22:00', closed: false },
+      },
+      opening_hours_confirmed: true,
+      supported_langs: ['vi', 'en'],
+      currency: 'VND',
+      is_published: true,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-02T00:00:00.000Z',
+      theme_config: {
+        primaryColor: '#10b981',
+        layout: 'list',
+        fontStyle: 'modern',
+        backgroundStyle: 'clean',
+        labelPrintConfig: {
+          enabled: true,
+          paperSize: 'cup_sticker_50x30',
+        },
+        internalDraftNote: 'PRIVATE_THEME_INTERNAL_SENTINEL',
+      },
+    },
+    [unpublishedShopId]: {
+      id: unpublishedShopId,
+      owner_id: ownerId,
+      slug: 'test-shop-unpublished',
+      name: 'Quán Nháp Nội Bộ',
+      vertical: 'fnb',
+      tagline_i18n: { vi: 'Nháp' },
+      description_i18n: { vi: 'Nháp' },
+      address: '456 Trần Phú',
+      city: 'Đà Nẵng',
+      telegram_chat_id: 'DRAFT_TELEGRAM_SECRET',
+      supported_langs: ['vi'],
+      currency: 'VND',
+      is_published: false,
+      theme_config: { primaryColor: '#10b981', layout: 'list' },
+    },
+  };
+
+  const categoriesList: Array<
+    Category & { created_at: string; internal_note: string }
+  > = [
+    {
+      id: 'cat-proj-1',
+      shop_id: shopId,
+      sort_order: 1,
+      name_i18n: { vi: 'Món nước', en: 'Noodle Soups' },
+      is_active: true,
+      created_at: '2026-10-03T00:00:00.000Z',
+      internal_note: 'CATEGORY_INTERNAL_SENTINEL',
+    },
+  ];
+
+  const rawItemWithInternalCols = {
+    id: 'item-proj-1',
+    shop_id: shopId,
+    category_id: 'cat-proj-1',
+    sort_order: 1,
+    price: 55000,
+    compare_at_price: 65000,
+    unit_i18n: { vi: 'tô', en: 'bowl' },
+    duration_mins: 15,
+    image_url: 'https://cdn.example.com/pho.webp',
+    is_available: true,
+    is_featured: true,
+    name_i18n: { vi: 'Phở Tái Nạm', en: 'Rare & Flank Pho' },
+    desc_i18n: { vi: 'Nước dùng xương hầm', en: 'Rich bone broth' },
+    options_json: [
+      {
+        id: 'opt-size',
+        name_i18n: { vi: 'Cỡ tô', en: 'Size' },
+        required: true,
+        choices: [
+          {
+            id: 'choice-reg',
+            name_i18n: { vi: 'Vừa', en: 'Regular' },
+            extra_price: 0,
+          },
+        ],
+      },
+    ],
+    stock_quantity: 3,
+    view_count: 428,
+    sold_count: 97,
+    created_at: '2026-10-01T08:00:00.000Z',
+    updated_at: '2026-10-20T09:30:00.000Z',
+    internal_cost_vnd: 19000,
+    supplier_secret_note: 'NEW_DB_COLUMN_SENTINEL',
+  };
+
+  const membershipsList = [
+    {
+      id: 'mem-staff-proj-1',
+      shop_id: shopId,
+      user_id: staffUserId,
+      email: 'staff@example.com',
+      full_name: 'Nhân Viên Quán',
+      role: 'cashier',
+      permissions: ['orders.view', 'catalog.manage'],
+      is_active: true,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+    },
+  ];
+
+  const mockSupabase = {
+    from(table: string) {
+      if (table === 'shops') {
+        const filters: Array<{ col: string; val: unknown }> = [];
+        const matchShops = () =>
+          Object.values(shopsMap).filter((row) =>
+            filters.every((f) => {
+              if (f.col === 'slug') {
+                return (
+                  String(row.slug || '').toLowerCase() ===
+                  String(f.val || '').toLowerCase()
+                );
+              }
+              return row[f.col] === f.val;
+            })
+          );
+        const chain = {
+          select() {
+            return chain;
+          },
+          order() {
+            return chain;
+          },
+          eq(col: string, val: unknown) {
+            filters.push({ col, val });
+            return chain;
+          },
+          limit: async (count: number) => ({
+            data: matchShops().slice(0, count),
+            error: null,
+          }),
+          maybeSingle: async () => ({
+            data: matchShops()[0] ?? null,
+            error: null,
+          }),
+          single: async () => {
+            const found = matchShops()[0] ?? null;
+            return {
+              data: found,
+              error: found ? null : { code: 'PGRST116', message: 'Not found' },
+            };
+          },
+        };
+        return chain;
+      }
+
+      if (table === 'categories') {
+        let targetShop = '';
+        const chain = {
+          select() {
+            return chain;
+          },
+          eq(col: string, val: string) {
+            if (col === 'shop_id') targetShop = val;
+            return chain;
+          },
+          order: async () => ({
+            data: targetShop === shopId ? categoriesList : [],
+            error: null,
+          }),
+        };
+        return chain;
+      }
+
+      if (table === 'items') {
+        let targetShop = '';
+        const chain = {
+          select() {
+            return chain;
+          },
+          eq(col: string, val: string) {
+            if (col === 'shop_id') targetShop = val;
+            return chain;
+          },
+          order: async () => ({
+            data:
+              targetShop === shopId
+                ? [{ ...rawItemWithInternalCols }]
+                : targetShop === unpublishedShopId
+                  ? [
+                      {
+                        ...rawItemWithInternalCols,
+                        id: 'item-unpub-1',
+                        shop_id: unpublishedShopId,
+                      },
+                    ]
+                  : [],
+            error: null,
+          }),
+        };
+        return chain;
+      }
+
+      if (table === 'shop_memberships') {
+        const filters: Array<{ col: string; val: unknown }> = [];
+        const chain = {
+          select() {
+            return chain;
+          },
+          eq(col: string, val: unknown) {
+            filters.push({ col, val });
+            return chain;
+          },
+          then(
+            onFulfilled: (val: {
+              data: typeof membershipsList;
+              error: null;
+            }) => unknown
+          ) {
+            const matched = membershipsList.filter((m) =>
+              filters.every(
+                (f) => (m as Record<string, unknown>)[f.col] === f.val
+              )
+            );
+            return Promise.resolve({ data: matched, error: null }).then(
+              onFulfilled
+            );
+          },
+        };
+        return chain;
+      }
+
+      if (table === 'profiles') {
+        const chain = {
+          select() {
+            return chain;
+          },
+          eq() {
+            return chain;
+          },
+          limit: async () => ({
+            data: [{ id: ownerId, plan: 'premium' }],
+            error: null,
+          }),
+          maybeSingle: async () => ({
+            data: { id: ownerId, plan: 'premium' },
+            error: null,
+          }),
+          single: async () => ({
+            data: { id: ownerId, plan: 'premium' },
+            error: null,
+          }),
+        };
+        return chain;
+      }
+
+      const emptyChain = {
+        select() {
+          return emptyChain;
+        },
+        eq() {
+          return emptyChain;
+        },
+        order: async () => ({ data: [], error: null }),
+        maybeSingle: async () => ({ data: null, error: null }),
+        single: async () => ({ data: null, error: null }),
+        then(onFulfilled: (val: { data: never[]; error: null }) => unknown) {
+          return Promise.resolve({ data: [], error: null }).then(onFulfilled);
+        },
+      };
+      return emptyChain;
+    },
+  };
+
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: 'owner@example.com',
+    role: 'owner',
+  });
+  const staffToken = issueSessionToken({
+    id: staffUserId,
+    email: 'staff@example.com',
+    role: 'cashier',
+  });
+  const outsiderToken = issueSessionToken({
+    id: outsiderId,
+    email: 'outsider@example.com',
+    role: 'owner',
+  });
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+
+  setSupabaseDbClientForTests(mockSupabase);
+  setShopTablesDbClientForTests(mockSupabase, true);
+  // @ts-expect-error test mock client
+  setShopMembershipDbClientForTest(mockSupabase);
+
+  try {
+    // 1. Public & nonmember GET /api/shops?shopId=... returns toPublicStorefrontShop allowlist
+    for (const headers of [
+      undefined,
+      { Authorization: `Bearer ${outsiderToken}` },
+    ]) {
+      const pubShopRes = await shopsGet(
+        new Request(`http://localhost:3000/api/shops?shopId=${shopId}`, {
+          headers,
+        })
+      );
+      assert.equal(pubShopRes.status, 200);
+      const rawShopText = await pubShopRes.clone().text();
+      const pubShopBody = await pubShopRes.json();
+
+      assert.equal(pubShopBody.shop.id, shopId);
+      assert.equal(pubShopBody.shop.slug, 'test-shop-1');
+      assert.equal(pubShopBody.shop.name, 'Quán Test 1');
+      assert.equal(pubShopBody.shop.theme_config.primaryColor, '#10b981');
+      assert.equal('owner_id' in pubShopBody.shop, false);
+      assert.equal('telegram_chat_id' in pubShopBody.shop, false);
+      assert.equal('created_at' in pubShopBody.shop, false);
+      assert.equal('updated_at' in pubShopBody.shop, false);
+      assert.equal('labelPrintConfig' in pubShopBody.shop.theme_config, false);
+      assert.equal('internalDraftNote' in pubShopBody.shop.theme_config, false);
+      assert.equal(pubShopBody.membership, undefined);
+      assert.equal(rawShopText.includes('SECRET_TELEGRAM_CHAT_999'), false);
+      assert.equal(rawShopText.includes(ownerId), false);
+      assert.equal(
+        rawShopText.includes('PRIVATE_THEME_INTERNAL_SENTINEL'),
+        false
+      );
+    }
+
+    // 2. Active member/owner/admin GET /api/shops?shopId=... preserves complete shop object
+    for (const token of [ownerToken, staffToken, adminToken]) {
+      const memberShopRes = await shopsGet(
+        new Request(`http://localhost:3000/api/shops?shopId=${shopId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(memberShopRes.status, 200);
+      const memberShopBody = await memberShopRes.json();
+      assert.equal(memberShopBody.shop.owner_id, ownerId);
+      assert.equal(
+        memberShopBody.shop.telegram_chat_id,
+        'SECRET_TELEGRAM_CHAT_999'
+      );
+      assert.deepEqual(memberShopBody.shop.theme_config.labelPrintConfig, {
+        enabled: true,
+        paperSize: 'cup_sticker_50x30',
+      });
+      assert.ok(memberShopBody.membership?.is_active);
+    }
+
+    // 3. Unpublished shop GET /api/shops?shopId=... returns 404 to anonymous & nonmember, 200 to owner/admin
+    for (const headers of [
+      undefined,
+      { Authorization: `Bearer ${outsiderToken}` },
+    ]) {
+      const unpubAnonRes = await shopsGet(
+        new Request(
+          `http://localhost:3000/api/shops?shopId=${unpublishedShopId}`,
+          { headers }
+        )
+      );
+      assert.equal(unpubAnonRes.status, 404);
+      const unpubText = await unpubAnonRes.text();
+      assert.equal(unpubText.includes('DRAFT_TELEGRAM_SECRET'), false);
+    }
+    const unpubOwnerRes = await shopsGet(
+      new Request(
+        `http://localhost:3000/api/shops?shopId=${unpublishedShopId}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } }
+      )
+    );
+    assert.equal(unpubOwnerRes.status, 200);
+
+    // 4. Public GET /api/shops?slug=test-shop-1 and public/nonmember GET /api/catalog?shopId=... use explicit item allowlist
+    const slugRes = await shopsGet(
+      new Request('http://localhost:3000/api/shops?slug=test-shop-1')
+    );
+    assert.equal(slugRes.status, 200);
+    const slugRawText = await slugRes.clone().text();
+    const slugBody = await slugRes.json();
+
+    const anonCatalogRes = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`)
+    );
+    assert.equal(anonCatalogRes.status, 200);
+    const anonCatalogRawText = await anonCatalogRes.clone().text();
+    const anonCatalogBody = await anonCatalogRes.json();
+
+    const outsiderCatalogRes = await catalogGet(
+      new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+        headers: { Authorization: `Bearer ${outsiderToken}` },
+      })
+    );
+    assert.equal(outsiderCatalogRes.status, 200);
+    const outsiderCatalogBody = await outsiderCatalogRes.json();
+
+    for (const [body, rawText] of [
+      [slugBody, slugRawText],
+      [anonCatalogBody, anonCatalogRawText],
+      [outsiderCatalogBody, JSON.stringify(outsiderCatalogBody)],
+    ] as const) {
+      assert.equal(body.items.length, 1);
+      const item = body.items[0];
+      assert.equal(item.id, 'item-proj-1');
+      assert.equal(item.shop_id, shopId);
+      assert.equal(item.category_id, 'cat-proj-1');
+      assert.equal(item.sort_order, 1);
+      assert.equal(item.price, 55000);
+      assert.equal(item.compare_at_price, 65000);
+      assert.deepEqual(item.unit_i18n, { vi: 'tô', en: 'bowl' });
+      assert.equal(item.duration_mins, 15);
+      assert.equal(item.image_url, 'https://cdn.example.com/pho.webp');
+      assert.equal(item.is_available, true);
+      assert.equal(item.is_featured, true);
+      assert.equal(item.name_i18n.vi, 'Phở Tái Nạm');
+      assert.equal(item.desc_i18n.vi, 'Nước dùng xương hầm');
+      assert.equal(item.options_json.length, 1);
+      assert.equal(item.stock_quantity, 3);
+
+      const category = body.categories[0];
+      assert.equal(category.id, 'cat-proj-1');
+      assert.equal(category.shop_id, shopId);
+      assert.equal(category.is_active, true);
+      assert.equal(category.name_i18n.vi, 'Món nước');
+      assert.equal(category.name_i18n.en, 'Noodle Soups');
+      assert.equal('created_at' in category, false);
+      assert.equal('internal_note' in category, false);
+
+      // Omitted analytics, timestamps, and unknown DB columns
+      assert.equal('view_count' in item, false);
+      assert.equal('sold_count' in item, false);
+      assert.equal('created_at' in item, false);
+      assert.equal('updated_at' in item, false);
+      assert.equal('internal_cost_vnd' in item, false);
+      assert.equal('supplier_secret_note' in item, false);
+      assert.equal(rawText.includes('NEW_DB_COLUMN_SENTINEL'), false);
+      assert.equal(rawText.includes('CATEGORY_INTERNAL_SENTINEL'), false);
+      assert.equal(rawText.includes('2026-10-20T09:30:00.000Z'), false);
+    }
+
+    // 5. Storefront VerticalRenderer renders retained stock_quantity from the public projection
+    const projectedItem = toPublicCatalogItem(
+      rawItemWithInternalCols as unknown as CatalogItem
+    );
+    const storefrontHtml = renderToStaticMarkup(
+      createElement(VerticalRenderer, {
+        vertical: 'fnb',
+        categories: categoriesList,
+        items: [projectedItem as CatalogItem],
+        locale: 'vi',
+        currency: 'VND',
+        selectedCategoryId: 'all',
+        searchQuery: '',
+        onSelectItem: () => {},
+        onQuickAdd: () => {},
+      })
+    );
+    assert.ok(
+      storefrontHtml.includes('Còn 3'),
+      'VerticalRenderer must render the stock badge from the public item projection'
+    );
+    assert.ok(storefrontHtml.includes('Phở Tái Nạm'));
+    assert.ok(storefrontHtml.includes('55.000'));
+
+    // 6. Active shop members and admins receive full catalog items on GET /api/catalog
+    for (const token of [ownerToken, staffToken, adminToken]) {
+      const authCatalogRes = await catalogGet(
+        new Request(`http://localhost:3000/api/catalog?shopId=${shopId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+      assert.equal(authCatalogRes.status, 200);
+      const authCatalogBody = await authCatalogRes.json();
+      assert.equal(authCatalogBody.items.length, 1);
+      assert.equal(
+        authCatalogBody.categories[0].created_at,
+        '2026-10-03T00:00:00.000Z'
+      );
+      assert.equal(
+        authCatalogBody.categories[0].internal_note,
+        'CATEGORY_INTERNAL_SENTINEL'
+      );
+      const fullItem = authCatalogBody.items[0];
+      assert.equal(fullItem.view_count, 428);
+      assert.equal(fullItem.sold_count, 97);
+      assert.equal(fullItem.stock_quantity, 3);
+      assert.equal(fullItem.created_at, '2026-10-01T08:00:00.000Z');
+      assert.equal(fullItem.updated_at, '2026-10-20T09:30:00.000Z');
+    }
+
+    // 7. Unpublished shop GET /api/catalog rejects nonmember (404) and allows owner/admin with full items
+    const unpubOutsiderCatalogRes = await catalogGet(
+      new Request(
+        `http://localhost:3000/api/catalog?shopId=${unpublishedShopId}`,
+        { headers: { Authorization: `Bearer ${outsiderToken}` } }
+      )
+    );
+    assert.equal(unpubOutsiderCatalogRes.status, 404);
+
+    const unpubOwnerCatalogRes = await catalogGet(
+      new Request(
+        `http://localhost:3000/api/catalog?shopId=${unpublishedShopId}`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } }
+      )
+    );
+    assert.equal(unpubOwnerCatalogRes.status, 200);
+    const unpubOwnerCatalogBody = await unpubOwnerCatalogRes.json();
+    assert.equal(unpubOwnerCatalogBody.items[0].sold_count, 97);
+    assert.equal(unpubOwnerCatalogBody.items[0].view_count, 428);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopTablesDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
   }
 });

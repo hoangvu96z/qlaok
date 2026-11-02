@@ -19,6 +19,10 @@ import {
   parseCatalogPriceValue,
   parseCatalogStockValue,
 } from '@/lib/catalog-excel';
+import {
+  toPublicCatalogCategory,
+  toPublicCatalogItem,
+} from '@/lib/public-catalog';
 
 const MAX_BULK_CATALOG_ITEMS = 2000;
 const BULK_SELECT_CHUNK_SIZE = 1000;
@@ -201,15 +205,15 @@ export async function GET(req: Request) {
     );
   }
 
-  if (shop.is_published === false) {
-    const auth = await requireShopPermission(req, shopId, []);
-    if (auth.errorResponse) {
-      return NextResponse.json(
-        { error: 'Không tìm thấy cửa hàng.', code: 'SHOP_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
+  const auth = await requireShopPermission(req, shopId, []);
+  if (shop.is_published === false && auth.errorResponse) {
+    return NextResponse.json(
+      { error: 'Không tìm thấy cửa hàng.', code: 'SHOP_NOT_FOUND' },
+      { status: 404 }
+    );
   }
+  const isMemberOrAdmin =
+    !auth.errorResponse && Boolean(auth.membership?.is_active);
 
   const publicShop = {
     id: shop.id,
@@ -237,8 +241,10 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     shop: publicShop,
-    categories,
-    items,
+    categories: isMemberOrAdmin
+      ? categories
+      : categories.map(toPublicCatalogCategory),
+    items: isMemberOrAdmin ? items : items.map(toPublicCatalogItem),
     ownerPlan,
   });
 }

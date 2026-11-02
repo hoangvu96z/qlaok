@@ -51,6 +51,10 @@ import {
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
 import { escapePostgrestIlikePattern } from '@/lib/owner-invitations';
+import {
+  toPublicCatalogCategory,
+  toPublicCatalogItem,
+} from '@/lib/public-catalog';
 import type { Shop, ShopPermission, ShopRole, ShopThemeConfig } from '@/types/qlaok';
 
 /** Roles an owner may assign to invited staff (owner is never invitable). */
@@ -179,6 +183,8 @@ export async function GET(req: Request) {
     const publicBundle = {
       ...bundle,
       shop: toPublicStorefrontShop(bundle.shop),
+      categories: bundle.categories.map(toPublicCatalogCategory),
+      items: bundle.items.map(toPublicCatalogItem),
     };
     const tableIdParam = (searchParams.get('tableId') ?? '').trim();
     if (tableIdParam) {
@@ -200,12 +206,16 @@ export async function GET(req: Request) {
     const { membership } = await getRequestShopMembership(req, shopId);
     const isMemberOrAdmin =
       sessionUser?.role === 'admin' ||
-      sessionUser?.sub === shop.owner_id ||
+      (!isShopBoundStaffSession(sessionUser) &&
+        Boolean(sessionUser?.sub && sessionUser.sub === shop.owner_id)) ||
       Boolean(membership?.is_active);
     if (!shop.is_published && !isMemberOrAdmin) {
       return NextResponse.json({ error: 'Shop not found' }, { status: 404 });
     }
-    return NextResponse.json({ shop, membership: membership || undefined });
+    return NextResponse.json({
+      shop: isMemberOrAdmin ? shop : toPublicStorefrontShop(shop),
+      membership: isMemberOrAdmin ? membership || undefined : undefined,
+    });
   }
 
   if (memberFlag === '1') {
