@@ -52,6 +52,10 @@ import {
 } from '@/lib/plan-limits';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
+import {
+  normalizeShopCreationInput,
+  resolveShopCreationOwnerId,
+} from '@/lib/shop-creation';
 import { escapePostgrestIlikePattern } from '@/lib/owner-invitations';
 import {
   toPublicCatalogCategory,
@@ -779,14 +783,160 @@ export async function POST(req: Request) {
       );
     }
 
+    const isSuperAdminBypass =
+      auth.user.role === 'admin' && isSuperAdminEmail(auth.user.email);
+    const ownerResolution = resolveShopCreationOwnerId({
+      authenticatedUserId: auth.user.sub,
+      requestedOwnerId: body?.owner_id,
+      isSuperAdmin: isSuperAdminBypass,
+    });
+    if (!ownerResolution.allowed) {
+      return NextResponse.json(
+        {
+          error: 'Không được phép tạo cửa hàng cho tài khoản khác.',
+          code: 'FORBIDDEN_OWNER_ID_OVERRIDE',
+        },
+        { status: 403 }
+      );
+    }
+
     assertNoSePaySecretInThemeConfig(body?.theme_config);
+    const shopInput = normalizeShopCreationInput(body);
+    if (!shopInput.valid) {
+      return NextResponse.json(
+        { error: shopInput.error, code: shopInput.code },
+        { status: 400 }
+      );
+    }
 
-    const effectiveOwnerId =
-      auth.user.role === 'admin' && body.owner_id
-        ? body.owner_id
-        : auth.user.sub;
+    const { payload } = shopInput;
+    const theme = payload.theme_config;
 
-    const created = await dbCreateShop(body, effectiveOwnerId);
+    if (theme.orderWorkflow !== undefined) {
+      const validation = validateOrderWorkflowConfig(theme.orderWorkflow);
+      if (!validation.valid || !validation.config) {
+        const primaryError = validation.errors[0];
+        return NextResponse.json(
+          {
+            error:
+              primaryError?.message ||
+              'Cấu hình quy trình đơn hàng không hợp lệ.',
+            code: primaryError?.code || 'INVALID_WORKFLOW_CONFIG',
+            errors: validation.errors,
+          },
+          { status: 400 }
+        );
+      }
+      theme.orderWorkflow = validation.config;
+    }
+
+    if (theme.labelPrintConfig !== undefined) {
+      const validation = validateLabelPrintConfig(theme.labelPrintConfig);
+      if (!validation.valid || !validation.config) {
+        const primaryError = validation.errors[0];
+        return NextResponse.json(
+          {
+            error:
+              primaryError?.message || 'Cấu hình in tem nhãn không hợp lệ.',
+            code: primaryError?.code || 'INVALID_LABEL_PRINT_CONFIG',
+            errors: validation.errors,
+          },
+          { status: 400 }
+        );
+      }
+      theme.labelPrintConfig = validation.config;
+    }
+
+    if (
+      theme.serviceRequestNotificationRule !== undefined &&
+      !isValidServiceRequestNotificationRule(
+        theme.serviceRequestNotificationRule
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Cấu hình người nhận thông báo gọi phục vụ không hợp lệ (chỉ chấp nhận all_order_staff hoặc owner_only).',
+          code: 'INVALID_SERVICE_REQUEST_NOTIFICATION_RULE',
+        },
+        { status: 400 }
+      );
+    }
+
+    if (payload.opening_hours !== undefined) {
+      const validation = validateOpeningHoursInput(payload.opening_hours);
+      if (!validation.valid) {
+        return NextResponse.json(
+          { error: validation.error, code: validation.code },
+          { status: 400 }
+        );
+      }
+      payload.opening_hours = validation.openingHours;
+    }
+
+    const needsOwnerPlanCheck =
+      shopInput.customThemeChanged || payload.supported_langs.length > 1;
+    if (!isSuperAdminBypass && needsOwnerPlanCheck) {
+      let rawOwnerPlan: unknown;
+      try {
+        const { data: ownerProfile, error: ownerPlanError } =
+          await getSupabaseDbClient()
+            .from('profiles')
+            .select('plan')
+            .eq('id', ownerResolution.ownerId)
+            .maybeSingle();
+        if (ownerPlanError || !ownerProfile) {
+          return NextResponse.json(
+            {
+              error:
+                'Không thể xác minh gói dịch vụ của chủ cửa hàng. Vui lòng thử lại.',
+              code: 'PLAN_ACCESS_CHECK_FAILED',
+            },
+            { status: 503 }
+          );
+        }
+        rawOwnerPlan = (ownerProfile as { plan?: unknown }).plan;
+      } catch {
+        return NextResponse.json(
+          {
+            error:
+              'Không thể xác minh gói dịch vụ của chủ cửa hàng. Vui lòng thử lại.',
+            code: 'PLAN_ACCESS_CHECK_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+
+      const ownerPlan = normalizePlanTier(rawOwnerPlan);
+      const restriction = getShopSettingsPlanRestriction(ownerPlan, {
+        customThemeChanged: shopInput.customThemeChanged,
+        supportedLanguageCount: payload.supported_langs.length,
+      });
+      if (restriction) {
+        const error =
+          restriction.feature === 'custom_theme'
+            ? `${restriction.code}: Tùy chỉnh giao diện cửa hàng chỉ có từ gói Basic. Vui lòng nâng cấp gói.`
+            : `${restriction.code}: Gói hiện tại chỉ hỗ trợ tối đa ${restriction.maxLanguages} ngôn ngữ. Vui lòng nâng cấp để thêm ngôn ngữ.`;
+        return NextResponse.json(
+          {
+            error,
+            code: restriction.code,
+            currentPlan: ownerPlan,
+            requiredPlan: restriction.requiredPlan,
+            ...(restriction.maxLanguages !== undefined
+              ? { maxLanguages: restriction.maxLanguages }
+              : {}),
+            upgradeHref: '/dashboard/billing',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    const created = await dbCreateShop(
+      payload as Parameters<typeof dbCreateShop>[0],
+      ownerResolution.ownerId
+    );
     return NextResponse.json({ shop: created }, { status: 201 });
   } catch (error) {
     const message =

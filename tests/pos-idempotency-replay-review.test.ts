@@ -432,6 +432,7 @@ test('POST /api/orders POS idempotent replay: recovers committed order after pri
       CREATE ROLE service_role BYPASSRLS;
       CREATE SCHEMA auth;
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;
     `);
     for (const file of fs
       .readdirSync('supabase/migrations')

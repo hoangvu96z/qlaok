@@ -1169,6 +1169,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
         CREATE ROLE service_role BYPASSRLS;
         CREATE SCHEMA auth;
         CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+        CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;
       `);
       for (const file of fs
         .readdirSync('supabase/migrations')
@@ -2072,6 +2073,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
         CREATE ROLE service_role BYPASSRLS;
         CREATE SCHEMA auth;
         CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+        CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;
       `);
       for (const file of fs
         .readdirSync('supabase/migrations')

@@ -79,7 +79,8 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
   };
   try {
     await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS; CREATE SCHEMA auth;
-      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;`);
+      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
     for (const file of fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort()) {
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
@@ -495,7 +496,8 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
 
   try {
     await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS; CREATE SCHEMA auth;
-      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;`);
+      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
     for (const file of fs
       .readdirSync('supabase/migrations')
       .filter((file) => file.endsWith('.sql'))
@@ -1373,7 +1375,8 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     process.env.SESSION_SECRET = 'synthetic-test-session-secret-storefront-qa-0000';
 
     await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS; CREATE SCHEMA auth;
-      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;`);
+      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
     for (const file of fs
       .readdirSync('supabase/migrations')
       .filter((file) => file.endsWith('.sql'))

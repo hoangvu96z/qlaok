@@ -217,17 +217,9 @@ export async function executeOnboardingCompletion(
             sat: { open: '08:00', close: '22:00', closed: false },
             sun: { open: '08:00', close: '22:00', closed: false },
           },
-          supported_langs: ['vi', 'en', 'ko', 'ja', 'zh'],
+          // Start on Vietnamese so a new Free shop stays within its entitlement.
+          supported_langs: ['vi'],
           currency: 'VND',
-          theme_config: {
-            primaryColor:
-              vertical === 'service'
-                ? '#8b5cf6'
-                : vertical === 'retail'
-                  ? '#f59e0b'
-                  : '#10b981',
-            layout: vertical === 'retail' ? 'grid' : 'list',
-          },
           // New stores start as drafts; owners go live from the dashboard
           // header "Go live" toggle once the menu is ready.
           is_published: false,
