@@ -59,6 +59,7 @@ export function LanguageSwitcher({
       <div ref={dropdownRef} className="relative z-50 shrink-0">
         <button
           type="button"
+          aria-expanded={open}
           onClick={() => setOpen((prev) => !prev)}
           style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
           className="qr-light-surface inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-500/70 bg-white px-3 py-1.5 text-xs font-extrabold text-slate-900 shadow-sm hover:border-emerald-600 active:scale-95 transition"
