@@ -2862,4 +2862,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **AGY:** Gemini 4 Argon High, review read-only `2026-11-02T22-27-05-999Z-d703f01e`, kết luận `No confirmed issue`; chưa chạy test hoặc live DB.
 - **Claude CLI:** gọi trực tiếp với cấu hình DeepSeek của CLI, yêu cầu review diff read-only; không trả về kết luận trước khi phải dừng lượt vì thời gian, nên không tính là review pass.
 - **Chưa xác minh:** POST chưa chạy end-to-end với DB; các plan cases kiểm tra bằng helper/route code và regression local, không thay đổi production.
-- **Trạng thái:** working tree; chưa commit/push/deploy follow-up.
+- **Trạng thái:** P2-5 đã được commit/push trong `44799a434ee67cd90f23ae7789dea8ccd8363378`; Actions #371 (`41537817742`) dừng ở E2E trước deploy vì database tự host thiếu `auth.jwt()`. Phần sửa compatibility được ghi tại mục 218.
+
+## 218. Sửa E2E migration trên PostgreSQL tự host (2026-11-03)
+
+- **Nguyên nhân:** Actions #371 chạy `scripts/run-e2e-ci.sh` trên PostgreSQL tạm dựng từ `supabase/self-hosted/000_bootstrap.sql`; bootstrap tạo `auth.uid()` nhưng không có `auth.jwt()`. Migration thu hồi owner session gọi `auth.jwt()` khi tạo `is_current_owner_session()`, nên verify fail và deploy bị skip.
+- **Sửa:** migration tạo `auth.jwt()` tương thích chỉ khi `auth.jwt()` chưa có; hàm đọc `request.jwt.claims` với `search_path` rỗng. Trên Supabase, hàm có sẵn được giữ nguyên. Regression PGlite bỏ fixture giả lập sẵn `auth.jwt()` để migration phải tự cung cấp helper.
+- **CodeGraph:** `status`; `explore "E2E migration runner applying disposable PostgreSQL auth.jwt session revocation migration"`; `explore "scripts/run-e2e-ci.sh disposable PostgreSQL E2E migration auth schema"`; `node tests/sql-review.test.mjs --offset 8 --limit 34`. `node scripts/run-e2e-ci.sh` không có file trong index (shell); shell runner và SQL migration được đọc trực tiếp sau truy vấn CodeGraph.
+- **Kiểm tra:** `npm run test:sql` **13/13 PASS** sau regression; `npm run test:db-reset` PASS (backup **26/26**, preflight/demo runner **21/21**, migration roundtrip **6/6**); `git diff --check` PASS. AGY Gemini 4 Argon Medium, read-only run `2026-11-02T22-36-54-319Z-81257962`, kết luận **No confirmed issue**.
+- **Chưa xác minh:** máy local không có Docker nên không chạy được `scripts/run-e2e-ci.sh`; Actions mới cho commit sửa sẽ xác nhận migration và deploy.

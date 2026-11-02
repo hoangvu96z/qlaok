@@ -12,8 +12,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       CREATE SCHEMA auth;
       CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
       $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS
-      $$ SELECT coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;`);
+      `);
     await db.exec('CREATE PUBLICATION supabase_realtime');
     const migrations = fs.readdirSync('supabase/migrations').filter((file) => file.endsWith('.sql')).sort();
     for (const file of migrations) {
@@ -32,6 +31,14 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       }
       await db.exec(fs.readFileSync(path.join('supabase/migrations', file), 'utf8'));
     }
+    const authJwtExists = await db.query(
+      "SELECT pg_catalog.to_regprocedure('auth.jwt()') IS NOT NULL AS present"
+    );
+    assert.equal(
+      authJwtExists.rows[0].present,
+      true,
+      'owner-session migration must provide auth.jwt() when the self-hosted bootstrap does not'
+    );
 
     const revokedTriggerFunctionSignatures = [
       'public.enforce_shop_table_boundaries()',

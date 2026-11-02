@@ -73,6 +73,32 @@ REVOKE ALL ON FUNCTION public.revoke_owner_session(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION public.revoke_owner_session(TEXT, INTEGER)
   TO service_role;
 
+-- Supabase already supplies auth.jwt(). The self-hosted PostgreSQL bootstrap
+-- only supplies auth.uid(), so add the compatible claims reader there when
+-- missing before the RLS helper below depends on it.
+DO $auth_jwt_compat$
+BEGIN
+  IF pg_catalog.to_regprocedure('auth.jwt()') IS NULL THEN
+    EXECUTE $create_auth_jwt$
+      CREATE FUNCTION auth.jwt()
+      RETURNS jsonb
+      LANGUAGE sql
+      STABLE
+      SET search_path = ''
+      AS $auth_jwt_body$
+        SELECT COALESCE(
+          NULLIF(pg_catalog.current_setting('request.jwt.claims', true), '')::jsonb,
+          '{}'::jsonb
+        )
+      $auth_jwt_body$
+    $create_auth_jwt$;
+    ALTER FUNCTION auth.jwt() OWNER TO postgres;
+    REVOKE ALL ON FUNCTION auth.jwt() FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION auth.jwt() TO anon, authenticated, service_role;
+  END IF;
+END
+$auth_jwt_compat$;
+
 -- PostgREST requests can bypass the Qlaok API, so bind every authenticated RLS
 -- policy to the same profile generation used by server-issued JWTs. Missing
 -- `sv` remains generation 1 for already-issued tokens and is revoked by bumping
