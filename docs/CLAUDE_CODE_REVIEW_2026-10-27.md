@@ -2462,4 +2462,13 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
   - `node --experimental-strip-types --import ./tests/register-ts.mjs --test tests/service-requests-review.test.ts` → **11/11 PASS**
   - `npm run typecheck` → **PASS**
   - `npm run lint` → **PASS**
-- **Triển khai:** Tại thời điểm ghi nhận kiểm chứng, production deploy còn chờ commit/push theo yêu cầu wrap-up đã được cấp. Sau đó đối chiếu Actions đúng SHA và kiểm tra route trên production; thay đổi chỉ sửa app code, không cần migration.
+- **Triển khai:** Đã push commit `edc00157745495d7b76249f1f87570ccc1d4e098`. GitHub Actions run #334 (`41363796773`) khớp SHA, kết thúc **success** cho cả verify và Build & Deploy. Sau deploy, `GET /api/health` và `/` trả HTTP 200; `GET /api/service-requests` không có shop ID trả HTTP 400 với `MISSING_SHOP_ID`. Chỉ đổi app code, không cần migration.
+
+## 185. Giữ giao dịch OIDC mobile để retry khi lỗi mạng lúc đổi authorization code (2026-11-02)
+
+- **Vấn đề:** `completeOwnerOidcCallback` xóa `OWNER_OIDC_TX_STORAGE_KEY` ngay đầu callback. Khi request `POST /api/auth` bị lỗi mạng, hàm trả `OIDC_EXCHANGE_NETWORK_ERROR` nhưng callback URL không thể retry vì giao dịch PKCE/state đã mất; deep-link handler vẫn cho phép thử lại cùng URL nhưng lần gọi sau nhận `OIDC_TRANSACTION_MISSING`.
+- **Sửa:** `mobile/src/lib/owner-session.ts` khôi phục đúng payload transaction đã đọc chỉ trong nhánh fetch bị reject do lỗi mạng. Provider error, state/transaction validation error, HTTP non-2xx và exchange thành công vẫn giữ hành vi single-use hiện tại; callback phát lại sau thành công tiếp tục bị từ chối.
+- **Regression:** `mobile/tests/owner-oidc-session.test.ts` mô phỏng lần đầu fetch ném `ECONNRESET`, xác nhận transaction còn để retry cùng callback; lần hai exchange thành công và xóa transaction; replay sau đó nhận `OIDC_TRANSACTION_MISSING` mà không gọi fetch.
+- **CodeGraph:** `codegraph node completeOwnerOidcCallback`; `codegraph node mobile/tests/owner-oidc-session.test.ts --offset 240 --limit 180`; `codegraph node mobile/tests/owner-oidc-session.test.ts --offset 1 --limit 80`; `codegraph node saveOwnerSession`; `codegraph explore "owner OIDC transaction storage helper clear pending transaction completeOwnerOidcCallback"`; `codegraph explore "mobile package scripts test typecheck owner session OIDC test"`; `codegraph status` báo index up-to-date. Ảnh hưởng giới hạn trong callback/session storage mobile và regression test.
+- **Checks:** `node --experimental-strip-types --test tests/owner-oidc-session.test.ts` trong `mobile/` → **16/16 PASS**; `npm test` trong `mobile/` → **122/122 PASS**; `npm run typecheck` trong `mobile/` → **PASS**; `git diff --check` → **PASS**.
+- **Chưa xác minh:** Chưa chạy callback với Zitadel thật hoặc trên iOS/Android SecureStore; test dùng fetch mock và memory storage. Chưa phát hành bản mobile/EAS cho thiết bị.

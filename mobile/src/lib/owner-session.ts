@@ -1363,6 +1363,10 @@ export async function completeOwnerOidcCallback(
       }),
     });
   } catch {
+    // The exchange did not return a response, so the caller may retry this
+    // callback after connectivity returns. Keep the transaction for that
+    // retry; all other callback outcomes remain single-use.
+    await store.setItem(OWNER_OIDC_TX_STORAGE_KEY, rawTx);
     throw new MobileOwnerOidcError(
       'OIDC_EXCHANGE_NETWORK_ERROR',
       isEn

@@ -375,6 +375,99 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
   );
 });
 
+test('completeOwnerOidcCallback keeps the transaction after a network failure so the callback can be retried', async () => {
+  const storage = createMemoryStorage();
+  const nowMs = 1_760_000_000_000;
+  const nowSec = Math.floor(nowMs / 1000);
+  const ownerUuid = 'a3a30894-e8ae-415d-a3dc-7947b0399dd1';
+  const prepared = await prepareOwnerOidcAuthorizationRequest({
+    env: {
+      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+    },
+    storage,
+    nowMs,
+  });
+  const callbackUrl = `qlaok://auth/callback?code=retry-auth-code-123&state=${encodeURIComponent(
+    prepared.transaction.state
+  )}`;
+
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(callbackUrl, {
+        baseUrl: 'https://qlaok.vunph.click',
+        storage,
+        nowMs: nowMs + 1000,
+        fetchImpl: async () => {
+          throw new Error('ECONNRESET');
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'OIDC_EXCHANGE_NETWORK_ERROR'
+  );
+
+  const retainedTransaction = await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY);
+  assert.ok(retainedTransaction);
+  assert.equal(JSON.parse(retainedTransaction).state, prepared.transaction.state);
+
+  const postgrestJwt = buildMockPostgrestJwt({
+    sub: ownerUuid,
+    role: 'authenticated',
+    aud: 'authenticated',
+    iss: 'qlaok-postgrest',
+    exp: nowSec + 3600,
+    iat: nowSec,
+  });
+  let exchangeCalls = 0;
+  const session = await completeOwnerOidcCallback(callbackUrl, {
+    baseUrl: 'https://qlaok.vunph.click',
+    storage,
+    nowMs: nowMs + 2000,
+    fetchImpl: async () => {
+      exchangeCalls += 1;
+      return new Response(
+        JSON.stringify({
+          user: {
+            id: ownerUuid,
+            email: 'owner@qlaok.vn',
+            full_name: 'Chủ Quán Hội An',
+            plan: 'pro',
+            role: 'owner',
+            is_admin: false,
+          },
+          isAdmin: false,
+          accessToken: 'qlaok-owner-hmac-payload.signature',
+          expiresAt: nowSec + 86400,
+          postgrestToken: postgrestJwt,
+          postgrestExpiresAt: nowSec + 3600,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    },
+  });
+
+  assert.equal(exchangeCalls, 1);
+  assert.equal(session.user.id, ownerUuid);
+  assert.equal(await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY), null);
+
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(callbackUrl, {
+        baseUrl: 'https://qlaok.vunph.click',
+        storage,
+        nowMs: nowMs + 3000,
+        fetchImpl: async () => {
+          exchangeCalls += 1;
+          throw new Error('Replay must not reach the exchange endpoint');
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'OIDC_TRANSACTION_MISSING'
+  );
+  assert.equal(exchangeCalls, 1);
+});
+
 test('revalidateOwnerSession retains valid owner session on transient 5xx/network errors and clears only on 401', async () => {
   const storage = createMemoryStorage();
   const nowSec = 1_760_000_000;
