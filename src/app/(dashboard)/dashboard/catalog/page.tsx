@@ -467,6 +467,17 @@ export default function DashboardCatalogPage() {
       const res = await fetch(input, init);
       if (activeShopIdRef.current !== expectedShopId) return false;
       if (res.ok) {
+        if ((init.method || 'GET').toUpperCase() === 'DELETE') {
+          const payload = await res.json().catch(() => null);
+          if (
+            !payload ||
+            typeof payload !== 'object' ||
+            (payload as { deleted?: unknown }).deleted !== true
+          ) {
+            setMutationError(toMutationError(payload, fallback));
+            return false;
+          }
+        }
         setMutationError(null);
         return true;
       }
@@ -885,6 +896,8 @@ export default function DashboardCatalogPage() {
           method: 'POST',
           headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
+            shopId: activeShop.id,
+            purpose: 'catalog',
             vertical: activeShop.vertical,
             categoryNameVi: nameVi,
             itemNameVi: nameVi,
@@ -964,6 +977,8 @@ export default function DashboardCatalogPage() {
           method: 'POST',
           headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
+            shopId: activeShop.id,
+            purpose: 'catalog',
             vertical: activeShop.vertical,
             categoryNameVi: trimmedName,
             itemNameVi: trimmedName,

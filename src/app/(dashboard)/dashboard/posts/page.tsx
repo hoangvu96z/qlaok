@@ -388,13 +388,15 @@ export default function DashboardPostsPage() {
   };
 
   const handleTranslatePost = async () => {
-    if (!titleI18n.vi.trim()) return;
+    if (!activeShop?.id || !titleI18n.vi.trim()) return;
     setTranslating(true);
     try {
       const res = await fetch('/api/ai/translate', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
+          shopId: activeShop.id,
+          purpose: 'promotion',
           vertical: activeShop.vertical,
           categoryNameVi: 'Khuyến mãi',
           itemNameVi: titleI18n.vi,
@@ -500,12 +502,17 @@ export default function DashboardPostsPage() {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
-      if (!res.ok) {
+      const payload = await res.json().catch(() => null);
+      if (
+        !res.ok ||
+        !payload ||
+        typeof payload !== 'object' ||
+        (payload as { deleted?: unknown }).deleted !== true
+      ) {
         setPostsError(
-          await readResponseError(
-            res,
-            tx('Không thể xóa thông báo', 'Could not delete announcement')
-          )
+          payload && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string'
+            ? (payload as { error: string }).error
+            : tx('Không thể xóa thông báo', 'Could not delete announcement')
         );
         return;
       }

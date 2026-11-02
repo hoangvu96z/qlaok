@@ -160,31 +160,7 @@ export async function executeOnboardingCompletion(
     };
   }
 
-  // 1. Translate first item & category into 5+ languages via AI (best-effort; falls back locally if unavailable)
-  let transData: OnboardingTranslationPayload = {};
-  try {
-    const transRes = await fetchImpl('/api/ai/translate', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        vertical,
-        categoryNameVi: categoryVi,
-        itemNameVi: trimmedItemNameVi,
-      }),
-    });
-    if (transRes.ok) {
-      const parsed = (await transRes
-        .json()
-        .catch(() => ({}))) as OnboardingTranslationPayload;
-      if (parsed && typeof parsed === 'object') {
-        transData = parsed;
-      }
-    }
-  } catch {
-    // Translation failure should not block draft creation or catalog import; fallback i18n is used below.
-  }
-
-  // 2. Reuse preserved draft shop on retry, or create a new draft shop (is_published: false)
+  // 1. Reuse preserved draft shop on retry, or create a new draft shop (is_published: false)
   let draftShop: OnboardingDraftShop | null = existingDraftShop?.id
     ? existingDraftShop
     : null;
@@ -316,6 +292,33 @@ export async function executeOnboardingCompletion(
     }
   } else {
     onDraftShopSaved?.(draftShop);
+  }
+
+  // 2. Translate only after a shop exists so the AI route can authorize the
+  // request against this owner's catalog.manage permission.
+  let transData: OnboardingTranslationPayload = {};
+  try {
+    const transRes = await fetchImpl('/api/ai/translate', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        shopId: draftShop.id,
+        purpose: 'catalog',
+        vertical,
+        categoryNameVi: categoryVi,
+        itemNameVi: trimmedItemNameVi,
+      }),
+    });
+    if (transRes.ok) {
+      const parsed = (await transRes
+        .json()
+        .catch(() => ({}))) as OnboardingTranslationPayload;
+      if (parsed && typeof parsed === 'object') {
+        transData = parsed;
+      }
+    }
+  } catch {
+    // Translation failure should not block catalog import; fallback i18n is used below.
   }
 
   // 3. Bulk import initial category and translated item into the draft shop

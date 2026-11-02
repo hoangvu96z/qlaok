@@ -7,6 +7,7 @@ import {
 } from '@/app/api/posts/route';
 import {
   dbGetShopPosts,
+  dbDeletePost,
   dbUpsertPost,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
@@ -23,13 +24,17 @@ interface MockQueryLog {
   filters: Array<{ column: string; value: unknown }>;
   orders: Array<{ column: string; ascending?: boolean }>;
   limitCount: number | null;
-  operation: 'select' | 'insert' | 'update';
+  operation: 'select' | 'insert' | 'update' | 'delete';
   payload?: Record<string, unknown>;
 }
 
 function createPostDbMock(
   initialPosts: Post[],
-  options: { forceInsertConflict?: boolean } = {}
+  options: {
+    forceInsertConflict?: boolean;
+    forceDeleteError?: boolean;
+    forceDeleteNoRows?: boolean;
+  } = {}
 ) {
   const queryLogs: MockQueryLog[] = [];
   const posts = initialPosts.map(cloneJson);
@@ -40,7 +45,7 @@ function createPostDbMock(
     private orders: Array<{ column: string; ascending?: boolean }> = [];
     private limitCount: number | null = null;
     private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
-    private operation: 'select' | 'insert' | 'update' = 'select';
+    private operation: 'select' | 'insert' | 'update' | 'delete' = 'select';
     private mutationPayload: Record<string, unknown> | null = null;
 
     constructor(table: string) {
@@ -60,6 +65,11 @@ function createPostDbMock(
     update(payload: Record<string, unknown>) {
       this.operation = 'update';
       this.mutationPayload = cloneJson(payload);
+      return this;
+    }
+
+    delete() {
+      this.operation = 'delete';
       return this;
     }
 
@@ -139,6 +149,26 @@ function createPostDbMock(
             return Promise.resolve({ data: matched[0] ?? null, error: null });
           }
           return Promise.resolve({ data: matched, error: null });
+        }
+
+        if (this.operation === 'delete') {
+          if (options.forceDeleteError) {
+            return Promise.resolve({
+              data: null,
+              error: { code: 'XX000', message: 'Simulated delete failure' },
+            });
+          }
+          if (options.forceDeleteNoRows) {
+            return Promise.resolve({ data: [], error: null });
+          }
+          const deletedIds = new Set(matched.map((post) => post.id));
+          for (let index = posts.length - 1; index >= 0; index -= 1) {
+            if (deletedIds.has(posts[index].id)) posts.splice(index, 1);
+          }
+          return Promise.resolve({
+            data: matched.map((post) => ({ id: post.id })),
+            error: null,
+          });
         }
 
         matched = [...matched].sort((a, b) => {
@@ -532,6 +562,58 @@ test('DELETE /api/posts authenticates before looking up post IDs', async () => {
       0,
       'Unauthenticated post ID checks must not query the database'
     );
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('dbDeletePost reports only confirmed successful deletes', async () => {
+  const errorDb = createPostDbMock(FIXTURE_POSTS, { forceDeleteError: true });
+  setSupabaseDbClientForTests(errorDb.client as never);
+  try {
+    assert.equal(await dbDeletePost('post-1-active-pinned'), false);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  const emptyDb = createPostDbMock(FIXTURE_POSTS, { forceDeleteNoRows: true });
+  setSupabaseDbClientForTests(emptyDb.client as never);
+  try {
+    assert.equal(await dbDeletePost('post-1-active-pinned'), false);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+
+  const successDb = createPostDbMock(FIXTURE_POSTS);
+  setSupabaseDbClientForTests(successDb.client as never);
+  try {
+    assert.equal(await dbDeletePost('post-1-active-pinned'), true);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('DELETE /api/posts returns non-2xx when the database delete fails', async () => {
+  const { client } = createPostDbMock(FIXTURE_POSTS, { forceDeleteError: true });
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const adminToken = issueSessionToken({
+      id: 'admin-post-delete-review',
+      email: SUPER_ADMIN_EMAIL,
+      role: 'admin',
+      is_admin: true,
+    });
+    const response = await deletePost(
+      new Request('http://localhost/api/posts?postId=post-1-active-pinned', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 500);
+    assert.equal(body.deleted, false);
+    assert.equal(body.code, 'POST_DELETE_FAILED');
   } finally {
     setSupabaseDbClientForTests(null);
   }

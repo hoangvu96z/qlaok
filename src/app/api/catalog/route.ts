@@ -1686,8 +1686,30 @@ export async function DELETE(req: Request) {
     );
     if (auth.errorResponse) return auth.errorResponse;
 
-    const ok = await dbDeleteItem(itemId);
-    return NextResponse.json({ deleted: ok });
+    let ok = false;
+    try {
+      ok = await dbDeleteItem(itemId);
+    } catch {
+      return NextResponse.json(
+        {
+          deleted: false,
+          error: 'Không thể xóa món. Vui lòng thử lại sau.',
+          code: 'ITEM_DELETE_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    if (!ok) {
+      return NextResponse.json(
+        {
+          deleted: false,
+          error: 'Không thể xóa món. Vui lòng tải lại và thử lại.',
+          code: 'ITEM_DELETE_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json({ deleted: true });
   }
 
   if (categoryId) {
@@ -1711,8 +1733,30 @@ export async function DELETE(req: Request) {
     );
     if (auth.errorResponse) return auth.errorResponse;
 
-    const ok = await dbDeleteCategory(categoryId);
-    return NextResponse.json({ deleted: ok });
+    let ok = false;
+    try {
+      ok = await dbDeleteCategory(categoryId);
+    } catch {
+      return NextResponse.json(
+        {
+          deleted: false,
+          error: 'Không thể xóa danh mục. Vui lòng thử lại sau.',
+          code: 'CATEGORY_DELETE_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    if (!ok) {
+      return NextResponse.json(
+        {
+          deleted: false,
+          error: 'Không thể xóa danh mục. Vui lòng tải lại và thử lại.',
+          code: 'CATEGORY_DELETE_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json({ deleted: true });
   }
 
   return NextResponse.json(

@@ -750,10 +750,7 @@ function syncInMemoryShopSlugAlias(
   inMemoryShopSlugAliases.set(normalizedPrev, shopId);
 }
 
-export async function dbDeleteShopSlugAliases(
-  shopId: string,
-  sbClient?: SupabaseClient
-): Promise<void> {
+export function dbClearShopSlugAliasCache(shopId: string): void {
   const cleanShopId = (shopId ?? '').trim();
   if (!cleanShopId) return;
 
@@ -762,6 +759,16 @@ export async function dbDeleteShopSlugAliases(
       inMemoryShopSlugAliases.delete(aliasSlug);
     }
   }
+}
+
+export async function dbDeleteShopSlugAliases(
+  shopId: string,
+  sbClient?: SupabaseClient
+): Promise<void> {
+  const cleanShopId = (shopId ?? '').trim();
+  if (!cleanShopId) return;
+
+  dbClearShopSlugAliasCache(cleanShopId);
 
   const sb =
     sbClient ??
@@ -1404,8 +1411,12 @@ export async function dbDeleteCategory(categoryId: string): Promise<boolean> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { error } = await sb.from('categories').delete().eq('id', categoryId);
-  return !error;
+  const { data, error } = await sb
+    .from('categories')
+    .delete()
+    .eq('id', categoryId)
+    .select('id');
+  return !error && Array.isArray(data) && data.some((row) => row.id === categoryId);
 }
 
 function applyItemFilter<T>(query: T, column: string, value: unknown): T {
@@ -1848,8 +1859,12 @@ export async function dbDeleteItem(itemId: string): Promise<boolean> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { error } = await sb.from('items').delete().eq('id', itemId);
-  return !error;
+  const { data, error } = await sb
+    .from('items')
+    .delete()
+    .eq('id', itemId)
+    .select('id');
+  return !error && Array.isArray(data) && data.some((row) => row.id === itemId);
 }
 
 export async function dbBulkImportCatalog(
@@ -2023,8 +2038,12 @@ export async function dbDeletePost(postId: string): Promise<boolean> {
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
 
-  const { error } = await sb.from('posts').delete().eq('id', postId);
-  return !error;
+  const { data, error } = await sb
+    .from('posts')
+    .delete()
+    .eq('id', postId)
+    .select('id');
+  return !error && Array.isArray(data) && data.some((row) => row.id === postId);
 }
 
 // ================= ANALYTICS & BILLING HELPERS =================

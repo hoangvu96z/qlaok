@@ -2,15 +2,13 @@ import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import {
   dbCompletePaymentWebhook,
-  dbDeleteShopSlugAliases,
+  dbClearShopSlugAliasCache,
   dbUpdateShop,
   ensureSupabaseReadyAndSeeded,
   requireSupabaseServiceRoleClient,
   shouldAutoSeedDemoData,
 } from '@/lib/db';
-import {
-  isSuperAdminEmail,
-} from '@/lib/auth-session';
+import { isSuperAdminEmail, SUPER_ADMIN_ID } from '@/lib/auth-session';
 import {
   ensureSuperAdminSeeded,
 } from '@/lib/auth-credentials';
@@ -459,6 +457,28 @@ export async function POST(req: Request) {
       );
     }
 
+    const inspectShopDeleteHistory = async (shopId: string) => {
+      const historyTables = [
+        'orders',
+        'order_audit_logs',
+        'sepay_webhook_events',
+        'table_service_requests',
+      ] as const;
+
+      for (const table of historyTables) {
+        const { data, error } = await sb
+          .from(table)
+          .select('id')
+          .eq('shop_id', shopId)
+          .limit(1)
+          .maybeSingle();
+        if (error) return { hasHistory: false, error: true };
+        if (data) return { hasHistory: true, error: false };
+      }
+
+      return { hasHistory: false, error: false };
+    };
+
     // 1. Update Owner Plan / Details
     if (action === 'update_owner_plan') {
       const {
@@ -594,36 +614,123 @@ export async function POST(req: Request) {
 
     // 4. Delete Owner Account
     if (action === 'delete_owner') {
-      const { ownerId, email } = body as { ownerId: string; email?: string };
+      const { ownerId } = body as { ownerId: string };
       if (!ownerId) {
         return NextResponse.json({ error: 'Thiếu ownerId' }, { status: 400 });
       }
-      if (isSuperAdminEmail(email)) {
+
+      const { data: targetOwner, error: targetOwnerError } = await sb
+        .from('profiles')
+        .select('id, email')
+        .eq('id', ownerId)
+        .maybeSingle();
+      if (targetOwnerError) {
+        return NextResponse.json(
+          {
+            error: 'Không thể kiểm tra tài khoản cần xóa. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'OWNER_DELETE_PREFLIGHT_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+      if (!targetOwner) {
+        return NextResponse.json({ error: 'Không tìm thấy tài khoản.' }, { status: 404 });
+      }
+      if (ownerId === SUPER_ADMIN_ID || isSuperAdminEmail(targetOwner.email)) {
         return NextResponse.json(
           { error: 'Không thể xóa tài khoản Super Admin tối cao!' },
           { status: 400 }
         );
       }
+      // Keep the audited email server-authoritative as well.
+      body.email = targetOwner.email;
 
-      // Delete shops belonging to this owner first
-      const { data: ownerShops } = await sb
+      const { data: ownerPaymentTransaction, error: paymentTransactionError } =
+        await sb
+          .from('payment_transactions')
+          .select('id')
+          .eq('user_id', ownerId)
+          .limit(1)
+          .maybeSingle();
+      if (paymentTransactionError) {
+        return NextResponse.json(
+          {
+            error: 'Không thể kiểm tra lịch sử thanh toán của tài khoản. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'OWNER_DELETE_PREFLIGHT_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+      if (ownerPaymentTransaction) {
+        return NextResponse.json(
+          {
+            error: 'Không thể xóa tài khoản vì còn lịch sử thanh toán gắn với tài khoản này.',
+            code: 'OWNER_HAS_PAYMENT_HISTORY',
+          },
+          { status: 409 }
+        );
+      }
+
+      const { data: ownerShops, error: ownerShopsError } = await sb
         .from('shops')
         .select('id')
         .eq('owner_id', ownerId);
-
-      for (const s of ownerShops || []) {
-        await dbDeleteShopSlugAliases(s.id, sb);
-        await sb.from('analytics_events').delete().eq('shop_id', s.id);
-        await sb.from('posts').delete().eq('shop_id', s.id);
-        await sb.from('items').delete().eq('shop_id', s.id);
-        await sb.from('categories').delete().eq('shop_id', s.id);
-        await sb.from('shops').delete().eq('id', s.id);
+      if (ownerShopsError) {
+        return NextResponse.json(
+          {
+            error: 'Không thể kiểm tra cửa hàng của tài khoản. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'OWNER_DELETE_PREFLIGHT_FAILED',
+          },
+          { status: 503 }
+        );
       }
 
-      await sb.from('payment_transactions').delete().eq('user_id', ownerId);
-      const { error } = await sb.from('profiles').delete().eq('id', ownerId);
+      const shopIds = (ownerShops || [])
+        .map((shop) => (typeof shop.id === 'string' ? shop.id : ''))
+        .filter(Boolean);
+      for (const shopId of shopIds) {
+        const history = await inspectShopDeleteHistory(shopId);
+        if (history.error) {
+          return NextResponse.json(
+            {
+              error: 'Không thể kiểm tra dữ liệu lịch sử của cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+              code: 'OWNER_DELETE_PREFLIGHT_FAILED',
+            },
+            { status: 503 }
+          );
+        }
+        if (history.hasHistory) {
+          return NextResponse.json(
+            {
+              error: 'Không thể xóa tài khoản vì cửa hàng còn đơn hàng hoặc dữ liệu lịch sử.',
+              code: 'OWNER_HAS_BUSINESS_HISTORY',
+            },
+            { status: 409 }
+          );
+        }
+      }
+
+      // One parent DELETE lets PostgreSQL apply the configured cascades as a
+      // single statement, so a later FK/trigger error cannot leave partial rows.
+      const { data: deletedOwners, error } = await sb
+        .from('profiles')
+        .delete()
+        .eq('id', ownerId)
+        .select('id');
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
+        return NextResponse.json(
+          {
+            error: 'Không thể xóa tài khoản. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'OWNER_DELETE_FAILED',
+          },
+          { status: 500 }
+        );
+      }
+      if (!Array.isArray(deletedOwners) || deletedOwners.length === 0) {
+        return NextResponse.json({ error: 'Không tìm thấy tài khoản.' }, { status: 404 });
+      }
+      for (const shopId of shopIds) {
+        dbClearShopSlugAliasCache(shopId);
       }
 
       await recordSuccessfulAudit();
@@ -664,17 +771,66 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Thiếu shopId' }, { status: 400 });
       }
 
-      await sb.from('analytics_events').delete().eq('shop_id', shopId);
-      await sb.from('posts').delete().eq('shop_id', shopId);
-      await sb.from('items').delete().eq('shop_id', shopId);
-      await sb.from('categories').delete().eq('shop_id', shopId);
-      const { error } = await sb.from('shops').delete().eq('id', shopId);
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
+      const { data: targetShop, error: targetShopError } = await sb
+        .from('shops')
+        .select('id')
+        .eq('id', shopId)
+        .maybeSingle();
+      if (targetShopError) {
+        return NextResponse.json(
+          {
+            error: 'Không thể kiểm tra cửa hàng cần xóa. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'SHOP_DELETE_PREFLIGHT_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+      if (!targetShop) {
+        return NextResponse.json({ error: 'Không tìm thấy cửa hàng.' }, { status: 404 });
       }
 
-      await dbDeleteShopSlugAliases(shopId, sb);
+      const history = await inspectShopDeleteHistory(shopId);
+      if (history.error) {
+        return NextResponse.json(
+          {
+            error: 'Không thể kiểm tra dữ liệu lịch sử của cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'SHOP_DELETE_PREFLIGHT_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+      if (history.hasHistory) {
+        return NextResponse.json(
+          {
+            error: 'Không thể xóa cửa hàng vì còn đơn hàng hoặc dữ liệu lịch sử.',
+            code: 'SHOP_HAS_HISTORY',
+          },
+          { status: 409 }
+        );
+      }
+
+      // Keep the cascade in one PostgreSQL statement; on error the shop and
+      // all dependent rows remain intact.
+      const { data: deletedShops, error } = await sb
+        .from('shops')
+        .delete()
+        .eq('id', shopId)
+        .select('id');
+
+      if (error) {
+        return NextResponse.json(
+          {
+            error: 'Không thể xóa cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+            code: 'SHOP_DELETE_FAILED',
+          },
+          { status: 500 }
+        );
+      }
+      if (!Array.isArray(deletedShops) || deletedShops.length === 0) {
+        return NextResponse.json({ error: 'Không tìm thấy cửa hàng.' }, { status: 404 });
+      }
+
+      dbClearShopSlugAliasCache(shopId);
       await recordSuccessfulAudit();
       return NextResponse.json({ ok: true });
     }

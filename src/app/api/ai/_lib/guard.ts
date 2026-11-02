@@ -10,9 +10,11 @@ import {
 } from '@/lib/plan-limits';
 import { SEED_SHOPS } from '@/lib/seed-data';
 import {
+  isShopBoundStaffSession,
   requireAuthenticatedUser,
   type VerifiedSessionUser,
 } from '@/lib/server-auth';
+import { verifyActiveShopStaffSession } from '@/lib/staff-accounts';
 import {
   hasShopPermission,
   normalizePermissions,
@@ -80,6 +82,29 @@ export async function requireAiCaller(
 > {
   const auth = await requireAuthenticatedUser(req);
   if (auth.errorResponse) return auth;
+
+  if (isShopBoundStaffSession(auth.user)) {
+    const shopId = auth.user.shop_id?.trim() || '';
+    const staffSession = shopId
+      ? await verifyActiveShopStaffSession({
+          userId: auth.user.sub,
+          shopId,
+          sessionVersion: auth.user.sv,
+        })
+      : null;
+
+    if (!staffSession?.active) {
+      return {
+        errorResponse: NextResponse.json(
+          {
+            error: 'Phiên nhân viên đã bị thu hồi hoặc không còn hợp lệ. Vui lòng đăng nhập lại.',
+            code: 'STAFF_SESSION_REVOKED',
+          },
+          { status: 401 }
+        ),
+      };
+    }
+  }
 
   const limit = consumeAiRateLimit(bucket, auth.user.sub);
   if (!limit.allowed) {

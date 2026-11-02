@@ -4482,6 +4482,16 @@ describe('Screen flow audit residuals: menu polling, mobile password recovery, s
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/ai/translate') {
         translateCalls += 1;
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          shopId?: string;
+          purpose?: string;
+        };
+        assert.equal(
+          body.shopId,
+          'shop-onboard-draft-1',
+          'Onboarding must create or reuse the draft shop before requesting an authorized translation'
+        );
+        assert.equal(body.purpose, 'catalog');
         return new Response(
           JSON.stringify({
             category_i18n: { vi: 'Món Đặc Trưng', en: 'Signature' },
@@ -8197,6 +8207,11 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
     const aliasesStore = new Map<string, { slug: string; shop_id: string }>();
     const failAliasUpsert = false;
     let failShopDelete = false;
+    const childDeleteTables: string[] = [];
+    let existingHistoryTable: string | null = null;
+    let historyQueryFailureTable: string | null = null;
+    let profileExists = true;
+    let ownerProfileEmail = 'owner-delete-review@example.test';
 
     const mockSupabase = {
       from(table: string) {
@@ -8304,15 +8319,30 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
               };
             },
             delete() {
+              let targetId = '';
               const chain = {
                 eq(_col: string, idVal: string) {
+                  targetId = idVal;
+                  return chain;
+                },
+                select() {
+                  return chain;
+                },
+                then(resolve: (value: unknown) => unknown) {
                   if (failShopDelete) {
                     return Promise.resolve({
+                      data: null,
                       error: { message: 'Simulated DB failure deleting shop' },
-                    });
+                    }).then(resolve);
                   }
-                  shopsStore.delete(idVal);
-                  return Promise.resolve({ error: null });
+                  if (!shopsStore.has(targetId)) {
+                    return Promise.resolve({ data: [], error: null }).then(resolve);
+                  }
+                  shopsStore.delete(targetId);
+                  for (const [slug, alias] of aliasesStore.entries()) {
+                    if (alias.shop_id === targetId) aliasesStore.delete(slug);
+                  }
+                  return Promise.resolve({ data: [{ id: targetId }], error: null }).then(resolve);
                 },
               };
               return chain;
@@ -8390,6 +8420,46 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           };
         }
 
+        if (
+          table === 'orders' ||
+          table === 'order_audit_logs' ||
+          table === 'sepay_webhook_events' ||
+          table === 'table_service_requests' ||
+          table === 'payment_transactions'
+        ) {
+          const filters: Array<[string, unknown]> = [];
+          const chain = {
+            eq(col: string, val: unknown) {
+              filters.push([col, val]);
+              return chain;
+            },
+            limit: () => chain,
+            maybeSingle: async () => {
+              if (historyQueryFailureTable === table) {
+                return {
+                  data: null,
+                  error: { message: `Simulated preflight query failure for ${table}` },
+                };
+              }
+              const expectedColumn =
+                table === 'payment_transactions' ? 'user_id' : 'shop_id';
+              const expectedValue =
+                table === 'payment_transactions' ? targetOwnerId : targetShopId;
+              const matchesTarget = filters.some(
+                ([col, value]) => col === expectedColumn && value === expectedValue
+              );
+              return {
+                data:
+                  existingHistoryTable === table && matchesTarget
+                    ? { id: `${table}-history` }
+                    : null,
+                error: null,
+              };
+            },
+          };
+          return { select: () => chain };
+        }
+
         if (table === 'profiles') {
           return {
             select() {
@@ -8397,13 +8467,34 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
                 eq: () => chain,
                 limit: () => chain,
                 maybeSingle: async () => ({
-                  data: { id: targetOwnerId, plan: 'premium' },
+                  data: { id: targetOwnerId, email: ownerProfileEmail, plan: 'premium' },
                   error: null,
                 }),
                 single: async () => ({
-                  data: { id: targetOwnerId, plan: 'premium' },
+                  data: { id: targetOwnerId, email: ownerProfileEmail, plan: 'premium' },
                   error: null,
                 }),
+              };
+              return chain;
+            },
+            delete() {
+              let targetId = '';
+              const chain = {
+                eq(_col: string, idVal: string) {
+                  targetId = idVal;
+                  return chain;
+                },
+                select: () => chain,
+                then(resolve: (value: unknown) => unknown) {
+                  if (!profileExists || targetId !== targetOwnerId) {
+                    return Promise.resolve({ data: [], error: null }).then(resolve);
+                  }
+                  profileExists = false;
+                  return Promise.resolve({
+                    data: [{ id: targetId }],
+                    error: null,
+                  }).then(resolve);
+                },
               };
               return chain;
             },
@@ -8414,6 +8505,7 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           select() {
             const chain = {
               eq: () => chain,
+              limit: () => chain,
               order: async () => ({ data: [], error: null }),
               maybeSingle: async () => ({ data: null, error: null }),
               single: async () => ({ data: null, error: null }),
@@ -8425,8 +8517,10 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           delete() {
             const chain = {
               eq: () => chain,
-              then: (resolve: (v: unknown) => unknown) =>
-                Promise.resolve({ error: null }).then(resolve),
+              then: (resolve: (v: unknown) => unknown) => {
+                childDeleteTables.push(table);
+                return Promise.resolve({ error: null }).then(resolve);
+              },
             };
             return chain;
           },
@@ -8469,6 +8563,85 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
       );
       assert.ok(aliasesStore.has('initial-del-slug'));
 
+      // The Super Admin guard uses the server profile email, not a spoofed body email.
+      ownerProfileEmail = SUPER_ADMIN_EMAIL;
+      const protectedOwnerDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_owner',
+            ownerId: targetOwnerId,
+            email: 'ordinary-owner@example.test',
+          }),
+        })
+      );
+      assert.equal(protectedOwnerDeleteRes.status, 400);
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+      ownerProfileEmail = 'owner-delete-review@example.test';
+
+      // Owner deletion must retain profile-level billing history and every
+      // shop-level order, audit, service-request, and SePay ledger row.
+      const ownerHistoryCases = [
+        ['payment_transactions', 'OWNER_HAS_PAYMENT_HISTORY'],
+        ['orders', 'OWNER_HAS_BUSINESS_HISTORY'],
+        ['order_audit_logs', 'OWNER_HAS_BUSINESS_HISTORY'],
+        ['sepay_webhook_events', 'OWNER_HAS_BUSINESS_HISTORY'],
+        ['table_service_requests', 'OWNER_HAS_BUSINESS_HISTORY'],
+      ] as const;
+      for (const [table, expectedCode] of ownerHistoryCases) {
+        existingHistoryTable = table;
+        const blockedOwnerDeleteRes = await adminPost(
+          new Request('http://localhost:3000/api/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({
+              action: 'delete_owner',
+              ownerId: targetOwnerId,
+              email: 'spoofed@example.test',
+            }),
+          })
+        );
+        assert.equal(blockedOwnerDeleteRes.status, 409);
+        assert.equal((await blockedOwnerDeleteRes.json()).code, expectedCode);
+        assert.ok(profileExists);
+        assert.ok(shopsStore.has(targetShopId));
+        assert.ok(aliasesStore.has('initial-del-slug'));
+        assert.deepEqual(childDeleteTables, []);
+      }
+      existingHistoryTable = null;
+
+      historyQueryFailureTable = 'order_audit_logs';
+      const ownerPreflightFailureRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_owner',
+            ownerId: targetOwnerId,
+          }),
+        })
+      );
+      assert.equal(ownerPreflightFailureRes.status, 503);
+      assert.equal(
+        (await ownerPreflightFailureRes.json()).code,
+        'OWNER_DELETE_PREFLIGHT_FAILED'
+      );
+      assert.ok(profileExists);
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+      historyQueryFailureTable = null;
+
       // 2. Failure case: shop deletion fails
       failShopDelete = true;
       const failDeleteRes = await adminPost(
@@ -8484,9 +8657,9 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           }),
         })
       );
-      assert.equal(failDeleteRes.status, 400);
+      assert.equal(failDeleteRes.status, 500);
       const failDeleteBody = await failDeleteRes.json();
-      assert.match(failDeleteBody.error, /Simulated DB failure deleting shop/);
+      assert.equal(failDeleteBody.code, 'SHOP_DELETE_FAILED');
 
       // Verify that after failed shop deletion, aliases remain INTACT in both storage and memory
       const aliasesAfterFailure = await dbGetShopSlugAliases(targetShopId);
@@ -8500,6 +8673,51 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
         'Mock DB durable alias row must not be deleted on failed shop deletion'
       );
       assert.ok(shopsStore.has(targetShopId), 'Shop must still exist after failed deletion');
+      assert.deepEqual(childDeleteTables, [], 'Failed parent delete must not pre-delete child rows');
+
+      // Any SePay event or other shop history blocks deletion before mutation.
+      existingHistoryTable = 'sepay_webhook_events';
+      const blockedDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_shop',
+            shopId: targetShopId,
+          }),
+        })
+      );
+      assert.equal(blockedDeleteRes.status, 409);
+      assert.equal((await blockedDeleteRes.json()).code, 'SHOP_HAS_HISTORY');
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+      existingHistoryTable = null;
+
+      historyQueryFailureTable = 'table_service_requests';
+      const shopPreflightFailureRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_shop',
+            shopId: targetShopId,
+          }),
+        })
+      );
+      assert.equal(shopPreflightFailureRes.status, 503);
+      assert.equal(
+        (await shopPreflightFailureRes.json()).code,
+        'SHOP_DELETE_PREFLIGHT_FAILED'
+      );
+      assert.ok(shopsStore.has(targetShopId));
+      assert.ok(aliasesStore.has('initial-del-slug'));
+      historyQueryFailureTable = null;
 
       // 3. Success case: shop deletion succeeds
       failShopDelete = false;
@@ -8531,6 +8749,22 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
         'Aliases in memory and DB must be cleaned up on confirmed deletion success'
       );
       assert.equal(aliasesStore.has('initial-del-slug'), false);
+
+      const successOwnerDeleteRes = await adminPost(
+        new Request('http://localhost:3000/api/admin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'delete_owner',
+            ownerId: targetOwnerId,
+          }),
+        })
+      );
+      assert.equal(successOwnerDeleteRes.status, 200);
+      assert.equal(profileExists, false);
     } finally {
       setSupabaseDbClientForTests(null);
       dbClearShopSlugAliasesForTests();

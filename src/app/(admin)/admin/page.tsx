@@ -498,6 +498,14 @@ export default function SuperAdminPortalPage() {
 
   const handleTestAiTranslate = async () => {
     if (!aiTestInput.trim()) return;
+    const shopId = data?.shops[0]?.id;
+    if (!shopId) {
+      showToastMessage(
+        'error',
+        tx('Cần có ít nhất một cửa hàng để kiểm tra dịch thuật.', 'Add at least one shop before testing translation.')
+      );
+      return;
+    }
     setAiTestLoading(true);
     setAiTestOutput(null);
     try {
@@ -505,6 +513,8 @@ export default function SuperAdminPortalPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          shopId,
+          purpose: 'catalog',
           itemNameVi: aiTestInput.trim(),
           vertical: 'fnb',
         }),

@@ -301,6 +301,8 @@ export function TranslationEditorModal({
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
+          shopId,
+          purpose: 'catalog',
           vertical,
           categoryNameVi: currentCategory?.name_i18n.vi || 'Danh mục',
           itemNameVi: nameI18n.vi,

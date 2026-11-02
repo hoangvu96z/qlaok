@@ -71,6 +71,27 @@ export async function DELETE(req: Request) {
     return auth.errorResponse;
   }
 
-  const deleted = await dbDeletePost(postId);
-  return NextResponse.json({ deleted });
+  try {
+    const deleted = await dbDeletePost(postId);
+    if (!deleted) {
+      return NextResponse.json(
+        {
+          deleted: false,
+          error: 'Không thể xóa thông báo. Vui lòng tải lại và thử lại.',
+          code: 'POST_DELETE_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json({ deleted: true });
+  } catch {
+    return NextResponse.json(
+      {
+        deleted: false,
+        error: 'Không thể xóa thông báo. Vui lòng thử lại sau.',
+        code: 'POST_DELETE_FAILED',
+      },
+      { status: 500 }
+    );
+  }
 }
