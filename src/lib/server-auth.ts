@@ -671,8 +671,10 @@ export async function requireSuperAdmin(req: Request): Promise<
   let user: VerifiedSessionUser | null = null;
   try {
     user = await verifyRequestUser(req);
-  } catch (err) {
-    console.error('[auth] Super-admin session verification failed', err);
+  } catch {
+    console.error('auth.super_admin_session_verification_failed', {
+      code: 'SERVER_AUTH_MISCONFIGURED',
+    });
     return {
       errorResponse: NextResponse.json(
         {
@@ -1066,8 +1068,7 @@ const MAX_AUDIT_LOG_BYTES = 5 * 1024 * 1024;
 
 function appendPrivateAuditRecord(
   targetFile: string,
-  payload: Record<string, unknown>,
-  label: string
+  payload: Record<string, unknown>
 ): boolean {
   let fd: number | null = null;
   try {
@@ -1093,15 +1094,15 @@ function appendPrivateAuditRecord(
     fs.fchmodSync(fd, 0o600);
     fs.writeSync(fd, `${JSON.stringify(payload)}\n`, undefined, 'utf8');
     return true;
-  } catch (error) {
-    console.error(`Failed to append ${label} audit record:`, error);
+  } catch {
+    console.error('audit.log_append_failed', { code: 'AUDIT_LOG_APPEND_FAILED' });
     return false;
   } finally {
     if (fd !== null) {
       try {
         fs.closeSync(fd);
-      } catch (error) {
-        console.error(`Failed to close ${label} audit log:`, error);
+      } catch {
+        console.error('audit.log_close_failed', { code: 'AUDIT_LOG_CLOSE_FAILED' });
       }
     }
   }
@@ -1150,8 +1151,7 @@ export async function recordAdminAuditLog(entry: {
           actorId: row.actor_user_id,
           actorEmail: row.actor_email,
           targetId: row.target_id,
-        },
-        'admin'
+        }
       );
       console.error('ADMIN_AUDIT_WRITE_FAILED', {
         code: 'ADMIN_AUDIT_DB_WRITE_FAILED',
@@ -1169,8 +1169,7 @@ export async function recordAdminAuditLog(entry: {
       actorId: row.actor_user_id,
       actorEmail: row.actor_email,
       targetId: row.target_id,
-    },
-    'admin'
+    }
   );
   if (process.env.NODE_ENV === 'production') {
     console.error('ADMIN_AUDIT_WRITE_FAILED', {
@@ -1212,7 +1211,9 @@ export function readAdminAuditLog(limit = 200): Record<string, unknown>[] {
     }).reverse();
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      console.error('Failed to read admin audit log:', error);
+      console.error('admin.audit_log_read_failed', {
+        code: 'ADMIN_AUDIT_READ_FAILED',
+      });
     }
     return [];
   }
@@ -1534,7 +1535,7 @@ export async function recordOrderAuditLog(
   const writeLocalFallback = (): boolean => {
     let allWritten = true;
     for (const payload of localPayloads) {
-      if (!appendPrivateAuditRecord(targetFile, payload, 'order')) {
+      if (!appendPrivateAuditRecord(targetFile, payload)) {
         allWritten = false;
       }
     }
@@ -1637,7 +1638,9 @@ export function readOrderAuditLog(limit = 200): OrderAuditLogRecord[] {
       .reverse();
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      console.error('Failed to read order audit log:', error);
+      console.error('order.audit_log_read_failed', {
+        code: 'ORDER_AUDIT_READ_FAILED',
+      });
     }
     return [];
   }

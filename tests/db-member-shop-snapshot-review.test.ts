@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dbGetAllShopsAndProfile, setSupabaseDbClientForTests } from '@/lib/db';
+import {
+  dbGetAllShopsAndProfile,
+  ensureSupabaseReadyAndSeeded,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
 import { setShopMembershipDbClientForTest } from '@/lib/shop-permissions';
 
 const ownerId = 'owner-member-snapshot-test';
@@ -191,4 +195,56 @@ test('P3-23: successful owner snapshot contains active member shops and membersh
     assert.equal(snapshot.memberships?.[memberShop.id]?.is_active, true);
     assert.equal(snapshot.memberships?.[memberShop.id]?.role, 'staff');
   });
+});
+
+test('P3-6: Supabase auto-seed failures log a stable code without exception details', async () => {
+  const marker = 'SUPABASE_SEED_LOG_SECRET_532E';
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalConsoleError = console.error;
+  const capturedLogs: unknown[][] = [];
+  Reflect.set(process.env, 'NODE_ENV', 'test');
+
+  const fakeClient = {
+    from(table: string) {
+      if (table === 'shops') {
+        const query = {
+          select() {
+            return query;
+          },
+          limit() {
+            return query;
+          },
+          then(resolve: (value: unknown) => unknown) {
+            return Promise.resolve({ data: [], error: null }).then(resolve);
+          },
+        };
+        return query;
+      }
+
+      return {
+        upsert: async () => {
+          throw new Error(marker);
+        },
+      };
+    },
+  };
+
+  setSupabaseDbClientForTests(fakeClient as never);
+  console.error = (...args: unknown[]) => {
+    capturedLogs.push(args);
+  };
+
+  try {
+    const result = await ensureSupabaseReadyAndSeeded();
+    assert.equal(result.ready, false);
+    assert.equal(JSON.stringify(capturedLogs).includes(marker), false);
+    assert.deepEqual(capturedLogs, [
+      ['db.supabase_auto_seed_failed', { code: 'SUPABASE_AUTO_SEED_FAILED' }],
+    ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    console.error = originalConsoleError;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, 'NODE_ENV');
+    else Reflect.set(process.env, 'NODE_ENV', originalNodeEnv);
+  }
 });

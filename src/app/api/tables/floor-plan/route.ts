@@ -224,8 +224,10 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json({ tables: responseTables });
-  } catch (error) {
-    console.error('Lỗi truy vấn sơ đồ bàn:', error);
+  } catch {
+    console.error('tables.floor_plan_fetch_failed', {
+      code: 'TABLE_FLOOR_PLAN_FETCH_FAILED',
+    });
     return NextResponse.json(
       {
         error: 'Lỗi truy vấn sơ đồ bàn.',

@@ -290,6 +290,46 @@ test('(a) blank shopId returns 400 before any DB call', async () => {
   }
 });
 
+test('P3-6: floor-plan failures preserve the generic response and redact database details from logs', async () => {
+  const marker = 'FLOOR_PLAN_LOG_SECRET_19C4';
+  const fakeClient = createFakeSupabaseClient({
+    onShopTablesRange: () => ({
+      data: null,
+      error: { message: marker },
+    }),
+  });
+  setSupabaseDbClientForTests(fakeClient);
+
+  const capturedLogs: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    capturedLogs.push(args);
+  };
+
+  try {
+    const response = await GET(
+      new Request('https://qlaok.test/api/tables/floor-plan?shopId=shop-log-review', {
+        headers: { authorization: getAdminAuthHeader() },
+      })
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: 'Lỗi truy vấn sơ đồ bàn.',
+      code: 'TABLE_FLOOR_PLAN_FETCH_FAILED',
+    });
+    assert.equal(JSON.stringify(capturedLogs).includes(marker), false);
+    assert.deepEqual(capturedLogs, [
+      [
+        'tables.floor_plan_fetch_failed',
+        { code: 'TABLE_FLOOR_PLAN_FETCH_FAILED' },
+      ],
+    ]);
+  } finally {
+    console.error = originalConsoleError;
+    setSupabaseDbClientForTests(null);
+  }
+});
+
 test('(b) successful GET returns only the documented 13 response keys, excludes archived tables, includes inactive tables, aggregates one table with 501 new unpaid orders correctly, and proves orders paginate through .range(0,499), .range(500,999) with exact shop_id filters', async () => {
   const targetShopId = 'shop-floor-plan-main';
 

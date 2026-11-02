@@ -309,7 +309,9 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
 
           return { ok: true };
         } catch (seedErr) {
-          console.error('Supabase auto-seed error:', seedErr);
+          console.error('db.supabase_auto_seed_failed', {
+            code: 'SUPABASE_AUTO_SEED_FAILED',
+          });
           const message =
             seedErr instanceof Error
               ? seedErr.message

@@ -10,7 +10,12 @@ const originalCwd = process.cwd();
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'qlaok-api-review-'));
 process.chdir(fixture);
 after(() => { process.chdir(originalCwd); fs.rmSync(fixture, { recursive: true, force: true }); });
-const { issueSessionToken } = await import('@/lib/server-auth');
+const {
+  issueSessionToken,
+  readAdminAuditLog,
+  recordAdminAuditLog,
+  setAdminAuditLogFileForTests,
+} = await import('@/lib/server-auth');
 const { dbUpsertShopMembership } = await import('@/lib/shop-permissions');
 const { GET: analyticsGet } = await import('@/app/api/analytics/track/route');
 const { GET: shopsGet, POST: shopsPost, PATCH: shopsPatch } = await import('@/app/api/shops/route');
@@ -269,4 +274,82 @@ test('/api/orders and /api/shops enforce table_id canonical snapshot, guest PATC
   assert.equal(settleRes.status, 200);
   const { tableBill } = await settleRes.json();
   assert.deepEqual(tableBill.order_ids, [secondOrder.id]);
+});
+
+test('P3-6: table API preserves conflict responses and logs only an allowlisted code', async () => {
+  const marker = 'TABLE_LOG_SECRET_6F2D';
+  const created = await tablesPost(
+    request(
+      '/api/tables',
+      ownerToken,
+      { shop_id: 'shop-fnb-001', name: 'Log test table', table_code: marker },
+      'POST'
+    )
+  );
+  assert.equal(created.status, 201);
+
+  const capturedLogs: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    capturedLogs.push(args);
+  };
+
+  try {
+    const response = await tablesPost(
+      request(
+        '/api/tables',
+        ownerToken,
+        { shop_id: 'shop-fnb-001', name: 'Duplicate log test table', table_code: marker },
+        'POST'
+      )
+    );
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: 'Không thể xử lý bàn ăn lúc này. Vui lòng thử lại.',
+      code: 'DUPLICATE_TABLE_CODE',
+    });
+    assert.equal(JSON.stringify(capturedLogs).includes(marker), false);
+    assert.deepEqual(capturedLogs, [
+      ['tables.api_operation_failed', { code: 'DUPLICATE_TABLE_CODE' }],
+    ]);
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
+test('P3-6: audit file errors log stable event codes without filesystem details', async () => {
+  const marker = 'AUDIT_LOG_SECRET_84C1';
+  const blockerPath = path.join(fixture, marker);
+  fs.writeFileSync(blockerPath, 'not a directory');
+  setAdminAuditLogFileForTests(path.join(blockerPath, 'admin-audit.jsonl'));
+
+  const capturedLogs: unknown[][] = [];
+  const originalConsoleError = console.error;
+  const originalNodeEnv = process.env.NODE_ENV;
+  Reflect.set(process.env, 'NODE_ENV', 'test');
+  console.error = (...args: unknown[]) => {
+    capturedLogs.push(args);
+  };
+
+  try {
+    assert.equal(
+      await recordAdminAuditLog({
+        actorId: 'audit-log-review',
+        actorEmail: 'audit-log-review@example.test',
+        action: 'review',
+      }),
+      false
+    );
+    assert.deepEqual(readAdminAuditLog(), []);
+    assert.equal(JSON.stringify(capturedLogs).includes(marker), false);
+    assert.deepEqual(capturedLogs, [
+      ['audit.log_append_failed', { code: 'AUDIT_LOG_APPEND_FAILED' }],
+      ['admin.audit_log_read_failed', { code: 'ADMIN_AUDIT_READ_FAILED' }],
+    ]);
+  } finally {
+    console.error = originalConsoleError;
+    setAdminAuditLogFileForTests(null);
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, 'NODE_ENV');
+    else Reflect.set(process.env, 'NODE_ENV', originalNodeEnv);
+  }
 });

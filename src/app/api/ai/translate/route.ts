@@ -124,8 +124,10 @@ Quy tắc:
       ...parsed,
       provider: `9router-${aiConfig.model}`,
     });
-  } catch (error) {
-    console.error('9router Translation Error, using smart fallback:', error);
+  } catch {
+    console.error('ai.translation_fallback', {
+      code: 'AI_TRANSLATION_PROVIDER_FAILED',
+    });
     const fallback = smartFallbackTranslate({
       vertical,
       categoryNameVi,

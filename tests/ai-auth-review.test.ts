@@ -167,3 +167,48 @@ test('paid AI translation rejects a missing shopId and unknown purpose before tr
     setShopMembershipDbClientForTest(null);
   }
 });
+
+test('P3-6: translation provider errors log a safe code and keep the smart fallback', async () => {
+  const marker = 'AI_PROVIDER_LOG_SECRET_73B0';
+  const previousEnv = {
+    apiKey: process.env.AI_API_KEY,
+    baseUrl: process.env.AI_BASE_URL,
+    model: process.env.AI_MODEL,
+  };
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  const capturedLogs: unknown[][] = [];
+
+  process.env.AI_API_KEY = 'test-only-review-key';
+  process.env.AI_BASE_URL = 'https://ai-review.invalid/v1';
+  process.env.AI_MODEL = 'test-model';
+  globalThis.fetch = (async () => {
+    throw new Error(marker);
+  }) as typeof fetch;
+  console.error = (...args: unknown[]) => {
+    capturedLogs.push(args);
+  };
+  setShopMembershipDbClientForTest(
+    createMembershipDb(2, ['catalog.manage']) as never
+  );
+
+  try {
+    const response = await translate(translationRequest(staffToken(2)));
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).provider, '9router-smart-fallback');
+    assert.equal(JSON.stringify(capturedLogs).includes(marker), false);
+    assert.deepEqual(capturedLogs, [
+      ['ai.translation_fallback', { code: 'AI_TRANSLATION_PROVIDER_FAILED' }],
+    ]);
+  } finally {
+    setShopMembershipDbClientForTest(null);
+    console.error = originalConsoleError;
+    globalThis.fetch = originalFetch;
+    if (previousEnv.apiKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = previousEnv.apiKey;
+    if (previousEnv.baseUrl === undefined) delete process.env.AI_BASE_URL;
+    else process.env.AI_BASE_URL = previousEnv.baseUrl;
+    if (previousEnv.model === undefined) delete process.env.AI_MODEL;
+    else process.env.AI_MODEL = previousEnv.model;
+  }
+});

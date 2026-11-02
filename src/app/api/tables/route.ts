@@ -45,10 +45,31 @@ function getTableErrorCode(message: string): string {
   return 'TABLE_OPERATION_FAILED';
 }
 
+const SAFE_TABLE_ERROR_LOG_CODES = new Set([
+  'FORBIDDEN_CROSS_SHOP_TABLE',
+  'TABLE_NOT_FOUND',
+  'SHOP_TABLE_NOT_FOUND',
+  'DUPLICATE_TABLE_CODE',
+  'DUPLICATE_TABLE_NAME',
+  'DUPLICATE_TABLE_ID',
+  'MISSING_SHOP_ID',
+  'MISSING_TABLE_IDENTITY',
+  'TABLE_NAME_REQUIRED',
+  'TABLE_CODE_REQUIRED',
+  'INVALID_TABLE_LAYOUT_COORDINATE',
+]);
+
+function getTableErrorLogCode(message: string): string {
+  const code = getTableErrorCode(message);
+  return SAFE_TABLE_ERROR_LOG_CODES.has(code) ? code : 'TABLE_OPERATION_FAILED';
+}
+
 function tableErrorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : '';
   const code = getTableErrorCode(message);
-  console.error('[tables] API operation failed', { code, error });
+  console.error('tables.api_operation_failed', {
+    code: getTableErrorLogCode(message),
+  });
   return NextResponse.json(
     { error: 'Không thể xử lý bàn ăn lúc này. Vui lòng thử lại.', code },
     { status: mapTableErrorStatus(message) }
