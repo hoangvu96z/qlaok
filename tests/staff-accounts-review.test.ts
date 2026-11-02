@@ -24,6 +24,7 @@ import {
 import {
   cleanupExpiredStaffLoginRateLimits,
   clearInMemoryStaffCredentialsForTest,
+  computeStaffLoginIpRateLimitKey,
   computeStaffLoginRateLimitKey,
   computeStaffLoginUnknownShopRateLimitKey,
   computeStaffLoginUnknownUserRateLimitKey,
@@ -31,6 +32,9 @@ import {
   getDummyStaffPasswordVerificationCountForTest,
   setStaffLoginRateLimitClockForTest,
   STAFF_LOGIN_RATE_LIMIT_BLOCK_SECONDS,
+  STAFF_LOGIN_IP_RATE_LIMIT_MAX_ATTEMPTS,
+  STAFF_LOGIN_IP_RATE_LIMIT_RETENTION_SECONDS,
+  STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS,
   STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
   STAFF_LOGIN_RATE_LIMIT_RETENTION_SECONDS,
 } from '../src/lib/staff-accounts';
@@ -1154,7 +1158,7 @@ test('authoritative Supabase DB mode persists staff credentials in shop_staff_cr
   }
 });
 
-test('staff login rate limiter: durable DB-backed failure window, generic error responses, spoofed IP header resistance, non-permanent cooldown recovery, reset on login/password-reset, retention cleanup, and fail-closed DB behavior', async () => {
+test('staff login rate limiter: durable account/IP windows, proxy IP throttling, correct-password lockout recovery, generic errors, cooldown reset, retention cleanup, and fail-closed DB behavior', async () => {
   const credentialRows = new Map<string, Record<string, unknown>>();
   const membershipRows = new Map<string, Record<string, unknown>>();
   const rateLimitRows = new Map<string, Record<string, unknown>>();
@@ -1422,8 +1426,10 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
     assert.equal(goodLoginRes.status, 200);
     assert.equal(rateLimitRows.has(bucketKey), false);
 
-    // 2. Reaching 5 failed attempts triggers temporary 429 cooldown; rotating spoofed IP headers cannot bypass it
-    for (let attempt = 1; attempt <= STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+    // 2. The proxy-normalized client IP bucket blocks repeated guesses while
+    // changing client-controlled X-Forwarded-For values cannot rotate it.
+    const proxyClientIp = '198.51.100.40';
+    for (let attempt = 1; attempt <= STAFF_LOGIN_IP_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
       const failRes = await authPost(
         jsonReq(
           'http://localhost:3000/api/auth',
@@ -1437,8 +1443,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
           undefined,
           {
             'x-forwarded-for': `203.0.113.${attempt}`,
-            'x-real-ip': `198.51.100.${attempt}`,
-            'cf-connecting-ip': `192.0.2.${attempt}`,
+            'x-real-ip': proxyClientIp,
           }
         )
       );
@@ -1446,7 +1451,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
       assert.equal((await failRes.json()).code, 'INVALID_STAFF_CREDENTIALS');
     }
 
-    // 6th attempt (even with a different spoofed IP header AND the valid password!) is blocked with 429
+    // A correct password from the same proxy client IP is blocked until cooldown ends.
     const blockedRes = await authPost(
       jsonReq(
         'http://localhost:3000/api/auth',
@@ -1460,7 +1465,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
         undefined,
         {
           'x-forwarded-for': '8.8.8.8',
-          'x-real-ip': '1.1.1.1',
+          'x-real-ip': proxyClientIp,
         }
       )
     );
@@ -1471,6 +1476,22 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
     assert.equal(
       blockedRes.headers.get('retry-after'),
       String(blockedBody.retryAfterSec)
+    );
+    const proxyIpBucketKey = computeStaffLoginIpRateLimitKey(
+      'shop-fnb-001',
+      proxyClientIp
+    );
+    assert.ok(proxyIpBucketKey);
+    assert.equal(rateLimitRows.get(proxyIpBucketKey)?.failure_count, STAFF_LOGIN_IP_RATE_LIMIT_MAX_ATTEMPTS);
+    assert.equal(
+      Date.parse(String(rateLimitRows.get(proxyIpBucketKey)?.expires_at)),
+      currentClockMs + STAFF_LOGIN_IP_RATE_LIMIT_RETENTION_SECONDS * 1000,
+      'IP buckets should expire shortly after their cooldown instead of retaining every observed address for a day'
+    );
+    assert.equal(
+      JSON.stringify(rateLimitRows.get(proxyIpBucketKey)).includes(proxyClientIp),
+      false,
+      'IP rate-limit rows must store only the hashed bucket key, not the raw address'
     );
 
     // Non-existent shop/username also follows the exact same generic 401 -> 429 progression (no enumeration leak)
@@ -1510,8 +1531,8 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
     );
     assert.equal(recoveredLoginRes.status, 200);
 
-    // 4. Owner password reset immediately clears an active rate-limit block for that staff member
-    for (let attempt = 1; attempt <= STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+    // 4. Owner password reset clears the account failure window before the staff member retries.
+    for (let attempt = 1; attempt <= STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
       await authPost(
         jsonReq('http://localhost:3000/api/auth', 'POST', {
           action: 'staff_login',
@@ -1521,15 +1542,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
         })
       );
     }
-    const verifyLockedBeforeReset = await authPost(
-      jsonReq('http://localhost:3000/api/auth', 'POST', {
-        action: 'staff_login',
-        shopIdentifier: 'pho-hoi-an',
-        username: 'cashier_rl',
-        password: 'ValidPass#123',
-      })
-    );
-    assert.equal(verifyLockedBeforeReset.status, 429);
+    assert.equal(rateLimitRows.get(bucketKey)?.failure_count, STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS);
 
     const ownerResetRes = await shopsPost(
       jsonReq(
@@ -1545,6 +1558,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
       )
     );
     assert.equal(ownerResetRes.status, 200);
+    assert.equal(rateLimitRows.has(bucketKey), false);
 
     const loginAfterOwnerReset = await authPost(
       jsonReq('http://localhost:3000/api/auth', 'POST', {
@@ -1572,6 +1586,33 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
     });
     assert.ok(cleaned >= 1);
     assert.equal(rateLimitRows.size, 0);
+
+    // Production must fail closed if the reverse proxy did not provide a
+    // usable client address for a real account.
+    const mutableProcessEnv = process.env as Record<string, string | undefined>;
+    const previousNodeEnv = mutableProcessEnv.NODE_ENV;
+    mutableProcessEnv.NODE_ENV = 'production';
+    try {
+      const missingProxyIpRes = await authPost(
+        jsonReq('http://localhost:3000/api/auth', 'POST', {
+          action: 'staff_login',
+          shopIdentifier: 'pho-hoi-an',
+          username: 'cashier_rl',
+          password: 'ValidPass#123',
+        })
+      );
+      assert.equal(missingProxyIpRes.status, 503);
+      assert.equal(
+        (await missingProxyIpRes.json()).code,
+        'STAFF_LOGIN_RATE_LIMIT_UNAVAILABLE'
+      );
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete mutableProcessEnv.NODE_ENV;
+      } else {
+        mutableProcessEnv.NODE_ENV = previousNodeEnv;
+      }
+    }
 
     // 6. Fail-closed when the DB rate limiter fails in authoritative DB mode
     failRateLimitDb = true;
@@ -1622,7 +1663,7 @@ test('staff login rate limiter: durable DB-backed failure window, generic error 
   }
 });
 
-test('staff login rate limiter bounded cardinality: unknown usernames collapse per shop, unknown shops collapse globally, real accounts stay isolated, dummy password verification runs on unknown targets, and cooldowns/resets/deletes clear only target buckets', async () => {
+test('staff login rate-limit scopes: unknown usernames collapse per shop, unknown shops collapse globally, accounts stay isolated, dummy scrypt preserves generic timing, and cooldowns/resets/deletes clear only target buckets', async () => {
   const credentialRows = new Map<string, Record<string, unknown>>();
   const membershipRows = new Map<string, Record<string, unknown>>();
   const rateLimitRows = new Map<string, Record<string, unknown>>();
@@ -1930,6 +1971,38 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
       computeStaffLoginRateLimitKey('shop-fnb-001', 'invalid!username!'),
       expectedShopUnknownUserKey
     );
+    const expectedIpKey = computeStaffLoginIpRateLimitKey(
+      'shop-fnb-001',
+      '198.51.100.40'
+    );
+    assert.match(String(expectedIpKey), /^rl-staff-[0-9a-f]{64}$/);
+    assert.equal(
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', '2001:db8:abcd:1::1'),
+      computeStaffLoginIpRateLimitKey(
+        'shop-fnb-001',
+        '2001:0db8:abcd:0001:0000:0000:0000:0002'
+      ),
+      'IPv6 privacy addresses and alternate spellings within one /64 share a bucket'
+    );
+    assert.notEqual(
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', '2001:db8:abcd:1::1'),
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', '2001:db8:abcd:2::1'),
+      'distinct IPv6 /64 prefixes use separate buckets'
+    );
+    assert.equal(
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', '::ffff:192.0.2.1'),
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', '192.0.2.1'),
+      'IPv4-mapped IPv6 addresses use the same bucket as their IPv4 address'
+    );
+    assert.ok(
+      computeStaffLoginIpRateLimitKey(null, '198.51.100.40'),
+      'unknown-shop attempts also receive a global IP bucket'
+    );
+    assert.equal(
+      computeStaffLoginIpRateLimitKey('shop-fnb-001', 'not-an-ip'),
+      null,
+      'invalid client addresses must not collapse into a shared bucket'
+    );
     assert.equal(
       new Set([
         expectedUnknownShopKey,
@@ -1970,27 +2043,33 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
         })
       );
       const body = await res.json();
-      if (i < STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS) {
+      if (i < STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS) {
         assert.equal(res.status, 401);
         assert.equal(body.code, 'INVALID_STAFF_CREDENTIALS');
         assert.equal(
           body.error,
           'Thông tin cửa hàng, tên đăng nhập hoặc mật khẩu không chính xác.'
         );
-      } else {
-        // Attempts 6..20 are rate-limited even though every username is brand new!
-        assert.equal(res.status, 429);
-        assert.equal(body.code, 'STAFF_LOGIN_RATE_LIMITED');
-        assert.ok(body.retryAfterSec > 0);
       }
     }
+
+    const blockedUnknownUserRes = await authPost(
+      jsonReq('http://localhost:3000/api/auth', 'POST', {
+        action: 'staff_login',
+        shopIdentifier: 'pho-hoi-an',
+        username: 'another_unknown_user_after_shop_bucket',
+        password: 'GuessPass#after-limit',
+      })
+    );
+    assert.equal(blockedUnknownUserRes.status, 429);
+    assert.equal((await blockedUnknownUserRes.json()).code, 'STAFF_LOGIN_RATE_LIMITED');
 
     const dummyAfterUnknownUsers =
       getDummyStaffPasswordVerificationCountForTest();
     assert.equal(
       dummyAfterUnknownUsers - dummyBeforeUnknownUsers,
-      STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
-      'dummy scrypt password verification must run on each allowed unknown-user attempt and be skipped once rate-limited'
+      STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS + 1,
+      'dummy scrypt must run for allowed attempts and for an account-bucket block when no IP bucket blocked the request'
     );
     assert.equal(
       rateLimitRows.size,
@@ -2027,31 +2106,37 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
           body.error,
           'Thông tin cửa hàng, tên đăng nhập hoặc mật khẩu không chính xác.'
         );
-      } else {
-        // Attempts 6..20 are rate-limited even though every shopIdentifier and username is brand new!
-        assert.equal(res.status, 429);
-        assert.equal(body.code, 'STAFF_LOGIN_RATE_LIMITED');
-        assert.ok(body.retryAfterSec > 0);
       }
     }
+
+    const blockedUnknownShopRes = await authPost(
+      jsonReq('http://localhost:3000/api/auth', 'POST', {
+        action: 'staff_login',
+        shopIdentifier: 'another-unknown-shop-after-global-bucket',
+        username: 'another_unknown_user',
+        password: 'BotPass#after-limit',
+      })
+    );
+    assert.equal(blockedUnknownShopRes.status, 429);
+    assert.equal((await blockedUnknownShopRes.json()).code, 'STAFF_LOGIN_RATE_LIMITED');
 
     const dummyAfterUnknownShops =
       getDummyStaffPasswordVerificationCountForTest();
     assert.equal(
       dummyAfterUnknownShops - dummyBeforeUnknownShops,
-      STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
-      'dummy scrypt password verification must run on each allowed unknown-shop attempt and be skipped once rate-limited'
+      STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS + 1,
+      'dummy scrypt must preserve generic timing for allowed and account-bucket-blocked unknown-shop attempts'
     );
     assert.equal(
       rateLimitRows.size,
       2,
-      '20 distinct unknown shops + 20 distinct unknown usernames must produce at most 2 total rows (1 shop-unknown-user + 1 global-unknown-shop)'
+      '20 distinct unknown shops + 20 distinct unknown usernames must produce at most 2 total rows without IP headers (1 shop-unknown-user + 1 global-unknown-shop)'
     );
     assert.equal(rateLimitRows.has(expectedUnknownShopKey), true);
 
-    // 3. Real staff accounts remain isolated from the blocked unknown-user and unknown-shop buckets, and from each other
-    // Exhaust real_cashier_a's bucket (5 failed attempts)
-    for (let attempt = 1; attempt <= STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+    // 3. Real staff accounts remain isolated from the blocked unknown-user and unknown-shop buckets, and from each other.
+    // The account-only fallback allows more attempts than the per-IP limiter.
+    for (let attempt = 1; attempt <= STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
       const badARes = await authPost(
         jsonReq('http://localhost:3000/api/auth', 'POST', {
           action: 'staff_login',
@@ -2068,7 +2153,7 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
         action: 'staff_login',
         shopIdentifier: 'pho-hoi-an',
         username: 'real_cashier_a',
-        password: 'CashierAPass#123',
+        password: 'StillWrongAfterAccountLimit#123',
       })
     );
     assert.equal(blockedARes.status, 429);
@@ -2132,6 +2217,19 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
       'successful login on account B must not clear shop unknown-user bucket'
     );
 
+    // An account-wide failure cap must not lock the real account out: a
+    // correct password from another network remains usable and clears it.
+    const recoveredARes = await authPost(
+      jsonReq('http://localhost:3000/api/auth', 'POST', {
+        action: 'staff_login',
+        shopIdentifier: 'pho-hoi-an',
+        username: 'real_cashier_a',
+        password: 'CashierAPass#123',
+      })
+    );
+    assert.equal(recoveredARes.status, 200);
+    assert.equal(rateLimitRows.has(expectedStaffAKey), false);
+
     // Deleting staffB after recording another failure clears staffB's bucket
     await authPost(
       jsonReq('http://localhost:3000/api/auth', 'POST', {
@@ -2161,7 +2259,17 @@ test('staff login rate limiter bounded cardinality: unknown usernames collapse p
       'deleting a staff account must clear its rate-limit bucket'
     );
 
-    // Renaming staffA's username clears the old username's bucket
+    // Recreate a failed-login window, then renaming staffA clears the old username bucket.
+    const badAAfterRecoveryRes = await authPost(
+      jsonReq('http://localhost:3000/api/auth', 'POST', {
+        action: 'staff_login',
+        shopIdentifier: 'pho-hoi-an',
+        username: 'real_cashier_a',
+        password: 'WrongBeforeRename#123',
+      })
+    );
+    assert.equal(badAAfterRecoveryRes.status, 401);
+    assert.equal(rateLimitRows.has(expectedStaffAKey), true);
     const renameARes = await shopsPost(
       jsonReq(
         'http://localhost:3000/api/shops',

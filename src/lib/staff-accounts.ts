@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { isIP } from 'node:net';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Profile, Shop, ShopMembership, ShopPermission } from '@/types/qlaok';
 import { hashPassword, verifyPassword } from './auth-credentials';
@@ -54,10 +55,14 @@ export interface StaffLoginRateLimitCheckResult {
 const MIN_STAFF_PASSWORD_LENGTH = 6;
 const MAX_STAFF_PASSWORD_LENGTH = 128;
 
-export const STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5;
+export const STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 20;
+export const STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS = 20;
+export const STAFF_LOGIN_IP_RATE_LIMIT_MAX_ATTEMPTS = 10;
 export const STAFF_LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 export const STAFF_LOGIN_RATE_LIMIT_BLOCK_SECONDS = 15 * 60;
 export const STAFF_LOGIN_RATE_LIMIT_RETENTION_SECONDS = 24 * 60 * 60;
+export const STAFF_LOGIN_IP_RATE_LIMIT_RETENTION_SECONDS =
+  STAFF_LOGIN_RATE_LIMIT_BLOCK_SECONDS;
 
 const STAFF_RATE_LIMIT_BUCKET_KEY_REGEX = /^rl-staff-[0-9a-f]{64}$/;
 
@@ -346,9 +351,9 @@ export function computeStaffLoginUnknownUserRateLimitKey(
  * - Known shop + existing staff credential username -> `shop_account` bucket
  *   (1 key per real staff account)
  *
- * Total possible rows in `public.staff_login_rate_limits` are bounded by
- * `1 + |shops| + |shop_staff_credentials|`, never by raw request strings.
- * Never trusts client-supplied IP headers or stores raw usernames/passwords/IPs.
+ * This helper derives only shop/account buckets from real stored identities;
+ * proxy-derived IP buckets use a separate helper. It never stores raw
+ * usernames/passwords/IPs.
  */
 export function computeStaffLoginRateLimitKey(
   knownShopId: string | null | undefined,
@@ -369,6 +374,69 @@ export function computeStaffLoginRateLimitKey(
     .update(
       `qlaok:staff_login_rl:v1:shop_account:${cleanShopId}:${normalizedUser}`
     )
+    .digest('hex');
+  return `rl-staff-${digest}`;
+}
+
+function normalizeStaffLoginClientNetwork(rawIp: unknown): string | null {
+  if (typeof rawIp !== 'string') return null;
+  const ip = rawIp.trim().toLowerCase();
+  const ipVersion = isIP(ip);
+  if (!ip || ip.length > 64 || ipVersion === 0) return null;
+  if (ipVersion === 4) return ip;
+
+  // IPv6 privacy addresses rotate within a network prefix. Canonicalize them
+  // and rate-limit by /64 so alternate spellings or temporary host IDs do not
+  // create a fresh bucket for every request.
+  try {
+    const canonicalIp = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+    if (canonicalIp.startsWith('::ffff:')) {
+      const mappedGroups = canonicalIp.slice('::ffff:'.length).split(':');
+      if (mappedGroups.length !== 2) return null;
+      const high = Number.parseInt(mappedGroups[0]!, 16);
+      const low = Number.parseInt(mappedGroups[1]!, 16);
+      if (!Number.isFinite(high) || !Number.isFinite(low)) return null;
+      return [high >> 8, high & 255, low >> 8, low & 255].join('.');
+    }
+    const halves = canonicalIp.split('::');
+    const leftGroups = halves[0] ? halves[0].split(':') : [];
+    const rightGroups = halves[1] ? halves[1].split(':') : [];
+    const missingGroupCount = 8 - leftGroups.length - rightGroups.length;
+    const groups =
+      halves.length === 1
+        ? leftGroups
+        : [
+            ...leftGroups,
+            ...Array.from({ length: missingGroupCount }, () => '0'),
+            ...rightGroups,
+          ];
+    if (groups.length !== 8) return null;
+    const prefix = groups
+      .slice(0, 4)
+      .map((group) => Number.parseInt(group, 16).toString(16))
+      .join(':');
+    return `${prefix}::/64`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Shop-scoped client-network bucket, or a single global scope for unknown
+ * shops. IPv6 addresses share their /64 prefix; invalid addresses return null.
+ */
+export function computeStaffLoginIpRateLimitKey(
+  knownShopId: string | null | undefined,
+  rawIp: unknown
+): string | null {
+  const cleanShopId = String(knownShopId ?? '')
+    .trim()
+    .toLowerCase() || 'unknown_shop';
+  const clientNetwork = normalizeStaffLoginClientNetwork(rawIp);
+  if (!clientNetwork) return null;
+  const digest = crypto
+    .createHash('sha256')
+    .update(`qlaok:staff_login_rl:v1:shop_ip:${cleanShopId}:${clientNetwork}`)
     .digest('hex');
   return `rl-staff-${digest}`;
 }
@@ -1966,6 +2034,7 @@ export async function authenticateShopStaffLogin(input: {
   shopIdentifier: string;
   username: string;
   password: string;
+  clientIp?: string | null;
 }): Promise<
   | {
       ok: true;
@@ -2024,38 +2093,98 @@ export async function authenticateShopStaffLogin(input: {
     }
   }
 
-  // Select a bounded rate-limit bucket key:
+  // Select bounded rate-limit buckets:
   // - Nonexistent shop -> fixed global unknown-shop bucket (1 key total)
   // - Known shop + nonexistent/invalid username -> fixed shop-scoped
   //   unknown-user bucket (1 key per real shop)
   // - Known shop + existing active/inactive staff credential -> per-account
   //   bucket (1 key per real staff account)
+  // - Any valid client IP -> one shop-scoped (or unknown-shop-scoped) bucket
   const bucketKey = !shop
     ? computeStaffLoginUnknownShopRateLimitKey()
     : credential
       ? computeStaffLoginRateLimitKey(shop.id, credential.username)
       : computeStaffLoginUnknownUserRateLimitKey(shop.id);
+  const ipBucketKey = computeStaffLoginIpRateLimitKey(
+    shop?.id ?? null,
+    input.clientIp
+  );
+  if (process.env.NODE_ENV === 'production' && credential && !ipBucketKey) {
+    // Do not silently fall back to an account-only limiter if the trusted
+    // reverse proxy failed to supply a usable client address.
+    return rateLimitUnavailableFailure;
+  }
+  const accountMaxAttempts = shop
+    ? STAFF_LOGIN_KNOWN_SHOP_RATE_LIMIT_MAX_ATTEMPTS
+    : STAFF_LOGIN_RATE_LIMIT_MAX_ATTEMPTS;
+  const rateLimitBuckets = [
+    {
+      key: bucketKey,
+      maxAttempts: accountMaxAttempts,
+      retentionSeconds: STAFF_LOGIN_RATE_LIMIT_RETENTION_SECONDS,
+    },
+    ...(ipBucketKey
+      ? [
+          {
+            key: ipBucketKey,
+            maxAttempts: STAFF_LOGIN_IP_RATE_LIMIT_MAX_ATTEMPTS,
+            retentionSeconds: STAFF_LOGIN_IP_RATE_LIMIT_RETENTION_SECONDS,
+          },
+        ]
+      : []),
+  ];
 
   // 1. Check durable rate limit BEFORE running scrypt password verification.
   //    Fails closed (503) if the authoritative DB limiter is unavailable.
-  let rateCheck: StaffLoginRateLimitCheckResult;
+  let blockedRetryAfterSec = 0;
+  let ipBucketBlocked = false;
   try {
-    rateCheck = await checkStaffLoginRateLimit(bucketKey);
+    for (const bucket of rateLimitBuckets) {
+      const rateCheck = await checkStaffLoginRateLimit(bucket.key);
+      if (!rateCheck.allowed) {
+        // Never let a public attacker lock a real staff account out from a
+        // different network. Keep account-wide throttling for failed guesses,
+        // but still verify a candidate password once the account bucket is
+        // blocked. A blocked client-IP bucket remains a hard stop.
+        if (credential && bucket.key === bucketKey) continue;
+        blockedRetryAfterSec = Math.max(
+          blockedRetryAfterSec,
+          rateCheck.retryAfterSec
+        );
+        if (bucket.key === ipBucketKey) ipBucketBlocked = true;
+      }
+    }
   } catch {
     return rateLimitUnavailableFailure;
   }
 
-  if (!rateCheck.allowed) {
-    return buildRateLimitedFailure(rateCheck.retryAfterSec);
+  if (blockedRetryAfterSec > 0) {
+    // Match scrypt timing for a blocked unknown account when no IP bucket
+    // blocked it. Valid credentials in an account-capped bucket still verify.
+    if (!credential && !ipBucketBlocked) {
+      runDummyStaffPasswordVerification(rawPassword);
+    }
+    return buildRateLimitedFailure(blockedRetryAfterSec);
   }
 
   const recordFailureAndRespond = async () => {
     try {
-      const failureResult = await recordStaffLoginFailure(bucketKey);
-      if (!failureResult.allowed) {
-        return buildRateLimitedFailure(failureResult.retryAfterSec);
+      let rateLimitedRetryAfterSec = 0;
+      for (const bucket of rateLimitBuckets) {
+        const failureResult = await recordStaffLoginFailure(bucket.key, {
+          maxAttempts: bucket.maxAttempts,
+          retentionSeconds: bucket.retentionSeconds,
+        });
+        if (!failureResult.allowed) {
+          rateLimitedRetryAfterSec = Math.max(
+            rateLimitedRetryAfterSec,
+            failureResult.retryAfterSec
+          );
+        }
       }
-      return genericFailure;
+      return rateLimitedRetryAfterSec > 0
+        ? buildRateLimitedFailure(rateLimitedRetryAfterSec)
+        : genericFailure;
     } catch {
       return rateLimitUnavailableFailure;
     }
@@ -2091,9 +2220,13 @@ export async function authenticateShopStaffLogin(input: {
     return recordFailureAndRespond();
   }
 
-  // Clear failure window upon successful login (fail closed if DB limiter fails)
+  // Clear the account and same-shop IP failure windows upon successful login.
   try {
-    await resetStaffLoginRateLimit(bucketKey, { strict: true });
+    await Promise.all(
+      rateLimitBuckets.map((bucket) =>
+        resetStaffLoginRateLimit(bucket.key, { strict: true })
+      )
+    );
   } catch {
     return rateLimitUnavailableFailure;
   }

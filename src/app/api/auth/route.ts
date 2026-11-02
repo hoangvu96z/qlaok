@@ -673,6 +673,9 @@ export async function POST(req: Request) {
         shopIdentifier: rawShopIdentifier,
         username: candidateUsername,
         password,
+        // Only consume the reverse-proxy-set single-address header. The
+        // comma-separated X-Forwarded-For chain is client-controlled here.
+        clientIp: req.headers.get('x-real-ip'),
       });
 
       if (!staffAuth.ok) {

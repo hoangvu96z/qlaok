@@ -2812,7 +2812,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
   4. `plan_expires_at` được ghi nhưng không được dùng để tính entitlement; gói trả phí tiếp tục có hiệu lực sau ngày hết hạn. Cần đối chiếu product rule trước khi đổi hành vi.
   5. `POST /api/shops` nhận `...newShop` và bỏ qua plan restriction/validators của PATCH; owner Free có thể tạo cấu hình vượt entitlement. Allowlist payload và áp dụng cùng validator/plan gate như PATCH.
   6. Mobile assisted-order key `assist-*` không ràng buộc cart; nếu response mất sau commit rồi nhân viên sửa giỏ và retry, server trả order cũ như thành công, món mới không tới bếp. **Đã xử lý ở mục 219:** server ràng buộc attempt với intent và trả 409 khi nội dung đổi.
-  7. Thử mật khẩu sai 5 lần khóa tài khoản nhân viên 15 phút theo shop+username, không theo IP (`src/lib/staff-accounts.ts:2033-2050`), cho phép người biết username công khai gây lockout. Cần thêm bucket theo IP và giới hạn account-only cao hơn.
+  7. Thử mật khẩu sai 5 lần khóa tài khoản nhân viên 15 phút theo shop+username, không theo IP (`src/lib/staff-accounts.ts:2033-2050`), cho phép người biết username công khai gây lockout. **Đã xử lý ở mục 220:** thêm bucket IP đã được Nginx xác thực và nâng ngưỡng bucket account/shop lên 20.
 - **P3 đã xác nhận:**
   - `POST /api/orders` không allowlist `payment_method`; giá trị lạ bị thống kê như VietQR (`src/app/api/orders/route.ts`, `src/lib/mpos-store.ts`).
   - Gia hạn SaaS đặt `plan_expires_at = now + 30d`, làm mất ngày còn lại (`supabase/migrations/015…`).
@@ -2880,5 +2880,14 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **AGY:** Gemini 4 Argon Medium, review read-only run `2026-11-02T23-21-00-066Z-e9dc7e8e`, kết luận **NO CONFIRMED FINDINGS**; không sửa file. Một lượt kiểm tra sớm hơn của cùng review bị dừng vì lặp CodeGraph/source reads; test command do agent tự dựng kết thúc 1, nên không được tính là test pass.
 - **Claude CLI:** v2.1.316, TUI plan mode hiển thị `deepseek · API Usage Billing`; đã đọc một phần source/test nhưng bị dừng do thời lượng, không trả verdict. Không tính là approval.
 - **Codex kiểm tra:** focused `tests/pos-idempotency-replay-review.test.ts` **4/4 PASS**; `npm run test:sql` **13/13 PASS**; `npm run typecheck` **PASS**; ESLint trên route/store/test và `git diff --check` **PASS**.
-- **Chưa xác minh:** unique index và replay race chỉ được kiểm tra bằng isolated PGlite, chưa chạy trên production/PostgreSQL nhiều kết nối; migration chưa deploy.
-- **Trạng thái:** local change, chưa commit/push/deploy.
+- **Chưa xác minh:** unique index và replay race chỉ được kiểm tra bằng isolated PGlite, chưa chạy trên production/PostgreSQL nhiều kết nối.
+- **Trạng thái:** commit `4ea38cd9d90fecc0add22b6fecfe3137fb83cba7` đã push lên `main`. GitHub Actions #373 (`41545235225`) verify và deploy đều **success**; `/api/health` trả `{"status":"ok","service":"qlaok-backend"}` sau rollout.
+
+## 220. P2-7: tránh khóa đăng nhập tài khoản nhân viên (2026-11-03)
+
+- **Sửa:** tăng ngưỡng bucket tài khoản/shop chưa tồn tại lên 20 lần/15 phút; thêm bucket IP 10 lần/15 phút theo shop, IPv6 gộp theo `/64`, IPv4-mapped IPv6 chuẩn hóa về IPv4. `POST /api/auth` chỉ chuyển `X-Real-IP` do proxy ghi đè; không dùng `X-Forwarded-For`. Mật khẩu đúng có thể khôi phục tài khoản sau các lần đoán sai từ IP khác, còn bucket IP vẫn chặn cứng địa chỉ đang bị cooldown. Production trả `503 STAFF_LOGIN_RATE_LIMIT_UNAVAILABLE` cho tài khoản thật nếu thiếu IP hợp lệ hoặc DB rate limiter lỗi. Bucket IP hết hạn sau 15 phút; không có trần số dòng tuyệt đối trong cửa sổ này.
+- **CodeGraph:** `status`; `explore "authenticateShopStaffLogin recordStaffLoginFailure checkStaffLoginRateLimit computeStaffLoginIpRateLimitKey"`; `node authenticateShopStaffLogin`; `node computeStaffLoginIpRateLimitKey`; `node recordStaffLoginFailure`; các đoạn `tests/staff-accounts-review.test.ts` quanh 1280–1637 và 1760–2279. Migration SQL được đọc trực tiếp vì CodeGraph không index SQL; migration 018/023 có đúng tham số `p_retention_seconds`, không cần migration mới.
+- **AGY:** Gemini 4 Argon Medium, review chỉ đọc run `2026-11-02T23-35-25-781Z-98a5b04d`. Báo regression test ban đầu chưa khớp và bucket IP có thể tăng số dòng; test hiện tại đã chạy xanh, retention IP rút còn 15 phút, IPv6 chuẩn hóa. Không có giới hạn cứng số dòng.
+- **Claude CLI:** plan mode hiển thị `deepseek · API Usage Billing`, review thiết kế hẹp; không trả verdict `APPROVE`. Các điểm về tin cậy proxy, IPv4-mapped IPv6 và ngưỡng unknown-user đã được xử lý/ghi rõ. Trạng thái firewall chặn truy cập thẳng origin và Cloudflare Worker tự đổi header IP vẫn chưa xác minh.
+- **Codex kiểm tra:** `tests/staff-accounts-review.test.ts` **6/6 PASS**; `npm run typecheck` **PASS**; ESLint trên route/store/test và `git diff --check` **PASS**. GET chỉ đọc tới `http://43.128.116.69:3005/api/health` timeout (`HTTP 000`), chưa đủ bằng chứng kết luận firewall chặn cổng origin.
+- **Trạng thái:** đã sửa và kiểm tra local; chưa commit/push/deploy.
