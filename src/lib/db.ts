@@ -894,23 +894,41 @@ export async function dbGetStorefrontBundle(
 
   // 1. Canonical lookup first (never let an alias shadow a current canonical slug)
   const canonicalQuery = sb.from('shops').select('*').eq('slug', normalizedSlug);
-  const { data: canonicalShop } =
-    typeof canonicalQuery.maybeSingle === 'function'
-      ? await canonicalQuery.maybeSingle()
-      : await canonicalQuery.single();
+  const canonicalUsesMaybeSingle = typeof canonicalQuery.maybeSingle === 'function';
+  const canonicalResult = canonicalUsesMaybeSingle
+    ? await canonicalQuery.maybeSingle()
+    : await canonicalQuery.single();
+  if (
+    canonicalResult.error &&
+    !(
+      !canonicalUsesMaybeSingle &&
+      canonicalResult.error.code === 'PGRST116'
+    )
+  ) {
+    throw new Error('STOREFRONT_SHOP_LOOKUP_FAILED');
+  }
 
-  let rawShop = (canonicalShop as Shop | null) ?? null;
+  let rawShop = (canonicalResult.data as Shop | null) ?? null;
 
   // 2. If no shop currently owns normalizedSlug as its canonical slug, resolve via shop_slug_aliases
   if (!rawShop) {
     const aliasedShopId = await queryShopSlugAliasOwner(sb, normalizedSlug);
     if (aliasedShopId) {
       const aliasShopQuery = sb.from('shops').select('*').eq('id', aliasedShopId);
-      const { data: aliasedShop } =
-        typeof aliasShopQuery.maybeSingle === 'function'
-          ? await aliasShopQuery.maybeSingle()
-          : await aliasShopQuery.single();
-      rawShop = (aliasedShop as Shop | null) ?? null;
+      const aliasUsesMaybeSingle = typeof aliasShopQuery.maybeSingle === 'function';
+      const aliasResult = aliasUsesMaybeSingle
+        ? await aliasShopQuery.maybeSingle()
+        : await aliasShopQuery.single();
+      if (
+        aliasResult.error &&
+        !(
+          !aliasUsesMaybeSingle &&
+          aliasResult.error.code === 'PGRST116'
+        )
+      ) {
+        throw new Error('STOREFRONT_SHOP_ALIAS_LOOKUP_FAILED');
+      }
+      rawShop = (aliasResult.data as Shop | null) ?? null;
     }
   }
 
