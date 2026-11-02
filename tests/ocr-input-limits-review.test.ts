@@ -35,6 +35,13 @@ const token = issueSessionToken({
   email: 'ocr-review@example.test',
 });
 
+const { SUPER_ADMIN_EMAIL, SUPER_ADMIN_ID } = await import('@/lib/auth-session');
+const adminToken = issueSessionToken({
+  id: SUPER_ADMIN_ID,
+  email: SUPER_ADMIN_EMAIL,
+  role: 'admin',
+});
+
 const MiB = 1024 * 1024;
 const authHeaders = {
   Authorization: `Bearer ${token}`,
@@ -205,4 +212,63 @@ test('rejects images whose declared dimensions exceed the OCR pixel budget', asy
 
   assert.equal(response.status, 413);
   assert.equal(data.code, 'OCR_REQUEST_TOO_LARGE');
+});
+
+test('AI provider failures never leak exception details in response or logs', async () => {
+  const secret = 'SECRET_PROVIDER_TOKEN_sk-live-123 https://internal.example/v1 /srv/app/key.pem';
+  const originalFetch = globalThis.fetch;
+  const originalConsole = {
+    error: console.error,
+    warn: console.warn,
+    log: console.log,
+    info: console.info,
+  };
+  const logged: string[] = [];
+  const capture = (...args: unknown[]) => {
+    logged.push(
+      args
+        .map((arg) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : String(arg)))
+        .join(' ')
+    );
+  };
+  process.env.AI_API_KEY = 'test-ai-key';
+  process.env.AI_BASE_URL = 'https://ai.invalid/v1';
+  globalThis.fetch = (async () => {
+    throw new Error(secret);
+  }) as typeof fetch;
+  console.error = console.warn = console.log = console.info = capture;
+  try {
+    resetAiRateLimitsForTest();
+    const response = await POST(
+      new Request('http://localhost/api/ai/ocr-menu', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ rawOcrText: '???' }),
+      })
+    );
+    const text = await response.text();
+
+    assert.equal(response.status, 500);
+    assert.equal(text.includes('SECRET_PROVIDER_TOKEN'), false);
+    assert.equal(text.includes('internal.example'), false);
+    assert.equal(text.includes('key.pem'), false);
+    assert.equal(
+      (JSON.parse(text) as { error: string }).error,
+      'Không thể phân tích thực đơn từ ảnh. Vui lòng thử lại sau.'
+    );
+    const logs = logged.join('\n');
+    assert.equal(logs.includes('SECRET_PROVIDER_TOKEN'), false);
+    assert.equal(logs.includes('internal.example'), false);
+    assert.equal(logs.includes('key.pem'), false);
+    assert.equal(logs.includes('at '), false);
+    assert.deepEqual(logged, ['{"event":"ocr_menu_analysis_failed","code":"Error"}']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.assign(console, originalConsole);
+    delete process.env.AI_API_KEY;
+    delete process.env.AI_BASE_URL;
+  }
 });

@@ -340,6 +340,159 @@ test('unregisterPushOnLogout attempts cleanup before signOut and keeps push stat
   ]);
 });
 
+test('P3-22 regression: unregisterPushOnLogout preserves token/scope on DELETE network or 5xx failure without blocking local signOut, then clears state on retry', async () => {
+  const state = createMobilePushRegistrationState();
+  state.expoPushToken = 'ExponentPushToken[p322RetryToken]';
+  state.lastRegisteredScope =
+    'user-1:shop-a:ExponentPushToken[p322RetryToken]:vi';
+  state.registeredShopIds.add('shop-a');
+
+  const events: string[] = [];
+  let deleteMode: 'network_error' | 'http_503' | 'ok' = 'network_error';
+  let localSessionActive = true;
+
+  const apiCall = async (path: string, init?: RequestInit) => {
+    const method = (init?.method || 'GET').toUpperCase();
+    const body = JSON.parse(String(init?.body || '{}')) as Record<
+      string,
+      string
+    >;
+    events.push(
+      `${method}:${path}:${body.expo_push_token || ''}:mode=${deleteMode}:session=${localSessionActive}`
+    );
+    if (deleteMode === 'network_error') {
+      throw new Error('Network request failed');
+    }
+    if (deleteMode === 'http_503') {
+      return new Response(JSON.stringify({ error: 'Service unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return Response.json({ success: true, deletedCount: 1 });
+  };
+
+  // 1. Network failure on DELETE: local signOut still runs, signOutError is null, registration state is preserved
+  const firstAttempt = await unregisterPushOnLogout({
+    state,
+    apiCall,
+    signOut: async () => {
+      events.push('signOut:1');
+      localSessionActive = false;
+    },
+  });
+
+  assert.equal(firstAttempt.unregistered, false);
+  assert.equal(firstAttempt.token, 'ExponentPushToken[p322RetryToken]');
+  assert.equal(firstAttempt.signOutError, null);
+  assert.equal(localSessionActive, false);
+  assert.equal(state.expoPushToken, 'ExponentPushToken[p322RetryToken]');
+  assert.equal(
+    state.lastRegisteredScope,
+    'user-1:shop-a:ExponentPushToken[p322RetryToken]:vi'
+  );
+  assert.equal(state.registeredShopIds.has('shop-a'), true);
+
+  // 2. HTTP 503 failure on retry: local signOut still runs, state remains preserved for a later session
+  localSessionActive = true;
+  deleteMode = 'http_503';
+  const secondAttempt = await unregisterPushOnLogout({
+    state,
+    apiCall,
+    signOut: async () => {
+      events.push('signOut:2');
+      localSessionActive = false;
+    },
+  });
+
+  assert.equal(secondAttempt.unregistered, false);
+  assert.equal(secondAttempt.token, 'ExponentPushToken[p322RetryToken]');
+  assert.equal(secondAttempt.signOutError, null);
+  assert.equal(localSessionActive, false);
+  assert.equal(state.expoPushToken, 'ExponentPushToken[p322RetryToken]');
+  assert.equal(
+    state.lastRegisteredScope,
+    'user-1:shop-a:ExponentPushToken[p322RetryToken]:vi'
+  );
+  assert.equal(state.registeredShopIds.has('shop-a'), true);
+
+  // 3. Subsequent session retries DELETE with preserved token and succeeds -> clears token, scope, and shops
+  localSessionActive = true;
+  deleteMode = 'ok';
+  const thirdAttempt = await unregisterPushOnLogout({
+    state,
+    apiCall,
+    signOut: async () => {
+      events.push('signOut:3');
+      localSessionActive = false;
+    },
+  });
+
+  assert.equal(thirdAttempt.unregistered, true);
+  assert.equal(thirdAttempt.token, 'ExponentPushToken[p322RetryToken]');
+  assert.equal(thirdAttempt.signOutError, null);
+  assert.equal(localSessionActive, false);
+  assert.equal(state.expoPushToken, null);
+  assert.equal(state.lastRegisteredScope, '');
+  assert.equal(state.registeredShopIds.size, 0);
+
+  assert.deepEqual(events, [
+    'DELETE:/api/push-tokens:ExponentPushToken[p322RetryToken]:mode=network_error:session=true',
+    'signOut:1',
+    'DELETE:/api/push-tokens:ExponentPushToken[p322RetryToken]:mode=http_503:session=true',
+    'signOut:2',
+    'DELETE:/api/push-tokens:ExponentPushToken[p322RetryToken]:mode=ok:session=true',
+    'signOut:3',
+  ]);
+});
+
+test('P3-22 regression: unregisterPushOnLogout distinguishes remote DELETE failure from local signOut failure', async () => {
+  // Case A: Remote DELETE succeeds, but local signOut returns an error object -> push state is cleared, signOutError is reported
+  const stateA = createMobilePushRegistrationState();
+  stateA.expoPushToken = 'ExponentPushToken[localSignOutResultErr]';
+  stateA.lastRegisteredScope =
+    'user-1:shop-a:ExponentPushToken[localSignOutResultErr]:vi';
+  stateA.registeredShopIds.add('shop-a');
+
+  const resA = await unregisterPushOnLogout({
+    state: stateA,
+    apiCall: async () => Response.json({ success: true, deletedCount: 1 }),
+    signOut: async () => ({ error: { message: 'SecureStore delete failed' } }),
+  });
+
+  assert.equal(resA.unregistered, true);
+  assert.equal(resA.signOutError, 'SecureStore delete failed');
+  assert.equal(stateA.expoPushToken, null);
+  assert.equal(stateA.lastRegisteredScope, '');
+  assert.equal(stateA.registeredShopIds.size, 0);
+
+  // Case B: Remote DELETE fails AND local signOut throws -> push state is preserved, signOutError is reported
+  const stateB = createMobilePushRegistrationState();
+  stateB.expoPushToken = 'ExponentPushToken[bothFailToken]';
+  stateB.lastRegisteredScope =
+    'user-1:shop-a:ExponentPushToken[bothFailToken]:vi';
+  stateB.registeredShopIds.add('shop-a');
+
+  const resB = await unregisterPushOnLogout({
+    state: stateB,
+    apiCall: async () => {
+      throw new Error('Offline');
+    },
+    signOut: async () => {
+      throw new Error('Local storage locked');
+    },
+  });
+
+  assert.equal(resB.unregistered, false);
+  assert.equal(resB.signOutError, 'Local storage locked');
+  assert.equal(stateB.expoPushToken, 'ExponentPushToken[bothFailToken]');
+  assert.equal(
+    stateB.lastRegisteredScope,
+    'user-1:shop-a:ExponentPushToken[bothFailToken]:vi'
+  );
+  assert.equal(stateB.registeredShopIds.has('shop-a'), true);
+});
+
 test('resolveNotificationTapTargetShop never falls back to another shop when target shop is unavailable or unauthorized', () => {
   const shops = [
     { id: 'shop-fallback-a', owner_id: 'owner-1', name: 'Shop A' },

@@ -43,6 +43,24 @@ class OcrRequestError extends Error {
   }
 }
 
+const OCR_ANALYSIS_FAILED_MESSAGE =
+  'Không thể phân tích thực đơn từ ảnh. Vui lòng thử lại sau.';
+const SAFE_OCR_ERROR_NAMES = new Set([
+  'Error',
+  'TypeError',
+  'RangeError',
+  'SyntaxError',
+  'AbortError',
+  'TimeoutError',
+]);
+
+/** Bounded, allow-listed error name; never derived from message or stack. */
+function safeOcrErrorCode(error: unknown): string {
+  return error instanceof Error && SAFE_OCR_ERROR_NAMES.has(error.name)
+    ? error.name
+    : 'UnknownError';
+}
+
 async function readOcrJsonRequest(req: Request): Promise<Record<string, unknown>> {
   const reader = req.body?.getReader();
   if (!reader) throw new OcrRequestError(400, 'INVALID_JSON');
@@ -446,7 +464,12 @@ Yêu cầu bắt buộc:
         { status: error.status }
       );
     }
-    console.error('OCR AI Error:', error);
+    console.error(
+      JSON.stringify({
+        event: 'ocr_menu_analysis_failed',
+        code: safeOcrErrorCode(error),
+      })
+    );
     if (extractedText) {
       const parsedFromOcr = parseRawOcrTextFallback(extractedText, vertical);
       if (parsedFromOcr.categories[0]?.items.length > 0) {
@@ -459,10 +482,7 @@ Yêu cầu bắt buộc:
     }
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? `Lỗi phân tích thực đơn: ${error.message}`
-            : 'Không thể phân tích văn bản thực đơn từ ảnh.',
+        error: OCR_ANALYSIS_FAILED_MESSAGE,
         rawOcrText: extractedText,
       },
       { status: 500 }
