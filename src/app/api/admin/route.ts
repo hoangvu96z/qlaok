@@ -419,17 +419,26 @@ export async function POST(req: Request) {
       );
     }
 
-    const recordSuccessfulAudit = () =>
+    const recordSuccessfulAudit = (overrides?: {
+      targetId?: string;
+      details?: Record<string, unknown>;
+    }) =>
       recordAdminAuditLog({
         actorId: auth.user.sub,
         actorEmail: auth.user.email,
         action: String(action || 'unknown'),
-        targetId: body.ownerId || body.shopId || body.orderId || body.orderCode,
-        details: {
-          plan: body.plan,
-          email: body.email,
-          isPublished: body.isPublished,
-        },
+        targetId:
+          overrides && 'targetId' in overrides
+            ? overrides.targetId
+            : body.ownerId || body.shopId || body.orderId || body.orderCode,
+        details:
+          overrides && 'details' in overrides
+            ? overrides.details
+            : {
+                plan: body.plan,
+                email: body.email,
+                isPublished: body.isPublished,
+              },
       });
 
     if (action === 'reseed_demo_data' && !shouldAutoSeedDemoData()) {
@@ -829,9 +838,11 @@ export async function POST(req: Request) {
         );
       }
 
-      body.shopId = normalizedShopId;
       dbClearShopSlugAliasCache(normalizedShopId);
-      await recordSuccessfulAudit();
+      await recordSuccessfulAudit({
+        targetId: normalizedShopId,
+        details: {},
+      });
       return NextResponse.json({ ok: true });
     }
 

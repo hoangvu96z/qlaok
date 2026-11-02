@@ -8914,13 +8914,40 @@ describe('Suite 18: Storefront Slug Aliases & Canonical URL Preservation', () =>
           },
           body: JSON.stringify({
             action: 'delete_shop',
-            shopId: targetShopId,
+            shopId: `  ${targetShopId}  `,
+            ownerId: 'spoofed-owner-id',
+            orderId: 'spoofed-order-id',
+            orderCode: 'SPOOFED-ORDER-CODE',
+            email: 'spoofed-shop-delete@example.test',
           }),
         })
       );
       assert.equal(successDeleteRes.status, 200);
       const successDeleteBody = await successDeleteRes.json();
       assert.equal(successDeleteBody.ok, true);
+
+      const shopDeleteAudit = recordedAdminAuditRows.find(
+        (row) => row.action === 'delete_shop'
+      );
+      assert.ok(
+        shopDeleteAudit,
+        'Confirmed shop delete must record admin audit log'
+      );
+      assert.equal(
+        shopDeleteAudit?.target_id,
+        targetShopId,
+        'Admin audit log for delete_shop must record the canonical deleted shop ID'
+      );
+      assert.equal(
+        (shopDeleteAudit?.details as { email?: string } | undefined)?.email,
+        undefined,
+        'Admin audit log for delete_shop must omit caller-supplied email'
+      );
+      assert.equal(
+        'email' in ((shopDeleteAudit?.details as Record<string, unknown>) || {}),
+        false,
+        'Admin audit log details for delete_shop must not include an email property'
+      );
 
       // Verify shop was removed
       assert.equal(shopsStore.has(targetShopId), false);
