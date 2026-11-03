@@ -839,10 +839,7 @@ export async function requireSuperAdmin(req: Request): Promise<
     return {
       errorResponse: NextResponse.json(
         {
-          error:
-            err instanceof Error
-              ? err.message
-              : 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
+          error: 'Lỗi cấu hình xác thực phiên quản trị trên máy chủ.',
           code: 'SERVER_AUTH_MISCONFIGURED',
         },
         { status: 500 }
