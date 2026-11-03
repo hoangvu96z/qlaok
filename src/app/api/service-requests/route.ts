@@ -17,6 +17,9 @@ import type {
   ServiceRequestStatus,
   SupportedLocale,
 } from '@/types/qlaok';
+import { readBoundedJsonRequestBody } from '@/lib/request-body';
+
+const MAX_SERVICE_REQUEST_BODY_BYTES = 16 * 1024;
 
 function extractErrorCode(message: string): string | undefined {
   const match = /^([A-Z][A-Z0-9_]{2,})\s*:/.exec(message.trim());
@@ -75,7 +78,17 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as Record<string, unknown>;
+    const parsedBody = await readBoundedJsonRequestBody(
+      req,
+      MAX_SERVICE_REQUEST_BODY_BYTES
+    );
+    if (!parsedBody.ok) {
+      return NextResponse.json(
+        { error: parsedBody.error, code: parsedBody.code },
+        { status: parsedBody.status }
+      );
+    }
+    const body = parsedBody.body;
 
     const rawShopId =
       typeof body.shop_id === 'string'

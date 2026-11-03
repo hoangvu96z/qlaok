@@ -43,6 +43,7 @@ import { hasBusinessStateChanged } from '@/lib/audit-replay';
 import { hasShopPermission } from '@/lib/shop-permissions';
 import { dbResolveOrderTableIdentity } from '@/lib/shop-tables';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
+import { readBoundedJsonRequestBody } from '@/lib/request-body';
 import type {
   OrderLineItem,
   OrderPaymentStatus,
@@ -53,6 +54,8 @@ import type {
   SupportedLocale,
   TicketPrintType,
 } from '@/types/qlaok';
+
+const MAX_ORDER_REQUEST_BODY_BYTES = 1024 * 1024;
 
 /** Extract a stable machine-readable code from "CODE: human message" errors. */
 function extractOrderErrorCode(message: string): string | undefined {
@@ -468,7 +471,17 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const parsedBody = await readBoundedJsonRequestBody(
+      req,
+      MAX_ORDER_REQUEST_BODY_BYTES
+    );
+    if (!parsedBody.ok) {
+      return NextResponse.json(
+        { error: parsedBody.error, code: parsedBody.code },
+        { status: parsedBody.status }
+      );
+    }
+    const body = parsedBody.body as Awaited<ReturnType<Request['json']>>;
     const { action } = body as { action?: string };
 
     if (action === 'quote') {
