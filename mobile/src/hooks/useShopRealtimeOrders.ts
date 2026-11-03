@@ -10,7 +10,11 @@ import {
   MobileShopOrder,
   MobileShopOrderStats,
 } from '../lib/supabase';
-import { getOwnerAccessToken } from '../lib/owner-session';
+import {
+  didOwnerAccessTokenRefresh,
+  getOwnerAccessToken,
+  subscribeOwnerSessionChanges,
+} from '../lib/owner-session';
 import {
   buildOrderEventsSseHeaders,
   buildOrderEventsSseUrl,
@@ -170,10 +174,29 @@ export function useShopRealtimeOrders({
   const requestId = useRef(0);
   const needsSyncRef = useRef(false);
   const [appActive, setAppActive] = useState(AppState.currentState !== 'background' && AppState.currentState !== 'inactive');
+  const [ownerSessionRefreshRevision, setOwnerSessionRefreshRevision] =
+    useState(0);
+  const sseAccessTokenRef = useRef<string | null>(null);
   useEffect(() => {
     const listener = AppState.addEventListener('change', state => setAppActive(state === 'active'));
     return () => listener.remove();
   }, []);
+  useEffect(
+    () =>
+      subscribeOwnerSessionChanges((session, reason) => {
+        if (
+          didOwnerAccessTokenRefresh(
+            sseAccessTokenRef.current,
+            session,
+            reason
+          )
+        ) {
+          sseAccessTokenRef.current = session.accessToken;
+          setOwnerSessionRefreshRevision((revision) => revision + 1);
+        }
+      }),
+    []
+  );
   useEffect(() => () => { scopeRef.current = { ...scopeRef.current, generation: scopeRef.current.generation + 1 }; }, []);
 
   const fetchOrdersFromApi = useCallback(
@@ -242,6 +265,7 @@ export function useShopRealtimeOrders({
           return;
         }
         if (disposed) return;
+        sseAccessTokenRef.current = token;
 
         const sseUrl = buildOrderEventsSseUrl(API_BASE_URL, shopId);
         const headers = buildOrderEventsSseHeaders(token);
@@ -331,7 +355,14 @@ export function useShopRealtimeOrders({
       clearInterval(safetyInterval);
       clearTimeout(changeTimer);
     };
-  }, [isLoggedIn, shopId, appActive, fetchOrdersFromApi, eventSourceFactory]);
+  }, [
+    isLoggedIn,
+    shopId,
+    appActive,
+    ownerSessionRefreshRevision,
+    fetchOrdersFromApi,
+    eventSourceFactory,
+  ]);
 
   return {
     orders,

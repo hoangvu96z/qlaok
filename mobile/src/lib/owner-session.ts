@@ -243,6 +243,19 @@ export function subscribeOwnerSessionChanges(
   };
 }
 
+export function didOwnerAccessTokenRefresh(
+  currentAccessToken: string | null,
+  session: Pick<MobileOwnerSession, 'accessToken'> | null,
+  reason?: 'login' | 'sync' | 'logout' | 'expired'
+): session is Pick<MobileOwnerSession, 'accessToken'> {
+  return (
+    reason === 'sync' &&
+    typeof session?.accessToken === 'string' &&
+    session.accessToken.length > 0 &&
+    session.accessToken !== currentAccessToken
+  );
+}
+
 function notifyOwnerSessionListeners(
   session: MobileOwnerSession | null,
   reason?: 'login' | 'sync' | 'logout' | 'expired'
