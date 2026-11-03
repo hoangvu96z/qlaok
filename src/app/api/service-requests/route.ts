@@ -18,8 +18,28 @@ import type {
   SupportedLocale,
 } from '@/types/qlaok';
 import { readBoundedJsonRequestBody } from '@/lib/request-body';
+import {
+  createBoundedRateLimiter,
+  createClientRateLimitKey,
+  createScopedRateLimitKey,
+} from '@/lib/request-rate-limit';
 
 const MAX_SERVICE_REQUEST_BODY_BYTES = 16 * 1024;
+const serviceRequestIpRateLimiter = createBoundedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 60,
+});
+const serviceRequestTableRateLimiter = createBoundedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+});
+
+function rateLimitedResponse(retryAfter: number) {
+  return NextResponse.json(
+    { error: 'Vui lòng thử lại sau ít phút.', code: 'RATE_LIMITED' },
+    { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+  );
+}
 
 function extractErrorCode(message: string): string | undefined {
   const match = /^([A-Z][A-Z0-9_]{2,})\s*:/.exec(message.trim());
@@ -136,6 +156,19 @@ export async function POST(req: Request) {
         : typeof body.idempotencyKey === 'string'
           ? body.idempotencyKey
           : req.headers.get('x-idempotency-key') ?? undefined;
+
+    const ipRetryAfter = serviceRequestIpRateLimiter(
+      createClientRateLimitKey(req, 'service-requests:create')
+    );
+    const tableRetryAfter = serviceRequestTableRateLimiter(
+      createScopedRateLimitKey(
+        'service-requests:signed-table',
+        rawShopId,
+        rawTableQrSig || 'missing-signature'
+      )
+    );
+    const retryAfter = Math.max(ipRetryAfter ?? 0, tableRetryAfter ?? 0);
+    if (retryAfter > 0) return rateLimitedResponse(retryAfter);
 
     const result = await dbCreateTableServiceRequest({
       shop_id: rawShopId,

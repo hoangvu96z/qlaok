@@ -80,6 +80,7 @@ import {
   resolveStorefrontMenuTableState,
 } from '../src/lib/table-helpers';
 import type { ShopMembership, ShopThemeConfig } from '../src/types/qlaok';
+import { resetRequestRateLimitersForTests } from '../src/lib/request-rate-limit';
 
 const SHOP_A = 'shop-fnb-001';
 const SHOP_B = 'shop-service-002';
@@ -115,6 +116,7 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
   let tmpDir: string;
 
   beforeEach(async () => {
+    resetRequestRateLimitersForTests();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qlaok-service-req-test-'));
     setShopTablesDbClientForTests(null, false);
     setShopTablesFileForTests(path.join(tmpDir, 'shop-tables.json'));
@@ -168,6 +170,33 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     } catch {
       // ignore cleanup errors
     }
+  });
+
+  test('anonymous service-request POST returns 429 with Retry-After after the IP/table budget is used', async () => {
+    const makeRequest = () =>
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-real-ip': '198.51.100.250',
+        },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'unknown-table-for-rate-limit-test',
+          table_qr_sig: 'invalid-signature-for-rate-limit-test',
+          request_type: 'call_staff',
+        }),
+      });
+
+    for (let index = 0; index < 20; index += 1) {
+      const response = await postServiceRequestsRoute(makeRequest());
+      assert.notEqual(response.status, 429);
+    }
+
+    const limited = await postServiceRequestsRoute(makeRequest());
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get('retry-after'), '60');
+    assert.deepEqual(await dbGetShopServiceRequests(SHOP_A), []);
   });
 
   test('1. Storefront i18n & table lock gating: all 8 locales localized, actions hidden for takeaway or invalid/unverified/inactive table', async () => {

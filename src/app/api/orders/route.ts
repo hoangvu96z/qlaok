@@ -44,6 +44,10 @@ import { hasShopPermission } from '@/lib/shop-permissions';
 import { dbResolveOrderTableIdentity } from '@/lib/shop-tables';
 import { isTakeawayTableLabel } from '@/lib/table-helpers';
 import { readBoundedJsonRequestBody } from '@/lib/request-body';
+import {
+  createBoundedRateLimiter,
+  createClientRateLimitKey,
+} from '@/lib/request-rate-limit';
 import type {
   OrderLineItem,
   OrderPaymentStatus,
@@ -56,6 +60,21 @@ import type {
 } from '@/types/qlaok';
 
 const MAX_ORDER_REQUEST_BODY_BYTES = 1024 * 1024;
+const publicQuoteRateLimiter = createBoundedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 60,
+});
+const guestOrderRateLimiter = createBoundedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 10,
+});
+
+function rateLimitedResponse(retryAfter: number) {
+  return NextResponse.json(
+    { error: 'Vui lòng thử lại sau ít phút.', code: 'RATE_LIMITED' },
+    { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+  );
+}
 
 /** Extract a stable machine-readable code from "CODE: human message" errors. */
 function extractOrderErrorCode(message: string): string | undefined {
@@ -495,6 +514,12 @@ export async function POST(req: Request) {
       const auth = await getRequestShopMembership(req, shopId);
       if (auth.errorResponse) return auth.errorResponse;
       const { membership } = auth;
+      if (!hasShopPermission(membership, 'orders.create')) {
+        const retryAfter = publicQuoteRateLimiter(
+          createClientRateLimitKey(req, 'orders:quote')
+        );
+        if (retryAfter !== null) return rateLimitedResponse(retryAfter);
+      }
       if (!(await canCreatePublicOrder(shopId, membership))) {
         return unpublishedShopResponse();
       }
@@ -755,6 +780,11 @@ export async function POST(req: Request) {
     }
 
     if (source !== 'counter_pos' && !hasCreatePerm) {
+      const retryAfter = guestOrderRateLimiter(
+        createClientRateLimitKey(req, 'orders:create')
+      );
+      if (retryAfter !== null) return rateLimitedResponse(retryAfter);
+
       if (!(await canCreatePublicOrder(shop_id, membership))) {
         return unpublishedShopResponse();
       }
