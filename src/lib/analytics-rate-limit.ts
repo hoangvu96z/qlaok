@@ -5,7 +5,7 @@ import {
 
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_PER_WINDOW = 120;
-const RATE_MAX_BUCKETS = 5000;
+const RATE_MAX_BUCKETS = 5128;
 
 export function createAnalyticsRateLimiter(): (
   req: Request,

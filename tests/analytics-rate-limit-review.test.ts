@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAnalyticsRateLimiter } from '@/lib/analytics-rate-limit';
+import { getRequestRateLimiterBucketCountsForTests } from '@/lib/request-rate-limit';
 
 function requestFrom(realIp: string, forwardedFor = '192.0.2.1'): Request {
   return new Request('http://localhost/api/analytics/track', {
@@ -61,7 +62,12 @@ test('analytics limiter preserves per-IP quotas and does not reject newcomers at
   }
   assert.equal(limiter(requestFrom('198.18.21.1'), now), 60);
 
-  // LRU eviction may reset an old, inactive identity instead of blocking newcomers.
+  // Previously known exact identities retain their own active quota.
   assert.equal(limiter(requestFrom('198.18.0.1'), now), null);
   assert.equal(limiter(requestFrom('198.18.20.1'), now), 60);
+
+  const state = getRequestRateLimiterBucketCountsForTests().at(-1);
+  assert.equal(state?.maxBuckets, 5128);
+  assert.equal(state?.exactBucketCount, 5000);
+  assert.equal(state?.overflowBucketCount, 1);
 });

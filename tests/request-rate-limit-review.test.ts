@@ -4,6 +4,7 @@ import {
   createBoundedRateLimiter,
   createClientRateLimitKey,
   createScopedRateLimitKey,
+  getRequestRateLimiterBucketCountsForTests,
   resetRequestRateLimitersForTests,
 } from '@/lib/request-rate-limit';
 
@@ -70,82 +71,209 @@ test('scoped keys are stable and separate shops and tables', () => {
   );
 });
 
-test('bounded limiter prunes expired buckets first and evicts least-recently-used entry at hard cap', () => {
+test('bounded limiter prunes expired buckets before using bounded overflow capacity', () => {
   const limit = createBoundedRateLimiter({
     windowMs: 60_000,
     maxRequests: 2,
-    maxBuckets: 3,
+    maxBuckets: 8,
   });
 
-  // Fill all 3 buckets; expiring-key has oldest window start (1_000)
+  // Fill all six exact slots; expiring-key has the oldest window start.
   assert.equal(limit('expiring-key', 1_000), null);
   assert.equal(limit('expiring-key', 1_000), null);
   assert.equal(limit('active-oldest', 10_000), null);
   assert.equal(limit('active-oldest', 10_000), null);
   assert.equal(limit('active-newest', 10_000), null);
   assert.equal(limit('active-newest', 10_000), null);
+  assert.equal(limit('active-fill', 10_000), null);
+  assert.equal(limit('active-fill', 10_000), null);
+  assert.equal(limit('active-fill-2', 10_000), null);
+  assert.equal(limit('active-fill-2', 10_000), null);
+  assert.equal(limit('active-fill-3', 10_000), null);
+  assert.equal(limit('active-fill-3', 10_000), null);
 
-  // Refresh expiring-key recency via a rate-limited hit so active-oldest becomes LRU
+  // A rate-limited hit does not extend the sliding window.
   assert.equal(limit('expiring-key', 20_000), 41);
 
-  // At 61_000, expiring-key has expired; pruning frees a slot without evicting active-oldest
+  // At 61_000, pruning frees the naturally expired exact bucket.
   assert.equal(limit('after-expiry', 61_000), null);
   assert.equal(limit('active-oldest', 61_000), 9);
   assert.equal(limit('active-newest', 61_000), 9);
 
-  // Current recency order after the two checks above: [after-expiry, active-oldest, active-newest].
-  // Repeated after-expiry hits keep it recent, so newcomer-d evicts active-oldest.
+  // Reach the exact cap and start bounded overflow without dropping known quotas.
   assert.equal(limit('after-expiry', 61_000), null);
   assert.equal(limit('after-expiry', 61_000), 60);
-  // Recency order is now: [active-oldest, active-newest, after-expiry].
   assert.equal(limit('newcomer-d', 61_000), null);
 
-  // active-newest and after-expiry remain rate-limited, while evicted active-oldest regains a fresh bucket (LRU tradeoff)
+  // Every active exact identity remains limited, even after identity churn.
+  for (let index = 0; index < 20; index += 1) {
+    limit(`churn-${index}`, 61_001);
+  }
   assert.equal(limit('active-newest', 61_000), 9);
   assert.equal(limit('after-expiry', 61_000), 60);
-  assert.equal(limit('active-oldest', 61_000), null);
+  assert.equal(limit('active-oldest', 61_000), 9);
+  assert.ok(
+    getRequestRateLimiterBucketCountsForTests().every(
+      ({ bucketCount, maxBuckets }) => bucketCount <= maxBuckets
+    )
+  );
 });
 
-test('saturated overflow identity cannot reject distinct newcomers while recently active known keys stay limited', () => {
+test('active identity quota cannot be reset by churn after the exact bucket cap', () => {
   const limit = createBoundedRateLimiter({
     windowMs: 60_000,
     maxRequests: 2,
-    maxBuckets: 3,
+    maxBuckets: 4,
   });
   const now = 1_000;
 
   assert.equal(limit('known-a', now), null);
   assert.equal(limit('known-b', now), null);
   assert.equal(limit('known-c', now), null);
-
-  // Saturate known-a and verify its recency is refreshed even when rate-limited
   assert.equal(limit('known-a', now), null);
   assert.equal(limit('known-a', now), 60);
 
-  // One noisy newcomer beyond maxBuckets saturates its own bucket
-  assert.equal(limit('noisy-overflow', now), null);
-  assert.equal(limit('noisy-overflow', now), null);
-  assert.equal(limit('noisy-overflow', now), 60);
+  for (let index = 0; index < 100; index += 1) {
+    limit(`attacker-${index}`, now + 500);
+  }
 
-  // Refresh known-a via rate-limited hit so it stays MRU ahead of noisy-overflow
+  // The original active identity never receives a fresh bucket before expiry.
   assert.equal(limit('known-a', now + 500), 60);
+  assert.equal(limit('known-a', now + 61_000), null);
+  assert.ok(
+    getRequestRateLimiterBucketCountsForTests().every(
+      ({ bucketCount, maxBuckets }) => bucketCount <= maxBuckets
+    )
+  );
+});
 
-  // Distinct unseen newcomers must not suffer collateral 429s from noisy-overflow
-  assert.equal(limit('newcomer-1', now + 500), null);
-  assert.equal(limit('known-a', now + 500), 60);
-  assert.equal(limit('newcomer-2', now + 500), null);
+test('overflow identities use independent bounded shards instead of one shared bucket', () => {
+  const limit = createBoundedRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 1,
+    maxBuckets: 12,
+  });
+  const now = 1_000;
 
-  // Recently active known-a remains rate-limited until its window expires
-  assert.equal(limit('known-a', now + 500), 60);
-  assert.equal(limit('known-a', now + 60_000), null);
+  // Fill exact capacity before the first overflow identity arrives.
+  for (let index = 0; index < 10; index += 1) {
+    assert.equal(limit(`exact-${index}`, now), null);
+  }
+
+  let saturatedShardIdentity: string | null = null;
+  for (let index = 0; index < 100; index += 1) {
+    const identity = `overflow-first-${index}`;
+    if (limit(identity, now) === null) {
+      assert.equal(limit(identity, now), 60);
+      saturatedShardIdentity = identity;
+      break;
+    }
+  }
+  assert.notEqual(saturatedShardIdentity, null);
+
+  let independentShardIdentity: string | null = null;
+  for (let index = 0; index < 100; index += 1) {
+    const identity = `overflow-second-${index}`;
+    if (limit(identity, now) === null) {
+      independentShardIdentity = identity;
+      break;
+    }
+  }
+  assert.notEqual(independentShardIdentity, null);
+  assert.equal(limit(independentShardIdentity!, now), 60);
+  assert.equal(limit(saturatedShardIdentity!, now), 60);
+  assert.ok(
+    getRequestRateLimiterBucketCountsForTests().every(
+      ({ bucketCount, maxBuckets }) => bucketCount <= maxBuckets
+    )
+  );
+});
+
+test('overflow mode recovers after its last accepted request expires', () => {
+  const limit = createBoundedRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 1,
+    maxBuckets: 6,
+  });
+
+  assert.equal(limit('exact-a', 1_000), null);
+  assert.equal(limit('exact-b', 1_000), null);
+  assert.equal(limit('exact-c', 1_000), null);
+  assert.equal(limit('exact-d', 1_000), null);
+  assert.equal(limit('overflow', 1_000), null);
+  assert.equal(limit('overflow', 1_000), 60);
+
+  // At the exact window boundary, old exact and overflow entries are expired.
+  assert.equal(limit('after-window', 61_000), null);
+  assert.equal(limit('after-window', 61_000), 60);
+  assert.ok(
+    getRequestRateLimiterBucketCountsForTests().every(
+      ({ bucketCount, maxBuckets }) => bucketCount <= maxBuckets
+    )
+  );
+});
+
+test('minimum bucket capacity keeps two overflow shards and rejects smaller caps', () => {
+  const limit = createBoundedRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 1,
+    maxBuckets: 3,
+  });
+  const now = 1_000;
+
+  assert.equal(limit('only-exact', now), null);
+
+  let firstOverflow: string | null = null;
+  for (let index = 0; index < 100; index += 1) {
+    const identity = `minimum-overflow-first-${index}`;
+    if (limit(identity, now) === null) {
+      assert.equal(limit(identity, now), 60);
+      firstOverflow = identity;
+      break;
+    }
+  }
+  assert.notEqual(firstOverflow, null);
+
+  let secondOverflow: string | null = null;
+  for (let index = 0; index < 100; index += 1) {
+    const identity = `minimum-overflow-second-${index}`;
+    if (limit(identity, now) === null) {
+      secondOverflow = identity;
+      break;
+    }
+  }
+  assert.notEqual(secondOverflow, null);
+  assert.equal(limit(secondOverflow!, now), 60);
+  assert.equal(limit(firstOverflow!, now), 60);
+
+  assert.throws(
+    () => createBoundedRateLimiter({ windowMs: 60_000, maxRequests: 1, maxBuckets: 2 }),
+    /at least three/
+  );
+  assert.ok(
+    getRequestRateLimiterBucketCountsForTests().every(
+      ({ bucketCount, maxBuckets }) => bucketCount <= maxBuckets
+    )
+  );
 });
 
 test('test reset clears limiter state without changing configured limits', () => {
-  const limit = createBoundedRateLimiter({ windowMs: 60_000, maxRequests: 1 });
+  const limit = createBoundedRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 1,
+    maxBuckets: 4,
+  });
   assert.equal(limit('same-key', 1_000), null);
-  assert.equal(limit('same-key', 1_000), 60);
+  assert.equal(limit('exact-key-2', 1_000), null);
+  assert.equal(limit('overflow-key', 1_000), null);
+  assert.equal(limit('overflow-key', 1_000), 60);
 
   resetRequestRateLimitersForTests();
 
   assert.equal(limit('same-key', 1_000), null);
+  assert.equal(limit('exact-key-2', 1_000), null);
+  const resetState = getRequestRateLimiterBucketCountsForTests().at(-1);
+  assert.equal(resetState?.exactBucketCount, 2);
+  assert.equal(resetState?.overflowBucketCount, 0);
+  assert.equal(limit('overflow-key', 1_000), null);
 });

@@ -7,12 +7,46 @@ export type RateLimitOptions = {
   maxBuckets?: number;
 };
 
-const DEFAULT_MAX_BUCKETS = 5000;
-const activeBucketMaps = new Set<Map<string, number[]>>();
+const DEFAULT_MAX_BUCKETS = 5128;
+const MAX_OVERFLOW_BUCKETS = 128;
+const OVERFLOW_BUCKET_PREFIX = 'overflow:';
+const EXACT_BUCKET_PREFIX = 'exact:';
+
+type ActiveRateLimitState = {
+  buckets: Map<string, number[]>;
+  maxBuckets: number;
+  overflowBucketKeys: Set<string>;
+  overflowModeUntil: number | null;
+};
+
+const activeRateLimitStates = new Set<ActiveRateLimitState>();
 
 /** Clears in-memory limiter state so route-level test cases remain isolated. */
 export function resetRequestRateLimitersForTests(): void {
-  for (const buckets of activeBucketMaps) buckets.clear();
+  for (const state of activeRateLimitStates) {
+    state.buckets.clear();
+    state.overflowBucketKeys.clear();
+    state.overflowModeUntil = null;
+  }
+}
+
+/** Returns bucket cardinalities without exposing keys or request identities. */
+export function getRequestRateLimiterBucketCountsForTests(): Array<{
+  bucketCount: number;
+  maxBuckets: number;
+  exactBucketCount: number;
+  overflowBucketCount: number;
+}> {
+  if (process.env.NODE_ENV === 'production') return [];
+  return Array.from(
+    activeRateLimitStates,
+    ({ buckets, maxBuckets, overflowBucketKeys }) => ({
+      bucketCount: buckets.size,
+      maxBuckets,
+      exactBucketCount: buckets.size - overflowBucketKeys.size,
+      overflowBucketCount: overflowBucketKeys.size,
+    })
+  );
 }
 
 function normalizeRateLimitAddress(rawAddress: string | null): string {
@@ -74,6 +108,19 @@ function hashIdentity(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function createOverflowBucketKey(
+  digest: string,
+  overflowBucketCount: number,
+  salt: Buffer
+): string {
+  const shard = crypto
+    .createHmac('sha256', salt)
+    .update(digest)
+    .digest()
+    .readUInt32BE(0) % overflowBucketCount;
+  return `${OVERFLOW_BUCKET_PREFIX}${shard}`;
+}
+
 /** Returns an opaque bucket key based on the proxy-supplied client address. */
 export function createClientRateLimitKey(req: Request, scope: string): string {
   // Nginx overwrites X-Real-IP from its trusted socket/Cloudflare address.
@@ -115,39 +162,89 @@ export function createBoundedRateLimiter({
   if (!Number.isSafeInteger(maxRequests) || maxRequests <= 0) {
     throw new RangeError('maxRequests must be a positive safe integer');
   }
-  if (!Number.isSafeInteger(maxBuckets) || maxBuckets < 2) {
-    throw new RangeError('maxBuckets must be a safe integer greater than one');
+  if (!Number.isSafeInteger(maxBuckets) || maxBuckets < 3) {
+    throw new RangeError('maxBuckets must be a safe integer of at least three');
   }
 
-  const buckets = new Map<string, number[]>();
-  if (process.env.NODE_ENV !== 'production') activeBucketMaps.add(buckets);
+  // Reserve a small portion of the hard cap for deterministic overflow shards.
+  // Existing exact quotas remain intact when new identities exceed their slots.
+  const overflowBucketCount = Math.min(
+    MAX_OVERFLOW_BUCKETS,
+    Math.max(2, Math.floor(maxBuckets / 40)),
+    maxBuckets - 1
+  );
+  const exactBucketLimit = maxBuckets - overflowBucketCount;
+  const state: ActiveRateLimitState = {
+    buckets: new Map<string, number[]>(),
+    maxBuckets,
+    overflowBucketKeys: new Set<string>(),
+    overflowModeUntil: null,
+  };
+  const overflowSalt = crypto.randomBytes(32);
+  if (process.env.NODE_ENV !== 'production') activeRateLimitStates.add(state);
+
   return (key, now = Date.now()) => {
     const digest = hashIdentity(key || 'unknown');
-    const existing = buckets.get(digest);
+    const { buckets } = state;
 
-    if (existing === undefined && buckets.size >= maxBuckets) {
-      pruneExpiredBuckets(buckets, now, windowMs);
-      if (buckets.size >= maxBuckets) {
-        const oldestKey = buckets.keys().next().value;
-        if (oldestKey !== undefined) {
-          buckets.delete(oldestKey);
+    if (
+      state.overflowModeUntil !== null &&
+      now >= state.overflowModeUntil
+    ) {
+      for (const bucketKey of state.overflowBucketKeys) {
+        buckets.delete(bucketKey);
+      }
+      state.overflowBucketKeys.clear();
+      state.overflowModeUntil = null;
+    }
+
+    const exactBucketKey = `${EXACT_BUCKET_PREFIX}${digest}`;
+    const existingExact = buckets.get(exactBucketKey);
+    let usesOverflow = false;
+    let bucketKey = exactBucketKey;
+
+    if (existingExact === undefined) {
+      if (state.overflowModeUntil !== null) {
+        usesOverflow = true;
+      } else {
+        if (buckets.size >= exactBucketLimit) {
+          pruneExpiredBuckets(buckets, now, windowMs);
         }
+        if (buckets.size >= exactBucketLimit) {
+          state.overflowModeUntil = now;
+          usesOverflow = true;
+        }
+      }
+
+      if (usesOverflow) {
+        bucketKey = createOverflowBucketKey(
+          digest,
+          overflowBucketCount,
+          overflowSalt
+        );
       }
     }
 
+    const existing = buckets.get(bucketKey);
     const current = (existing || []).filter(
       (timestamp) => now - timestamp < windowMs
     );
-    if (existing !== undefined) {
-      buckets.delete(digest);
-    }
     if (current.length >= maxRequests) {
-      buckets.set(digest, current);
+      buckets.delete(bucketKey);
+      buckets.set(bucketKey, current);
       return Math.max(1, Math.ceil((current[0] + windowMs - now) / 1000));
     }
 
     current.push(now);
-    buckets.set(digest, current);
+    buckets.delete(bucketKey);
+    buckets.set(bucketKey, current);
+    if (usesOverflow) {
+      state.overflowBucketKeys.add(bucketKey);
+      state.overflowModeUntil = Math.max(
+        state.overflowModeUntil ?? 0,
+        now + windowMs
+      );
+    }
     return null;
   };
 }
