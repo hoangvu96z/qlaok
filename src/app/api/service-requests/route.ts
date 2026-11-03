@@ -206,7 +206,18 @@ export async function PATCH(req: Request) {
     const sessionAuth = await requireAuthenticatedUser(req);
     if (sessionAuth.errorResponse) return sessionAuth.errorResponse;
 
-    const body = (await req.json()) as Record<string, unknown>;
+    const parsedBody = await readBoundedJsonRequestBody(
+      req,
+      MAX_SERVICE_REQUEST_BODY_BYTES
+    );
+    if (!parsedBody.ok) {
+      return NextResponse.json(
+        { error: parsedBody.error, code: parsedBody.code },
+        { status: parsedBody.status }
+      );
+    }
+    const body = parsedBody.body;
+
     const requestId = (
       typeof body.id === 'string'
         ? body.id

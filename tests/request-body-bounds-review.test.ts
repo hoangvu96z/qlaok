@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { POST as postOrders } from '../src/app/api/orders/route';
-import { POST as postServiceRequests } from '../src/app/api/service-requests/route';
+import {
+  PATCH as patchServiceRequests,
+  POST as postServiceRequests,
+} from '../src/app/api/service-requests/route';
 import { readBoundedJsonRequestBody } from '../src/lib/request-body';
+import { issueSessionToken } from '../src/lib/server-auth';
 
 function makeRequest(
   chunks: Uint8Array[],
@@ -115,4 +119,25 @@ test('order and service-request POST routes return 413 before processing oversiz
     assert.equal(response.status, 413);
     assert.equal((await response.json()).code, 'REQUEST_BODY_TOO_LARGE');
   }
+});
+
+test('service-request PATCH rejects oversized body after authentication and before authorization or database work', async () => {
+  const token = issueSessionToken({
+    id: 'review-service-request-owner',
+    email: 'service-request-review@example.test',
+  });
+  const response = await patchServiceRequests(
+    new Request('https://qlaok.test/api/service-requests', {
+      method: 'PATCH',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'content-length': String(16 * 1024 + 1),
+      },
+      body: '{}',
+    })
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).code, 'REQUEST_BODY_TOO_LARGE');
 });
