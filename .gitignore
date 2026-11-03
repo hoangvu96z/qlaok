@@ -1,11 +1,8 @@
 node_modules
 .next
 .env
-.env.local
-.env.*.local
-.env.testing
-mobile/.env
-mobile/.env.local
+.env.*
+!.env.example
 .local-db
 .agy-runs/
 .playwright-cli/
