@@ -557,6 +557,56 @@ test('/api/ai/translate requires an authenticated user', async () => {
   assert.equal(res.status, 401);
 });
 
+test('/api/ai/translate rejects oversized bodies while streaming before parsing or calling AI', async () => {
+  const res = await translatePost(
+    post('/api/ai/translate', ownerToken, {
+      shopId: 'shop-review-owner',
+      itemNameVi: 'x'.repeat(25_000),
+    })
+  );
+  assert.equal(res.status, 413);
+  assert.equal((await res.json()).code, 'TRANSLATION_REQUEST_TOO_LARGE');
+
+  const declaredTooLarge = await translatePost(
+    new Request('http://localhost/api/ai/translate', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': String(20 * 1024 + 1),
+      },
+      body: '{}',
+    })
+  );
+  assert.equal(declaredTooLarge.status, 413);
+  assert.equal(
+    (await declaredTooLarge.json()).code,
+    'TRANSLATION_REQUEST_TOO_LARGE'
+  );
+});
+
+test('/api/ai/translate validates vertical and per-field prompt limits', async () => {
+  const invalidVertical = await translatePost(
+    post('/api/ai/translate', ownerToken, {
+      shopId: 'shop-review-owner',
+      vertical: 'other',
+      itemNameVi: 'Phở bò',
+    })
+  );
+  assert.equal(invalidVertical.status, 400);
+  assert.equal((await invalidVertical.json()).code, 'INVALID_TRANSLATION_VERTICAL');
+
+  const longName = await translatePost(
+    post('/api/ai/translate', ownerToken, {
+      shopId: 'shop-review-owner',
+      vertical: 'fnb',
+      itemNameVi: 'x'.repeat(201),
+    })
+  );
+  assert.equal(longName.status, 400);
+  assert.equal((await longName.json()).code, 'TRANSLATION_FIELD_TOO_LONG');
+});
+
 test('/api/ai/translate rate limits per user with 429', async () => {
   const max = AI_RATE_LIMITS.translate.max;
   // Empty itemNameVi -> 400 after the guard consumed quota (avoids any network AI call).

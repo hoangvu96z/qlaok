@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import {
   createR2PresignedUploadUrl,
   isR2Configured,
@@ -230,7 +231,8 @@ export async function POST(req: Request) {
     }
 
     const safeName = sanitizeUploadFileName(fileName);
-    const key = `uploads/${Date.now()}-${safeName}`;
+    const uploadId = randomUUID().replace(/-/g, '');
+    const key = `uploads/${Date.now()}-${uploadId}-${safeName}`;
     const hooks = globalThis.__uploadRouteTestHooks;
     const r2Configured = hooks?.isR2Configured
       ? hooks.isR2Configured()

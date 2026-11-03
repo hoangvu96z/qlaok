@@ -112,7 +112,7 @@ test('upload route prefers Garage and preserves its response contract', async ()
   });
   assert.equal(r2Calls, 0);
   assert.equal(uploaded[0]?.contentType, 'image/webp');
-  assert.match(uploaded[0]?.key || '', /^uploads\/\d+-menu\.webp$/);
+  assert.match(uploaded[0]?.key || '', /^uploads\/\d+-[a-f0-9]{32}-menu\.webp$/);
 });
 
 test('upload route falls back to R2 storage when Garage is not configured', async () => {
@@ -137,7 +137,7 @@ test('upload route falls back to R2 storage when Garage is not configured', asyn
   });
   assert.equal(uploaded[0]?.contentType, 'image/webp');
   assert.equal(uploaded[0]?.buffer.toString(), 'hello');
-  assert.match(uploaded[0]?.key || '', /^uploads\/\d+-menu\.webp$/);
+  assert.match(uploaded[0]?.key || '', /^uploads\/\d+-[a-f0-9]{32}-menu\.webp$/);
 });
 
 test('upload route falls back to R2 storage when a Garage upload fails', async () => {
@@ -1273,8 +1273,11 @@ test('Garage and R2 presigners sign exact ContentLength and ContentType with WHE
 
 test('POST /api/upload sanitizes and bounds long or degenerate fileName values before constructing the storage key', async () => {
   const capturedKeys: string[] = [];
+  const originalDateNow = Date.now;
+  const fixedTimestamp = originalDateNow();
 
   try {
+    Date.now = () => fixedTimestamp;
     globalThis.__uploadRouteTestHooks = {
       isGarageConfigured: () => true,
       isR2Configured: () => false,
@@ -1303,10 +1306,10 @@ test('POST /api/upload sanitizes and bounds long or degenerate fileName values b
     assert.equal(res1.status, 200);
     const key1 = capturedKeys[0]!;
     assert.ok(key1);
-    assert.match(key1, /^uploads\/\d+-[a-zA-Z0-9._-]+$/);
+    assert.match(key1, /^uploads\/\d+-[a-f0-9]{32}-[a-zA-Z0-9._-]+$/);
     assert.ok(key1.endsWith('-special-dish.webp'));
     assert.ok(Buffer.byteLength(key1, 'utf8') <= 1024);
-    assert.ok(key1.length <= 150);
+    assert.ok(key1.length <= 175);
 
     // 2. Long filename (> 1,024 bytes) without extension on presigned upload
     const longNoExt = 'b'.repeat(1800);
@@ -1320,9 +1323,9 @@ test('POST /api/upload sanitizes and bounds long or degenerate fileName values b
     assert.equal(res2.status, 200);
     const key2 = capturedKeys[1]!;
     assert.ok(key2);
-    assert.match(key2, /^uploads\/\d+-b+$/);
+    assert.match(key2, /^uploads\/\d+-[a-f0-9]{32}-b+$/);
     assert.ok(Buffer.byteLength(key2, 'utf8') <= 1024);
-    assert.ok(key2.length <= 150);
+    assert.ok(key2.length <= 175);
 
     // 3. Degenerate filenames fall back to image.webp
     for (const degenerate of ['', '   ', '...', '___', '../..', '.webp']) {
@@ -1336,9 +1339,42 @@ test('POST /api/upload sanitizes and bounds long or degenerate fileName values b
       );
       assert.equal(resDegenerate.status, 200);
       const degKey = capturedKeys[prevLen]!;
-      assert.match(degKey, /^uploads\/\d+-image\.webp$/);
+      assert.match(degKey, /^uploads\/\d+-[a-f0-9]{32}-image\.webp$/);
     }
+
+    const directStart = capturedKeys.length;
+    for (let i = 0; i < 2; i += 1) {
+      const sameNameDirect = await POST(
+        createUploadRequest({
+          fileName: 'same-name.webp',
+          contentType: 'image/webp',
+          base64Data: 'data:image/webp;base64,aGVsbG8=',
+        })
+      );
+      assert.equal(sameNameDirect.status, 200);
+    }
+    const directKeys = capturedKeys.slice(directStart);
+    assert.equal(directKeys.length, 2);
+    assert.notEqual(directKeys[0], directKeys[1]);
+    assert.ok(directKeys.every((key) => key.startsWith(`uploads/${fixedTimestamp}-`)));
+
+    const presignedStart = capturedKeys.length;
+    for (let i = 0; i < 2; i += 1) {
+      const sameNamePresigned = await POST(
+        createUploadRequest({
+          fileName: 'same-name.webp',
+          contentType: 'image/webp',
+          contentLength: 512,
+        })
+      );
+      assert.equal(sameNamePresigned.status, 200);
+    }
+    const presignedKeys = capturedKeys.slice(presignedStart);
+    assert.equal(presignedKeys.length, 2);
+    assert.notEqual(presignedKeys[0], presignedKeys[1]);
+    assert.ok(presignedKeys.every((key) => key.startsWith(`uploads/${fixedTimestamp}-`)));
   } finally {
+    Date.now = originalDateNow;
     delete globalThis.__uploadRouteTestHooks;
   }
 });

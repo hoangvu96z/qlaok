@@ -123,6 +123,19 @@ test('checkout rejects stale displayed totals before creating or collecting paym
   assert.equal(response.status, 409, JSON.stringify(await response.clone().json()));
 });
 
+test('POST /api/orders rejects unsupported payment methods before creating an order', async () => {
+  const response = await ordersPost(
+    request(
+      '/api/orders',
+      null,
+      { shop_id: 'shop-fnb-001', payment_method: 'crypto', items: [] },
+      'POST'
+    )
+  );
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'INVALID_PAYMENT_METHOD');
+});
+
 test('/api/tables enforces owner-only mutations, archive-only DELETE guard, and safe public vs management reads', async () => {
   // Anonymous management read must be 401
   const anonMgmtRes = await tablesGet(new Request('http://localhost/api/tables?shopId=shop-fnb-001&includeInactive=1'));

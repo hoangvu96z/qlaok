@@ -699,6 +699,19 @@ export async function POST(req: Request) {
       items: OrderLineItem[];
     };
 
+    if (
+      payment_method !== 'cash' &&
+      payment_method !== 'vietqr'
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Phương thức thanh toán không hợp lệ.',
+          code: 'INVALID_PAYMENT_METHOD',
+        },
+        { status: 400 }
+      );
+    }
+
     if (!shop_id) {
       return NextResponse.json(
         { error: 'Thiếu mã cửa hàng (shop_id)' },

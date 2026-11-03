@@ -14,27 +14,112 @@ interface TranslationAiResponse {
   desc_i18n: I18nText;
 }
 
+const MAX_TRANSLATION_REQUEST_BYTES = 20 * 1024;
+const MAX_TRANSLATION_FIELD_LENGTHS = {
+  categoryNameVi: 200,
+  itemNameVi: 200,
+  itemDescVi: 4000,
+} as const;
+const SUPPORTED_VERTICALS = new Set<BusinessVertical>([
+  'fnb',
+  'service',
+  'retail',
+]);
+
+async function readBoundedTranslationJson(
+  req: Request
+): Promise<
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; response: NextResponse }
+> {
+  const invalidInput = () =>
+    NextResponse.json(
+      {
+        error: 'Dữ liệu yêu cầu không hợp lệ.',
+        code: 'INVALID_TRANSLATION_INPUT',
+      },
+      { status: 400 }
+    );
+  const oversizedInput = () =>
+    NextResponse.json(
+      {
+        error: 'Nội dung yêu cầu dịch vượt quá giới hạn cho phép.',
+        code: 'TRANSLATION_REQUEST_TOO_LARGE',
+      },
+      { status: 413 }
+    );
+
+  const declaredLength = req.headers.get('content-length')?.trim();
+  if (declaredLength) {
+    if (!/^\d+$/.test(declaredLength)) {
+      return { ok: false, response: invalidInput() };
+    }
+    if (Number(declaredLength) > MAX_TRANSLATION_REQUEST_BYTES) {
+      try {
+        await req.body?.cancel();
+      } catch {
+        // Ignore stream cancellation errors.
+      }
+      return { ok: false, response: oversizedInput() };
+    }
+  }
+
+  const reader = req.body?.getReader();
+  if (!reader) return { ok: false, response: invalidInput() };
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_TRANSLATION_REQUEST_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore stream cancellation errors.
+        }
+        return { ok: false, response: oversizedInput() };
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch {
+    return { ok: false, response: invalidInput() };
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Ignore reader lock release errors.
+    }
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(
+      Buffer.concat(chunks, totalBytes).toString('utf8')
+    );
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, response: invalidInput() };
+    }
+    return {
+      ok: true,
+      body: parsed as Record<string, unknown>,
+    };
+  } catch {
+    return { ok: false, response: invalidInput() };
+  }
+}
+
 export async function POST(req: Request) {
   // Paid AI endpoint: require a current session and apply per-user rate limit.
   const guard = await requireAiCaller(req, 'translate');
   if (guard.errorResponse) return guard.errorResponse;
 
-  let body: Record<string, unknown>;
-  try {
-    const parsed = await req.json();
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return NextResponse.json(
-        { error: 'Dữ liệu yêu cầu không hợp lệ.', code: 'INVALID_TRANSLATION_INPUT' },
-        { status: 400 }
-      );
-    }
-    body = parsed as Record<string, unknown>;
-  } catch {
-    return NextResponse.json(
-      { error: 'Dữ liệu yêu cầu không hợp lệ.', code: 'INVALID_TRANSLATION_INPUT' },
-      { status: 400 }
-    );
-  }
+  const parsedRequest = await readBoundedTranslationJson(req);
+  if (!parsedRequest.ok) return parsedRequest.response;
+  const { body } = parsedRequest;
 
   const shopId = typeof body.shopId === 'string' ? body.shopId.trim() : '';
   if (!shopId) {
@@ -42,6 +127,37 @@ export async function POST(req: Request) {
       { error: 'Thiếu mã cửa hàng (shopId).', code: 'SHOP_ID_REQUIRED' },
       { status: 400 }
     );
+  }
+
+  const verticalInput = body.vertical === undefined ? 'fnb' : body.vertical;
+  if (
+    typeof verticalInput !== 'string' ||
+    !SUPPORTED_VERTICALS.has(verticalInput as BusinessVertical)
+  ) {
+    return NextResponse.json(
+      {
+        error: 'Ngành kinh doanh không hợp lệ.',
+        code: 'INVALID_TRANSLATION_VERTICAL',
+      },
+      { status: 400 }
+    );
+  }
+
+  for (const [field, maxLength] of Object.entries(
+    MAX_TRANSLATION_FIELD_LENGTHS
+  )) {
+    const value = body[field];
+    if (typeof value === 'string' && value.length > maxLength) {
+      return NextResponse.json(
+        {
+          error: 'Nội dung dịch vượt quá độ dài cho phép.',
+          code: 'TRANSLATION_FIELD_TOO_LONG',
+          field,
+          maxLength,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   const purpose = body.purpose === undefined ? 'catalog' : body.purpose;
@@ -62,10 +178,7 @@ export async function POST(req: Request) {
   );
   if (permission.errorResponse) return permission.errorResponse;
 
-  const vertical =
-    typeof body.vertical === 'string'
-      ? (body.vertical as BusinessVertical)
-      : 'fnb';
+  const vertical = verticalInput as BusinessVertical;
   const categoryNameVi =
     typeof body.categoryNameVi === 'string' && body.categoryNameVi.trim()
       ? body.categoryNameVi
