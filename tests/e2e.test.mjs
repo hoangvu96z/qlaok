@@ -400,6 +400,46 @@ test("8. QR Scan Analytics Tracking & Aggregation (/api/analytics/track)", { ski
 });
 
 test("9. Payment Order & Development Webhook Sandbox Auto-Upgrade (/api/webhooks/payment)", { skip: MUTATING_E2E_SKIP_REASON }, async () => {
+  if (SUPER_ADMIN_TOKEN) {
+    const adminHeaders = { Authorization: `Bearer ${SUPER_ADMIN_TOKEN}` };
+
+    const grantRes = await fetchJson("/api/webhooks/payment", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        action: "switch_plan_direct",
+        ownerId: "owner-demo-001",
+        plan: "premium",
+      }),
+    });
+    assert.equal(grantRes.status, 200);
+
+    const nonExpiringOrderRes = await fetchJson("/api/webhooks/payment", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "create_order",
+        targetPlan: "premium",
+        amount: 69000,
+      }),
+    });
+    assert.equal(nonExpiringOrderRes.status, 409);
+    assert.equal(
+      nonExpiringOrderRes.data?.code,
+      "NON_EXPIRING_PLAN_REQUIRES_ADMIN"
+    );
+
+    const resetRes = await fetchJson("/api/webhooks/payment", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        action: "switch_plan_direct",
+        ownerId: "owner-demo-001",
+        plan: "free",
+      }),
+    });
+    assert.equal(resetRes.status, 200);
+  }
+
   // Create pending order
   const orderRes = await fetchJson("/api/webhooks/payment", {
     method: "POST",
