@@ -120,6 +120,7 @@ Báo cáo doanh thu/tồn kho ở `computeShopRevenueAndInventoryStats` và `dbC
 
 ## Xác thực và ranh giới dữ liệu
 
+- `next.config.ts` áp dụng header bảo mật cơ bản cho `/:path*`: chỉ cho phép iframe cùng origin, tắt MIME sniffing, chỉ gửi origin trong referrer khi đi cross-origin và bật HSTS cho host ứng dụng. HSTS không có `includeSubDomains` vì các host dịch vụ cùng cấp dùng cấu hình HTTPS riêng.
 - `verifyRequestUser` hỗ trợ phiên Qlaok HMAC (`qlaok_session` cho chủ quán và nhân viên) và xác minh Zitadel JWT qua JWKS (`iss`, `aud`, `exp`), ánh xạ `sub` opaque qua `public.profiles.zitadel_sub` rồi dùng UUID `public.profiles.id` cho quyền và dữ liệu; UI không là ranh giới quyền và quyền admin luôn được suy xuất từ logic server/DB (`isSuperAdminEmail` / bảng `profiles`), không bao giờ tin claim từ client hay JWT.
 - Web `/login` và `/admin` dùng luồng Zitadel OIDC (Authorization Code + PKCE `S256`) cho chủ quán và Super Admin (`GET /api/auth?action=oidc_start` → `GET /api/auth/callback`, redirect URI bắt buộc `https://qlaok.vunph.click/api/auth/callback`); giao diện Qlaok gửi mật khẩu qua HTTPS tới máy chủ Qlaok; máy chủ kiểm tra bằng Session API, giữ khóa dịch vụ ở phía máy chủ và để Zitadel hoàn tất các bước xác thực theo chính sách. Đăng nhập nhân viên tại quán (`mode === 'staff'`) vẫn giữ nguyên qua `shop_member_credentials`.
 - `requireShopPermission` kiểm user, shop và active membership, rồi kiểm quyền. Owner/cashier/staff là vai trò theo shop; không chỉ dựa vào nhãn role trong client.

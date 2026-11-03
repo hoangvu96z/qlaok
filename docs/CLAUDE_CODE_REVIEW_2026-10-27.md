@@ -2947,4 +2947,15 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Codex checks:** guest idempotency test **3/3 PASS**; order route suite **3/3 PASS**; ESLint helper/test **PASS**; `npm run typecheck` **PASS**; `git diff --check` **PASS**.
 - **AGY:** Gemini 3.8 Flash High production read-only QA run `2026-11-03T02-23-16-369Z-f5e2808d`, conversation `b56b6299-ef36-425e-9c68-f78942a8502e`: homepage APIs và UI trên ba viewport **PASS**, Premium draft gating/preview **PASS**, không có business write. Đây là QA trên deployment trước patch, SHA `d2d0ece0ff540f5c57e622cf1757c4f355377ee9`; report sanitized ở `.agy-runs/qa/postdeploy-qa-current-2026-11-03.md`.
 - **Claude:** Sonnet 5.5 Low qua AGY run `2026-11-03T02-20-52-873Z-d8a14a92` không xác nhận finding; run không đọc README/ARCHITECTURE và không kiểm tra giả thuyết locale, nên không tính là review độc lập cho patch này.
-- **Chưa xác minh:** không tạo order hoặc replay POST trên production để giữ QA read-only. Cần xác nhận deployment của patch bằng Actions/health trước khi báo đã sửa ở production.
+- **Deployment follow-up:** commit `1ad3488a607101c86df7c477495d0e8b1fe09e41`, Actions #382, verify/E2E/build/deploy **success**; `/api/health` sau rollout HTTP 200. Không tạo order hoặc replay POST production để giữ QA read-only.
+
+## 226. Thiếu baseline security response headers (2026-11-03)
+
+- **Finding được xác nhận:** `next.config.ts` trước đây không thiết lập security headers; production GET tới `/` và `/api/health` đều thiếu CSP frame policy, HSTS, MIME-sniffing protection, frame policy và referrer policy.
+- **Sửa:** áp dụng header rules cho `/:path*`: CSP `frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, và `Strict-Transport-Security: max-age=31536000`. Không thêm `includeSubDomains`; các sibling service host có cấu hình HTTPS riêng.
+- **Regression:** `tests/security-headers-review.test.ts` xác nhận rule bao phủ mọi route và các giá trị header.
+- **CodeGraph:** `status`; `explore "next.config.js or next.config.ts security headers X-Frame-Options Content-Security-Policy Referrer-Policy"`; `node next.config.ts`.
+- **Vùng ảnh hưởng:** response headers của toàn bộ Next.js pages, API routes và public files; không thay đổi route payload hay authorization.
+- **Codex checks:** security-header test **1/1 PASS**; ESLint config/test **PASS**; `npm run typecheck` **PASS**; `git diff --check` **PASS**.
+- **Bằng chứng production trước sửa:** HTTPS GET `/` và `/api/health` trả HTTP 200 nhưng thiếu cả năm header; kiểm tra sau deploy còn chờ.
+- **Chưa xác minh:** chưa kiểm tra response sau deploy và chưa thử embedding từ custom domain bên ngoài; `frame-ancestors 'self'` cùng `SAMEORIGIN` sẽ chặn iframe cross-origin.
