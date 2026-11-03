@@ -40,11 +40,73 @@ export const AI_RATE_LIMITS = {
 
 export type AiRateBucket = keyof typeof AI_RATE_LIMITS;
 
-const hits = new Map<string, number[]>();
+type AiRateLimitKey = string | symbol;
+
+const MAX_AI_RATE_LIMIT_BUCKETS = 5_000;
+const AI_RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000;
+const RESERVED_OVERFLOW_BUCKETS = Object.keys(AI_RATE_LIMITS).length;
+const MAX_AI_IDENTITY_BUCKETS =
+  MAX_AI_RATE_LIMIT_BUCKETS - RESERVED_OVERFLOW_BUCKETS;
+const OVERFLOW_BUCKET_KEYS: Record<AiRateBucket, symbol> = {
+  translate: Symbol('translate-rate-limit-overflow'),
+  ocr: Symbol('ocr-rate-limit-overflow'),
+};
+
+const hits = new Map<AiRateLimitKey, number[]>();
+let nextAiRateLimitCleanupAt = 0;
+
+function getAiRateBucketForKey(key: AiRateLimitKey): AiRateBucket {
+  if (typeof key === 'symbol') {
+    return key === OVERFLOW_BUCKET_KEYS.translate ? 'translate' : 'ocr';
+  }
+  return key.startsWith('ocr:') ? 'ocr' : 'translate';
+}
+
+function pruneExpiredAiRateLimitBuckets(now: number): void {
+  if (
+    hits.size < MAX_AI_IDENTITY_BUCKETS ||
+    now < nextAiRateLimitCleanupAt
+  ) {
+    return;
+  }
+
+  nextAiRateLimitCleanupAt = now + AI_RATE_LIMIT_CLEANUP_INTERVAL_MS;
+  for (const [key, timestamps] of hits) {
+    const { windowMs } = AI_RATE_LIMITS[getAiRateBucketForKey(key)];
+    const activeTimestamps = timestamps.filter(
+      (timestamp) => now - timestamp < windowMs
+    );
+    if (activeTimestamps.length === 0) hits.delete(key);
+    else if (activeTimestamps.length !== timestamps.length) {
+      hits.set(key, activeTimestamps);
+    }
+  }
+}
+
+function getAiRateLimitKey(
+  bucket: AiRateBucket,
+  userId: string,
+  now: number
+): AiRateLimitKey {
+  const identityKey = `${bucket}:${userId}`;
+  if (hits.has(identityKey)) return identityKey;
+
+  pruneExpiredAiRateLimitBuckets(now);
+  if (hits.size >= MAX_AI_IDENTITY_BUCKETS) {
+    return OVERFLOW_BUCKET_KEYS[bucket];
+  }
+  return identityKey;
+}
 
 /** Test helper: clears all in-memory rate limit counters. */
 export function resetAiRateLimitsForTest(): void {
   hits.clear();
+  nextAiRateLimitCleanupAt = 0;
+}
+
+/** Test helper: exposes bucket cardinality without exposing identities. */
+export function getAiRateLimitBucketCountForTest(): number {
+  return hits.size;
 }
 
 export function consumeAiRateLimit(
@@ -53,7 +115,7 @@ export function consumeAiRateLimit(
   now = Date.now()
 ): { allowed: boolean; retryAfterSec: number; remaining: number } {
   const { max, windowMs } = AI_RATE_LIMITS[bucket];
-  const key = `${bucket}:${userId}`;
+  const key = getAiRateLimitKey(bucket, userId, now);
   const recent = (hits.get(key) || []).filter((ts) => now - ts < windowMs);
   if (recent.length >= max) {
     hits.set(key, recent);
@@ -65,12 +127,6 @@ export function consumeAiRateLimit(
   }
   recent.push(now);
   hits.set(key, recent);
-  // Opportunistic cleanup to bound memory
-  if (hits.size > 5000) {
-    for (const [k, list] of hits) {
-      if (!list.some((ts) => now - ts < windowMs)) hits.delete(k);
-    }
-  }
   return { allowed: true, retryAfterSec: 0, remaining: max - recent.length };
 }
 
