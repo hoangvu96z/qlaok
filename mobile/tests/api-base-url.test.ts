@@ -44,6 +44,15 @@ test('development HTTP API URLs are limited to loopback and RFC1918 hosts', () =
     }),
     'http://10.0.2.2:3000'
   );
+  assert.equal(
+    resolveMobileApiBaseUrl({
+      envUrl: 'http://fc-example.test:3000',
+      isDev: true,
+      platform: 'android',
+      productionApiUrl,
+    }),
+    'http://10.0.2.2:3000'
+  );
 });
 
 test('development localhost overrides resolve to Metro or Android emulator addresses', () => {

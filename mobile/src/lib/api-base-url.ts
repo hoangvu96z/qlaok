@@ -6,12 +6,18 @@ export interface ResolveMobileApiBaseUrlOptions {
   productionApiUrl: string;
 }
 
-function isLoopbackOrPrivateHost(hostname: string): boolean {
+export function isLoopbackOrPrivateHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') {
     return true;
   }
-  if (host.startsWith('fc') || host.startsWith('fd')) return true;
+  if (host.includes(':')) {
+    const firstHextet = host.split(':', 1)[0] || '0';
+    if (/^[0-9a-f]{1,4}$/.test(firstHextet)) {
+      const value = Number.parseInt(firstHextet, 16);
+      if ((value & 0xfe00) === 0xfc00) return true;
+    }
+  }
 
   const octets = host.split('.').map((part) => Number(part));
   if (

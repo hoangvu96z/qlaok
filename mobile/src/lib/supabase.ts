@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { NativeModules, Platform } from 'react-native';
 import { createApiClient } from './api-client';
 import { resolveMobileApiBaseUrl } from './api-base-url';
+import { normalizeSelfHostedPostgrestUrl } from './postgrest-url';
 import {
   clearOwnerSession,
   getOwnerAccessToken,
@@ -60,7 +61,8 @@ export const API_BASE_URL = resolveApiBaseUrl();
 
 export function resolveSelfHostedPostgrestBaseUrl(
   envOverride?: Record<string, string | undefined>,
-  fallbackApiBaseUrl = API_BASE_URL
+  fallbackApiBaseUrl = API_BASE_URL,
+  isDev = Boolean(__DEV__)
 ): string {
   const env = envOverride ?? (process.env as Record<string, string | undefined>);
   const rawConfigured = (
@@ -69,9 +71,7 @@ export function resolveSelfHostedPostgrestBaseUrl(
     fallbackApiBaseUrl ||
     PRODUCTION_API_URL
   )
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/rest\/v1$/i, '');
+    .trim();
 
   if (isSupabaseCloudUrl(rawConfigured)) {
     throw new MobileOwnerOidcError(
@@ -80,7 +80,15 @@ export function resolveSelfHostedPostgrestBaseUrl(
     );
   }
 
-  return rawConfigured || PRODUCTION_API_URL;
+  const normalizedUrl = normalizeSelfHostedPostgrestUrl(rawConfigured, isDev);
+  if (!normalizedUrl) {
+    throw new MobileOwnerOidcError(
+      'SELF_HOSTED_POSTGREST_URL_INVALID',
+      'Configure an HTTPS self-hosted PostgREST URL. HTTP is allowed only for loopback or private-network hosts during development.'
+    );
+  }
+
+  return normalizedUrl;
 }
 
 export const POSTGREST_BASE_URL = resolveSelfHostedPostgrestBaseUrl();

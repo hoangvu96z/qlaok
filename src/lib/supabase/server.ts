@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './client';
+import { resolveSupabaseApiUrl } from '../supabase-url';
 
 export async function createServerSupabaseClient() {
   if (!isSupabaseConfigured()) {
@@ -10,7 +11,7 @@ export async function createServerSupabaseClient() {
   const cookieStore = await cookies();
 
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    resolveSupabaseApiUrl(process.env.NEXT_PUBLIC_SUPABASE_URL!),
     getSupabaseAnonKey()!,
     {
       cookies: {

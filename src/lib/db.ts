@@ -26,6 +26,7 @@ import {
   SEED_TRANSACTIONS,
 } from './seed-data';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
+import { resolveSupabaseApiUrl } from './supabase-url';
 import { canAddMoreItems, getEffectivePlanTier } from './plan-limits';
 import { ALL_LOCALES } from './i18n-helper';
 import { smartFallbackTranslate } from './gemini';
@@ -100,18 +101,20 @@ export function hasSupabaseServiceRoleKey(): boolean {
 export function getSupabaseDbClient(): SupabaseClient {
   if (testDbClientOverride) return testDbClientOverride;
 
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
   const key = (
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     getSupabaseAnonKey() ||
     ''
   ).trim();
 
-  if (!url || !key) {
+  if (!rawUrl || !key) {
     throw new Error(
       'Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in environment.'
     );
   }
+
+  const url = resolveSupabaseApiUrl(rawUrl);
 
   const cacheSignature = `${url}::${key}`;
   if (cachedAdminClient && cachedAdminClientKey === cacheSignature) {
@@ -139,18 +142,20 @@ export function getSupabaseDbClient(): SupabaseClient {
 export function createSupabasePublicAuthClient(): SupabaseClient {
   if (testDbClientOverride) return testDbClientOverride;
 
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
   const key = (
     getSupabaseAnonKey() ||
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     ''
   ).trim();
 
-  if (!url || !key) {
+  if (!rawUrl || !key) {
     throw new Error(
       'Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in environment.'
     );
   }
+
+  const url = resolveSupabaseApiUrl(rawUrl);
 
   return createSupabaseJsClient(url, key, {
     auth: {

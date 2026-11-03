@@ -8,6 +8,7 @@ import type { ShopMembership, ShopPermission, ShopRole } from '@/types/qlaok';
 import { getSupabaseDbClient } from './db';
 import { SEED_SHOPS } from './seed-data';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
+import { resolveSupabaseApiUrl } from './supabase-url';
 
 export const ALL_SHOP_PERMISSIONS: ShopPermission[] = [
   'orders.view',
@@ -442,7 +443,10 @@ export function getMembershipDbClient(): SupabaseClient {
   }
 
   const sb = getSupabaseDbClient();
-  const currentUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const rawCurrentUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const currentUrl = rawCurrentUrl
+    ? resolveSupabaseApiUrl(rawCurrentUrl)
+    : undefined;
   const currentKey = (
     process.env.SUPABASE_SERVICE_ROLE_KEY || getSupabaseAnonKey()
   )?.trim();
