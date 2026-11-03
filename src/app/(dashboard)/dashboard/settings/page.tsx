@@ -34,6 +34,7 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { membershipHasPermission } from '@/lib/dashboard-nav';
 import { getAuthHeaders, isSuperAdminEmail } from '@/lib/auth-session';
+import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
 import {
   BusinessVertical,
   CatalogItem,
@@ -620,23 +621,19 @@ export default function DashboardSettingsPage() {
         paymentNote: (paymentConfig.paymentNote || '').trim(),
       };
 
-      // Preserve promoBanner, welcomePopup, and flashSale configured in /dashboard/posts;
-      // omit orderWorkflow and labelPrintConfig so PATCH /api/shops preserves its independent owner-managed values.
-      const {
-        orderWorkflow: _preservedOrderWorkflow,
-        labelPrintConfig: _preservedLabelPrintConfig,
-        paymentConfig: _preservedPaymentConfig,
-        ...restThemeConfig
-      } = activeShop.theme_config || {};
-      const nextThemeConfig: Partial<ShopThemeConfig> = {
-        ...(canManageShopSettings ? restThemeConfig : {}),
+      // Send only fields owned by this editor. The API merges omitted fields with
+      // the latest database value, so a stale activeShop snapshot cannot replace
+      // promotions, workflow, or settings saved from another page/session.
+      const nextThemeConfig = buildShopSettingsThemeConfigPatch({
         ...(canManageShopSettings && canEditCustomTheme
           ? {
-              primaryColor,
-              layout: layoutMode,
-              backgroundStyle,
-              backgroundImageUrl: backgroundImageUrl.trim() || undefined,
-              backgroundOverlayOpacity,
+              customTheme: {
+                primaryColor,
+                layout: layoutMode,
+                backgroundStyle,
+                backgroundImageUrl,
+                backgroundOverlayOpacity,
+              },
             }
           : {}),
         ...(canManageBankSettings
@@ -645,7 +642,7 @@ export default function DashboardSettingsPage() {
         ...(canManageShopSettings && activeShop.owner_id === profile?.id
           ? { serviceRequestNotificationRule }
           : {}),
-      };
+      });
 
       const nextCoverUrls = canManageShopSettings
         ? coverUrl.trim()

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { GET as getShops, PATCH as patchShops } from '@/app/api/shops/route';
 import { setSupabaseDbClientForTests } from '@/lib/db';
 import { issueSessionToken } from '@/lib/server-auth';
+import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
 import {
   ALL_SHOP_PERMISSIONS,
   setShopMembershipDbClientForTest,
@@ -578,6 +579,139 @@ test('PATCH /api/shops persists promoBanner, welcomePopup, and flashSale, preser
     assert.equal(missingRowRes.status, 404);
     const missingRowJson = (await missingRowRes.json()) as { error?: string };
     assert.equal(missingRowJson.error, 'Shop not found');
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+  }
+});
+
+test('settings theme patch cannot overwrite newer values through PATCH /api/shops', async () => {
+  const ownerId = '66666666-6666-4666-8666-666666666666';
+  const shopId = 'shop-settings-theme-patch-regression';
+  const latestPromoBanner: ShopPromoBannerConfig = {
+    enabled: true,
+    title: 'Latest banner from Posts',
+  } as ShopPromoBannerConfig;
+  const latestWelcomePopup: ShopPopupConfig = {
+    enabled: true,
+    title: 'Latest welcome from Posts',
+  } as ShopPopupConfig;
+  const latestFlashSale: ShopFlashSaleConfig = {
+    enabled: true,
+    title: 'Latest flash sale from Posts',
+  } as ShopFlashSaleConfig;
+  const latestTheme = {
+    ...cloneJson(SEED_SHOPS[0].theme_config),
+    primaryColor: '#1d4ed8',
+    layout: 'grid' as const,
+    backgroundStyle: 'custom_image' as const,
+    backgroundImageUrl: 'https://cdn.qlaok.test/latest-background.jpg',
+    promoBanner: latestPromoBanner,
+    welcomePopup: latestWelcomePopup,
+    flashSale: latestFlashSale,
+    paymentQr: { bankId: 'VCB', accountNumber: 'latest-qr' },
+    orderWorkflow: getBuiltInOrderWorkflowTemplate('counter_bar_serve'),
+    labelPrintConfig: cloneJson(DEFAULT_SHOP_LABEL_PRINT_CONFIG),
+  };
+  const initialShop: Shop = {
+    ...cloneJson(SEED_SHOPS[0]),
+    id: shopId,
+    owner_id: ownerId,
+    slug: 'settings-theme-patch-regression',
+    theme_config: latestTheme,
+  };
+  const mockDb = createInMemoryShopDbMock({
+    initialShops: [initialShop],
+    profiles: [
+      {
+        id: ownerId,
+        email: 'settings-owner@qlaok.test',
+        full_name: 'Settings Owner',
+        plan: 'premium',
+        role: 'owner',
+      },
+    ],
+    memberships: [
+      {
+        id: 'mem-settings-owner',
+        shop_id: shopId,
+        user_id: ownerId,
+        role: 'owner',
+        permissions: [...ALL_SHOP_PERMISSIONS],
+        is_active: true,
+        created_at: '2026-11-03T00:00:00.000Z',
+        updated_at: '2026-11-03T00:00:00.000Z',
+      },
+    ],
+  });
+  setSupabaseDbClientForTests(mockDb.client);
+  setShopMembershipDbClientForTest(mockDb.client as never);
+
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: 'settings-owner@qlaok.test',
+    role: 'owner',
+  });
+
+  try {
+    // This represents a page that still holds an older theme snapshot: its old
+    // promo value must not be included when the editor saves its custom theme.
+    const staleSettingsSnapshot = {
+      ...cloneJson(latestTheme),
+      promoBanner: { ...latestPromoBanner, title: 'Stale banner from Settings' },
+    };
+    assert.notEqual(
+      staleSettingsSnapshot.promoBanner.title,
+      latestTheme.promoBanner.title
+    );
+
+    const themePatch = buildShopSettingsThemeConfigPatch({
+      customTheme: {
+        primaryColor: '#1d4ed8',
+        layout: 'grid',
+        backgroundStyle: 'clean',
+        backgroundImageUrl: '   ',
+        backgroundOverlayOpacity: 0.72,
+      },
+    });
+    assert.deepEqual(Object.keys(themePatch).sort(), [
+      'backgroundImageUrl',
+      'backgroundOverlayOpacity',
+      'backgroundStyle',
+      'layout',
+      'primaryColor',
+    ]);
+
+    const saveRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({ id: shopId, theme_config: themePatch }),
+      })
+    );
+    assert.equal(saveRes.status, 200);
+    const savedJson = (await saveRes.json()) as { shop: Shop };
+
+    assert.deepEqual(savedJson.shop.theme_config.promoBanner, latestPromoBanner);
+    assert.deepEqual(savedJson.shop.theme_config.welcomePopup, latestWelcomePopup);
+    assert.deepEqual(savedJson.shop.theme_config.flashSale, latestFlashSale);
+    assert.deepEqual(
+      savedJson.shop.theme_config.paymentQr,
+      latestTheme.paymentQr
+    );
+    assert.deepEqual(
+      savedJson.shop.theme_config.orderWorkflow,
+      latestTheme.orderWorkflow
+    );
+    assert.deepEqual(
+      savedJson.shop.theme_config.labelPrintConfig,
+      latestTheme.labelPrintConfig
+    );
+    assert.equal(savedJson.shop.theme_config.backgroundImageUrl, '');
+    assert.equal(savedJson.shop.theme_config.backgroundStyle, 'clean');
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

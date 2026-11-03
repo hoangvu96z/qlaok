@@ -4,6 +4,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PlanUpgradeDialog } from '@/components/ui/PlanUpgradeDialog';
 import { getShopSettingsPlanRestriction } from '@/lib/plan-limits';
+import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
 
 test('Free and Basic language limits select the next plan with enough slots', () => {
   assert.equal(
@@ -50,6 +51,67 @@ test('Only Free is blocked from changing custom theme settings', () => {
   assert.equal(
     getShopSettingsPlanRestriction('premium', { customThemeChanged: true }),
     null
+  );
+});
+
+test('settings theme patch preserves newer values owned by other editors', () => {
+  const staleSettingsSnapshot = {
+    promoBanner: { title: 'Old banner' },
+    flashSale: { title: 'Old sale' },
+    paymentQr: { accountNumber: '111' },
+    orderWorkflow: { template_id: 'old' },
+    labelPrintConfig: { paper_preset: 'old' },
+  };
+  const latestDatabaseTheme = {
+    ...staleSettingsSnapshot,
+    promoBanner: { title: 'Latest banner' },
+    flashSale: { title: 'Latest sale' },
+    paymentQr: { accountNumber: '222' },
+    orderWorkflow: { template_id: 'latest' },
+    labelPrintConfig: { paper_preset: 'latest' },
+  };
+  const paymentConfig = { accountNumber: '333' };
+  const patch = buildShopSettingsThemeConfigPatch({
+    customTheme: {
+      primaryColor: '#123456',
+      layout: 'grid',
+      backgroundStyle: 'custom_image',
+      backgroundImageUrl: '   ',
+      backgroundOverlayOpacity: 0.4,
+    },
+    paymentConfig,
+    serviceRequestNotificationRule: 'owner_only',
+  });
+  const savedTheme = { ...latestDatabaseTheme, ...patch };
+
+  assert.deepEqual(Object.keys(patch).sort(), [
+    'backgroundImageUrl',
+    'backgroundOverlayOpacity',
+    'backgroundStyle',
+    'layout',
+    'paymentConfig',
+    'primaryColor',
+    'serviceRequestNotificationRule',
+  ]);
+  assert.deepEqual(savedTheme.promoBanner, latestDatabaseTheme.promoBanner);
+  assert.deepEqual(savedTheme.flashSale, latestDatabaseTheme.flashSale);
+  assert.deepEqual(savedTheme.paymentQr, latestDatabaseTheme.paymentQr);
+  assert.deepEqual(savedTheme.orderWorkflow, latestDatabaseTheme.orderWorkflow);
+  assert.deepEqual(
+    savedTheme.labelPrintConfig,
+    latestDatabaseTheme.labelPrintConfig
+  );
+  assert.equal(savedTheme.primaryColor, '#123456');
+  assert.equal(savedTheme.backgroundImageUrl, '');
+  assert.deepEqual(savedTheme.paymentConfig, paymentConfig);
+  assert.equal(savedTheme.serviceRequestNotificationRule, 'owner_only');
+});
+
+test('bank-only settings patch does not re-send custom or owner theme values', () => {
+  const paymentConfig = { accountNumber: '123456789' };
+  assert.deepEqual(
+    buildShopSettingsThemeConfigPatch({ paymentConfig }),
+    { paymentConfig }
   );
 });
 
