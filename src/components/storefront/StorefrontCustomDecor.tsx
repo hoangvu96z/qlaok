@@ -33,6 +33,10 @@ import {
 import { FlagIcon } from '@/components/ui/FlagIcon';
 import { StorefrontProductImage } from '@/components/storefront/StorefrontProductImage';
 import { copyText } from '@/lib/copy-text';
+import {
+  getAccessibleAccentTextColors,
+  getContrastTextColor,
+} from '@/lib/theme-contrast';
 
 export const BANNER_GRADIENT_MAP: Record<
   NonNullable<ShopPromoBannerConfig['bgGradient']>,
@@ -955,6 +959,7 @@ export function StorefrontWelcomePopup({
   if (!popup || !popup.enabled || !popup.title?.trim()) return null;
 
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const primaryTextColor = getContrastTextColor(primaryColor);
   const pt = PROMO_LOCALE_TEXT[locale] || PROMO_LOCALE_TEXT.vi;
   const localizedBanner = banner
     ? getLocalizedPromoBannerStrings(banner, shop.currency, locale)
@@ -1092,8 +1097,8 @@ export function StorefrontWelcomePopup({
               <button
                 type="button"
                 onClick={onClose}
-                style={{ backgroundColor: primaryColor, color: '#ffffff' }}
-                className="w-full rounded-2xl py-3.5 text-sm font-black text-white shadow-lg transition hover:opacity-95 active:scale-98"
+                style={{ backgroundColor: primaryColor, color: primaryTextColor }}
+                className="w-full rounded-2xl py-3.5 text-sm font-black shadow-lg transition hover:opacity-95 active:scale-98"
               >
                 {displayCta}
               </button>
@@ -1123,6 +1128,7 @@ export function StorefrontPhonePreview({
   const [previewLocale, setPreviewLocale] = useState<SupportedLocale>('vi');
 
   const primaryColor = shop.theme_config?.primaryColor || '#10b981';
+  const primaryTextColor = getContrastTextColor(primaryColor);
   const layoutMode = shop.theme_config?.layout || 'list';
   const bgStyle = shop.theme_config?.backgroundStyle || 'clean';
   const bgUrl = shop.theme_config?.backgroundImageUrl?.trim();
@@ -1132,6 +1138,10 @@ export function StorefrontPhonePreview({
       : 0.72;
   const isDarkSurface =
     bgStyle === 'dark' || Boolean(bgStyle === 'custom_image' && bgUrl);
+  const accentTextColors = getAccessibleAccentTextColors(primaryColor);
+  const accentTextColor = isDarkSurface
+    ? accentTextColors.dark
+    : accentTextColors.light;
 
   const labels = UI_LABELS[previewLocale] || UI_LABELS.vi;
   const sampleItems: CatalogItem[] =
@@ -1267,8 +1277,8 @@ export function StorefrontPhonePreview({
               <div className="flex items-center justify-between gap-1">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-black text-white"
-                    style={{ backgroundColor: primaryColor }}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-black"
+                    style={{ backgroundColor: primaryColor, color: primaryTextColor }}
                   >
                     Q
                   </span>
@@ -1300,7 +1310,7 @@ export function StorefrontPhonePreview({
                       onClick={() => setPreviewLocale(loc)}
                       style={
                         active
-                          ? { backgroundColor: primaryColor, color: '#ffffff' }
+                          ? { backgroundColor: primaryColor, color: primaryTextColor }
                           : { backgroundColor: '#f1f5f9', color: '#334155' }
                       }
                       className="shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-extrabold transition"
@@ -1365,8 +1375,8 @@ export function StorefrontPhonePreview({
                   <button
                     type="button"
                     onClick={() => setPreviewTab('menu')}
-                    style={{ backgroundColor: primaryColor, color: '#ffffff' }}
-                    className="w-full rounded-2xl p-3 text-left text-white shadow-md flex items-center justify-between"
+                    style={{ backgroundColor: primaryColor, color: primaryTextColor }}
+                    className="w-full rounded-2xl p-3 text-left shadow-md flex items-center justify-between"
                   >
                     <div>
                       <span className="block text-xs font-black">
@@ -1391,7 +1401,7 @@ export function StorefrontPhonePreview({
                         Wi-Fi: {shop.wifi_info.ssid}
                       </span>
                       <span
-                        style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+                        style={{ backgroundColor: primaryColor, color: primaryTextColor }}
                         className="rounded-lg px-2 py-0.5 text-[9px] font-bold"
                       >
                         {labels.copyPassword}
@@ -1404,7 +1414,7 @@ export function StorefrontPhonePreview({
                   {/* Category Pill Preview */}
                   <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
                     <span
-                      style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+                      style={{ backgroundColor: primaryColor, color: primaryTextColor }}
                       className="rounded-full px-2.5 py-1 text-[10px] font-black shadow-2xs"
                     >
                       {labels.allCategories}
@@ -1482,7 +1492,7 @@ export function StorefrontPhonePreview({
                                 )}
                                 <span
                                   className="text-[11px] font-black"
-                                  style={{ color: primaryColor }}
+                                  style={{ color: accentTextColor }}
                                 >
                                   {formatCurrency(eff.finalPrice, shop.currency)}
                                 </span>
@@ -1490,7 +1500,7 @@ export function StorefrontPhonePreview({
                               <span
                                 style={{
                                   backgroundColor: primaryColor,
-                                  color: '#ffffff',
+                                  color: primaryTextColor,
                                 }}
                                 className="flex h-5 w-5 items-center justify-center rounded-md text-xs font-black"
                               >
@@ -1543,7 +1553,7 @@ export function StorefrontPhonePreview({
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <span
                                 className="text-[11px] font-black"
-                                style={{ color: primaryColor }}
+                                style={{ color: accentTextColor }}
                               >
                                 {formatCurrency(eff.finalPrice, shop.currency)}
                               </span>
@@ -1560,7 +1570,7 @@ export function StorefrontPhonePreview({
                           <span
                             style={{
                               backgroundColor: primaryColor,
-                              color: '#ffffff',
+                              color: primaryTextColor,
                             }}
                             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs font-black"
                           >
@@ -1578,7 +1588,7 @@ export function StorefrontPhonePreview({
           {/* Sticky Bottom Order Bar inside Phone Mockup */}
           <div className="sticky bottom-0 z-20 p-2 bg-gradient-to-t from-black/20 to-transparent">
             <div
-              style={{ backgroundColor: primaryColor, color: '#ffffff' }}
+              style={{ backgroundColor: primaryColor, color: primaryTextColor }}
               className="rounded-xl px-3 py-2 text-[11px] font-black flex items-center justify-between shadow-lg"
             >
               <span>🛒 2 ({labels.qtyShort})</span>

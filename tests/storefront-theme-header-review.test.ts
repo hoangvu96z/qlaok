@@ -18,6 +18,10 @@ const storefrontMenuPageSource = readFileSync(
   new URL('../src/app/(storefront)/s/[slug]/menu/page.tsx', import.meta.url),
   'utf8'
 );
+const storefrontCustomDecorSource = readFileSync(
+  new URL('../src/components/storefront/StorefrontCustomDecor.tsx', import.meta.url),
+  'utf8'
+);
 
 test('theme-contrast: parseRgb parses 3-digit hex, 6-digit hex, and rgb() strings', () => {
   assert.deepEqual(parseRgb('#fff'), [255, 255, 255]);
@@ -120,6 +124,12 @@ test('theme-contrast: distinguishes light vs dark brand swatches accurately', ()
   }
 });
 
+test('theme-contrast: the screenshot red uses the strongest readable endpoint', () => {
+  assert.equal(getContrastTextColor('#f52853'), '#000000');
+  assert.ok(getContrastRatio('#000000', '#f52853') >= 4.5);
+  assert.ok(getContrastRatio('#ffffff', '#f52853') < 4.5);
+});
+
 test('theme-contrast: fallback behavior for invalid or missing colors', () => {
   // Missing or invalid color defaults to emerald luminance.
   assert.equal(isLightColor(null), true);
@@ -154,5 +164,49 @@ test('storefront door primary-color surfaces use a computed readable foreground'
   assert.doesNotMatch(
     storefrontDoorPageSource,
     /text-white(?:\/\d+)?[^\n]*\n\s*style=\{\{ backgroundColor: primaryColor/
+  );
+});
+
+test('storefront popup CTA and settings preview use computed text on primary-color surfaces', () => {
+  const popupStart = storefrontCustomDecorSource.indexOf(
+    'export function StorefrontWelcomePopup'
+  );
+  const previewStart = storefrontCustomDecorSource.indexOf(
+    'export function StorefrontPhonePreview'
+  );
+  assert.ok(popupStart >= 0);
+  assert.ok(previewStart > popupStart);
+
+  const popupSource = storefrontCustomDecorSource.slice(popupStart, previewStart);
+  const previewSource = storefrontCustomDecorSource.slice(previewStart);
+  assert.match(popupSource, /getContrastTextColor\(primaryColor\)/);
+  assert.match(
+    popupSource,
+    /backgroundColor: primaryColor, color: primaryTextColor/
+  );
+  assert.doesNotMatch(
+    popupSource,
+    /backgroundColor: primaryColor, color: '#ffffff'/
+  );
+
+  assert.match(previewSource, /getContrastTextColor\(primaryColor\)/);
+  assert.ok(
+    (previewSource.match(/backgroundColor:\s*primaryColor,\s*color:\s*primaryTextColor/g) || [])
+      .length >= 8,
+    'brand badge, selected language, door CTA, Wi-Fi action, category, quick-add buttons, and order bar should use the computed foreground'
+  );
+  assert.doesNotMatch(
+    previewSource,
+    /backgroundColor:\s*primaryColor,\s*color:\s*'#ffffff'/
+  );
+  assert.doesNotMatch(
+    previewSource,
+    /style=\{\{\s*backgroundColor:\s*primaryColor\s*\}\}/
+  );
+  assert.match(previewSource, /getAccessibleAccentTextColors\(primaryColor\)/);
+  assert.equal(
+    (previewSource.match(/style=\{\{ color: accentTextColor \}\}/g) || []).length,
+    2,
+    'both preview layouts should adjust price text for the card surface'
   );
 });
