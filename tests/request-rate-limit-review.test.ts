@@ -70,7 +70,43 @@ test('scoped keys are stable and separate shops and tables', () => {
   );
 });
 
-test('bounded limiter uses overflow bucket without evicting active identities', () => {
+test('bounded limiter prunes expired buckets first and evicts least-recently-used entry at hard cap', () => {
+  const limit = createBoundedRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 2,
+    maxBuckets: 3,
+  });
+
+  // Fill all 3 buckets; expiring-key has oldest window start (1_000)
+  assert.equal(limit('expiring-key', 1_000), null);
+  assert.equal(limit('expiring-key', 1_000), null);
+  assert.equal(limit('active-oldest', 10_000), null);
+  assert.equal(limit('active-oldest', 10_000), null);
+  assert.equal(limit('active-newest', 10_000), null);
+  assert.equal(limit('active-newest', 10_000), null);
+
+  // Refresh expiring-key recency via a rate-limited hit so active-oldest becomes LRU
+  assert.equal(limit('expiring-key', 20_000), 41);
+
+  // At 61_000, expiring-key has expired; pruning frees a slot without evicting active-oldest
+  assert.equal(limit('after-expiry', 61_000), null);
+  assert.equal(limit('active-oldest', 61_000), 9);
+  assert.equal(limit('active-newest', 61_000), 9);
+
+  // Current recency order after the two checks above: [after-expiry, active-oldest, active-newest].
+  // Repeated after-expiry hits keep it recent, so newcomer-d evicts active-oldest.
+  assert.equal(limit('after-expiry', 61_000), null);
+  assert.equal(limit('after-expiry', 61_000), 60);
+  // Recency order is now: [active-oldest, active-newest, after-expiry].
+  assert.equal(limit('newcomer-d', 61_000), null);
+
+  // active-newest and after-expiry remain rate-limited, while evicted active-oldest regains a fresh bucket (LRU tradeoff)
+  assert.equal(limit('active-newest', 61_000), 9);
+  assert.equal(limit('after-expiry', 61_000), 60);
+  assert.equal(limit('active-oldest', 61_000), null);
+});
+
+test('saturated overflow identity cannot reject distinct newcomers while recently active known keys stay limited', () => {
   const limit = createBoundedRateLimiter({
     windowMs: 60_000,
     maxRequests: 2,
@@ -80,12 +116,28 @@ test('bounded limiter uses overflow bucket without evicting active identities', 
 
   assert.equal(limit('known-a', now), null);
   assert.equal(limit('known-b', now), null);
-  assert.equal(limit('overflow-a', now), null);
-  assert.equal(limit('overflow-b', now), null);
-  assert.equal(limit('overflow-c', now), 60);
+  assert.equal(limit('known-c', now), null);
+
+  // Saturate known-a and verify its recency is refreshed even when rate-limited
   assert.equal(limit('known-a', now), null);
   assert.equal(limit('known-a', now), 60);
-  assert.equal(limit('known-c', now + 60_000), null);
+
+  // One noisy newcomer beyond maxBuckets saturates its own bucket
+  assert.equal(limit('noisy-overflow', now), null);
+  assert.equal(limit('noisy-overflow', now), null);
+  assert.equal(limit('noisy-overflow', now), 60);
+
+  // Refresh known-a via rate-limited hit so it stays MRU ahead of noisy-overflow
+  assert.equal(limit('known-a', now + 500), 60);
+
+  // Distinct unseen newcomers must not suffer collateral 429s from noisy-overflow
+  assert.equal(limit('newcomer-1', now + 500), null);
+  assert.equal(limit('known-a', now + 500), 60);
+  assert.equal(limit('newcomer-2', now + 500), null);
+
+  // Recently active known-a remains rate-limited until its window expires
+  assert.equal(limit('known-a', now + 500), 60);
+  assert.equal(limit('known-a', now + 60_000), null);
 });
 
 test('test reset clears limiter state without changing configured limits', () => {

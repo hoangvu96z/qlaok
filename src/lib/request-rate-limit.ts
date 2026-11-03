@@ -8,7 +8,6 @@ export type RateLimitOptions = {
 };
 
 const DEFAULT_MAX_BUCKETS = 5000;
-const OVERFLOW_BUCKET_KEY = '__request_rate_overflow__';
 const activeBucketMaps = new Set<Map<string, number[]>>();
 
 /** Clears in-memory limiter state so route-level test cases remain isolated. */
@@ -124,38 +123,31 @@ export function createBoundedRateLimiter({
   if (process.env.NODE_ENV !== 'production') activeBucketMaps.add(buckets);
   return (key, now = Date.now()) => {
     const digest = hashIdentity(key || 'unknown');
-    let bucketKey = digest;
+    const existing = buckets.get(digest);
 
-    if (!buckets.has(bucketKey) && buckets.size >= maxBuckets - 1) {
-      const overflowEvents = buckets.get(OVERFLOW_BUCKET_KEY) || [];
-      const activeOverflowEvents = overflowEvents.filter(
-        (timestamp) => now - timestamp < windowMs
-      );
-      if (activeOverflowEvents.length > 0) {
-        buckets.set(OVERFLOW_BUCKET_KEY, activeOverflowEvents);
-        bucketKey = OVERFLOW_BUCKET_KEY;
-      } else {
-        if (buckets.has(OVERFLOW_BUCKET_KEY)) {
-          buckets.delete(OVERFLOW_BUCKET_KEY);
-        }
-        pruneExpiredBuckets(buckets, now, windowMs);
-        if (!buckets.has(bucketKey) && buckets.size >= maxBuckets - 1) {
-          // Reserve one shared bucket rather than evicting active identities.
-          bucketKey = OVERFLOW_BUCKET_KEY;
+    if (existing === undefined && buckets.size >= maxBuckets) {
+      pruneExpiredBuckets(buckets, now, windowMs);
+      if (buckets.size >= maxBuckets) {
+        const oldestKey = buckets.keys().next().value;
+        if (oldestKey !== undefined) {
+          buckets.delete(oldestKey);
         }
       }
     }
 
-    const current = (buckets.get(bucketKey) || []).filter(
+    const current = (existing || []).filter(
       (timestamp) => now - timestamp < windowMs
     );
+    if (existing !== undefined) {
+      buckets.delete(digest);
+    }
     if (current.length >= maxRequests) {
-      buckets.set(bucketKey, current);
+      buckets.set(digest, current);
       return Math.max(1, Math.ceil((current[0] + windowMs - now) / 1000));
     }
 
     current.push(now);
-    buckets.set(bucketKey, current);
+    buckets.set(digest, current);
     return null;
   };
 }

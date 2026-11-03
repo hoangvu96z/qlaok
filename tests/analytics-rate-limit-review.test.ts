@@ -32,7 +32,7 @@ test('analytics limiter groups IPv6 /64 addresses and IPv4-mapped equivalents', 
   assert.equal(mappedLimiter(requestFrom('::ffff:c000:22c'), 2000), 60);
 });
 
-test('analytics limiter uses a bounded overflow bucket without evicting active IP budgets', () => {
+test('analytics limiter preserves per-IP quotas and does not reject newcomers at capacity', () => {
   const limiter = createAnalyticsRateLimiter();
   const now = 3000;
 
@@ -46,18 +46,22 @@ test('analytics limiter uses a bounded overflow bucket without evicting active I
     assert.equal(result, null, `initial IP ${index + 1}`);
   }
 
-  for (let index = 1; index <= 120; index += 1) {
+  for (let index = 0; index < 120; index += 1) {
     assert.equal(
-      limiter(requestFrom(`198.18.20.${index}`), now),
+      limiter(requestFrom('198.18.20.1'), now),
       null,
-      `overflow request ${index}`
+      `allowed request ${index + 1}`
     );
+  }
+  assert.equal(limiter(requestFrom('198.18.20.1'), now), 60);
+
+  // A distinct client still gets its own quota even when the previous client is saturated.
+  for (let index = 0; index < 120; index += 1) {
+    assert.equal(limiter(requestFrom('198.18.21.1'), now), null);
   }
   assert.equal(limiter(requestFrom('198.18.21.1'), now), 60);
 
-  for (let index = 0; index < 119; index += 1) {
-    assert.equal(limiter(requestFrom('198.18.0.1'), now), null);
-  }
-  assert.equal(limiter(requestFrom('198.18.0.1'), now), 60);
-  assert.equal(limiter(requestFrom('198.18.21.2'), now + 60_000), null);
+  // LRU eviction may reset an old, inactive identity instead of blocking newcomers.
+  assert.equal(limiter(requestFrom('198.18.0.1'), now), null);
+  assert.equal(limiter(requestFrom('198.18.20.1'), now), 60);
 });
