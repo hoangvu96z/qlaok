@@ -757,22 +757,131 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    // 5. Toggle Shop Published or Update Shop Owner/Metadata
+    // 5. Toggle Shop Published, Update Metadata, or Transfer Shop Owner
     if (action === 'update_shop') {
-      const { shopId, patch } = body as {
-        shopId: string;
-        patch: Partial<Shop>;
+      const { shopId: rawShopId, patch: rawPatch } = body as {
+        shopId?: unknown;
+        patch?: unknown;
       };
-      if (!shopId || !patch) {
+      const shopId =
+        typeof rawShopId === 'string' ? rawShopId.trim() : '';
+      if (
+        !shopId ||
+        !rawPatch ||
+        typeof rawPatch !== 'object' ||
+        Array.isArray(rawPatch)
+      ) {
         return NextResponse.json(
           { error: 'Thiếu shopId hoặc patch' },
           { status: 400 }
         );
       }
 
+      const patch = rawPatch as Partial<Shop>;
+      if (patch.owner_id !== undefined) {
+        const newOwnerId =
+          typeof patch.owner_id === 'string' ? patch.owner_id.trim() : '';
+        if (!newOwnerId) {
+          return NextResponse.json(
+            { error: 'owner_id không hợp lệ.', code: 'INVALID_OWNER_ID' },
+            { status: 400 }
+          );
+        }
+
+        const hasMetadataPatch = Object.entries(patch).some(
+          ([key, value]) => key !== 'owner_id' && value !== undefined
+        );
+        if (hasMetadataPatch) {
+          return NextResponse.json(
+            {
+              error: 'Chuyển chủ quán phải được gửi riêng, không kèm cập nhật thông tin cửa hàng.',
+              code: 'OWNER_TRANSFER_MUST_BE_SEPARATE',
+            },
+            { status: 400 }
+          );
+        }
+
+        if (typeof sb.rpc !== 'function') {
+          return NextResponse.json(
+            {
+              error: 'Không thể chuyển quyền cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+              code: 'SHOP_OWNER_TRANSFER_FAILED',
+            },
+            { status: 500 }
+          );
+        }
+
+        const { data: rpcData, error: rpcError } = await sb.rpc(
+          'admin_transfer_shop_ownership_atomic',
+          { p_shop_id: shopId, p_new_owner_id: newOwnerId }
+        );
+        if (
+          rpcError ||
+          !rpcData ||
+          typeof rpcData !== 'object' ||
+          Array.isArray(rpcData)
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Không thể chuyển quyền cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+              code: 'SHOP_OWNER_TRANSFER_FAILED',
+            },
+            { status: 500 }
+          );
+        }
+
+        const result = rpcData as {
+          ok?: unknown;
+          code?: unknown;
+          old_owner_id?: unknown;
+          new_owner_id?: unknown;
+          shop?: unknown;
+        };
+        if (result.code === 'SHOP_NOT_FOUND' || result.code === 'OWNER_NOT_FOUND') {
+          return NextResponse.json(
+            {
+              error:
+                result.code === 'SHOP_NOT_FOUND'
+                  ? 'Không tìm thấy cửa hàng.'
+                  : 'Không tìm thấy tài khoản chủ quán mới.',
+              code: result.code,
+            },
+            { status: 404 }
+          );
+        }
+
+        const updatedShop = result.shop as Shop | null;
+        if (
+          result.ok !== true ||
+          !updatedShop ||
+          typeof updatedShop !== 'object' ||
+          updatedShop.id !== shopId ||
+          updatedShop.owner_id !== newOwnerId ||
+          result.new_owner_id !== newOwnerId
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Không thể chuyển quyền cửa hàng. Dữ liệu hiện tại được giữ nguyên.',
+              code: 'SHOP_OWNER_TRANSFER_FAILED',
+            },
+            { status: 500 }
+          );
+        }
+
+        await recordSuccessfulAudit({
+          details: {
+            oldOwnerId:
+              typeof result.old_owner_id === 'string'
+                ? result.old_owner_id
+                : null,
+            newOwnerId,
+          },
+        });
+        return NextResponse.json({ shop: updatedShop });
+      }
+
       try {
         const updatedShop = await dbUpdateShop(shopId, patch, {
-          allowOwnerIdPatch: true,
           sbClient: sb,
           skipEnsureSeeded: true,
         });

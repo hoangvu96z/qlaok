@@ -1225,11 +1225,13 @@ export async function dbUpdateShop(
   shopId: string,
   patch: Partial<Shop>,
   options?: {
-    allowOwnerIdPatch?: boolean;
     sbClient?: SupabaseClient;
     skipEnsureSeeded?: boolean;
   }
 ): Promise<Shop | null> {
+  if (patch.owner_id !== undefined) {
+    throw new Error('SHOP_OWNER_TRANSFER_REQUIRES_ATOMIC_RPC');
+  }
   if (!options?.skipEnsureSeeded) {
     await ensureSupabaseReadyAndSeeded();
   }
@@ -1241,10 +1243,6 @@ export async function dbUpdateShop(
       sanitizedPatch[key] = patch[key];
     }
   }
-  if (options?.allowOwnerIdPatch && patch.owner_id !== undefined) {
-    sanitizedPatch.owner_id = patch.owner_id;
-  }
-
   let previousSlug = '';
   let nextSlug = '';
 

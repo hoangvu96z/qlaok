@@ -25,6 +25,7 @@ after(() => {
 
 const {
   dbCreateShop,
+  dbUpdateShop,
   ensureSupabaseReadyAndSeeded,
   hasSupabaseServiceRoleKey,
   requireSupabaseServiceRoleClient,
@@ -1669,6 +1670,134 @@ test('POST /api/admin update_order_status rejects marking fulfillment completed 
       'select:id',
       'limit:1',
     ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('POST /api/admin update_shop routes owner transfers through the atomic RPC only', async () => {
+  const rpcCalls: Array<{ functionName: string; args: Record<string, unknown> }> = [];
+  let rpcData: unknown = {
+    ok: true,
+    shop_id: 'transfer-shop',
+    old_owner_id: 'old-owner',
+    new_owner_id: 'new-owner',
+    shop: {
+      id: 'transfer-shop',
+      owner_id: 'new-owner',
+      name: 'Transfer fixture',
+    },
+  };
+  let rpcError: { message: string } | null = null;
+  const mockDb = {
+    from(table: string) {
+      assert.equal(table, 'shops');
+      return {
+        select(columns: string) {
+          assert.equal(columns, 'id');
+          return {
+            limit: async (count: number) => {
+              assert.equal(count, 1);
+              return { data: [{ id: 'ready-shop' }], error: null };
+            },
+          };
+        },
+      };
+    },
+    rpc: async (functionName: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ functionName, args });
+      return {
+        data: rpcData,
+        error: rpcError,
+      };
+    },
+  };
+  const adminToken = issueSessionToken({
+    id: SUPER_ADMIN_ID,
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+  const sendUpdate = (patch: Record<string, unknown>) =>
+    adminPost(
+      new Request('http://localhost/api/admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({
+          action: 'update_shop',
+          shopId: 'transfer-shop',
+          patch,
+        }),
+      })
+    );
+
+  setSupabaseDbClientForTests(mockDb as never);
+  try {
+    const response = await sendUpdate({ owner_id: 'new-owner' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).shop.owner_id, 'new-owner');
+    assert.deepEqual(rpcCalls, [
+      {
+        functionName: 'admin_transfer_shop_ownership_atomic',
+        args: {
+          p_shop_id: 'transfer-shop',
+          p_new_owner_id: 'new-owner',
+        },
+      },
+    ]);
+
+    const mixedPatchResponse = await sendUpdate({
+      owner_id: 'new-owner',
+      is_published: true,
+    });
+    assert.equal(mixedPatchResponse.status, 400);
+    assert.equal(
+      (await mixedPatchResponse.json()).code,
+      'OWNER_TRANSFER_MUST_BE_SEPARATE'
+    );
+    assert.equal(rpcCalls.length, 1, 'mixed patch must not call the transfer RPC');
+    assert.deepEqual(readAdminAuditLog(1)[0]?.details, {
+      oldOwnerId: 'old-owner',
+      newOwnerId: 'new-owner',
+    });
+
+    rpcError = { message: 'database failure details stay server-side' };
+    const failedTransferResponse = await sendUpdate({ owner_id: 'new-owner' });
+    assert.equal(failedTransferResponse.status, 500);
+    assert.equal(
+      (await failedTransferResponse.json()).code,
+      'SHOP_OWNER_TRANSFER_FAILED'
+    );
+    assert.deepEqual(
+      readAdminAuditLog(1)[0]?.details,
+      { oldOwnerId: 'old-owner', newOwnerId: 'new-owner' },
+      'failed transfers must not add a success audit entry'
+    );
+
+    rpcError = null;
+    rpcData = { ok: false, code: 'OWNER_NOT_FOUND' };
+    const missingOwnerResponse = await sendUpdate({ owner_id: 'new-owner' });
+    assert.equal(missingOwnerResponse.status, 404);
+    assert.equal((await missingOwnerResponse.json()).code, 'OWNER_NOT_FOUND');
+
+    rpcData = {
+      ok: true,
+      new_owner_id: 'new-owner',
+      shop: { id: 'transfer-shop', owner_id: 'unexpected-owner' },
+    };
+    const malformedTransferResponse = await sendUpdate({ owner_id: 'new-owner' });
+    assert.equal(malformedTransferResponse.status, 500);
+    assert.equal(
+      (await malformedTransferResponse.json()).code,
+      'SHOP_OWNER_TRANSFER_FAILED'
+    );
+    await assert.rejects(
+      dbUpdateShop('transfer-shop', { owner_id: 'new-owner' }),
+      /SHOP_OWNER_TRANSFER_REQUIRES_ATOMIC_RPC/
+    );
   } finally {
     setSupabaseDbClientForTests(null);
   }

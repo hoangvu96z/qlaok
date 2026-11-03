@@ -2959,3 +2959,15 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Codex checks:** security-header test **1/1 PASS**; ESLint config/test **PASS**; `npm run typecheck` **PASS**; `git diff --check` **PASS**.
 - **Bằng chứng production trước sửa:** HTTPS GET `/` và `/api/health` trả HTTP 200 nhưng thiếu cả năm header; kiểm tra sau deploy còn chờ.
 - **Chưa xác minh:** chưa kiểm tra response sau deploy và chưa thử embedding từ custom domain bên ngoài; `frame-ancestors 'self'` cùng `SAMEORIGIN` sẽ chặn iframe cross-origin.
+
+## 227. Chuyển chủ shop không thu hồi membership chủ cũ (2026-11-03)
+
+- **Finding được xác nhận:** Super Admin action `update_shop` có thể cập nhật `shops.owner_id` riêng lẻ. Membership `owner` đang hoạt động của chủ cũ vẫn tồn tại; server membership fallback và RLS `user_has_shop_permission` tiếp tục cấp quyền cho tài khoản đó.
+- **Sửa:** thêm service-role-only RPC `admin_transfer_shop_ownership_atomic` khóa shop và cập nhật owner, thu hồi membership cũ, kích hoạt membership owner mới trong cùng transaction. API chuyển `owner_id` chỉ qua RPC, từ chối gộp metadata vào cùng request; `dbUpdateShop` từ chối thay owner trực tiếp. Không có dữ liệu production nào được sửa trong patch này.
+- **Regression:** SQL test cô lập kiểm tra quyền trước/sau, trạng thái hai membership, quyền EXECUTE, và retry cùng owner; API test xác nhận route chỉ gọi RPC và từ chối patch hỗn hợp.
+- **CodeGraph:** `status`; `explore "POST /api/admin action update_shop patch.owner_id ..."`; `node dbUpdateShop`; `node ensureSupabaseReadyAndSeeded`; node `src/app/api/admin/route.ts` và `tests/admin-review.test.ts`; `explore`/node cho `shop_memberships` and `user_has_shop_permission`.
+- **Vùng ảnh hưởng:** Super Admin owner transfer, `shop_memberships`, RLS permission lookup. Chuyển ownership có transaction boundary; không đổi contract cho metadata-only updates.
+- **AGY audit:** Gemini 4 Argon High run `2026-11-03T02-44-49-218Z-2822af31`, conversation `c886d6f2-61bd-4b81-b588-48762760517f`: confirmed that the former owner's active membership retained server-side permission fallback and RLS access.
+- **Claude review:** Sonnet 5.5 Low via AGY run `2026-11-03T03-02-09-048Z-8751ae62`, conversation `8e3114cd-ce89-4b01-b76a-1a587f75a37c`: no confirmed correctness bug; recommended coverage for RPC error/not-found/malformed responses and SQL missing-row outcomes. Those cases are now included in the focused regression tests. Direct local Claude CLI invocation was also attempted, but its configured `deepseek` alias returned `unrecognized_model`.
+- **Checks:** `tests/sql-review.test.mjs` **1/1 PASS**; full `tests/admin-review.test.ts` **15/15 PASS** (including RPC error/not-found/malformed-response and success-only audit cases); `npm run typecheck`; targeted ESLint; `git diff --check` **PASS**.
+- **Chưa xác minh:** migration chưa deploy; không thực hiện owner transfer trên production.

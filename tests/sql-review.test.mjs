@@ -2989,5 +2989,122 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       'current direct PostgREST JWT should retain its profile access'
     );
 
+    const transferOldOwner = '00000000-0000-0000-0000-000000000007';
+    const transferNewOwner = '00000000-0000-0000-0000-000000000008';
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+      SET ROLE service_role;
+      INSERT INTO profiles (id, email, full_name)
+        VALUES ('${transferOldOwner}', 'former-owner@example.test', 'Former Owner'),
+               ('${transferNewOwner}', 'new-owner@example.test', 'New Owner');
+      INSERT INTO shops (id, owner_id, slug, name, is_published)
+        VALUES ('transfer-shop', '${transferOldOwner}', 'transfer-shop', 'Transfer fixture', false);
+      INSERT INTO shop_memberships (id, shop_id, user_id, email, full_name, role, permissions, is_active)
+        VALUES ('transfer-old-owner', 'transfer-shop', '${transferOldOwner}', 'former-owner@example.test', 'Former Owner', 'owner', '[]', true);`);
+
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claim.sub', '${transferOldOwner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${transferOldOwner}"}', false);
+      SET ROLE authenticated;`);
+    assert.equal(
+      (await db.query("SELECT public.user_has_shop_permission('transfer-shop', 'orders.view') AS allowed")).rows[0].allowed,
+      true,
+      'former owner fixture starts with shop access'
+    );
+
+    const transferFunctionAcl = await db.query(`
+      SELECT
+        has_function_privilege('anon', 'public.admin_transfer_shop_ownership_atomic(text,text)', 'EXECUTE') AS anon_exec,
+        has_function_privilege('authenticated', 'public.admin_transfer_shop_ownership_atomic(text,text)', 'EXECUTE') AS authenticated_exec,
+        has_function_privilege('service_role', 'public.admin_transfer_shop_ownership_atomic(text,text)', 'EXECUTE') AS service_role_exec
+    `);
+    assert.deepEqual(transferFunctionAcl.rows[0], {
+      anon_exec: false,
+      authenticated_exec: false,
+      service_role_exec: true,
+    });
+    await assert.rejects(
+      db.query("SELECT public.admin_transfer_shop_ownership_atomic('transfer-shop', $1)", [transferNewOwner]),
+      /permission denied/i
+    );
+
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+      SET ROLE service_role;`);
+    const firstTransfer = (
+      await db.query(
+        'SELECT public.admin_transfer_shop_ownership_atomic($1, $2) AS result',
+        ['transfer-shop', transferNewOwner]
+      )
+    ).rows[0].result;
+    assert.equal(firstTransfer.ok, true);
+    assert.equal(firstTransfer.old_owner_id, transferOldOwner);
+    assert.equal(firstTransfer.new_owner_id, transferNewOwner);
+    assert.equal(firstTransfer.shop.owner_id, transferNewOwner);
+    assert.deepEqual(
+      (await db.query(`
+        SELECT user_id, role, is_active
+        FROM shop_memberships
+        WHERE shop_id = 'transfer-shop'
+        ORDER BY user_id
+      `)).rows,
+      [
+        { user_id: transferOldOwner, role: 'owner', is_active: false },
+        { user_id: transferNewOwner, role: 'owner', is_active: true },
+      ]
+    );
+
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claim.sub', '${transferOldOwner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${transferOldOwner}"}', false);
+      SET ROLE authenticated;`);
+    assert.equal(
+      (await db.query("SELECT public.user_has_shop_permission('transfer-shop', 'orders.view') AS allowed")).rows[0].allowed,
+      false,
+      'former owner loses RLS-backed membership access after transfer'
+    );
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claim.sub', '${transferNewOwner}', false);
+      SELECT set_config('request.jwt.claims', '{"role":"authenticated","sub":"${transferNewOwner}"}', false);
+      SET ROLE authenticated;`);
+    assert.equal(
+      (await db.query("SELECT public.user_has_shop_permission('transfer-shop', 'orders.view') AS allowed")).rows[0].allowed,
+      true,
+      'new owner receives shop access after transfer'
+    );
+
+    await db.exec(`RESET ROLE;
+      SELECT set_config('request.jwt.claims', '{"role":"service_role"}', false);
+      SET ROLE service_role;`);
+    const retriedTransfer = (
+      await db.query(
+        'SELECT public.admin_transfer_shop_ownership_atomic($1, $2) AS result',
+        ['transfer-shop', transferNewOwner]
+      )
+    ).rows[0].result;
+    assert.equal(retriedTransfer.ok, true, 'same-owner retry is idempotent');
+    assert.equal(retriedTransfer.old_owner_id, transferNewOwner);
+    assert.equal(
+      (await db.query(`SELECT is_active FROM shop_memberships WHERE shop_id = 'transfer-shop' AND user_id = $1`, [transferOldOwner])).rows[0].is_active,
+      false,
+      'idempotent retry must not reactivate the former owner'
+    );
+    const missingTransferOwner = (
+      await db.query(
+        'SELECT public.admin_transfer_shop_ownership_atomic($1, $2) AS result',
+        ['transfer-shop', 'missing-transfer-owner']
+      )
+    ).rows[0].result;
+    assert.equal(missingTransferOwner.ok, false);
+    assert.equal(missingTransferOwner.code, 'OWNER_NOT_FOUND');
+    const missingTransferShop = (
+      await db.query(
+        'SELECT public.admin_transfer_shop_ownership_atomic($1, $2) AS result',
+        ['missing-transfer-shop', transferNewOwner]
+      )
+    ).rows[0].result;
+    assert.equal(missingTransferShop.ok, false);
+    assert.equal(missingTransferShop.code, 'SHOP_NOT_FOUND');
+
   } finally { await db.close(); }
 });
