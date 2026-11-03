@@ -808,7 +808,7 @@ export function StorefrontFlashSaleSection({
   const badgeLabel =
     flashSale.discountType === 'percent'
       ? `-${flashSale.discountValue}%`
-      : `-${formatCurrency(flashSale.discountValue, shop.currency)}`;
+      : `-${formatCurrency(flashSale.discountValue, shop.currency, locale)}`;
 
   const displayBadgeText =
     locale === 'vi'
@@ -916,10 +916,10 @@ export function StorefrontFlashSaleSection({
               <div className="mt-2 pt-1.5 border-t border-slate-100 dark:border-slate-800 flex items-end justify-between gap-1">
                 <div>
                   <span className="block text-[10px] text-slate-400 line-through">
-                    {formatCurrency(item.price, shop.currency)}
+                    {formatCurrency(item.price, shop.currency, locale)}
                   </span>
                   <span className="text-xs font-black text-rose-600 dark:text-rose-400">
-                    {formatCurrency(eff.finalPrice, shop.currency)}
+                    {formatCurrency(eff.finalPrice, shop.currency, locale)}
                   </span>
                 </div>
                 {onQuickAdd && item.is_available && (
@@ -1486,7 +1486,8 @@ export function StorefrontPhonePreview({
                                   <span className="block text-[8px] opacity-60 line-through">
                                     {formatCurrency(
                                       eff.originalPrice,
-                                      shop.currency
+                                      shop.currency,
+                                      previewLocale
                                     )}
                                   </span>
                                 )}
@@ -1494,7 +1495,11 @@ export function StorefrontPhonePreview({
                                   className="text-[11px] font-black"
                                   style={{ color: accentTextColor }}
                                 >
-                                  {formatCurrency(eff.finalPrice, shop.currency)}
+                                  {formatCurrency(
+                                    eff.finalPrice,
+                                    shop.currency,
+                                    previewLocale
+                                  )}
                                 </span>
                               </div>
                               <span
@@ -1555,13 +1560,18 @@ export function StorefrontPhonePreview({
                                 className="text-[11px] font-black"
                                 style={{ color: accentTextColor }}
                               >
-                                {formatCurrency(eff.finalPrice, shop.currency)}
+                                {formatCurrency(
+                                  eff.finalPrice,
+                                  shop.currency,
+                                  previewLocale
+                                )}
                               </span>
                               {eff.originalPrice && (
                                 <span className="text-[9px] opacity-60 line-through">
                                   {formatCurrency(
                                     eff.originalPrice,
-                                    shop.currency
+                                    shop.currency,
+                                    previewLocale
                                   )}
                                 </span>
                               )}

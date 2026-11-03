@@ -209,4 +209,29 @@ test('storefront popup CTA and settings preview use computed text on primary-col
     2,
     'both preview layouts should adjust price text for the card surface'
   );
+
+  const previewFormatCalls = [
+    ...previewSource.matchAll(/formatCurrency\s*\(([\s\S]*?)\)/g),
+  ];
+  assert.equal(
+    previewFormatCalls.length,
+    4,
+    'StorefrontPhonePreview should format 4 prices (grid original/discounted, list discounted/original)'
+  );
+  for (const call of previewFormatCalls) {
+    const rawArgs = call[1]
+      .split(',')
+      .map((arg) => arg.trim())
+      .filter(Boolean);
+    assert.equal(
+      rawArgs.length,
+      3,
+      `every formatCurrency call in StorefrontPhonePreview must pass 3 arguments: ${call[0]}`
+    );
+    assert.equal(
+      rawArgs[2],
+      'previewLocale',
+      `every formatCurrency call in StorefrontPhonePreview must pass previewLocale: ${call[0]}`
+    );
+  }
 });

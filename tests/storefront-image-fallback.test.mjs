@@ -9,6 +9,7 @@ import {
 import { ItemDetailDrawer } from '../src/components/storefront/ItemDetailDrawer.tsx';
 import { VerticalRenderer } from '../src/components/storefront/VerticalRenderer.tsx';
 import { StorefrontFlashSaleSection } from '../src/components/storefront/StorefrontCustomDecor.tsx';
+import { formatCurrency } from '../src/lib/i18n-helper.ts';
 import {
   getAccessibleAccentTextColors,
   getContrastRatio,
@@ -416,5 +417,67 @@ describe('Storefront Image Presentation Resilience', () => {
     assert.ok(html.includes('data-testid="storefront-product-image"'));
     assert.ok(html.includes('Món khuyến mãi'));
     assert.ok(html.includes('-25%'));
+  });
+
+  it('StorefrontFlashSaleSection formats fixed-amount discount badge and prices using locale in English', () => {
+    const discountAmount = 20000;
+    const originalPrice = 100000;
+    const finalPrice = 80000;
+
+    const flashSaleShop = {
+      id: 'shop-test',
+      vertical: 'fnb',
+      currency: 'VND',
+      theme_config: {
+        flashSale: {
+          enabled: true,
+          title: 'Special Flash Sale',
+          discountType: 'fixed_amount',
+          discountValue: discountAmount,
+          itemIds: ['sale-item-en'],
+        },
+      },
+    };
+    const saleItem = {
+      id: 'sale-item-en',
+      shop_id: 'shop-test',
+      category_id: 'cat-1',
+      sort_order: 1,
+      name_i18n: { vi: 'Món tiếng Anh', en: 'English Sale Item' },
+      desc_i18n: { vi: '', en: '' },
+      options_json: [],
+      view_count: 0,
+      price: originalPrice,
+      compare_at_price: null,
+      image_url: 'https://example.com/sale-item-en.jpg',
+      is_available: true,
+      is_featured: false,
+    };
+    const html = renderToStaticMarkup(
+      React.createElement(StorefrontFlashSaleSection, {
+        shop: flashSaleShop,
+        items: [saleItem],
+        locale: 'en',
+      })
+    );
+
+    const expectedDiscountBadge = `-${formatCurrency(discountAmount, 'VND', 'en')}`;
+    const expectedOriginalPrice = formatCurrency(originalPrice, 'VND', 'en');
+    const expectedFinalPrice = formatCurrency(finalPrice, 'VND', 'en');
+
+    const vietnameseDiscountBadge = `-${formatCurrency(discountAmount, 'VND', 'vi')}`;
+    const vietnameseOriginalPrice = formatCurrency(originalPrice, 'VND', 'vi');
+    const vietnameseFinalPrice = formatCurrency(finalPrice, 'VND', 'vi');
+
+    // Assert the discount badge and both displayed prices use English formatting
+    assert.ok(html.includes(expectedDiscountBadge));
+    assert.ok(html.includes(expectedOriginalPrice));
+    assert.ok(html.includes(expectedFinalPrice));
+
+    // Assert they do not render the corresponding Vietnamese `đ` formatting
+    assert.ok(!html.includes(vietnameseDiscountBadge));
+    assert.ok(!html.includes(vietnameseOriginalPrice));
+    assert.ok(!html.includes(vietnameseFinalPrice));
+    assert.ok(!html.includes('đ'));
   });
 });
