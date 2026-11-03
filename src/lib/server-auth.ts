@@ -521,8 +521,12 @@ export function extractRequestToken(req: Request): string | null {
       if (eqIdx === -1) continue;
       const name = part.slice(0, eqIdx).trim();
       if (name === SESSION_COOKIE_NAME) {
-        const val = decodeURIComponent(part.slice(eqIdx + 1).trim());
-        if (val) return val;
+        try {
+          const val = decodeURIComponent(part.slice(eqIdx + 1).trim());
+          if (val) return val;
+        } catch {
+          // Ignore malformed cookie encodings and continue looking for a valid token.
+        }
       }
     }
   }
