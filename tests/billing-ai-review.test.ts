@@ -99,6 +99,23 @@ let mockRpcHandler:
   | null = null;
 let mockRpcError: { message: string } | null = null;
 
+function postgrestIlikeRegex(pattern: string): RegExp {
+  let source = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '\\' && index + 1 < pattern.length) {
+      source += pattern[++index].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (char === '%') {
+      source += '.*';
+    } else if (char === '_') {
+      source += '.';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`${source}$`, 'i');
+}
+
 // Authoritative column whitelist from 001_init_qlaok.sql & 004_memberships_billing_payments_audit.sql.
 // Notably, public.profiles has NO `role` or `is_admin` columns.
 const SCHEMA_COLUMNS_BY_TABLE: Record<string, ReadonlySet<string>> = {
@@ -195,7 +212,11 @@ const mockSupabaseClient = {
     const resolveError = () => projectionError ?? mockTableErrors[table] ?? null;
 
     const matchesFilters = (row: Record<string, unknown>) =>
-      filters.every(([col, val]) => row[col] === val) &&
+      filters.every(([col, val]) =>
+        val instanceof RegExp
+          ? val.test(String(row[col] ?? ''))
+          : row[col] === val
+      ) &&
       neqFilters.every(([col, val]) => row[col] !== val);
 
     const resolveRows = () => {
@@ -258,7 +279,7 @@ const mockSupabaseClient = {
         return chain;
       },
       ilike: (col: string, val: unknown) => {
-        filters.push([col, val]);
+        filters.push([col, postgrestIlikeRegex(String(val ?? ''))]);
         return chain;
       },
       order: () => chain,

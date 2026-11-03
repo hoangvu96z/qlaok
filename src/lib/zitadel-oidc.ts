@@ -1312,7 +1312,7 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
       const { data: rawCollision, error: collisionErr } = await sb
         .from('profiles')
         .select('*')
-        .ilike('email', inputEmail)
+        .ilike('email', escapePostgrestIlikePattern(inputEmail))
         .limit(1);
       if (collisionErr && collisionErr.code !== 'PGRST116') {
         throw new ZitadelOidcError(

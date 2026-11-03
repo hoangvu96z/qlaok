@@ -1269,8 +1269,6 @@ export async function completeOwnerOidcCallback(
 ): Promise<MobileOwnerSession> {
   const store = options.storage ?? (await resolveDefaultStorageAdapter());
   const rawTx = await store.getItem(OWNER_OIDC_TX_STORAGE_KEY);
-  // Always clear pending transaction on callback attempt (single-use)
-  await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
 
   let parsedTxCandidate: Partial<PendingOwnerOidcTransaction> | null = null;
   if (rawTx) {
@@ -1303,6 +1301,7 @@ export async function completeOwnerOidcCallback(
   }
 
   if (!parsedTxCandidate) {
+    await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_INVALID',
       isEn
@@ -1324,6 +1323,7 @@ export async function completeOwnerOidcCallback(
     typeof tx.expiresAt !== 'number' ||
     nowMs > tx.expiresAt
   ) {
+    await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
     throw new MobileOwnerOidcError(
       'OIDC_TRANSACTION_EXPIRED',
       isEn
@@ -1332,18 +1332,22 @@ export async function completeOwnerOidcCallback(
     );
   }
 
+  if (
+    !parsedCallback.state ||
+    !compareConstantTime(parsedCallback.state, tx.state)
+  ) {
+    throw new MobileOwnerOidcError(
+      'OIDC_STATE_MISMATCH',
+      isEn
+        ? 'Invalid sign-in request. Please try again.'
+        : 'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
+    );
+  }
+
+  // Consume only a well-formed callback bound to this pending transaction.
+  await store.removeItem(OWNER_OIDC_TX_STORAGE_KEY);
+
   if (parsedCallback.kind === 'error') {
-    if (
-      parsedCallback.state &&
-      !compareConstantTime(parsedCallback.state, tx.state)
-    ) {
-      throw new MobileOwnerOidcError(
-        'OIDC_STATE_MISMATCH',
-        isEn
-          ? 'Invalid sign-in request. Please try again.'
-          : 'Yêu cầu đăng nhập không hợp lệ. Vui lòng thử lại.'
-      );
-    }
     const friendlyProviderMessage =
       parsedCallback.error === 'access_denied'
         ? isEn
@@ -1355,15 +1359,6 @@ export async function completeOwnerOidcCallback(
     throw new MobileOwnerOidcError(
       'OIDC_PROVIDER_ERROR',
       friendlyProviderMessage
-    );
-  }
-
-  if (!compareConstantTime(parsedCallback.state, tx.state)) {
-    throw new MobileOwnerOidcError(
-      'OIDC_STATE_MISMATCH',
-      isEn
-        ? 'Invalid sign-in request rejected to protect your account.'
-        : 'Yêu cầu đăng nhập không hợp lệ. Yêu cầu bị từ chối để bảo vệ tài khoản.'
     );
   }
 

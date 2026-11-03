@@ -311,7 +311,10 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
     nowMs,
   });
 
-  // 1. State mismatch clears pending transaction and fails closed
+  const pendingTransaction = await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY);
+  assert.ok(pendingTransaction);
+
+  // Wrong or incomplete callbacks fail closed without consuming the valid transaction.
   await assert.rejects(
     () =>
       completeOwnerOidcCallback(
@@ -328,16 +331,43 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
     (err: unknown) =>
       err instanceof MobileOwnerOidcError && err.code === 'OIDC_STATE_MISMATCH'
   );
-  assert.equal(await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY), null);
 
-  // 2. Re-prepare and complete valid callback
-  const prepared2 = await prepareOwnerOidcAuthorizationRequest({
-    env: {
-      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
-    },
-    storage,
-    nowMs,
-  });
+  assert.equal(
+    await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY),
+    pendingTransaction
+  );
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback('qlaok://auth/callback?error=access_denied', {
+        baseUrl: 'https://qlaok.vunph.click',
+        storage,
+        nowMs: nowMs + 2000,
+        fetchImpl: async () => {
+          throw new Error('Must not call server when callback state is missing');
+        },
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError && err.code === 'OIDC_STATE_MISMATCH'
+  );
+  assert.equal(
+    await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY),
+    pendingTransaction
+  );
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback('qlaok://auth/callback?code=only-code', {
+        baseUrl: 'https://qlaok.vunph.click',
+        storage,
+        nowMs: nowMs + 3000,
+      }),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError &&
+      err.code === 'OIDC_CALLBACK_MISSING_PARAMS'
+  );
+  assert.equal(
+    await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY),
+    pendingTransaction
+  );
 
   const postgrestJwt = buildMockPostgrestJwt({
     sub: ownerUuid,
@@ -351,7 +381,7 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
   let capturedRequestBody: Record<string, unknown> = {};
   const session = await completeOwnerOidcCallback(
     `qlaok://auth/callback?code=valid-auth-code-123&state=${encodeURIComponent(
-      prepared2.transaction.state
+      prepared.transaction.state
     )}`,
     {
       baseUrl: 'https://qlaok.vunph.click',
@@ -389,9 +419,9 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
   assert.equal(capturedRequestBody.code, 'valid-auth-code-123');
   assert.equal(
     capturedRequestBody.codeVerifier,
-    prepared2.transaction.codeVerifier
+    prepared.transaction.codeVerifier
   );
-  assert.equal(capturedRequestBody.nonce, prepared2.transaction.nonce);
+  assert.equal(capturedRequestBody.nonce, prepared.transaction.nonce);
   assert.equal(capturedRequestBody.redirectUri, 'qlaok://auth/callback');
   assert.equal(capturedRequestBody.clientId, '312345678901234567@qlaok');
 
@@ -417,7 +447,7 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
     () =>
       completeOwnerOidcCallback(
         `qlaok://auth/callback?code=valid-auth-code-123&state=${encodeURIComponent(
-          prepared2.transaction.state
+          prepared.transaction.state
         )}`,
         {
           baseUrl: 'https://qlaok.vunph.click',
@@ -429,6 +459,38 @@ test('completeOwnerOidcCallback validates single-use state/nonce/PKCE, exchanges
       err instanceof MobileOwnerOidcError &&
       err.code === 'OIDC_TRANSACTION_MISSING'
   );
+});
+
+test('completeOwnerOidcCallback consumes a provider error only after matching state', async () => {
+  const storage = createMemoryStorage();
+  const nowMs = 1_760_000_000_000;
+  const prepared = await prepareOwnerOidcAuthorizationRequest({
+    env: {
+      EXPO_PUBLIC_ZITADEL_CLIENT_ID: '312345678901234567@qlaok',
+    },
+    storage,
+    nowMs,
+  });
+
+  await assert.rejects(
+    () =>
+      completeOwnerOidcCallback(
+        `qlaok://auth/callback?error=access_denied&state=${encodeURIComponent(
+          prepared.transaction.state
+        )}`,
+        {
+          baseUrl: 'https://qlaok.vunph.click',
+          storage,
+          nowMs: nowMs + 1000,
+          fetchImpl: async () => {
+            throw new Error('Provider error callbacks must not call the server');
+          },
+        }
+      ),
+    (err: unknown) =>
+      err instanceof MobileOwnerOidcError && err.code === 'OIDC_PROVIDER_ERROR'
+  );
+  assert.equal(await storage.getItem(OWNER_OIDC_TX_STORAGE_KEY), null);
 });
 
 test('completeOwnerOidcCallback keeps the transaction after a network failure so the callback can be retried', async () => {

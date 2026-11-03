@@ -122,10 +122,28 @@ function extractCookieValue(
   return undefined;
 }
 
+function postgrestIlikeRegex(pattern: string): RegExp {
+  let source = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '\\' && index + 1 < pattern.length) {
+      source += pattern[++index].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (char === '%') {
+      source += '.*';
+    } else if (char === '_') {
+      source += '.';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`${source}$`, 'i');
+}
+
 function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, initialShops: Array<Record<string, unknown>> = []) {
   const profiles = initialProfiles.map((p) => ({ ...p }));
   const shops = initialShops.map((s) => ({ ...s }));
   const profileWrites: Array<{ op: 'insert' | 'update' | 'upsert'; payload: Record<string, unknown> }> = [];
+  const ilikePatterns: Array<{ column: string; pattern: string }> = [];
 
   const client = {
     rpc(name: string, args: Record<string, unknown>) {
@@ -163,10 +181,12 @@ function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, i
                 };
               },
               ilike(col: string, val: unknown) {
+                const pattern = String(val ?? '');
+                ilikePatterns.push({ column: col, pattern });
+                const matcher = postgrestIlikeRegex(pattern);
                 const matches = profiles.filter(
                   (p) =>
-                    String(p[col] ?? '').toLowerCase() ===
-                    String(val ?? '').toLowerCase()
+                    matcher.test(String(p[col] ?? ''))
                 );
                 return {
                   limit: async (n: number) => ({
@@ -307,7 +327,7 @@ function createInMemoryOidcDb(initialProfiles: Array<Record<string, unknown>>, i
     },
   };
 
-  return { client, profiles, shops, profileWrites };
+  return { client, profiles, shops, profileWrites, ilikePatterns };
 }
 
 test('owner logout revokes legacy owner-prefixed profile IDs and blocks token renewal', async () => {
@@ -2205,6 +2225,47 @@ test('resolveAndSyncZitadelOwnerProfile and OIDC callback/mobile exchange fail c
     delete process.env.ZITADEL_CLIENT_ID;
     delete process.env.ZITADEL_MOBILE_CLIENT_ID;
     delete process.env.ZITADEL_REDIRECT_URI;
+  }
+});
+
+test('OIDC verified email backfill treats PostgREST ILIKE wildcards as literal characters', async () => {
+  const inputEmail = 'backfill_%_email@qlaok.vn';
+  const { client, profiles, profileWrites, ilikePatterns } =
+    createInMemoryOidcDb([
+      {
+        id: '99999999-8888-4777-8666-555555555555',
+        zitadel_sub: 'sub-missing-email-special',
+        email: null,
+        full_name: 'Owner Missing Email',
+        plan: 'free',
+      },
+      {
+        id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        zitadel_sub: 'unrelated-owner-special',
+        email: 'backfillXYZemail@qlaok.vn',
+        full_name: 'Unrelated Owner',
+        plan: 'free',
+      },
+    ]);
+  setSupabaseDbClientForTests(client as never);
+
+  try {
+    const result = await resolveAndSyncZitadelOwnerProfile({
+      sub: 'sub-missing-email-special',
+      email: inputEmail,
+      emailVerified: true,
+      allowInsert: false,
+    });
+
+    assert.equal(result.user.email, inputEmail);
+    assert.equal(result.user.id, '99999999-8888-4777-8666-555555555555');
+    assert.equal(profiles[0].email, inputEmail);
+    assert.deepEqual(profileWrites[0]?.payload.email, inputEmail);
+    assert.deepEqual(ilikePatterns, [
+      { column: 'email', pattern: 'backfill\\_\\%\\_email@qlaok.vn' },
+    ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
   }
 });
 

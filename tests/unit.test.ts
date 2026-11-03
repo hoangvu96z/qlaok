@@ -775,6 +775,8 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
   });
 
   test('3.14 returns manual-reconciliation status from a guarded payment webhook', async () => {
+    let capturedPaymentLookupPattern = '';
+    const capturedPaymentRpcArgs: Record<string, unknown>[] = [];
     const mockDb = {
       from(table: string) {
         if (table === 'shops') {
@@ -787,17 +789,21 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
         if (table === 'payment_transactions') {
           return {
             select: () => ({
-              ilike: () => ({
+              ilike: (column: string, pattern: string) => {
+                assert.equal(column, 'order_code');
+                capturedPaymentLookupPattern = pattern;
+                return {
                 maybeSingle: async () => ({
                   data: {
                     id: 'tx-manual-review',
                     user_id: 'owner-lifetime',
-                    order_code: 'QLAOKP_MANUAL_REVIEW',
+                    order_code: 'QLAOKP_MANUAL_%',
                     status: 'pending',
                   },
                   error: null,
                 }),
-              }),
+              };
+              },
               eq: () => ({
                 order: async () => ({ data: [], error: null }),
               }),
@@ -824,24 +830,29 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
         }
         throw new Error(`Unexpected table: ${table}`);
       },
-      rpc: async () => ({
-        data: {
-          status: 'manual_review',
-          owner_id: 'owner-lifetime',
-          resolution_required: true,
-          resolution_code: 'NON_EXPIRING_ADMIN_PLAN',
-        },
-        error: null,
-      }),
+      rpc: async (_name: string, args: Record<string, unknown>) => {
+        capturedPaymentRpcArgs.push(args);
+        return {
+          data: {
+            status: 'manual_review',
+            owner_id: 'owner-lifetime',
+            resolution_required: true,
+            resolution_code: 'NON_EXPIRING_ADMIN_PLAN',
+          },
+          error: null,
+        };
+      },
     };
 
     setSupabaseDbClientForTests(mockDb);
     try {
       const result = await dbCompletePaymentWebhook(
-        'QLAOKP_MANUAL_REVIEW',
+        'QLAOKP_MANUAL_%',
         'FT-MANUAL-REVIEW',
         { verifiedTransferAmount: 69000 }
       );
+      assert.equal(capturedPaymentLookupPattern, 'QLAOKP\\_MANUAL\\_\\%');
+      assert.equal(capturedPaymentRpcArgs[0]?.p_order_code, 'QLAOKP_MANUAL_%');
       assert.equal(result.paymentResolutionRequired, true);
       assert.equal(
         result.paymentResolutionCode,

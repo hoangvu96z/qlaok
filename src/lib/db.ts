@@ -43,6 +43,7 @@ import {
   parseCatalogPriceValue,
   parseCatalogStockValue,
 } from './catalog-excel';
+import { escapePostgrestIlikePattern } from './owner-invitations';
 
 let cachedAdminClient: SupabaseClient | null = null;
 let cachedAdminClientKey = '';
@@ -2468,7 +2469,7 @@ export async function dbCompletePaymentWebhook(
   const { data, error } = await sb
     .from('payment_transactions')
     .select('*')
-    .ilike('order_code', normalizedCode)
+    .ilike('order_code', escapePostgrestIlikePattern(normalizedCode))
     .maybeSingle();
 
   if (error) {
