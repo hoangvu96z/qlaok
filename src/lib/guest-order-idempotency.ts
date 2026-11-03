@@ -10,7 +10,10 @@ function canonicalizeIntent(value: unknown, topLevel = false): unknown {
   const record = value as Record<string, unknown>;
   const canonical: Record<string, unknown> = {};
   for (const key of Object.keys(record).sort()) {
-    if ((topLevel && key === 'idempotency_key') || record[key] === undefined) {
+    if (
+      (topLevel && (key === 'idempotency_key' || key === 'visitor_lang')) ||
+      record[key] === undefined
+    ) {
       continue;
     }
     canonical[key] = canonicalizeIntent(record[key]);

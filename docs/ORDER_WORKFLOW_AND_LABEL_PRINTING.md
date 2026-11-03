@@ -37,6 +37,10 @@ Both configuration modules are located in the Merchant Web Dashboard:
 - `visitor_lang` is excluded from the intent fingerprint, so changing the app language does not create a second order or block a safe retry. After changing an order attempt, the mobile client must generate a fresh attempt key.
 - Legacy raw `assist-*` keys remain replayable only for the original mobile payload shape and matching table/cart. The database prefix index prevents concurrent requests from committing two different intents for one staff/shop attempt.
 
+### Guest QR Checkout Retry Safety
+
+- Guest checkout binds its idempotency key to the order intent and ignores top-level `visitor_lang`, which is display metadata. If a request commits but its response is lost, changing the storefront language before retrying preserves the same key and replays the existing order. Cart, table, amount, and other order details remain part of the intent.
+
 ---
 
 ## 2. Shipped Workflow Templates & Transitions

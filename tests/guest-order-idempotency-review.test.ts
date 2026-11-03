@@ -33,7 +33,7 @@ test('guest checkout idempotency keys are strong, intent-bound, and retryable', 
   );
 });
 
-test('guest intent serialization is stable and ignores only the top-level key', () => {
+test('guest intent serialization is stable and ignores its top-level key', () => {
   assert.equal(
     serializeGuestOrderIntent({ z: 1, a: { y: true, x: null }, idempotency_key: 'first' }),
     serializeGuestOrderIntent({ idempotency_key: 'second', a: { x: null, y: true }, z: 1 })
@@ -43,4 +43,24 @@ test('guest intent serialization is stable and ignores only the top-level key', 
     serializeGuestOrderIntent({ shop_id: 'shop-b' })
   );
   assert.equal(parseGuestOrderIdempotencyKey('guessable-key'), null);
+});
+
+test('guest order retries keep the same idempotency key across display language changes', async () => {
+  const intent = {
+    shop_id: 'shop-fixture',
+    expected_total: 25000,
+    visitor_lang: 'vi',
+    items: [{ item_id: 'item-fixture', quantity: 1 }],
+  };
+  const firstKey = await getGuestOrderIdempotencyKey(intent);
+  const switchedLanguageIntent = { ...intent, visitor_lang: 'en' };
+
+  assert.equal(
+    serializeGuestOrderIntent(intent),
+    serializeGuestOrderIntent(switchedLanguageIntent)
+  );
+  assert.equal(
+    await getGuestOrderIdempotencyKey(switchedLanguageIntent, firstKey),
+    firstKey
+  );
 });
