@@ -177,11 +177,68 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
       optionsOrder.items[0].selected_choices?.map((choice) => choice.id),
       ['size-large', 'topping-cheese', 'topping-egg']
     );
+    const createSessionOrder = (
+      table_label: string,
+      session_id?: string,
+      source: 'qr_table' | 'counter_pos' = 'qr_table',
+      isStaffAuthorized = false
+    ) => dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label,
+      session_id,
+      source,
+      isStaffAuthorized,
+      items: [{
+        item_id: 'engine-item-options',
+        name_vi: 'Options fixture',
+        quantity: 1,
+        unit_price: 10000,
+        extra_price: 0,
+        selected_choices: [selectedOption('size-small', 'Nhỏ', 1000)],
+      }],
+    });
+    const tableASession = await createSessionOrder('Session isolation table A');
+    const crossTableSessionAttempt = await createSessionOrder(
+      'Session isolation table B',
+      tableASession.session_id
+    );
+    assert.notEqual(
+      crossTableSessionAttempt.session_id,
+      tableASession.session_id,
+      'guest-supplied session IDs must not attach an order to another table bill'
+    );
+    const tableBRoundTwo = await createSessionOrder(
+      'Session isolation table B',
+      tableASession.session_id
+    );
+    assert.equal(
+      tableBRoundTwo.session_id,
+      crossTableSessionAttempt.session_id,
+      'guest rounds on the same validated table reuse its server-selected active session'
+    );
+    const counterPosSession = await createSessionOrder(
+      'POS session fixture',
+      'pos-session-fixture',
+      'counter_pos',
+      true
+    );
+    assert.equal(
+      counterPosSession.session_id,
+      'pos-session-fixture',
+      'authorized counter POS may select its bill session'
+    );
+    const orderCountBeforeFailedCreate = (
+      await db.query('SELECT id FROM orders')
+    ).rows.length;
     failRpc = true;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid' }), /injected DB failure/);
     assert.equal((await dbGetOrderById(order.id))?.payment_status, 'unpaid', 'failed payment must not be cached as paid');
     await assert.rejects(create(1), /injected DB failure/);
-    assert.equal((await db.query('SELECT id FROM orders')).rows.length, orderCountBeforeInvalidOptions + 1);
+    assert.equal(
+      (await db.query('SELECT id FROM orders')).rows.length,
+      orderCountBeforeFailedCreate,
+      'failed order commit must not insert an order'
+    );
     failRpc = false;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 1 }), /Tổng tiền/);
     const paid = await dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 20000 });
