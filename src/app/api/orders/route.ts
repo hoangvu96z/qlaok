@@ -1125,7 +1125,8 @@ export async function POST(req: Request) {
       table_label,
       table_qr_sig: resolvedTableQrSig,
       require_table_qr_sig: requireTableQrSig,
-      session_id,
+      session_id:
+        source === 'counter_pos' && hasCreatePerm ? session_id : undefined,
       visitor_lang,
       customer_note,
       payment_method,

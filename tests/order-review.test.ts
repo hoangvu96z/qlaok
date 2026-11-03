@@ -177,68 +177,11 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
       optionsOrder.items[0].selected_choices?.map((choice) => choice.id),
       ['size-large', 'topping-cheese', 'topping-egg']
     );
-    const createSessionOrder = (
-      table_label: string,
-      session_id?: string,
-      source: 'qr_table' | 'counter_pos' = 'qr_table',
-      isStaffAuthorized = false
-    ) => dbCreateOrder({
-      shop_id: 'engine-shop',
-      table_label,
-      session_id,
-      source,
-      isStaffAuthorized,
-      items: [{
-        item_id: 'engine-item-options',
-        name_vi: 'Options fixture',
-        quantity: 1,
-        unit_price: 10000,
-        extra_price: 0,
-        selected_choices: [selectedOption('size-small', 'Nhỏ', 1000)],
-      }],
-    });
-    const tableASession = await createSessionOrder('Session isolation table A');
-    const crossTableSessionAttempt = await createSessionOrder(
-      'Session isolation table B',
-      tableASession.session_id
-    );
-    assert.notEqual(
-      crossTableSessionAttempt.session_id,
-      tableASession.session_id,
-      'guest-supplied session IDs must not attach an order to another table bill'
-    );
-    const tableBRoundTwo = await createSessionOrder(
-      'Session isolation table B',
-      tableASession.session_id
-    );
-    assert.equal(
-      tableBRoundTwo.session_id,
-      crossTableSessionAttempt.session_id,
-      'guest rounds on the same validated table reuse its server-selected active session'
-    );
-    const counterPosSession = await createSessionOrder(
-      'POS session fixture',
-      'pos-session-fixture',
-      'counter_pos',
-      true
-    );
-    assert.equal(
-      counterPosSession.session_id,
-      'pos-session-fixture',
-      'authorized counter POS may select its bill session'
-    );
-    const orderCountBeforeFailedCreate = (
-      await db.query('SELECT id FROM orders')
-    ).rows.length;
     failRpc = true;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid' }), /injected DB failure/);
     assert.equal((await dbGetOrderById(order.id))?.payment_status, 'unpaid', 'failed payment must not be cached as paid');
     await assert.rejects(create(1), /injected DB failure/);
-    assert.equal(
-      (await db.query('SELECT id FROM orders')).rows.length,
-      orderCountBeforeFailedCreate,
-      'failed order commit must not insert an order'
-    );
+    assert.equal((await db.query('SELECT id FROM orders')).rows.length, orderCountBeforeInvalidOptions + 1);
     failRpc = false;
     await assert.rejects(dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 1 }), /Tổng tiền/);
     const paid = await dbUpdateOrderStatus(order.id, { payment_status: 'paid', expected_total: 20000 });
@@ -1490,6 +1433,7 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
         ('cat-qa-unpublished', 'shop-qa-unpublished', '{"vi":"Món thử"}');
       INSERT INTO shop_tables (id, shop_id, table_code, name, is_active, sort_order) VALUES
         ('tbl-qa-01', 'shop-qa-storefront', 'T01', 'Bàn QA 01', true, 1),
+        ('tbl-qa-02', 'shop-qa-storefront', 'T03', 'Bàn QA 02', true, 3),
         ('tbl-qa-inactive', 'shop-qa-storefront', 'T02', 'Bàn Khóa', false, 2);
       INSERT INTO shop_memberships (id, shop_id, user_id, role, permissions, is_active) VALUES
         ('mem-qa-fulfill', 'shop-qa-storefront', 'staff-qa-fulfill', 'staff', '["orders.view","orders.fulfill"]'::jsonb, true),
@@ -1508,6 +1452,13 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
         id, shop_id, category_id, price, stock_quantity, sold_count, is_available, name_i18n
       ) VALUES (
         'item-qa-unpublished', 'shop-qa-unpublished', 'cat-qa-unpublished', 10000, 3, 0, true, '{"vi":"Món thử"}'
+      )`
+    );
+    await db.query(
+      `INSERT INTO items (
+        id, shop_id, category_id, price, stock_quantity, sold_count, is_available, name_i18n
+      ) VALUES (
+        'item-qa-session', 'shop-qa-storefront', 'cat-qa-main', 10000, 10, 0, true, '{"vi":"Món kiểm tra phiên"}'
       )`
     );
 
@@ -1673,6 +1624,7 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       table_qr_sig: validTableSig,
       qr_table_mode: true,
       table_label: 'Spoofed VIP Table',
+      session_id: 'client-selected-session-a',
       visitor_lang: 'vi',
       payment_method: 'vietqr',
       expected_total: 140000,
@@ -1746,6 +1698,14 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(guestQrRes.status, 201, JSON.stringify(guestQrJson));
     const createdQrOrder = guestQrJson.order;
     assert.ok(createdQrOrder?.id);
+    const createdQrOrderRecord = await dbGetOrderById(createdQrOrder.id);
+    const tableASessionId = createdQrOrderRecord?.session_id;
+    assert.ok(tableASessionId);
+    assert.notEqual(
+      tableASessionId,
+      'client-selected-session-a',
+      'guest QR order must use the server-selected session'
+    );
     assert.equal(createdQrOrder.source, 'qr_table');
     assert.equal(createdQrOrder.table_id, 'tbl-qa-01');
     assert.equal(createdQrOrder.table_label, 'Bàn QA 01');
@@ -2406,6 +2366,7 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
           shop_id: 'shop-qa-storefront',
           source: 'counter_pos',
           table_label: 'Mang về',
+          session_id: 'pos-session-fixture',
           payment_method: 'cash',
           items: ownerPosItems,
         }),
@@ -2417,6 +2378,11 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(ownerPosOrder.payment_status, 'unpaid');
     assert.equal(ownerPosOrder.status, 'new');
     assert.equal(ownerPosOrder.total_amount, 55000);
+    assert.equal(
+      (await dbGetOrderById(ownerPosOrder.id))?.session_id,
+      'pos-session-fixture',
+      'authorized counter POS may select its bill session'
+    );
 
     const patchOwnerPosOrder = (
       expectedTotal: number,
@@ -2538,6 +2504,66 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
     assert.equal(orderAfterIncreaseAttempt?.payment_status, 'unpaid');
 
     await assertSoldOutItemUnchanged();
+
+    const tableBQrSignature = signTableQr(
+      'shop-qa-storefront',
+      'tbl-qa-02'
+    );
+    const createTableBSessionOrder = async (customer_note: string) => {
+      const intent = {
+        shop_id: 'shop-qa-storefront',
+        table_id: 'tbl-qa-02',
+        table_qr_sig: tableBQrSignature,
+        qr_table_mode: true,
+        source: 'qr_table' as const,
+        table_label: 'Spoofed Table B',
+        session_id: tableASessionId,
+        visitor_lang: 'vi' as const,
+        customer_note,
+        payment_method: 'cash' as const,
+        expected_total: 10000,
+        items: [{
+          item_id: 'item-qa-session',
+          name_vi: 'Món kiểm tra phiên',
+          quantity: 1,
+          unit_price: 1,
+          extra_price: 0,
+          selected_choices: [],
+        }],
+      };
+      const response = await postOrdersRoute(
+        new Request('http://localhost/api/orders', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: ownerCookie,
+          },
+          body: JSON.stringify({
+            ...intent,
+            idempotency_key: await getGuestOrderIdempotencyKey(intent),
+          }),
+        })
+      );
+      const responseBody = await response.json();
+      assert.equal(response.status, 201, JSON.stringify(responseBody));
+      const persistedOrder = await dbGetOrderById(responseBody.order.id);
+      assert.ok(persistedOrder);
+      return persistedOrder;
+    };
+    const tableBOrderOne = await createTableBSessionOrder('Bàn B lượt một');
+    assert.equal(tableBOrderOne.table_id, 'tbl-qa-02');
+    assert.notEqual(
+      tableBOrderOne.session_id,
+      tableASessionId,
+      'QR order for table B must not join table A session even for an authenticated owner'
+    );
+    const tableBOrderTwo = await createTableBSessionOrder('Bàn B lượt hai');
+    assert.notEqual(tableBOrderTwo.id, tableBOrderOne.id);
+    assert.equal(
+      tableBOrderTwo.session_id,
+      tableBOrderOne.session_id,
+      'later QR rounds on table B reuse its server-selected active session'
+    );
   } finally {
     if (previousSessionSecret === undefined) delete process.env.SESSION_SECRET;
     else process.env.SESSION_SECRET = previousSessionSecret;

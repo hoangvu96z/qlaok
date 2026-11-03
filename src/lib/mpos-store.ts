@@ -2669,14 +2669,8 @@ export async function dbCreateOrder(params: {
     const orderSource =
       isStaff && params.source === 'counter_pos' ? 'counter_pos' : 'qr_table';
 
-    // Only an authorized counter-POS request may choose an existing bill
-    // session. Guest QR orders must use the session resolved from their
-    // validated table so a client cannot attach an order to another table's bill.
-    const canUseRequestedSessionId =
-      params.isStaffAuthorized === true && params.source === 'counter_pos';
-    let resolvedSessionId = canUseRequestedSessionId
-      ? params.session_id?.trim() || undefined
-      : undefined;
+    // Reuse active unpaid table session_id for multi-round dine-in orders on the same table
+    let resolvedSessionId = params.session_id?.trim() || undefined;
     if (!resolvedSessionId && !isPaid) {
       const existingActiveForTable = store.orders.find(
         (o) =>
