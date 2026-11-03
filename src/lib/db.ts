@@ -26,7 +26,7 @@ import {
   SEED_TRANSACTIONS,
 } from './seed-data';
 import { getSupabaseAnonKey, isSupabaseConfigured } from './supabase/client';
-import { canAddMoreItems } from './plan-limits';
+import { canAddMoreItems, getEffectivePlanTier } from './plan-limits';
 import { ALL_LOCALES } from './i18n-helper';
 import { smartFallbackTranslate } from './gemini';
 import {
@@ -517,9 +517,16 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
             plan: 'free',
           };
 
+      const resolvedProfile = ownerProfile || fallbackProfile;
       return {
         shops: Array.from(shopMap.values()),
-        profile: ownerProfile || fallbackProfile,
+        profile: {
+          ...resolvedProfile,
+          plan: getEffectivePlanTier(
+            resolvedProfile.plan,
+            resolvedProfile.plan_expires_at
+          ),
+        },
         memberships: membershipsMap,
         source: 'supabase',
       };
@@ -651,9 +658,16 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
           plan: 'free',
         };
 
+    const resolvedProfile = (ownerProfile as Profile) || fallbackProfile;
     return {
       shops: Array.from(shopMap.values()),
-      profile: (ownerProfile as Profile) || fallbackProfile,
+      profile: {
+        ...resolvedProfile,
+        plan: getEffectivePlanTier(
+          resolvedProfile.plan,
+          resolvedProfile.plan_expires_at
+        ),
+      },
       memberships: membershipsMap,
       source: 'supabase',
     };
@@ -1007,7 +1021,7 @@ export async function dbGetStorefrontBundle(
       try {
         const query = sb
           .from('profiles')
-          .select('plan')
+          .select('plan, plan_expires_at')
           .eq('id', shop.owner_id);
         const fetchFn =
           typeof query.maybeSingle === 'function'
@@ -1028,10 +1042,14 @@ export async function dbGetStorefrontBundle(
 
   let ownerPlan: PlanTier = 'free';
   if (ownerProfileRes && !ownerProfileRes.error && ownerProfileRes.data) {
-    const rawPlan = (ownerProfileRes.data as { plan?: unknown }).plan;
-    if (rawPlan === 'basic' || rawPlan === 'premium') {
-      ownerPlan = rawPlan;
-    }
+    const ownerProfile = ownerProfileRes.data as {
+      plan?: unknown;
+      plan_expires_at?: unknown;
+    };
+    ownerPlan = getEffectivePlanTier(
+      ownerProfile.plan,
+      ownerProfile.plan_expires_at
+    );
   }
 
   const normalizedCategories = ((categories || []) as Category[]).map((c) => {
@@ -1350,7 +1368,7 @@ export async function dbGetShopCatalog(shopId?: string) {
         try {
           return await sb
             .from('profiles')
-            .select('plan')
+            .select('plan, plan_expires_at')
             .eq('id', shop.owner_id)
             .maybeSingle();
         } catch (err) {
@@ -1372,10 +1390,14 @@ export async function dbGetShopCatalog(shopId?: string) {
 
   let ownerPlan: PlanTier = 'free';
   if (ownerProfileRes && !ownerProfileRes.error && ownerProfileRes.data) {
-    const rawPlan = (ownerProfileRes.data as { plan?: unknown }).plan;
-    if (rawPlan === 'basic' || rawPlan === 'premium') {
-      ownerPlan = rawPlan;
-    }
+    const ownerProfile = ownerProfileRes.data as {
+      plan?: unknown;
+      plan_expires_at?: unknown;
+    };
+    ownerPlan = getEffectivePlanTier(
+      ownerProfile.plan,
+      ownerProfile.plan_expires_at
+    );
   }
 
   const normalizedItems = (items || []).map((i) => ({
@@ -1837,7 +1859,7 @@ export async function dbUpsertItem(
 
   const { data: ownerProfile, error: profileError } = await sb
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', shop.owner_id)
     .maybeSingle();
 
@@ -1848,9 +1870,10 @@ export async function dbUpsertItem(
 
   if (countError) throw new Error(countError.message);
 
-  const rawPlan = ownerProfile.plan;
-  const currentPlan: PlanTier =
-    rawPlan === 'basic' || rawPlan === 'premium' ? rawPlan : 'free';
+  const currentPlan = getEffectivePlanTier(
+    ownerProfile.plan,
+    ownerProfile.plan_expires_at
+  );
   const check = canAddMoreItems(currentPlan, count || 0);
   if (!check.allowed) {
     throw new Error(check.reason || 'PLAN_LIMIT_REACHED');
@@ -2345,6 +2368,32 @@ export async function dbGetBillingData(ownerId?: string) {
   };
 }
 
+export async function dbGetProfilePlanStatus(ownerId: string): Promise<
+  Pick<Profile, 'id' | 'plan' | 'plan_expires_at'>
+> {
+  const normalizedOwnerId = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!normalizedOwnerId) {
+    throw new Error('PROFILE_PLAN_OWNER_ID_REQUIRED');
+  }
+
+  await ensureSupabaseReadyAndSeeded();
+  const sb = getSupabaseDbClient();
+  const { data, error } = await sb
+    .from('profiles')
+    .select('id, plan, plan_expires_at')
+    .eq('id', normalizedOwnerId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`DB_PROFILE_PLAN_LOOKUP_FAILED: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error('PROFILE_PLAN_NOT_FOUND');
+  }
+
+  return data as Pick<Profile, 'id' | 'plan' | 'plan_expires_at'>;
+}
+
 export const OFFICIAL_PLAN_PRICES_VND: Record<'basic' | 'premium', number> = {
   basic: 39000,
   premium: 69000,
@@ -2485,7 +2534,8 @@ export async function dbCompletePaymentWebhook(
 
   if (
     rpcResult.status !== 'completed' &&
-    rpcResult.status !== 'already_completed'
+    rpcResult.status !== 'already_completed' &&
+    rpcResult.status !== 'manual_review'
   ) {
     throw new Error(
       'DB_RPC_INVALID_RESPONSE: Trạng thái phản hồi RPC không hợp lệ từ complete_payment_webhook_atomic.'
@@ -2510,11 +2560,21 @@ export async function dbCompletePaymentWebhook(
   }
 
   const alreadyCompleted = rpcResult.status === 'already_completed';
+  const manualReviewRequired = rpcResult.status === 'manual_review';
 
   const billingData = await dbGetBillingData(resolvedOwnerId);
   return {
     ...billingData,
     alreadyCompleted,
+    ...(manualReviewRequired
+      ? {
+          paymentResolutionRequired: true,
+          paymentResolutionCode:
+            typeof rpcResult.resolution_code === 'string'
+              ? rpcResult.resolution_code
+              : 'PAYMENT_REQUIRES_MANUAL_REVIEW',
+        }
+      : {}),
   };
 }
 
@@ -2525,10 +2585,16 @@ export async function dbSetProfilePlan(
   await ensureSupabaseReadyAndSeeded();
   const sb = getSupabaseDbClient();
   const resolvedOwnerId = ownerId || SEED_PROFILE.id;
+  const now = new Date().toISOString();
 
   const { data, error } = await sb
     .from('profiles')
-    .update({ plan, updated_at: new Date().toISOString() })
+    .update({
+      plan,
+      plan_expires_at: null,
+      plan_updated_at: now,
+      updated_at: now,
+    })
     .eq('id', resolvedOwnerId)
     .select('*')
     .single();

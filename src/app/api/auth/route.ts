@@ -35,6 +35,7 @@ import {
   isValidRecoveryEmail,
 } from '@/lib/auth-recovery';
 import { resolvePostLoginRoute } from '@/lib/post-login-route';
+import { getEffectivePlanTier } from '@/lib/plan-limits';
 import {
   attachOidcTransactionCookie,
   buildZitadelAuthorizeUrl,
@@ -60,8 +61,18 @@ import type { Profile, Shop, ShopMembership } from '@/types/qlaok';
 
 const OWNER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
-function omitServerSessionFields(profile: Profile): Profile {
-  const result = { ...profile } as Profile & { session_version?: unknown };
+function toClientProfile(profile: Profile, isAdmin = false): Profile {
+  const result = {
+    ...profile,
+    ...(isAdmin
+      ? {}
+      : {
+          plan: getEffectivePlanTier(
+            profile.plan,
+            profile.plan_expires_at
+          ),
+        }),
+  } as Profile & { session_version?: unknown };
   delete result.session_version;
   return result;
 }
@@ -402,7 +413,7 @@ async function handleMobileOidcExchange(
 
   const res = NextResponse.json(
     {
-      user: omitServerSessionFields(finalUser),
+      user: toClientProfile(finalUser, isAdmin),
       shops: (ownerShops || []) as Shop[],
       memberShops: memberData.memberShops,
       memberships: memberData.memberships,
@@ -876,7 +887,7 @@ export async function POST(req: Request) {
       });
 
       const res = NextResponse.json({
-        user: omitServerSessionFields(resolvedUser),
+        user: toClientProfile(resolvedUser),
         shops: (demoShops || []) as Shop[],
         isAdmin: false,
         accessToken,
@@ -1047,7 +1058,7 @@ export async function POST(req: Request) {
       });
 
       const res = NextResponse.json({
-        user: omitServerSessionFields(finalUser),
+        user: toClientProfile(finalUser, verifiedIsAdmin),
         shops: (ownerShops || []) as Shop[],
         memberShops: syncMemberData.memberShops,
         memberships: syncMemberData.memberships,

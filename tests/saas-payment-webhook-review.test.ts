@@ -54,7 +54,13 @@ function makePayOSBody(
   };
 }
 
-function createBillingWebhookTestClient(expectedOrderCode = 'QLAOKB12345') {
+function createBillingWebhookTestClient(
+  expectedOrderCode = 'QLAOKB12345',
+  rpcResult: Record<string, unknown> = {
+    status: 'completed',
+    owner_id: 'qa-owner',
+  }
+) {
   const profile: Record<string, unknown> = {
     id: 'qa-owner',
     plan: 'free',
@@ -130,11 +136,13 @@ function createBillingWebhookTestClient(expectedOrderCode = 'QLAOKB12345') {
     },
     async rpc(name: string, args: Record<string, unknown>) {
       rpcCalls.push({ name, args });
-      transaction.status = 'completed';
       transaction.bank_ref_id = args.p_bank_ref_id;
-      profile.plan = 'premium';
+      if (rpcResult.status !== 'manual_review') {
+        transaction.status = 'completed';
+        profile.plan = 'premium';
+      }
       return {
-        data: { status: 'completed', owner_id: 'qa-owner' },
+        data: rpcResult,
         error: null,
       };
     },
@@ -237,6 +245,80 @@ test('valid PayOS payment webhook completes billing through the atomic DB RPC', 
         args: {
           p_order_code: 'QLAOKB12345',
           p_bank_ref_id: 'bank-ref-qa-1',
+          p_verified_transfer_amount: 99000,
+          p_allow_unverified_amount: false,
+        },
+      },
+    ]);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    for (const key of envKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('manual-review payment callback is acknowledged without claiming payment success', async () => {
+  const envKeys = [
+    'PAYMENT_WEBHOOK_SECRET',
+    'SAAS_BANK_ACCOUNTS',
+    'SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNTS',
+    'NEXT_PUBLIC_SAAS_BANK_ACCOUNT',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'QLAOK_DATABASE_URL',
+    'PAYMENT_DEV_SIMULATE',
+  ];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  for (const key of envKeys) delete process.env[key];
+  process.env.PAYMENT_WEBHOOK_SECRET = TEST_CHECKSUM_KEY;
+  process.env.SAAS_BANK_ACCOUNTS = '["1234567890"]';
+
+  const { client, rpcCalls } = createBillingWebhookTestClient('QLAOKB12345', {
+    status: 'manual_review',
+    owner_id: 'qa-owner',
+    resolution_required: true,
+    resolution_code: 'NON_EXPIRING_ADMIN_PLAN',
+  });
+  setSupabaseDbClientForTests(client);
+
+  try {
+    const { POST } = await import('@/app/api/webhooks/payment/route');
+    const body = makePayOSBody({}, {
+      description: 'Thanh toan QLAOKB12345',
+      accountNumber: '1234567890',
+      reference: 'bank-ref-manual-review',
+    });
+    const response = await POST(
+      new Request('https://qlaok.example/api/webhooks/payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+    const responseBody = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.success, false);
+    assert.equal(responseBody.status, 'manual_review');
+    assert.equal(responseBody.code, 'NON_EXPIRING_ADMIN_PLAN');
+    assert.equal(responseBody.paymentResolutionRequired, true);
+    assert.equal(responseBody.transactions[0].status, 'pending');
+    assert.equal(
+      responseBody.transactions[0].bank_ref_id,
+      'bank-ref-manual-review'
+    );
+    assert.deepEqual(rpcCalls, [
+      {
+        name: 'complete_payment_webhook_atomic',
+        args: {
+          p_order_code: 'QLAOKB12345',
+          p_bank_ref_id: 'bank-ref-manual-review',
           p_verified_transfer_amount: 99000,
           p_allow_unverified_amount: false,
         },

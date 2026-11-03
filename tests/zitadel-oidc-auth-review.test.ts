@@ -318,7 +318,8 @@ test('owner logout revokes legacy owner-prefixed profile IDs and blocks token re
       id: ownerId,
       email: 'session-owner@example.test',
       full_name: 'Session Owner',
-      plan: 'free',
+      plan: 'premium',
+      plan_expires_at: '2020-01-01T00:00:00.000Z',
       role: 'owner',
       session_version: 1,
     },
@@ -404,6 +405,13 @@ test('owner logout revokes legacy owner-prefixed profile IDs and blocks token re
     const currentSyncBody = await currentSyncResponse.json();
     assert.equal(verifySessionToken(currentSyncBody.accessToken)?.sv, 2);
     assert.equal(currentSyncBody.user.id, ownerId);
+    assert.equal(
+      currentSyncBody.user.plan,
+      'free',
+      'sync_user must return the effective Free tier after a paid plan expires'
+    );
+    assert.equal(profiles[0].plan, 'premium');
+    assert.equal(profiles[0].plan_expires_at, '2020-01-01T00:00:00.000Z');
     assert.equal(Object.hasOwn(currentSyncBody.user, 'session_version'), false);
     assert.equal(currentSyncBody.postgrestToken, null);
 
@@ -1106,7 +1114,11 @@ test('GET /api/auth/callback maps opaque Zitadel subjects to stable Qlaok UUID p
       const syncBody = await syncRes.json();
       assert.equal(syncBody.user.id, existingOwnerUuid);
       assert.equal(syncBody.user.email, 'existing-pro@qlaok.vn');
-      assert.equal(syncBody.user.plan, 'pro');
+      assert.equal(
+        syncBody.user.plan,
+        'free',
+        'Unsupported legacy tiers must fail closed in the synchronized session response'
+      );
 
       // Existing profile plan & expiry must be completely untouched (zero overwrites)
       const storedPro = profiles.find((p) => p.id === existingOwnerUuid)!;
@@ -1724,16 +1736,17 @@ test('POST /api/auth action=oidc_mobile_exchange enforces qlaok://auth/callback,
     assert.equal((await badPkceRes.json()).code, 'OIDC_PKCE_VERIFIER_INVALID');
   }
 
-  // 4. Valid mobile exchange preserves existing owner profile plan and issues Qlaok session + PostgREST authenticated JWT
-  const { client, profileWrites } = createInMemoryOidcDb(
+  // 4. Valid mobile exchange returns the effective plan without overwriting
+  // the stored profile, then issues the Qlaok session and PostgREST JWT.
+  const { client, profileWrites, profiles } = createInMemoryOidcDb(
     [
       {
         id: existingOwnerUuid,
         zitadel_sub: mobileOwnerSub,
         email: 'owner.mobile@qlaok.vn',
         full_name: 'Chủ Quán Đà Nẵng',
-        plan: 'pro',
-        plan_expires_at: '2027-06-01T00:00:00.000Z',
+        plan: 'premium',
+        plan_expires_at: '2020-01-01T00:00:00.000Z',
         role: 'owner',
         is_admin: false,
       },
@@ -1823,7 +1836,14 @@ test('POST /api/auth action=oidc_mobile_exchange enforces qlaok://auth/callback,
     assert.equal(capturedTokenParams.get('code_verifier'), pkce.codeVerifier);
 
     assert.equal(dataWithoutPg.user.id, existingOwnerUuid);
-    assert.equal(dataWithoutPg.user.plan, 'pro');
+    assert.equal(
+      dataWithoutPg.user.plan,
+      'free',
+      'Mobile OIDC response must not keep paid entitlements after expiry'
+    );
+    const storedMobileOwner = profiles.find((p) => p.id === existingOwnerUuid)!;
+    assert.equal(storedMobileOwner.plan, 'premium');
+    assert.equal(storedMobileOwner.plan_expires_at, '2020-01-01T00:00:00.000Z');
     assert.equal(dataWithoutPg.user.full_name, 'Chủ Quán Đà Nẵng');
     assert.equal(typeof dataWithoutPg.accessToken, 'string');
     assert.equal(dataWithoutPg.postgrestToken, null);

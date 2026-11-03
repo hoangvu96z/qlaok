@@ -50,6 +50,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       'public.record_shop_slug_alias_on_update()',
       'public.notify_order_events()',
       'public.prevent_client_owner_session_version_mutation()',
+      'public.touch_profile_plan_updated_at()',
     ];
 
     const assertTriggerFunctionsExecuteRevoked = async () => {
@@ -160,6 +161,12 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await db.exec(
       fs.readFileSync(
         'supabase/migrations/20261103000100_harden_postgrest_direct_writes.sql',
+        'utf8'
+      )
+    );
+    await db.exec(
+      fs.readFileSync(
+        'supabase/migrations/20261103000400_enforce_plan_expiry_and_renewal.sql',
         'utf8'
       )
     );
@@ -968,7 +975,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     await db.exec('RESET ROLE');
     await db.query(`
       INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
-      VALUES ('tx-atomic-test-2', '${saasUser}', 'QLAOKP_ATOMIC_2', 'basic', 39000, 'pending')
+      VALUES ('tx-atomic-test-2', '${saasUser}', 'QLAOKP_ATOMIC_2', 'premium', 69000, 'pending')
     `);
     await db.exec(
       "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
@@ -976,7 +983,7 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
 
     await assert.rejects(
       db.query(
-        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_2', 'FT-ATOMIC-1', 39000)"
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_2', 'FT-ATOMIC-1', 69000)"
       ),
       /DUPLICATE_BANK_REF/i
     );
@@ -987,6 +994,229 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
     ).rows[0];
     assert.equal(tx2AfterDup.status, 'pending');
     assert.equal(tx2AfterDup.bank_ref_id, null);
+
+    // Same-tier early renewal extends from the existing deadline.
+    await db.exec('RESET ROLE');
+    await db.query(
+      `UPDATE profiles SET plan_expires_at = clock_timestamp() + INTERVAL '10 days' WHERE id = '${saasUser}'`
+    );
+    const profileBeforeRenewal = (
+      await db.query(
+        `SELECT plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0];
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const earlyRenewalRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_ATOMIC_2', 'FT-ATOMIC-2', 69000) AS res"
+      )
+    ).rows[0].res;
+    const earlyRenewal =
+      typeof earlyRenewalRaw === 'string'
+        ? JSON.parse(earlyRenewalRaw)
+        : earlyRenewalRaw;
+    assert.equal(earlyRenewal.status, 'completed');
+    const renewalDeltaMs =
+      new Date(earlyRenewal.plan_expires_at).getTime() -
+      new Date(profileBeforeRenewal.plan_expires_at).getTime();
+    assert.ok(
+      Math.abs(renewalDeltaMs - 30 * 24 * 60 * 60 * 1000) < 1000,
+      'same-tier early renewal must add 30 days to the existing expiry'
+    );
+
+    // A paid tier change starts now and converts the old tier's remaining
+    // prepaid value into time at the new tier's published monthly price.
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-tier-change', '${saasUser}', 'QLAOKP_TIER_CHANGE', 'basic', 39000, 'pending')
+    `);
+    await db.query(
+      `UPDATE profiles SET plan_expires_at = clock_timestamp() + INTERVAL '10 days' WHERE id = '${saasUser}'`
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const tierChangeRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_TIER_CHANGE', 'FT-TIER-CHANGE', 39000) AS res"
+      )
+    ).rows[0].res;
+    const tierChange =
+      typeof tierChangeRaw === 'string'
+        ? JSON.parse(tierChangeRaw)
+        : tierChangeRaw;
+    assert.equal(tierChange.status, 'completed');
+    assert.equal(tierChange.target_plan, 'basic');
+    const tierChangeRemainingMs = Number(
+      (
+        await db.query(
+          `SELECT EXTRACT(EPOCH FROM (plan_expires_at - clock_timestamp())) * 1000 AS remaining_ms FROM profiles WHERE id = '${saasUser}'`
+        )
+      ).rows[0].remaining_ms
+    );
+    const expectedTierChangeMs =
+      (30 + (10 * 69000) / 39000) * 24 * 60 * 60 * 1000;
+    assert.ok(
+      Math.abs(tierChangeRemainingMs - expectedTierChangeMs) < 1000,
+      'changing tiers must credit remaining value using the published monthly prices'
+    );
+
+    // Paying for the same manually granted, non-expiring tier must keep its
+    // NULL expiry rather than silently downgrade it to a 30-day plan.
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-null-renewal', '${saasUser}', 'QLAOKP_NULL_RENEWAL', 'basic', 39000, 'pending')
+    `);
+    await db.query(
+      `UPDATE profiles SET plan_expires_at = NULL WHERE id = '${saasUser}'`
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const nullRenewalRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_NULL_RENEWAL', 'FT-NULL-RENEWAL', 39000) AS res"
+      )
+    ).rows[0].res;
+    const nullRenewal =
+      typeof nullRenewalRaw === 'string'
+        ? JSON.parse(nullRenewalRaw)
+        : nullRenewalRaw;
+    assert.equal(nullRenewal.status, 'completed');
+    assert.equal(
+      (
+        await db.query(
+          `SELECT plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+        )
+      ).rows[0].plan_expires_at,
+      null,
+      'same-tier payment must preserve a non-expiring manual grant'
+    );
+
+    // A pending cross-tier payment must not overwrite a non-expiring plan
+    // granted by an admin while the owner was in checkout. Keep it pending
+    // and return a reconciliation signal so the webhook caller can stop retrying.
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status, created_at)
+      VALUES ('tx-atomic-manual-review', '${saasUser}', 'QLAOKP_MANUAL_REVIEW', 'basic', 39000, 'pending', clock_timestamp() - INTERVAL '1 minute')
+    `);
+    await db.query(
+      `UPDATE profiles SET plan = 'premium', plan_expires_at = NULL, updated_at = clock_timestamp() WHERE id = '${saasUser}'`
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const manualReviewRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_MANUAL_REVIEW', 'FT-MANUAL-REVIEW', 39000) AS res"
+      )
+    ).rows[0].res;
+    const manualReview =
+      typeof manualReviewRaw === 'string'
+        ? JSON.parse(manualReviewRaw)
+        : manualReviewRaw;
+    assert.equal(manualReview.status, 'manual_review');
+    assert.equal(manualReview.owner_id, saasUser);
+    assert.equal(manualReview.resolution_required, true);
+    assert.equal(manualReview.resolution_code, 'NON_EXPIRING_ADMIN_PLAN');
+    const pendingManualReview = (
+      await db.query(
+        "SELECT status, bank_ref_id FROM payment_transactions WHERE id = 'tx-atomic-manual-review'"
+      )
+    ).rows[0];
+    assert.equal(pendingManualReview.status, 'pending');
+    assert.equal(pendingManualReview.bank_ref_id, 'FT-MANUAL-REVIEW');
+    const preservedAdminPlan = (
+      await db.query(
+        `SELECT plan, plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0];
+    assert.equal(preservedAdminPlan.plan, 'premium');
+    assert.equal(preservedAdminPlan.plan_expires_at, null);
+
+    // A routine profile edit after checkout must not look like a plan grant.
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-profile-edit', '${saasUser}', 'QLAOKP_PROFILE_EDIT', 'basic', 39000, 'pending')
+    `);
+    const planUpdatedBeforeProfileEdit = (
+      await db.query(
+        `SELECT plan_updated_at FROM profiles WHERE id = '${saasUser}'`
+      )
+    ).rows[0].plan_updated_at;
+    await db.query(
+      `UPDATE profiles SET full_name = 'Updated after checkout', updated_at = clock_timestamp() WHERE id = '${saasUser}'`
+    );
+    assert.equal(
+      new Date(
+        (
+          await db.query(
+            `SELECT plan_updated_at FROM profiles WHERE id = '${saasUser}'`
+          )
+        ).rows[0].plan_updated_at
+      ).getTime(),
+      new Date(planUpdatedBeforeProfileEdit).getTime(),
+      'an unrelated profile edit must not change the plan-specific timestamp'
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const profileEditRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_PROFILE_EDIT', 'FT-PROFILE-EDIT', 39000) AS res"
+      )
+    ).rows[0].res;
+    const profileEditResult =
+      typeof profileEditRaw === 'string'
+        ? JSON.parse(profileEditRaw)
+        : profileEditRaw;
+    assert.equal(profileEditResult.status, 'completed');
+    assert.equal(
+      (
+        await db.query(
+          "SELECT status FROM payment_transactions WHERE id = 'tx-atomic-profile-edit'"
+        )
+      ).rows[0].status,
+      'completed'
+    );
+
+    // A same-tier admin grant that races with checkout remains non-expiring.
+    await db.exec('RESET ROLE');
+    await db.query(`
+      INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
+      VALUES ('tx-atomic-same-tier-grant', '${saasUser}', 'QLAOKP_SAME_TIER_GRANT', 'basic', 39000, 'pending')
+    `);
+    await db.query(
+      `UPDATE profiles SET plan = 'basic', plan_expires_at = NULL, updated_at = clock_timestamp() WHERE id = '${saasUser}'`
+    );
+    await db.exec(
+      "SELECT set_config('request.jwt.claim.role', 'service_role', false), set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); SET ROLE service_role"
+    );
+    const sameTierGrantRaw = (
+      await db.query(
+        "SELECT public.complete_payment_webhook_atomic('QLAOKP_SAME_TIER_GRANT', 'FT-SAME-TIER-GRANT', 39000) AS res"
+      )
+    ).rows[0].res;
+    const sameTierGrantResult =
+      typeof sameTierGrantRaw === 'string'
+        ? JSON.parse(sameTierGrantRaw)
+        : sameTierGrantRaw;
+    assert.equal(sameTierGrantResult.status, 'completed');
+    assert.equal(
+      (
+        await db.query(
+          `SELECT plan, plan_expires_at FROM profiles WHERE id = '${saasUser}'`
+        )
+      ).rows[0].plan_expires_at,
+      null,
+      'same-tier admin grant must remain non-expiring after a racing checkout'
+    );
 
     // 8. Non-pending status (e.g. cancelled) is rejected with PAYMENT_ORDER_NOT_PENDING
     await db.exec('RESET ROLE');
@@ -1006,6 +1236,9 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
 
     // 9. p_allow_unverified_amount=true allows dev simulator to complete without transfer amount check
     await db.exec('RESET ROLE');
+    await db.query(
+      `UPDATE profiles SET plan_expires_at = clock_timestamp() - INTERVAL '1 second' WHERE id = '${saasUser}'`
+    );
     await db.query(`
       INSERT INTO payment_transactions (id, user_id, order_code, target_plan, amount, status)
       VALUES ('tx-atomic-test-3', '${saasUser}', 'QLAOKP_ATOMIC_3', 'basic', 39000, 'pending')
@@ -1023,6 +1256,17 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       typeof devResRaw === 'string' ? JSON.parse(devResRaw) : devResRaw;
     assert.equal(devRes.status, 'completed');
     assert.equal(devRes.target_plan, 'basic');
+    const expiredRenewalRemainingMs = Number(
+      (
+        await db.query(
+          `SELECT EXTRACT(EPOCH FROM (plan_expires_at - clock_timestamp())) * 1000 AS remaining_ms FROM profiles WHERE id = '${saasUser}'`
+        )
+      ).rows[0].remaining_ms
+    );
+    assert.ok(
+      Math.abs(expiredRenewalRemainingMs - 30 * 24 * 60 * 60 * 1000) < 1000,
+      'renewal after expiry must start a new 30-day period at completion time'
+    );
 
     await db.exec('RESET ROLE');
 
@@ -2691,6 +2935,26 @@ test('migrations apply and enforce staff/cashier mutation boundaries in isolated
       db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('basic-limit-26', 'plan-limit-shop', 'plan-limit-category', 10000)"),
       /PLAN_LIMIT_REACHED/i
     );
+
+    // Paid plans with an explicit expired deadline use Free limits; null
+    // expiries keep manually granted Basic plans available.
+    await db.exec(`
+      INSERT INTO profiles (id, plan, plan_expires_at)
+        VALUES ('expired-basic-owner', 'basic', clock_timestamp() - INTERVAL '1 second');
+      INSERT INTO shops (id, owner_id, slug, name, is_published)
+        VALUES ('expired-basic-shop', 'expired-basic-owner', 'expired-basic-shop', 'Expired Basic fixture', false);
+      INSERT INTO categories (id, shop_id, sort_order, name_i18n)
+        VALUES ('expired-basic-category', 'expired-basic-shop', 1, '{"vi":"Test"}');
+      INSERT INTO items (id, shop_id, category_id, price)
+        SELECT 'expired-basic-item-' || n, 'expired-basic-shop', 'expired-basic-category', 10000
+        FROM generate_series(1, 5) AS n;
+    `);
+    await assert.rejects(
+      db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('expired-basic-item-6', 'expired-basic-shop', 'expired-basic-category', 10000)"),
+      /PLAN_LIMIT_REACHED/i
+    );
+    await db.query("UPDATE profiles SET plan_expires_at = NULL WHERE id = 'expired-basic-owner'");
+    await db.query("INSERT INTO items (id, shop_id, category_id, price) VALUES ('expired-basic-item-6', 'expired-basic-shop', 'expired-basic-category', 10000)");
 
     // A direct PostgREST JWT must be rejected by RLS after owner logout, while
     // the newly issued generation can still read the same profile.

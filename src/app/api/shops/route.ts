@@ -48,7 +48,7 @@ import { isValidServiceRequestNotificationRule } from '@/lib/push-notifications'
 import { isSuperAdminEmail } from '@/lib/auth-session';
 import {
   getShopSettingsPlanRestriction,
-  normalizePlanTier,
+  getEffectivePlanTier,
 } from '@/lib/plan-limits';
 import { ALL_LOCALES } from '@/lib/i18n-helper';
 import { validateOpeningHoursInput } from '@/lib/shop-setup-checklist';
@@ -882,7 +882,7 @@ export async function POST(req: Request) {
         const { data: ownerProfile, error: ownerPlanError } =
           await getSupabaseDbClient()
             .from('profiles')
-            .select('plan')
+            .select('plan, plan_expires_at')
             .eq('id', ownerResolution.ownerId)
             .maybeSingle();
         if (ownerPlanError || !ownerProfile) {
@@ -895,7 +895,10 @@ export async function POST(req: Request) {
             { status: 503 }
           );
         }
-        rawOwnerPlan = (ownerProfile as { plan?: unknown }).plan;
+        rawOwnerPlan = ownerProfile as {
+          plan?: unknown;
+          plan_expires_at?: unknown;
+        };
       } catch {
         return NextResponse.json(
           {
@@ -907,7 +910,14 @@ export async function POST(req: Request) {
         );
       }
 
-      const ownerPlan = normalizePlanTier(rawOwnerPlan);
+      const ownerProfile = rawOwnerPlan as {
+        plan?: unknown;
+        plan_expires_at?: unknown;
+      };
+      const ownerPlan = getEffectivePlanTier(
+        ownerProfile.plan,
+        ownerProfile.plan_expires_at
+      );
       const restriction = getShopSettingsPlanRestriction(ownerPlan, {
         customThemeChanged: shopInput.customThemeChanged,
         supportedLanguageCount: payload.supported_langs.length,
@@ -1103,7 +1113,7 @@ export async function PATCH(req: Request) {
         const { data: ownerProfile, error: ownerPlanError } =
           await getSupabaseDbClient()
             .from('profiles')
-            .select('plan')
+            .select('plan, plan_expires_at')
             .eq('id', existingShop.owner_id)
             .maybeSingle();
         if (ownerPlanError || !ownerProfile) {
@@ -1116,7 +1126,10 @@ export async function PATCH(req: Request) {
             { status: 503 }
           );
         }
-        rawOwnerPlan = (ownerProfile as { plan?: unknown }).plan;
+        rawOwnerPlan = ownerProfile as {
+          plan?: unknown;
+          plan_expires_at?: unknown;
+        };
       } catch {
         return NextResponse.json(
           {
@@ -1128,7 +1141,14 @@ export async function PATCH(req: Request) {
         );
       }
 
-      const ownerPlan = normalizePlanTier(rawOwnerPlan);
+      const ownerProfile = rawOwnerPlan as {
+        plan?: unknown;
+        plan_expires_at?: unknown;
+      };
+      const ownerPlan = getEffectivePlanTier(
+        ownerProfile.plan,
+        ownerProfile.plan_expires_at
+      );
       const restriction = getShopSettingsPlanRestriction(ownerPlan, {
         customThemeChanged,
         ...(supportedLangsChanged && requestedLanguageCount !== undefined

@@ -95,6 +95,7 @@ export async function ensureSuperAdminSeeded(): Promise<Profile> {
       .update({
         plan: 'premium',
         plan_expires_at: '2030-12-31T23:59:59Z',
+        plan_updated_at: new Date().toISOString(),
       })
       .eq('id', adminProfile.id)
       .select('*')

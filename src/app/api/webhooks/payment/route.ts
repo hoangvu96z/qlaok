@@ -4,6 +4,7 @@ import {
   dbCompletePaymentWebhook,
   dbCreatePaymentOrder,
   dbGetBillingData,
+  dbGetProfilePlanStatus,
   dbSetProfilePlan,
   getSupabaseDbClient,
   isSupabaseDbClientOverriddenForTests,
@@ -32,6 +33,10 @@ import {
   verifySaasPaymentWebhookAuthentication,
 } from '@/lib/saas-payment-webhook';
 import type { PlanTier, ShopRole } from '@/types/qlaok';
+import {
+  getEffectivePlanTier,
+  isNonExpiringPaidPlan,
+} from '@/lib/plan-limits';
 
 function isVerifiedSuperAdmin(
   user: VerifiedSessionUser | null | undefined
@@ -307,7 +312,16 @@ export async function GET(req: Request) {
       : auth.user.sub;
 
   const data = await dbGetBillingData(resolvedOwnerId);
-  return NextResponse.json(data);
+  return NextResponse.json({
+    ...data,
+    profile: {
+      ...data.profile,
+      plan: getEffectivePlanTier(
+        data.profile.plan,
+        data.profile.plan_expires_at
+      ),
+    },
+  });
 }
 
 export async function POST(req: Request) {
@@ -333,6 +347,35 @@ export async function POST(req: Request) {
             code: 'INVALID_TARGET_PLAN',
           },
           { status: 400 }
+        );
+      }
+
+      const currentPlanStatus = await dbGetProfilePlanStatus(
+        auth.targetOwnerId
+      ).catch(() => null);
+      if (!currentPlanStatus) {
+        return NextResponse.json(
+          {
+            error: 'Không thể xác minh gói hiện tại. Vui lòng thử lại sau.',
+            code: 'BILLING_PLAN_LOOKUP_FAILED',
+          },
+          { status: 503 }
+        );
+      }
+
+      if (
+        isNonExpiringPaidPlan(
+          currentPlanStatus.plan,
+          currentPlanStatus.plan_expires_at
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Gói trả phí hiện tại được cấp không thời hạn. Hãy liên hệ Super Admin để đổi gói trước khi thanh toán.',
+            code: 'NON_EXPIRING_PLAN_REQUIRES_ADMIN',
+          },
+          { status: 409 }
         );
       }
 
@@ -602,6 +645,16 @@ export async function POST(req: Request) {
         allowUnverifiedAmount: Boolean(isDevSandboxSimulator),
       }
     );
+    if (result.paymentResolutionRequired) {
+      return NextResponse.json({
+        success: false,
+        status: 'manual_review',
+        code:
+          result.paymentResolutionCode || 'PAYMENT_REQUIRES_MANUAL_REVIEW',
+        ...result,
+      });
+    }
+
     return NextResponse.json({
       success: true,
       ...result,

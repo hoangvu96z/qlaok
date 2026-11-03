@@ -524,6 +524,7 @@ export interface Profile {
   full_name: string;
   plan: PlanTier;
   plan_expires_at?: string | null;
+  plan_updated_at?: string | null;
   is_admin?: boolean;
   role?: 'admin' | 'owner' | 'cashier' | 'staff';
   created_at?: string;

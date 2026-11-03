@@ -6,6 +6,7 @@ import {
 } from '@/lib/db';
 import {
   canUseAiOcr,
+  getEffectivePlanTier,
   PLAN_FEATURE_LOCKED_CODE,
 } from '@/lib/plan-limits';
 import { SEED_SHOPS } from '@/lib/seed-data';
@@ -455,11 +456,16 @@ export async function requireAiOcrPlan(
     const sb = getSupabaseDbClient();
     const { data, error } = await sb
       .from('profiles')
-      .select('plan')
+      .select('plan, plan_expires_at')
       .eq('id', resolvedOwnerId)
       .maybeSingle();
     if (!error) {
-      plan = ((data as { plan?: PlanTier } | null)?.plan as PlanTier) || null;
+      const profile = data as
+        | { plan?: unknown; plan_expires_at?: unknown }
+        | null;
+      plan = profile
+        ? getEffectivePlanTier(profile.plan, profile.plan_expires_at)
+        : null;
     }
   } catch {
     plan = null;

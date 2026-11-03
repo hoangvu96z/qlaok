@@ -242,7 +242,10 @@ test('summary label helpers return concise localized labels for chime and deskto
 
 interface MockStorefrontBundleDbOptions {
   shops?: Record<string, Omit<Partial<Shop>, 'owner_id'> & { owner_id?: string | null }>;
-  profiles?: Record<string, { id?: string; plan?: unknown } | null>;
+  profiles?: Record<
+    string,
+    { id?: string; plan?: unknown; plan_expires_at?: unknown } | null
+  >;
   firstProfile?: { id?: string; plan?: unknown };
   recordedProfileQueries?: Array<{
     columns?: string;
@@ -472,12 +475,25 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
         is_published: true,
         supported_langs: ['vi', 'en', 'ko'],
       },
+      'shop-expired-premium': {
+        id: 'shop-expired-premium',
+        slug: 'quan-expired-premium',
+        name: 'Quán Premium Hết Hạn',
+        owner_id: 'owner-expired-premium-id',
+        is_published: true,
+        supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
+      },
     },
     profiles: {
       'owner-free-01': { id: 'owner-free-01', plan: 'free' },
       'owner-prem-01': { id: 'owner-prem-01', plan: 'premium' },
       'owner-basic-01': { id: 'owner-basic-01', plan: 'basic' },
       'owner-invalid-plan-id': { id: 'owner-invalid-plan-id', plan: 'enterprise_custom' },
+      'owner-expired-premium-id': {
+        id: 'owner-expired-premium-id',
+        plan: 'premium',
+        plan_expires_at: '2020-01-01T00:00:00.000Z',
+      },
     },
     // The unrelated first profile returned by an un-scoped profiles lookup has plan: 'premium'
     firstProfile: { id: 'unrelated-first-profile', plan: 'premium' },
@@ -493,12 +509,16 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
     assert.equal(freeBundle.ownerPlan, 'free', 'Owner on Free tier must return ownerPlan "free"');
     assert.equal(freeBundle.shop.id, 'shop-free');
 
-    // Verify exact query: only 'plan' column selected, and filtered by id = shop.owner_id
+    // Verify exact entitlement query and that it is scoped to shop.owner_id.
     const freeQuery = recordedProfileQueries.find(
       (q) => q.filterCol === 'id' && q.filterVal === 'owner-free-01'
     );
     assert.ok(freeQuery, 'Must query profiles with filter id = shop.owner_id');
-    assert.equal(freeQuery.columns, 'plan', 'Must select only "plan" column from profiles');
+    assert.equal(
+      freeQuery.columns,
+      'plan, plan_expires_at',
+      'Must select only the plan fields needed for entitlement checks'
+    );
 
     // Verify storefront language gating: Free owner allows only 1 language even if shop configured 8
     const freeAllowedLangs = getAllowedLocalesForPlan(
@@ -592,6 +612,20 @@ test('dbGetStorefrontBundle derives ownerPlan strictly from shop.owner_id and fa
       invalidPlanBundle.ownerPlan,
       'free',
       'Invalid plan string in profiles must fall back to "free"'
+    );
+
+    // 7. Expired paid plans lose paid storefront locale access.
+    const expiredPremiumBundle = await dbGetStorefrontBundle(
+      'quan-expired-premium'
+    );
+    assert.ok(expiredPremiumBundle);
+    assert.equal(expiredPremiumBundle.ownerPlan, 'free');
+    assert.deepEqual(
+      getAllowedLocalesForPlan(
+        expiredPremiumBundle.ownerPlan,
+        normalizeShopSupportedLangs(expiredPremiumBundle.shop.supported_langs)
+      ),
+      ['vi']
     );
   } finally {
     setSupabaseDbClientForTests(null);

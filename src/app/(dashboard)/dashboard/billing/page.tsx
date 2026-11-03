@@ -595,6 +595,13 @@ export default function DashboardBillingPage() {
                 })}
               </h3>
 
+              <p className="text-xs leading-relaxed text-slate-600">
+                {tx(
+                  'Gia hạn cùng hạng cộng thêm 30 ngày. Nếu đổi hạng khi gói còn hạn, giá trị thời gian đã trả nhưng chưa dùng được quy đổi theo giá tháng của hai gói.',
+                  'Renewing the same tier adds 30 days. If you change tiers while your plan is active, the remaining prepaid value is converted using the two plans’ monthly prices.'
+                )}
+              </p>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
                 <div>
                   <span className="text-slate-400 block">

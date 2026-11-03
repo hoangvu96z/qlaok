@@ -21,6 +21,8 @@ import {
 import {
   PLAN_CONFIGS,
   canAddMoreItems,
+  getEffectivePlanTier,
+  isNonExpiringPaidPlan,
   getAllowedLocalesForPlan,
   normalizePlanTier,
 } from '@/lib/plan-limits';
@@ -126,7 +128,9 @@ import {
 } from '@/lib/onboarding-flow';
 import {
   dbBulkImportCatalog,
+  dbCompletePaymentWebhook,
   dbGetShopCatalog,
+  dbSetProfilePlan,
   dbUpsertItem,
   setSupabaseDbClientForTests,
 } from '@/lib/db';
@@ -570,6 +574,283 @@ describe('Suite 3: SaaS Plan Limits & Feature Gating (plan-limits.ts)', () => {
     assert.deepEqual(getAllowedLocalesForPlan('premium', all8), [
       'vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru',
     ]);
+  });
+
+  test('3.10 getEffectivePlanTier expires paid plans at the deadline and keeps null expiries', () => {
+    const now = Date.parse('2030-01-01T00:00:00.000Z');
+
+    assert.equal(
+      getEffectivePlanTier('premium', '2030-01-01T00:00:00.001Z', now),
+      'premium'
+    );
+    assert.equal(
+      getEffectivePlanTier('premium', '2030-01-01T00:00:00.000Z', now),
+      'free'
+    );
+    assert.equal(
+      getEffectivePlanTier('basic', '2029-12-31T23:59:59.999Z', now),
+      'free'
+    );
+    assert.equal(getEffectivePlanTier('premium', null, now), 'premium');
+    assert.equal(getEffectivePlanTier('basic', undefined, now), 'basic');
+    assert.equal(getEffectivePlanTier('premium', 'invalid-date', now), 'free');
+    assert.equal(getEffectivePlanTier('invalid-plan', null, now), 'free');
+  });
+
+  test('3.11 identifies non-expiring paid plans without blocking free or finite plans', () => {
+    assert.equal(isNonExpiringPaidPlan('basic', null), true);
+    assert.equal(isNonExpiringPaidPlan('premium', undefined), true);
+    assert.equal(isNonExpiringPaidPlan('free', null), false);
+    assert.equal(
+      isNonExpiringPaidPlan('basic', '2029-01-01T00:00:00.000Z'),
+      false
+    );
+    assert.equal(
+      isNonExpiringPaidPlan('premium', '2031-01-01T00:00:00.000Z'),
+      false
+    );
+  });
+
+  test('3.12 Super Admin direct plan changes clear an inherited expiry', async () => {
+    const capturedUpdate: { value: Record<string, unknown> | null } = {
+      value: null,
+    };
+    const mockDb = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select: () => ({
+              limit: async () => ({ data: [{ id: 'ready-shop' }], error: null }),
+            }),
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            update: (payload: Record<string, unknown>) => {
+              capturedUpdate.value = payload;
+              return {
+                eq: () => ({
+                  select: () => ({
+                    single: async () => ({
+                      data: {
+                        id: 'owner-expired',
+                        plan: payload.plan,
+                        plan_expires_at: payload.plan_expires_at,
+                      },
+                      error: null,
+                    }),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      },
+    };
+
+    setSupabaseDbClientForTests(mockDb);
+    try {
+      const profile = await dbSetProfilePlan('premium', 'owner-expired');
+      assert.equal(capturedUpdate.value?.plan, 'premium');
+      assert.equal(capturedUpdate.value?.plan_expires_at, null);
+      assert.equal(profile.plan_expires_at, null);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('3.13 blocks payment orders for admin-managed non-expiring paid plans', async () => {
+    const adminToken = issueSessionToken({
+      id: 'super-admin-test',
+      email: 'hoangvu96z@gmail.com',
+      role: 'admin',
+    });
+
+    for (const plan of ['basic', 'premium'] as const) {
+      let paymentOrderTouched = false;
+      const mockDb = {
+        from(table: string) {
+          if (table === 'shops') {
+            return {
+              select: () => ({
+                limit: async () => ({ data: [{ id: 'ready-shop' }], error: null }),
+              }),
+            };
+          }
+          if (table === 'profiles') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      id: 'owner-lifetime',
+                      plan,
+                      plan_expires_at: null,
+                    },
+                    error: null,
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === 'payment_transactions') {
+            paymentOrderTouched = true;
+          }
+          throw new Error(`Unexpected table: ${table}`);
+        },
+      };
+
+      setSupabaseDbClientForTests(mockDb);
+      try {
+        const response = await paymentPost(
+          new Request('http://localhost:3000/api/webhooks/payment', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({
+              action: 'create_order',
+              ownerId: 'owner-lifetime',
+              targetPlan: plan === 'basic' ? 'premium' : 'basic',
+            }),
+          })
+        );
+        const body = await response.json();
+        assert.equal(response.status, 409);
+        assert.equal(body.code, 'NON_EXPIRING_PLAN_REQUIRES_ADMIN');
+        assert.equal(paymentOrderTouched, false);
+      } finally {
+        setSupabaseDbClientForTests(null);
+      }
+    }
+
+    const lookupFailureDb = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select: () => ({
+              limit: async () => ({ data: [{ id: 'ready-shop' }], error: null }),
+            }),
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data: null,
+                  error: { message: 'database unavailable' },
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      },
+    };
+    setSupabaseDbClientForTests(lookupFailureDb);
+    try {
+      const response = await paymentPost(
+        new Request('http://localhost:3000/api/webhooks/payment', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminToken}`,
+          },
+          body: JSON.stringify({
+            action: 'create_order',
+            ownerId: 'owner-lifetime',
+            targetPlan: 'premium',
+          }),
+        })
+      );
+      const body = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(body.code, 'BILLING_PLAN_LOOKUP_FAILED');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  });
+
+  test('3.14 returns manual-reconciliation status from a guarded payment webhook', async () => {
+    const mockDb = {
+      from(table: string) {
+        if (table === 'shops') {
+          return {
+            select: () => ({
+              limit: async () => ({ data: [{ id: 'ready-shop' }], error: null }),
+            }),
+          };
+        }
+        if (table === 'payment_transactions') {
+          return {
+            select: () => ({
+              ilike: () => ({
+                maybeSingle: async () => ({
+                  data: {
+                    id: 'tx-manual-review',
+                    user_id: 'owner-lifetime',
+                    order_code: 'QLAOKP_MANUAL_REVIEW',
+                    status: 'pending',
+                  },
+                  error: null,
+                }),
+              }),
+              eq: () => ({
+                order: async () => ({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data: {
+                    id: 'owner-lifetime',
+                    email: 'owner@example.test',
+                    full_name: 'Lifetime Owner',
+                    plan: 'basic',
+                    plan_expires_at: null,
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      },
+      rpc: async () => ({
+        data: {
+          status: 'manual_review',
+          owner_id: 'owner-lifetime',
+          resolution_required: true,
+          resolution_code: 'NON_EXPIRING_ADMIN_PLAN',
+        },
+        error: null,
+      }),
+    };
+
+    setSupabaseDbClientForTests(mockDb);
+    try {
+      const result = await dbCompletePaymentWebhook(
+        'QLAOKP_MANUAL_REVIEW',
+        'FT-MANUAL-REVIEW',
+        { verifiedTransferAmount: 69000 }
+      );
+      assert.equal(result.paymentResolutionRequired, true);
+      assert.equal(
+        result.paymentResolutionCode,
+        'NON_EXPIRING_ADMIN_PLAN'
+      );
+      assert.equal(result.profile.plan, 'basic');
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
   });
 });
 
@@ -7360,10 +7641,10 @@ describe('Suite 25: Catalog owner quota and dbUpsertItem plan limits', () => {
       const catalogPrem = await dbGetShopCatalog('shop-owner-premium');
       assert.equal(catalogPrem.ownerPlan, 'premium');
 
-      // 4. Exact column selection check: Verify that only 'plan' column was selected from profiles for ownerPlan
+      // 4. Exact column selection check: read only entitlement fields from profiles.
       assert.ok(
-        recordedColumns.profiles.includes('plan'),
-        'Must select only the "plan" column for ownerPlan lookup'
+        recordedColumns.profiles.includes('plan, plan_expires_at'),
+        'Must select only plan and expiry columns for ownerPlan lookup'
       );
       // Ensure ownerPlan is a scalar string and never serialized the full owner profile
       assert.equal(typeof catalogBasic.ownerPlan, 'string');

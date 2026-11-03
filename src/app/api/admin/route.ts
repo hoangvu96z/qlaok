@@ -46,6 +46,7 @@ import type {
 } from '@/types/qlaok';
 
 import { hasBusinessStateChanged } from '@/lib/audit-replay';
+import { getEffectivePlanTier } from '@/lib/plan-limits';
 import {
   recordAdminAuditLog,
   recordOrderAuditLog,
@@ -135,7 +136,12 @@ export async function GET(req: Request) {
     const profiles = ((profilesData || []) as Profile[]).map((p) =>
       isSuperAdminEmail(p.email)
         ? { ...p, is_admin: true, role: 'admin' as const, plan: 'premium' as const }
-        : { ...p, is_admin: false, role: 'owner' as const }
+        : {
+            ...p,
+            is_admin: false,
+            role: 'owner' as const,
+            plan: getEffectivePlanTier(p.plan, p.plan_expires_at),
+          }
     );
     const shops = (shopsData || []) as Shop[];
     const categories = (categoriesData || []) as Category[];
@@ -516,10 +522,12 @@ export async function POST(req: Request) {
         expiresAt = exp.toISOString();
       }
 
+      const planUpdatedAt = new Date().toISOString();
       const updatePayload: Record<string, unknown> = {
         plan,
         plan_expires_at: expiresAt,
-        updated_at: new Date().toISOString(),
+        plan_updated_at: planUpdatedAt,
+        updated_at: planUpdatedAt,
       };
       if (fullName !== undefined) updatePayload.full_name = fullName;
       if (phone !== undefined) updatePayload.phone = phone;

@@ -93,6 +93,38 @@ export function normalizePlanTier(plan?: unknown): PlanTier {
   return 'free';
 }
 
+/** Resolves the tier available for entitlement checks at the supplied time. */
+export function getEffectivePlanTier(
+  plan: unknown,
+  planExpiresAt?: unknown,
+  nowMs = Date.now()
+): PlanTier {
+  const tier = normalizePlanTier(plan);
+  if (tier === 'free' || planExpiresAt === null || planExpiresAt === undefined) {
+    return tier;
+  }
+
+  const expiresAtMs =
+    planExpiresAt instanceof Date
+      ? planExpiresAt.getTime()
+      : typeof planExpiresAt === 'string' || typeof planExpiresAt === 'number'
+        ? new Date(planExpiresAt).getTime()
+        : Number.NaN;
+
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs ? tier : 'free';
+}
+
+/** A paid tier without an expiry is an admin-managed, non-expiring grant. */
+export function isNonExpiringPaidPlan(
+  plan: unknown,
+  planExpiresAt?: unknown
+): boolean {
+  return (
+    (plan === 'basic' || plan === 'premium') &&
+    (planExpiresAt === null || planExpiresAt === undefined)
+  );
+}
+
 export function getAllowedLocalesForPlan(
   plan?: PlanTier | string | null,
   shopLocales: SupportedLocale[] = []
