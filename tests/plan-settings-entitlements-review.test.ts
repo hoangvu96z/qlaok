@@ -4,7 +4,11 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PlanUpgradeDialog } from '@/components/ui/PlanUpgradeDialog';
 import { getShopSettingsPlanRestriction } from '@/lib/plan-limits';
-import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
+import {
+  buildShopSettingsThemeConfigPatch,
+  hasShopSettingsPaymentConfigChanged,
+  resolveInitialShopSettingsCustomTheme,
+} from '@/lib/shop-settings-theme-patch';
 
 test('Free and Basic language limits select the next plan with enough slots', () => {
   assert.equal(
@@ -105,6 +109,81 @@ test('settings theme patch preserves newer values owned by other editors', () =>
   assert.equal(savedTheme.backgroundImageUrl, '');
   assert.deepEqual(savedTheme.paymentConfig, paymentConfig);
   assert.equal(savedTheme.serviceRequestNotificationRule, 'owner_only');
+});
+
+test('color-only theme save omits unchanged defaults and unrelated settings', () => {
+  const initialCustomTheme = resolveInitialShopSettingsCustomTheme(
+    { primaryColor: '#10b981' },
+    'fnb'
+  );
+
+  assert.deepEqual(initialCustomTheme, {
+    primaryColor: '#10b981',
+    layout: 'list',
+    backgroundStyle: 'clean',
+    backgroundImageUrl: '',
+    backgroundOverlayOpacity: 0.72,
+  });
+
+  const patch = buildShopSettingsThemeConfigPatch({
+    customTheme: {
+      ...initialCustomTheme,
+      primaryColor: '#f52853',
+    },
+    initialCustomTheme,
+    serviceRequestNotificationRule: 'all_order_staff',
+    initialServiceRequestNotificationRule: 'all_order_staff',
+  });
+
+  assert.deepEqual(patch, { primaryColor: '#f52853' });
+});
+
+test('theme patch includes only custom fields changed from the hydrated form values', () => {
+  const initialCustomTheme = resolveInitialShopSettingsCustomTheme(
+    { primaryColor: '#10b981' },
+    'retail'
+  );
+  const patch = buildShopSettingsThemeConfigPatch({
+    customTheme: {
+      ...initialCustomTheme,
+      layout: 'list',
+      backgroundStyle: 'dark',
+      backgroundImageUrl: ' https://example.com/background.jpg ',
+      backgroundOverlayOpacity: 0.5,
+    },
+    initialCustomTheme,
+  });
+
+  assert.deepEqual(patch, {
+    layout: 'list',
+    backgroundStyle: 'dark',
+    backgroundImageUrl: 'https://example.com/background.jpg',
+    backgroundOverlayOpacity: 0.5,
+  });
+});
+
+test('payment settings are detected as changed only after an editable field changes', () => {
+  const initial = {
+    mode: 'vietqr_auto' as const,
+    bankId: 'MB',
+    bankName: 'MB Bank',
+    accountNumber: '',
+    accountName: 'SHOP NAME',
+    template: 'compact2' as const,
+    transferPrefix: 'QLAOK',
+    customQrUrl: '',
+    paymentNote: '',
+  };
+
+  assert.equal(hasShopSettingsPaymentConfigChanged(initial, initial), false);
+  assert.equal(
+    hasShopSettingsPaymentConfigChanged(
+      { ...initial, accountNumber: '123456789' },
+      initial
+    ),
+    true
+  );
+  assert.equal(hasShopSettingsPaymentConfigChanged(initial, null), false);
 });
 
 test('bank-only settings patch does not re-send custom or owner theme values', () => {

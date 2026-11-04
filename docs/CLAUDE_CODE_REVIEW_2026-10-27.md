@@ -3187,3 +3187,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Điều phối:** AGY Gemini 3.8 Flash High run `2026-11-04T08-32-46-477Z-e6a36369` triển khai ba file. Claude CLI được thử read-only nhưng gateway trả `[claude-code:unrecognized_model]` với model `deepseek`; không có verdict Claude cho patch này.
 - **Kiểm chứng độc lập Codex:** focused Settings regression + entitlement **12/12 PASS**; `npm run test:review` **581/581 PASS**; `npm run typecheck` PASS; `npm run build` PASS; `git diff --check` sạch. Build báo các cảnh báo ESLint hiện có về `<img>` và dependency hook.
 - **Chưa xác minh:** save/reload trên shop Premium QA sau khi deploy; request ghi bị guard chặn trong lần thử trước deploy.
+
+## 249. Lưu màu Settings vẫn gửi các cấu hình theme mặc định chưa được sửa (2026-11-04)
+
+- **Finding được xác nhận:** sau khi sửa trường `city`, guarded Premium QA tiến xa hơn nhưng chặn PATCH vì `backgroundStyle` trong payload là mặc định của form, trong khi baseline của shop không có trường đó. `performSaveSettings` trước đó luôn gửi mọi giá trị form, kể cả `layout`, nền, payment config và quy tắc thông báo chưa được người dùng chỉnh. Không có PATCH nào tới DB trong các lượt guard bị chặn.
+- **Sửa:** hydrate custom theme qua cùng một hàm giá trị ban đầu; PATCH chỉ gồm từng trường theme khác giá trị đã hydrate. Chỉ gửi cả `paymentConfig` khi một trường thanh toán chỉnh sửa được thay đổi; chỉ gửi quy tắc thông báo khi khác giá trị ban đầu. API tiếp tục merge các trường theme bị bỏ qua với dữ liệu hiện tại.
+- **Regression:** mở rộng `tests/plan-settings-entitlements-review.test.ts` để xác nhận lưu màu chỉ gửi `{ primaryColor }`, các trường custom theme chỉ xuất hiện khi đổi, và payment settings chỉ được đánh dấu thay đổi khi có chỉnh sửa.
+- **CodeGraph:** `sync`; `node buildShopSettingsThemeConfigPatch`; `node` vùng hydrate và save của `DashboardSettingsPage`; `node` vùng kiểm quyền/merge của `PATCH /api/shops`; xem blast radius ở `tests/plan-settings-entitlements-review.test.ts`. Ảnh hưởng: Settings custom theme, payment config và service-request notification rule; API merge không đổi.
+- **Kiểm chứng Codex:** focused Settings regressions **15/15 PASS**; `npm run test:review` **584/584 PASS**; `npm run typecheck` PASS; `npm run build` PASS; `git diff --check` sạch. Build còn các cảnh báo lint `<img>`/hook hiện hữu.
+- **Chưa xác minh:** deploy và lượt save/reload có guard trên shop Premium QA. Lượt test trước chưa ghi DB; cần chạy lại sau deploy và đối chiếu khôi phục theme chính xác.

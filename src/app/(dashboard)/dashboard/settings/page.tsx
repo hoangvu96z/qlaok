@@ -34,7 +34,11 @@ import {
 import { useDashboard } from '@/lib/dashboard-context';
 import { membershipHasPermission } from '@/lib/dashboard-nav';
 import { getAuthHeaders, isSuperAdminEmail } from '@/lib/auth-session';
-import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
+import {
+  buildShopSettingsThemeConfigPatch,
+  hasShopSettingsPaymentConfigChanged,
+  resolveInitialShopSettingsCustomTheme,
+} from '@/lib/shop-settings-theme-patch';
 import {
   buildShopSettingsCityPatch,
   resolveInitialSettingsCity,
@@ -260,6 +264,7 @@ export default function DashboardSettingsPage() {
     customQrUrl: '',
     paymentNote: '',
   });
+  const initialPaymentConfigRef = useRef<ShopPaymentConfig | null>(null);
 
   const [supportedLangs, setSupportedLangs] =
     useState<SupportedLocale[]>(['vi']);
@@ -407,6 +412,7 @@ export default function DashboardSettingsPage() {
       setOwnerPlanForShop(null);
       setCity('');
       setIsCityTouched(false);
+      initialPaymentConfigRef.current = null;
       return;
     }
     let cancelled = false;
@@ -432,25 +438,23 @@ export default function DashboardSettingsPage() {
     setWifiPassword(activeShop.wifi_info?.password || '');
 
     const tc = activeShop.theme_config;
+    const initialCustomTheme = resolveInitialShopSettingsCustomTheme(
+      tc,
+      activeShop.vertical
+    );
     setServiceRequestNotificationRule(
       tc?.serviceRequestNotificationRule === 'owner_only'
         ? 'owner_only'
         : 'all_order_staff'
     );
-    setPrimaryColor(tc?.primaryColor || '#10b981');
-    setLayoutMode(
-      tc?.layout || (activeShop.vertical === 'retail' ? 'grid' : 'list')
-    );
-    setBackgroundStyle(tc?.backgroundStyle || 'clean');
-    setBackgroundImageUrl(tc?.backgroundImageUrl || '');
-    setBackgroundOverlayOpacity(
-      typeof tc?.backgroundOverlayOpacity === 'number'
-        ? tc.backgroundOverlayOpacity
-        : 0.72
-    );
+    setPrimaryColor(initialCustomTheme.primaryColor);
+    setLayoutMode(initialCustomTheme.layout);
+    setBackgroundStyle(initialCustomTheme.backgroundStyle);
+    setBackgroundImageUrl(initialCustomTheme.backgroundImageUrl);
+    setBackgroundOverlayOpacity(initialCustomTheme.backgroundOverlayOpacity);
 
     const pc = tc?.paymentConfig;
-    setPaymentConfig({
+    const initialPaymentConfig: ShopPaymentConfig = {
       mode: pc?.mode || 'vietqr_auto',
       bankId: pc?.bankId || 'MB',
       bankName: pc?.bankName || 'MB Bank',
@@ -461,7 +465,9 @@ export default function DashboardSettingsPage() {
       transferPrefix: pc?.transferPrefix || 'QLAOK',
       customQrUrl: pc?.customQrUrl || '',
       paymentNote: pc?.paymentNote || '',
-    });
+    };
+    initialPaymentConfigRef.current = initialPaymentConfig;
+    setPaymentConfig(initialPaymentConfig);
 
     setSupportedLangs(
       activeShop.supported_langs?.length
@@ -644,13 +650,28 @@ export default function DashboardSettingsPage() {
                 backgroundImageUrl,
                 backgroundOverlayOpacity,
               },
+              initialCustomTheme: resolveInitialShopSettingsCustomTheme(
+                activeShop.theme_config,
+                activeShop.vertical
+              ),
             }
           : {}),
-        ...(canManageBankSettings
+        ...(canManageBankSettings &&
+        hasShopSettingsPaymentConfigChanged(
+          paymentConfig,
+          initialPaymentConfigRef.current
+        )
           ? { paymentConfig: cleanedPaymentConfig }
           : {}),
         ...(canManageShopSettings && activeShop.owner_id === profile?.id
-          ? { serviceRequestNotificationRule }
+          ? {
+              serviceRequestNotificationRule,
+              initialServiceRequestNotificationRule:
+                activeShop.theme_config?.serviceRequestNotificationRule ===
+                'owner_only'
+                  ? 'owner_only'
+                  : 'all_order_staff',
+            }
           : {}),
       });
 
