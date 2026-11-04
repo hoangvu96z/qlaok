@@ -3186,7 +3186,7 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **CodeGraph:** `status`; `explore "resolveInitialSettingsCity buildShopSettingsCityPatch DashboardSettingsPage isCityTouched settingsPatch"`; `explore "city hydration activeShop useEffect city select onChange isCityTouched"`; `node buildShopSettingsCityPatch`; xem các vùng hydrate, preview, PATCH và selector của Settings; `sync` sau thay đổi. Ảnh hưởng: Settings form/preview và regression mới.
 - **Điều phối:** AGY Gemini 3.8 Flash High run `2026-11-04T08-32-46-477Z-e6a36369` triển khai ba file. Claude CLI được thử read-only nhưng gateway trả `[claude-code:unrecognized_model]` với model `deepseek`; không có verdict Claude cho patch này.
 - **Kiểm chứng độc lập Codex:** focused Settings regression + entitlement **12/12 PASS**; `npm run test:review` **581/581 PASS**; `npm run typecheck` PASS; `npm run build` PASS; `git diff --check` sạch. Build báo các cảnh báo ESLint hiện có về `<img>` và dependency hook.
-- **Chưa xác minh:** save/reload trên shop Premium QA sau khi deploy; request ghi bị guard chặn trong lần thử trước deploy.
+- **QA sau deploy:** shop Premium QA đã lưu màu qua UI, tải lại form/API và khôi phục lại giá trị ban đầu; read-back cuối xác nhận `city` vẫn trống.
 
 ## 249. Lưu màu Settings vẫn gửi các cấu hình theme mặc định chưa được sửa (2026-11-04)
 
@@ -3195,4 +3195,12 @@ Không chạy `npm run test:e2e`: các luồng trong suite có thể tạo/sửa
 - **Regression:** mở rộng `tests/plan-settings-entitlements-review.test.ts` để xác nhận lưu màu chỉ gửi `{ primaryColor }`, các trường custom theme chỉ xuất hiện khi đổi, và payment settings chỉ được đánh dấu thay đổi khi có chỉnh sửa.
 - **CodeGraph:** `sync`; `node buildShopSettingsThemeConfigPatch`; `node` vùng hydrate và save của `DashboardSettingsPage`; `node` vùng kiểm quyền/merge của `PATCH /api/shops`; xem blast radius ở `tests/plan-settings-entitlements-review.test.ts`. Ảnh hưởng: Settings custom theme, payment config và service-request notification rule; API merge không đổi.
 - **Kiểm chứng Codex:** focused Settings regressions **15/15 PASS**; `npm run test:review` **584/584 PASS**; `npm run typecheck` PASS; `npm run build` PASS; `git diff --check` sạch. Build còn các cảnh báo lint `<img>`/hook hiện hữu.
-- **Chưa xác minh:** deploy và lượt save/reload có guard trên shop Premium QA. Lượt test trước chưa ghi DB; cần chạy lại sau deploy và đối chiếu khôi phục theme chính xác.
+- **QA sau deploy:** lượt save/reload và khôi phục theme chính xác được ghi ở §250.
+
+## 250. QA sau deploy cho Settings city và theme patch (2026-11-04)
+
+- **Deployment:** commit `64f210a9d83cd82e48afbe066ba5f47f53fdcb6e`, GitHub Actions run `41804542464` kết thúc `success`, gồm verify và VPS deploy.
+- **Phạm vi QA:** shop Premium QA chưa publish; thử lưu màu `#f52853`, tải lại form/API để xác nhận đã lưu, rồi khôi phục cấu hình ban đầu. Read-back cuối xác nhận màu gốc `#10b981`, toàn bộ `theme_config` khớp chính xác, `city` vẫn trống và form khớp API.
+- **Request guard:** đúng hai PATCH của Settings, cả hai chỉ chứa `theme_config.primaryColor`. Guard đã chặn hai POST ngoài auth allowlist trước khi gửi tới server; không có ghi ngoài phạm vi QA.
+- **Smoke production:** `/`, `/api/health`, `/api/shops?slug=pho-hoi-an` và `/s/pho-hoi-an/menu` đều HTTP 200 sau deploy.
+- **Giới hạn:** QA kiểm tra shop Premium chưa publish; không thực hiện checkout, thanh toán hay business mutation trên production.
