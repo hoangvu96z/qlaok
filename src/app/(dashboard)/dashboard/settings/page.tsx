@@ -36,6 +36,10 @@ import { membershipHasPermission } from '@/lib/dashboard-nav';
 import { getAuthHeaders, isSuperAdminEmail } from '@/lib/auth-session';
 import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
 import {
+  buildShopSettingsCityPatch,
+  resolveInitialSettingsCity,
+} from '@/lib/shop-settings-city';
+import {
   BusinessVertical,
   CatalogItem,
   OpeningHours,
@@ -224,7 +228,10 @@ export default function DashboardSettingsPage() {
   const [logoUrl, setLogoUrl] = useState('');
   const [coverUrl, setCoverUrl] = useState('');
   const [address, setAddress] = useState('');
-  const [city, setCity] = useState('Đà Nẵng');
+  const [city, setCity] = useState(() =>
+    resolveInitialSettingsCity(activeShop?.city)
+  );
+  const [isCityTouched, setIsCityTouched] = useState(false);
   const [phoneContact, setPhoneContact] = useState('');
   const [zaloPhone, setZaloPhone] = useState('');
   const [googleMapsUrl, setGoogleMapsUrl] = useState('');
@@ -398,6 +405,8 @@ export default function DashboardSettingsPage() {
   useEffect(() => {
     if (!activeShop) {
       setOwnerPlanForShop(null);
+      setCity('');
+      setIsCityTouched(false);
       return;
     }
     let cancelled = false;
@@ -413,7 +422,8 @@ export default function DashboardSettingsPage() {
     setLogoUrl(activeShop.logo_url || '');
     setCoverUrl(activeShop.cover_urls?.[0] || '');
     setAddress(activeShop.address || '');
-    setCity(activeShop.city || 'Đà Nẵng');
+    setCity(resolveInitialSettingsCity(activeShop.city));
+    setIsCityTouched(false);
     setPhoneContact(activeShop.phone_contact || '');
     setZaloPhone(activeShop.zalo_phone || '');
     setGoogleMapsUrl(activeShop.google_maps_url || '');
@@ -666,7 +676,10 @@ export default function DashboardSettingsPage() {
               vi: descVi,
             },
             address,
-            city,
+            ...buildShopSettingsCityPatch({
+              city,
+              touched: isCityTouched,
+            }),
             phone_contact: phoneContact,
             zalo_phone: zaloPhone,
             google_maps_url: googleMapsUrl,
@@ -718,6 +731,7 @@ export default function DashboardSettingsPage() {
       if (data?.shop) {
         updateActiveShop?.(data.shop);
         setOpeningHoursConfirmed(hasConfirmedOpeningHours(data.shop));
+        setIsCityTouched(false);
       }
 
       setSlug(normalizedSlug);
@@ -794,6 +808,7 @@ export default function DashboardSettingsPage() {
     logo_url: logoUrl || activeShop.logo_url,
     cover_urls: coverUrl ? [coverUrl] : activeShop.cover_urls,
     address: address || activeShop.address,
+    city: isCityTouched ? city : (activeShop.city ?? ''),
     wifi_info: {
       ssid: wifiSsid || activeShop.wifi_info?.ssid || 'Free_WiFi',
       password: wifiPassword || activeShop.wifi_info?.password || '12345678',
@@ -1311,9 +1326,22 @@ export default function DashboardSettingsPage() {
               </label>
               <select
                 value={city}
-                onChange={(e) => setCity(e.target.value)}
+                onChange={(e) => {
+                  setCity(e.target.value);
+                  setIsCityTouched(true);
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-900"
               >
+                <option value="">
+                  {tx(
+                    '-- Chọn Tỉnh / Thành phố (tùy chọn) --',
+                    '-- Select Province / City (optional) --'
+                  )}
+                </option>
+                {city &&
+                  !VIETNAM_PROVINCES_34.some((prov) => prov.name === city) && (
+                    <option value={city}>{city}</option>
+                  )}
                 {VIETNAM_PROVINCES_34.map((prov) => (
                   <option key={prov.code} value={prov.name}>
                     {prov.name} ({prov.region})
