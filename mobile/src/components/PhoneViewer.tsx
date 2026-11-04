@@ -1,7 +1,6 @@
 import React, { memo } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import {
-  formatVnd,
   MobileCatalogItem,
   MobileFlashSaleConfig,
   MobilePromoBannerConfig,
@@ -11,7 +10,10 @@ import {
   BANNER_GRADIENT_SWATCHES,
   styles,
 } from '../styles/mobileStyles';
-import { resolveMobilePromoPreview } from '../lib/promo-preview-i18n';
+import {
+  formatVnd,
+  resolveMobilePromoPreview,
+} from '../lib/promo-preview-i18n';
 import { useMobileI18n } from './MobileI18nProvider';
 
 interface PhoneViewerProps {
@@ -267,7 +269,7 @@ export const PhoneViewer = memo(function PhoneViewer({
                         color: primaryColor,
                       }}
                     >
-                      {formatVnd(effPrice)}
+                      {formatVnd(effPrice, previewLang)}
                     </Text>
                     {effPrice < it.price && (
                       <Text
@@ -277,7 +279,7 @@ export const PhoneViewer = memo(function PhoneViewer({
                           textDecorationLine: 'line-through',
                         }}
                       >
-                        {formatVnd(it.price)}
+                        {formatVnd(it.price, previewLang)}
                       </Text>
                     )}
                   </View>

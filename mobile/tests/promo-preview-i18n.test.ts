@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   formatVnd,
   getMobilePromoPreviewStrings,
@@ -240,9 +243,11 @@ test('handles percent and fixed_amount discounts while preserving formatVnd outp
     flashSale: flashFixed,
   });
 
-  assert.equal(resFixed.discValStr, '50.000đ');
-  assert.equal(resFixed.titleStr, 'Get 50.000đ OFF on your order');
-  assert.equal(resFixed.flashDiscountLabel, `-${formatVnd(20000)}`);
+  const expectedEnPromo = formatVnd(50000, 'en');
+  const expectedEnFlash = formatVnd(20000, 'en');
+  assert.equal(resFixed.discValStr, expectedEnPromo);
+  assert.equal(resFixed.titleStr, `Get ${expectedEnPromo} OFF on your order`);
+  assert.equal(resFixed.flashDiscountLabel, `-${expectedEnFlash}`);
   assert.equal(resFixed.flashTimePrefix, 'Time');
   assert.equal(resFixed.flashTimeRange, '10:00 - 12:00');
 
@@ -264,8 +269,8 @@ test('handles percent and fixed_amount discounts while preserving formatVnd outp
     promoBanner: bannerZero,
     flashSale: flashZero,
   });
-  assert.equal(resDefault.discValStr, formatVnd(20000));
-  assert.equal(resDefault.flashDiscountLabel, `-${formatVnd(0)}`);
+  assert.equal(resDefault.discValStr, formatVnd(20000, 'en'));
+  assert.equal(resDefault.flashDiscountLabel, `-${formatVnd(0, 'en')}`);
 });
 
 test('unknown locale falls back exactly to existing Vietnamese behavior', () => {
@@ -306,4 +311,197 @@ test('unknown locale falls back exactly to existing Vietnamese behavior', () => 
   assert.equal(unknownRes.flashDiscountLabel, viRes.flashDiscountLabel);
   assert.equal(unknownRes.flashTimePrefix, viRes.flashTimePrefix);
   assert.equal(unknownRes.flashTimeRange, viRes.flashTimeRange);
+});
+
+test('formatVnd supports all eight locales and formats correctly', () => {
+  const all8Langs = ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'] as const;
+  const testAmount = 50000;
+
+  for (const lang of all8Langs) {
+    const formatted = formatVnd(testAmount, lang);
+    if (lang === 'vi') {
+      assert.equal(formatted, '50.000đ');
+    } else {
+      const expected = new Intl.NumberFormat(lang, {
+        style: 'currency',
+        currency: 'VND',
+        maximumFractionDigits: 0,
+      }).format(testAmount);
+      assert.equal(formatted, expected, `Locale ${lang} mismatch`);
+    }
+  }
+
+  // Exact outputs for all eight locales at 50,000 VND
+  assert.equal(formatVnd(50000, 'vi'), '50.000đ');
+  assert.equal(formatVnd(50000, 'en'), '₫50,000');
+  assert.equal(formatVnd(50000, 'ko'), '₫50,000');
+  assert.equal(formatVnd(50000, 'ja'), '₫50,000');
+  assert.equal(formatVnd(50000, 'zh'), '₫50,000');
+  assert.equal(
+    formatVnd(50000, 'es'),
+    new Intl.NumberFormat('es', {
+      style: 'currency',
+      currency: 'VND',
+      maximumFractionDigits: 0,
+    }).format(50000)
+  );
+  assert.equal(
+    formatVnd(50000, 'it'),
+    new Intl.NumberFormat('it', {
+      style: 'currency',
+      currency: 'VND',
+      maximumFractionDigits: 0,
+    }).format(50000)
+  );
+  assert.equal(
+    formatVnd(50000, 'ru'),
+    new Intl.NumberFormat('ru', {
+      style: 'currency',
+      currency: 'VND',
+      maximumFractionDigits: 0,
+    }).format(50000)
+  );
+});
+
+test('formatVnd preserves Vietnamese format for vi, default, null, undefined, and unknown locales', () => {
+  // Vietnamese explicit
+  assert.equal(formatVnd(50000, 'vi'), '50.000đ');
+  assert.equal(formatVnd(0, 'vi'), '0đ');
+
+  // Default / missing / null / undefined / empty
+  assert.equal(formatVnd(50000), '50.000đ');
+  assert.equal(formatVnd(50000, undefined), '50.000đ');
+  assert.equal(formatVnd(50000, null), '50.000đ');
+  assert.equal(formatVnd(50000, ''), '50.000đ');
+
+  // Unknown locales fallback to Vietnamese
+  assert.equal(formatVnd(50000, 'unknown'), '50.000đ');
+  assert.equal(formatVnd(50000, 'fr'), '50.000đ');
+  assert.equal(formatVnd(50000, 'de'), '50.000đ');
+});
+
+test('resolveMobilePromoPreview formats fixed-amount promo and flash sale labels in English', () => {
+  const bannerFixed: MobilePromoBannerConfig = {
+    enabled: true,
+    title: 'Cash discount',
+    discountType: 'fixed_amount',
+    discountValue: 50000,
+  };
+  const flashFixed: MobileFlashSaleConfig = {
+    enabled: true,
+    title: 'Flash Sale',
+    discountType: 'fixed_amount',
+    discountValue: 20000,
+    startTime: '10:00',
+    endTime: '12:00',
+    itemIds: ['item-1'],
+  };
+
+  const res = resolveMobilePromoPreview({
+    previewLang: 'en',
+    promoBanner: bannerFixed,
+    flashSale: flashFixed,
+  });
+
+  const expectedPromoVal = formatVnd(50000, 'en'); // '₫50,000'
+  const expectedFlashVal = formatVnd(20000, 'en'); // '₫20,000'
+
+  assert.equal(res.discValStr, expectedPromoVal);
+  assert.equal(res.titleStr, `Get ${expectedPromoVal} OFF on your order`);
+  assert.equal(res.flashDiscountLabel, `-${expectedFlashVal}`);
+  assert.equal(res.flashTimePrefix, 'Time');
+  assert.equal(res.flashTimeRange, '10:00 - 12:00');
+});
+
+test('resolveMobilePromoPreview formats fixed-amount discounts across all eight locales and falls back for unknown locales', () => {
+  const all8Langs = ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'] as const;
+  const bannerFixed: MobilePromoBannerConfig = {
+    enabled: true,
+    title: 'Ưu đãi tiền mặt',
+    discountType: 'fixed_amount',
+    discountValue: 30000,
+  };
+  const flashFixed: MobileFlashSaleConfig = {
+    enabled: true,
+    title: 'Flash Giờ Vàng',
+    discountType: 'fixed_amount',
+    discountValue: 15000,
+    startTime: '13:00',
+    endTime: '15:00',
+    itemIds: [],
+  };
+
+  for (const lang of all8Langs) {
+    const res = resolveMobilePromoPreview({
+      previewLang: lang,
+      promoBanner: bannerFixed,
+      flashSale: flashFixed,
+    });
+    const expectedPromoAmt = formatVnd(30000, lang);
+    const expectedFlashAmt = `-${formatVnd(15000, lang)}`;
+    assert.equal(res.discValStr, expectedPromoAmt, `discValStr mismatch for ${lang}`);
+    assert.equal(res.flashDiscountLabel, expectedFlashAmt, `flashDiscountLabel mismatch for ${lang}`);
+  }
+
+  // Unknown locale fallback
+  const resUnknown = resolveMobilePromoPreview({
+    previewLang: 'unknown_lang',
+    promoBanner: bannerFixed,
+    flashSale: flashFixed,
+  });
+  assert.equal(resUnknown.discValStr, '30.000đ');
+  assert.equal(resUnknown.flashDiscountLabel, '-15.000đ');
+});
+
+test('PhoneViewer imports formatVnd from promo-preview-i18n and passes previewLang to both sample price calls', () => {
+  const phoneViewerPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../src/components/PhoneViewer.tsx'
+  );
+  const source = fs.readFileSync(phoneViewerPath, 'utf8');
+
+  // Must import formatVnd from promo-preview-i18n
+  assert.match(
+    source,
+    /import\s*\{[^}]*formatVnd[^}]*\}\s*from\s*['"]\.\.\/lib\/promo-preview-i18n['"]/
+  );
+
+  // Must NOT import formatVnd from supabase
+  const supabaseImportMatch = source.match(
+    /import\s*\{([^}]*)\}\s*from\s*['"]\.\.\/lib\/supabase['"]/
+  );
+  assert.ok(supabaseImportMatch, 'PhoneViewer should import from supabase');
+  assert.ok(
+    !supabaseImportMatch[1].includes('formatVnd'),
+    'PhoneViewer must not import formatVnd from supabase'
+  );
+
+  // Sample effective price call: formatVnd(effPrice, previewLang)
+  assert.match(
+    source,
+    /formatVnd\(\s*effPrice\s*,\s*previewLang\s*\)/,
+    'effPrice sample call must pass previewLang'
+  );
+
+  // Sample original price call: formatVnd(it.price, previewLang)
+  assert.match(
+    source,
+    /formatVnd\(\s*it\.price\s*,\s*previewLang\s*\)/,
+    'it.price sample call must pass previewLang'
+  );
+
+  // No formatVnd call in PhoneViewer should omit previewLang
+  const allFormatVndCalls = source.match(/formatVnd\([^)]*\)/g) || [];
+  assert.equal(
+    allFormatVndCalls.length,
+    2,
+    `Expected exactly 2 formatVnd calls in PhoneViewer, found ${allFormatVndCalls.length}`
+  );
+  for (const call of allFormatVndCalls) {
+    assert.match(
+      call,
+      /previewLang/,
+      `Call "${call}" in PhoneViewer must pass previewLang`
+    );
+  }
 });

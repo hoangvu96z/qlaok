@@ -3,11 +3,29 @@ import type {
   MobilePromoBannerConfig,
 } from './supabase';
 
+const OTHER_PREVIEW_LOCALES = new Set([
+  'en',
+  'ko',
+  'ja',
+  'zh',
+  'es',
+  'it',
+  'ru',
+]);
+
 /**
  * Formats a currency amount in Vietnamese Dong (VND).
- * e.g. 50000 -> "50.000đ"
+ * Preserves Vietnamese output (e.g. 50000 -> "50.000đ") for 'vi' and unknown/default fallback.
+ * Formats with Intl.NumberFormat for the other 7 supported preview locales.
  */
-export function formatVnd(amount: number): string {
+export function formatVnd(amount: number, locale?: string | null): string {
+  if (locale && OTHER_PREVIEW_LOCALES.has(locale)) {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: 'VND',
+      maximumFractionDigits: 0,
+    }).format(Number(amount || 0));
+  }
   return `${Number(amount || 0).toLocaleString('vi-VN')}đ`;
 }
 
@@ -114,7 +132,7 @@ export function resolveMobilePromoPreview(
   const discValStr =
     promoBanner.discountType === 'percent'
       ? `${promoBanner.discountValue || 15}%`
-      : formatVnd(promoBanner.discountValue || 20000);
+      : formatVnd(promoBanner.discountValue || 20000, previewLang);
 
   const badgeStr =
     previewLang === 'vi'
@@ -128,7 +146,7 @@ export function resolveMobilePromoPreview(
   const flashDiscountLabel =
     flashSale.discountType === 'percent'
       ? `-${flashSale.discountValue}%`
-      : `-${formatVnd(flashSale.discountValue || 0)}`;
+      : `-${formatVnd(flashSale.discountValue || 0, previewLang)}`;
 
   const flashTimePrefix = locText.timePrefix;
   const flashTimeRange = `${flashSale.startTime || ''} - ${flashSale.endTime || ''}`;
