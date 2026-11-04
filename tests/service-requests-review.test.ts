@@ -199,6 +199,34 @@ describe('Table QR Service Requests ("Gọi phục vụ / Xin hóa đơn ngay t�
     assert.deepEqual(await dbGetShopServiceRequests(SHOP_A), []);
   });
 
+  test('local service-request JSON store applies private permissions to existing paths', async () => {
+    const storeDir = path.join(tmpDir, 'insecure-service-request-store');
+    fs.mkdirSync(storeDir);
+    fs.chmodSync(storeDir, 0o777);
+    const storePath = path.join(storeDir, 'service-requests.json');
+    fs.writeFileSync(storePath, JSON.stringify({ serviceRequests: [] }));
+    fs.chmodSync(storePath, 0o644);
+    __setServiceRequestsLocalPathForTests(storePath);
+
+    const validSig = signTableQr(SHOP_A, 'tbl-fnb-01');
+    const response = await postServiceRequestsRoute(
+      new Request('http://localhost/api/service-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop_id: SHOP_A,
+          table_id: 'tbl-fnb-01',
+          table_qr_sig: validSig,
+          request_type: 'call_staff',
+        }),
+      })
+    );
+
+    assert.equal(response.status, 201);
+    assert.equal(fs.statSync(storeDir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(storePath).mode & 0o777, 0o600);
+  });
+
   test('1. Storefront i18n & table lock gating: all 8 locales localized, actions hidden for takeaway or invalid/unverified/inactive table', async () => {
     for (const locale of ALL_LOCALES) {
       const labels = getTableServiceRequestLabels(locale);

@@ -49,6 +49,11 @@ import {
   type MobileOrderStatusUpdateOptions,
 } from './src/lib/order-actions';
 import {
+  buildMobilePromotionsPatchPayload,
+  buildMobileSettingsPatchPayload,
+  resolveInitialMobileCustomTheme,
+} from './src/lib/shop-theme-patch';
+import {
   type NotificationTapRoute,
   resolveNotificationTapTargetShop,
   unregisterPushOnLogout,
@@ -661,11 +666,13 @@ function Workspace({ userId }: { userId: string }) {
   const hydrateThemeAndPromoState = useCallback(
     (shop: MobileShop, _loadedItems: MobileCatalogItem[]) => {
       const tc = shop.theme_config;
-      setPrimaryColor(tc?.primaryColor || '#10b981');
-      setLayoutMode(
-        tc?.layout || (shop.vertical === 'retail' ? 'grid' : 'list')
+      const initialCustomTheme = resolveInitialMobileCustomTheme(
+        tc,
+        shop.vertical
       );
-      setBackgroundStyle(tc?.backgroundStyle || 'clean');
+      setPrimaryColor(initialCustomTheme.primaryColor);
+      setLayoutMode(initialCustomTheme.layout);
+      setBackgroundStyle(initialCustomTheme.backgroundStyle);
 
       const defaultToday = formatLocalIsoDate();
 
@@ -1204,25 +1211,18 @@ function Workspace({ userId }: { userId: string }) {
       return;
     }
     const saveGeneration = loadGeneration.current;
-    const existingTc = activeShop.theme_config || {};
-    const nextThemeConfig: MobileShopThemeConfig = {
-      ...existingTc,
+    const promotionsPayload = buildMobilePromotionsPatchPayload({
+      shopId: activeShop.id,
       promoBanner,
-      welcomePopup: {
-        ...welcomePopup,
-        voucherCode: promoBanner.voucherCode || welcomePopup.voucherCode,
-      },
+      welcomePopup,
       flashSale,
-    };
+    });
 
     try {
       await fetchApi('/api/shops', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: activeShop.id,
-          theme_config: nextThemeConfig,
-        }),
+        body: JSON.stringify(promotionsPayload),
       });
     } catch (error) {
       showSaveFeedback(
@@ -1256,29 +1256,27 @@ function Workspace({ userId }: { userId: string }) {
       return;
     }
     const saveGeneration = loadGeneration.current;
-    const existingTc = activeShop.theme_config || {};
-    const nextThemeConfig: MobileShopThemeConfig = {
-      ...existingTc,
-      primaryColor,
-      layout: layoutMode,
-      backgroundStyle,
-    };
+    const settingsPayload = buildMobileSettingsPatchPayload({
+      shopId: activeShop.id,
+      name: editShopName,
+      city: editCity,
+      phoneContact: editPhone,
+      wifiSsid: editWifiSsid,
+      wifiPassword: editWifiPass,
+      currentTheme: {
+        primaryColor,
+        layout: layoutMode,
+        backgroundStyle,
+      },
+      activeShopThemeConfig: activeShop.theme_config,
+      activeShopVertical: activeShop.vertical,
+    });
 
     try {
       await fetchApi('/api/shops', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: activeShop.id,
-          name: editShopName.trim(),
-          city: editCity.trim(),
-          phone_contact: editPhone.trim(),
-          wifi_info: {
-            ssid: editWifiSsid.trim(),
-            password: editWifiPass.trim(),
-          },
-          theme_config: nextThemeConfig,
-        }),
+        body: JSON.stringify(settingsPayload),
       });
     } catch (error) {
       showSaveFeedback(

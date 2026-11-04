@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { GET as authGet, POST as authPost } from '@/app/api/auth/route';
 import { GET as authCallbackGet } from '@/app/api/auth/callback/route';
-import { setSupabaseDbClientForTests } from '@/lib/db';
+import {
+  dbGetAllShopsAndProfile,
+  dbGetBillingData,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
 import { SUPER_ADMIN_EMAIL } from '@/lib/auth-session';
 import {
   buildAdminOwnerInvitationProfile,
@@ -1971,7 +1975,7 @@ test('resolveAndSyncZitadelOwnerProfile and OIDC callback/mobile exchange fail c
         zitadel_sub: 'sub-existing-missing-email',
         email: null,
         full_name: 'Chủ Quán Chưa Có Email',
-        plan: 'pro',
+        plan: 'premium',
       },
     ],
     []
@@ -2042,7 +2046,7 @@ test('resolveAndSyncZitadelOwnerProfile and OIDC callback/mobile exchange fail c
     assert.equal(backfilled.createdNewProfile, false);
     assert.equal(backfilled.user.id, existingMissingEmailUuid);
     assert.equal(backfilled.user.email, 'backfill-verified@qlaok.vn');
-    assert.equal(backfilled.user.plan, 'pro');
+    assert.equal(backfilled.user.plan, 'premium');
 
     // 3. Brand-new profile creation succeeds when emailVerified === true
     const verifiedResult = await resolveAndSyncZitadelOwnerProfile({
@@ -2532,6 +2536,196 @@ test('admin owner invitations require the exact verified email, claim once, and 
     );
     assert.equal(profiles[0].zitadel_sub, 'zitadel-correct-invitee');
     assert.equal(profiles[0].plan, 'premium');
+  } finally {
+    setSupabaseDbClientForTests(null);
+  }
+});
+
+test('F4 regression: resolveAndSyncZitadelOwnerProfile, dbGetBillingData, and dbGetAllShopsAndProfile normalize expired paid plans to free while preserving plan_expires_at, non-expiring grants, and admin role', async () => {
+  const pastExpiry = '2025-01-01T00:00:00.000Z';
+  const expiredBasicOwner = {
+    id: 'a3a30894-e8ae-415d-a3dc-7947b0399dd1',
+    zitadel_sub: 'zitadel-expired-basic-001',
+    email: 'expired.basic@qlaok.test',
+    full_name: 'Expired Basic Owner',
+    plan: 'basic',
+    plan_expires_at: pastExpiry,
+    role: 'owner',
+    session_version: 1,
+  };
+  const expiredPremiumOwner = {
+    id: '7d21f8ae-6b7c-414b-ba28-3f932ab062f7',
+    zitadel_sub: 'zitadel-expired-premium-002',
+    email: 'expired.premium@qlaok.test',
+    full_name: 'Expired Premium Owner',
+    plan: 'premium',
+    plan_expires_at: pastExpiry,
+    role: 'owner',
+    session_version: 1,
+  };
+  const nonExpiringPaidOwner = {
+    id: '0a40219c-49d0-4391-a2df-c7a5f58237a5',
+    zitadel_sub: 'zitadel-non-expiring-003',
+    email: 'lifetime.basic@qlaok.test',
+    full_name: 'Lifetime Basic Owner',
+    plan: 'basic',
+    plan_expires_at: null,
+    role: 'owner',
+    session_version: 1,
+  };
+  const adminProfile = {
+    id: '46767a29-2691-4d40-8da9-b48c6fa1da1a',
+    zitadel_sub: 'zitadel-super-admin-004',
+    email: SUPER_ADMIN_EMAIL,
+    full_name: 'Super Admin',
+    plan: 'basic',
+    plan_expires_at: pastExpiry,
+    role: 'admin',
+    is_admin: true,
+    session_version: 1,
+  };
+
+  const { client, profiles, profileWrites } = createInMemoryOidcDb(
+    [
+      expiredBasicOwner,
+      expiredPremiumOwner,
+      nonExpiringPaidOwner,
+      adminProfile,
+    ],
+    [{ id: 'shop-f4-001', owner_id: expiredBasicOwner.id, slug: 'shop-f4' }]
+  );
+
+  // Extend mock client for payment_transactions and profiles.select().limit(1)
+  const baseFrom = client.from.bind(client);
+  const extendedClient = {
+    ...client,
+    from(table: string) {
+      if (table === 'payment_transactions') {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  order: async () => ({ data: [], error: null }),
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === 'profiles') {
+        const tableObj = baseFrom('profiles') as Record<string, unknown>;
+        const origSelect = tableObj.select as () => Record<string, unknown>;
+        return {
+          ...tableObj,
+          select() {
+            const sel = origSelect();
+            return {
+              ...sel,
+              limit: async (n: number) => ({
+                data: profiles.slice(0, n),
+                error: null,
+              }),
+            };
+          },
+        };
+      }
+      if (table === 'shops') {
+        const tableObj = baseFrom('shops') as Record<string, unknown>;
+        const origSelect = tableObj.select as (
+          cols?: string,
+          opts?: { count?: string; head?: boolean }
+        ) => Record<string, unknown>;
+        return {
+          ...tableObj,
+          select(cols?: string, opts?: { count?: string; head?: boolean }) {
+            const sel = origSelect(cols, opts);
+            if (opts?.head) return sel;
+            return {
+              ...sel,
+              order: async () => ({
+                data: [
+                  {
+                    id: 'shop-f4-001',
+                    owner_id: expiredBasicOwner.id,
+                    slug: 'shop-f4',
+                    name: 'Shop F4',
+                    vertical: 'fnb',
+                    supported_langs: ['vi'],
+                    is_published: true,
+                  },
+                ],
+                error: null,
+              }),
+            };
+          },
+        };
+      }
+      return baseFrom(table);
+    },
+  };
+
+  setSupabaseDbClientForTests(extendedClient as never);
+  try {
+    // 1. resolveAndSyncZitadelOwnerProfile normalizes expired basic & premium to 'free' without mutating stored plan or plan_expires_at
+    const syncedBasic = await resolveAndSyncZitadelOwnerProfile({
+      sub: expiredBasicOwner.zitadel_sub,
+      email: expiredBasicOwner.email,
+      emailVerified: true,
+    });
+    assert.equal(syncedBasic.user.plan, 'free');
+    assert.equal(syncedBasic.user.plan_expires_at, pastExpiry);
+    assert.equal(profiles[0].plan, 'basic');
+    assert.equal(profiles[0].plan_expires_at, pastExpiry);
+
+    const syncedPremium = await resolveAndSyncZitadelOwnerProfile({
+      sub: expiredPremiumOwner.zitadel_sub,
+      email: expiredPremiumOwner.email,
+      emailVerified: true,
+    });
+    assert.equal(syncedPremium.user.plan, 'free');
+    assert.equal(syncedPremium.user.plan_expires_at, pastExpiry);
+    assert.equal(profiles[1].plan, 'premium');
+    assert.equal(profiles[1].plan_expires_at, pastExpiry);
+
+    // 2. Non-expiring paid grant (plan_expires_at: null) remains 'basic'
+    const syncedLifetime = await resolveAndSyncZitadelOwnerProfile({
+      sub: nonExpiringPaidOwner.zitadel_sub,
+      email: nonExpiringPaidOwner.email,
+      emailVerified: true,
+    });
+    assert.equal(syncedLifetime.user.plan, 'basic');
+    assert.equal(syncedLifetime.user.plan_expires_at, null);
+
+    // 3. Super Admin remains 'premium'
+    const syncedAdmin = await resolveAndSyncZitadelOwnerProfile({
+      sub: adminProfile.zitadel_sub,
+      email: adminProfile.email,
+      emailVerified: true,
+    });
+    assert.equal(syncedAdmin.isAdmin, true);
+    assert.equal(syncedAdmin.user.plan, 'premium');
+    assert.equal(profileWrites.length, 0);
+
+    // 4. dbGetBillingData normalizes expired paid plans to 'free' while preserving plan_expires_at and non-expiring grants
+    const billingExpired = await dbGetBillingData(expiredPremiumOwner.id);
+    assert.equal(billingExpired.profile.plan, 'free');
+    assert.equal(billingExpired.profile.plan_expires_at, pastExpiry);
+    assert.equal(profiles[1].plan, 'premium');
+
+    const billingLifetime = await dbGetBillingData(nonExpiringPaidOwner.id);
+    assert.equal(billingLifetime.profile.plan, 'basic');
+    assert.equal(billingLifetime.profile.plan_expires_at, null);
+
+    // 5. dbGetAllShopsAndProfile normalizes expired paid plans both with ownerId and without ownerId
+    const shopsWithOwner = await dbGetAllShopsAndProfile(expiredBasicOwner.id);
+    assert.equal(shopsWithOwner.profile.plan, 'free');
+    assert.equal(shopsWithOwner.profile.plan_expires_at, pastExpiry);
+
+    const shopsWithoutOwner = await dbGetAllShopsAndProfile(undefined);
+    assert.equal(shopsWithoutOwner.profile.plan, 'free');
+    assert.equal(shopsWithoutOwner.profile.plan_expires_at, pastExpiry);
+    assert.equal(profiles[0].plan, 'basic');
   } finally {
     setSupabaseDbClientForTests(null);
   }

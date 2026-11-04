@@ -1285,6 +1285,8 @@ test('POST /api/admin approve_transaction validates payment amount and maps RPC/
     } | null;
     paymentLookupError?: { message: string } | null;
     rpcError?: { message: string } | null;
+    rpcData?: Record<string, unknown> | null;
+    profile?: Record<string, unknown>;
   }) {
     const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
@@ -1293,6 +1295,9 @@ test('POST /api/admin approve_transaction validates payment amount and maps RPC/
         rpcCalls.push({ fn, args });
         if (options?.rpcError) {
           return { data: null, error: options.rpcError };
+        }
+        if (options?.rpcData) {
+          return { data: options.rpcData, error: null };
         }
         return {
           data: {
@@ -1311,7 +1316,7 @@ test('POST /api/admin approve_transaction validates payment amount and maps RPC/
           }
           if (table === 'profiles') {
             return [
-              {
+              options?.profile || {
                 id: 'owner-mock-001',
                 email: 'owner@mock.test',
                 plan: 'premium',
@@ -1611,6 +1616,75 @@ test('POST /api/admin approve_transaction validates payment amount and maps RPC/
       assert.equal(res.status, 500);
       const body = await res.json();
       assert.match(body.error, /DB_PAYMENT_LOOKUP_FAILED/);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
+  }
+
+  // 8. F3 regression: manual_review conflict from RPC (paymentResolutionRequired) returns HTTP 409, keeps transaction pending & profile plan unchanged, and logs explicit manual_review audit details
+  {
+    const pendingManualReviewTx = {
+      id: 'tx-manual-review-008',
+      order_code: 'ORD-MANUAL-008',
+      user_id: 'owner-mock-001',
+      amount: 39000,
+      status: 'pending',
+      target_plan: 'basic',
+    };
+    const lifetimeProfile = {
+      id: 'owner-mock-001',
+      email: 'owner@mock.test',
+      full_name: 'Lifetime Premium Owner',
+      plan: 'premium',
+      plan_expires_at: null,
+    };
+    const { client, rpcCalls } = createMockAdminPaymentDb({
+      tx: pendingManualReviewTx,
+      profile: lifetimeProfile,
+      rpcData: {
+        status: 'manual_review',
+        owner_id: 'owner-mock-001',
+        target_plan: 'basic',
+        plan_expires_at: null,
+        order_code: 'ORD-MANUAL-008',
+        bank_ref_id: 'ADMIN-REF-008',
+        resolution_required: true,
+        resolution_code: 'NON_EXPIRING_ADMIN_PLAN',
+      },
+    });
+    setSupabaseDbClientForTests(client as never);
+    try {
+      const res = await sendApprove({
+        orderCode: 'ORD-MANUAL-008',
+        amount: 39000,
+        bankRefId: 'ADMIN-REF-008',
+      });
+      assert.equal(res.status, 409);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.equal(body.status, 'manual_review');
+      assert.equal(body.code, 'NON_EXPIRING_ADMIN_PLAN');
+      assert.equal(body.paymentResolutionRequired, true);
+      assert.equal(body.paymentResolutionCode, 'NON_EXPIRING_ADMIN_PLAN');
+      assert.match(body.error, /NON_EXPIRING_ADMIN_PLAN/);
+      assert.match(body.error, /đối soát thủ công trước khi duyệt/);
+      assert.doesNotMatch(body.error, /không thời hạn do Admin cấp/);
+      assert.equal(body.result?.profile?.plan, 'premium');
+      assert.equal(body.result?.profile?.plan_expires_at, null);
+      assert.equal(pendingManualReviewTx.status, 'pending');
+      assert.equal(rpcCalls.length, 1);
+
+      const latestAudit = readAdminAuditLog(1)[0];
+      assert.equal(latestAudit?.action, 'approve_transaction');
+      assert.equal(latestAudit?.targetId, 'ORD-MANUAL-008');
+      assert.equal(
+        (latestAudit?.details as Record<string, unknown> | undefined)?.result,
+        'manual_review'
+      );
+      assert.equal(
+        (latestAudit?.details as Record<string, unknown> | undefined)?.code,
+        'NON_EXPIRING_ADMIN_PLAN'
+      );
     } finally {
       setSupabaseDbClientForTests(null);
     }

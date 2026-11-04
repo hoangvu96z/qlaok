@@ -41,8 +41,17 @@ export async function GET(req: Request) {
   }
   const auth = await requireShopPermission(req, shopId, 'reports.view');
   if (auth.errorResponse) return auth.errorResponse;
-  const summary = await dbGetShopAnalyticsSummary(shopId);
-  return NextResponse.json(summary);
+  try {
+    const summary = await dbGetShopAnalyticsSummary(shopId);
+    return NextResponse.json(summary);
+  } catch (error) {
+    const code = getSafeAnalyticsErrorCode(error);
+    console.error('analytics.summary_failed', { code });
+    return NextResponse.json(
+      { error: 'Failed to load analytics summary', code },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: Request) {

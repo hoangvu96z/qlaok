@@ -35,6 +35,7 @@ function createPostDbMock(
     forceDeleteError?: boolean;
     forceDeleteNoRows?: boolean;
     forcePostReadError?: boolean;
+    forcePostLookupThrow?: boolean;
     unpublishedShop?: boolean;
   } = {}
 ) {
@@ -126,6 +127,9 @@ function createPostDbMock(
 
       if (this.table === 'posts') {
         if (this.operation === 'select' && options.forcePostReadError) {
+          if (options.forcePostLookupThrow) {
+            throw new Error('Simulated thrown post lookup failure');
+          }
           return Promise.resolve({
             data: null,
             error: { code: 'XX000', message: 'Simulated post read failure' },
@@ -618,6 +622,40 @@ test('DELETE /api/posts authenticates before looking up post IDs', async () => {
     );
   } finally {
     setSupabaseDbClientForTests(null);
+  }
+});
+
+test('DELETE /api/posts reports returned and thrown failures from the pre-delete lookup', async () => {
+  const adminToken = issueSessionToken({
+    id: 'admin-post-lookup-review',
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    is_admin: true,
+  });
+
+  for (const forcePostLookupThrow of [false, true]) {
+    const { client, queryLogs } = createPostDbMock(FIXTURE_POSTS, {
+      forcePostReadError: true,
+      forcePostLookupThrow,
+    });
+    setSupabaseDbClientForTests(client as never);
+
+    try {
+      const response = await deletePost(
+        new Request('http://localhost/api/posts?postId=post-1-active-pinned', {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      );
+
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: 'Không thể kiểm tra thông báo để xóa. Vui lòng thử lại sau.',
+        code: 'POST_LOOKUP_FAILED',
+      });
+      assert.equal(queryLogs.filter((query) => query.table === 'posts').length, 1);
+    } finally {
+      setSupabaseDbClientForTests(null);
+    }
   }
 });
 

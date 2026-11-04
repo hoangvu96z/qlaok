@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GET as getShops, PATCH as patchShops } from '@/app/api/shops/route';
-import { setSupabaseDbClientForTests } from '@/lib/db';
+import {
+  dbGetAllShopsAndProfile,
+  dbGetShopById,
+  dbGetStorefrontBundle,
+  setSupabaseDbClientForTests,
+} from '@/lib/db';
 import { issueSessionToken } from '@/lib/server-auth';
 import { buildShopSettingsThemeConfigPatch } from '@/lib/shop-settings-theme-patch';
 import {
@@ -951,6 +956,245 @@ test('PATCH /api/shops enforces plan restrictions on custom theme and supported 
     );
     assert.equal(missingProfileRes.status, 401);
     assert.deepEqual(mockDb.getRawShopSnapshot(shopId), snapshotAfterPremium);
+  } finally {
+    setSupabaseDbClientForTests(null);
+    setShopMembershipDbClientForTest(null);
+  }
+});
+
+test('F1 & F2 regression: hydrateShopWithSeedDefaults preserves persisted supported_langs and order for real shops, seed defaults apply only when absent/legacy on seed shops, Free basic-info save does not trigger plan lock, and promotions-only no-op save authorizes with promotions.manage', async () => {
+  const ownerId = '55555555-5555-4555-8555-555555555555';
+  const promoStaffId = '66666666-6666-4666-8666-666666666666';
+  const realShopId = 'shop-real-langs-f1';
+
+  const realShop: Shop = {
+    ...cloneJson(SEED_SHOPS[0]),
+    id: realShopId,
+    owner_id: ownerId,
+    slug: 'quan-that-ngon-ngu-f1',
+    name: 'Quán Thật Ngôn Ngữ F1',
+    is_published: true,
+    opening_hours_confirmed: true,
+    supported_langs: ['vi'],
+    theme_config: {
+      primaryColor: '#10b981',
+      layout: 'list',
+      orderWorkflow: getBuiltInOrderWorkflowTemplate('classic_kitchen'),
+    },
+  };
+
+  const legacySeedShop: Shop = {
+    ...cloneJson(SEED_SHOPS[0]),
+    supported_langs: ['vi', 'en', 'ko', 'ja', 'zh'],
+  };
+
+  const ownerProfile: Profile = {
+    id: ownerId,
+    email: 'owner-f1@qlaok.test',
+    full_name: 'Owner F1',
+    plan: 'free',
+    role: 'owner',
+  };
+
+  const promoStaffProfile: Profile = {
+    id: promoStaffId,
+    email: 'promo-f2@qlaok.test',
+    full_name: 'Promo Staff F2',
+    plan: 'free',
+    role: 'staff',
+  };
+
+  const memberships: ShopMembership[] = [
+    {
+      id: 'mem-f1-owner',
+      shop_id: realShopId,
+      user_id: ownerId,
+      role: 'owner',
+      permissions: [...ALL_SHOP_PERMISSIONS],
+      is_active: true,
+      created_at: '2026-11-04T00:00:00.000Z',
+      updated_at: '2026-11-04T00:00:00.000Z',
+    },
+    {
+      id: 'mem-f2-promo-staff',
+      shop_id: realShopId,
+      user_id: promoStaffId,
+      role: 'staff',
+      permissions: ['promotions.manage'],
+      is_active: true,
+      created_at: '2026-11-04T00:00:00.000Z',
+      updated_at: '2026-11-04T00:00:00.000Z',
+    },
+  ];
+
+  const mockDb = createInMemoryShopDbMock({
+    initialShops: [realShop, legacySeedShop],
+    profiles: [ownerProfile, promoStaffProfile],
+    memberships,
+  });
+
+  setSupabaseDbClientForTests(mockDb.client);
+  setShopMembershipDbClientForTest(mockDb.client as never);
+
+  const ownerToken = issueSessionToken({
+    id: ownerId,
+    email: ownerProfile.email,
+    role: 'owner',
+  });
+  const promoStaffToken = issueSessionToken({
+    id: promoStaffId,
+    email: promoStaffProfile.email,
+    role: 'staff',
+  });
+
+  try {
+    // 1. Real shop with supported_langs: ['vi'] keeps ['vi'] across dbGetShopById, dbGetAllShopsAndProfile, and dbGetStorefrontBundle
+    const byIdFree = await dbGetShopById(realShopId);
+    assert.deepEqual(byIdFree?.supported_langs, ['vi']);
+
+    const allOwnedFree = await dbGetAllShopsAndProfile(ownerId);
+    const ownedRealShop = allOwnedFree.shops.find((s) => s.id === realShopId);
+    assert.deepEqual(ownedRealShop?.supported_langs, ['vi']);
+
+    const bundleFree = await dbGetStorefrontBundle('quan-that-ngon-ngu-f1');
+    assert.deepEqual(bundleFree?.shop.supported_langs, ['vi']);
+
+    // 2. Seed shop with legacy 5-locale list still hydrates to all 8 seed locales
+    const hydratedSeed = await dbGetShopById(SEED_SHOPS[0].id);
+    assert.equal(hydratedSeed?.supported_langs.length, 8);
+
+    // 3. Free owner saving basic info with hydrated supported_langs: ['vi'] and no theme_config succeeds (not treated as entitlement change)
+    const freeBasicSaveRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: realShopId,
+          name: 'Quán Thật Ngôn Ngữ F1 (Đã đổi tên)',
+          supported_langs: byIdFree?.supported_langs,
+        }),
+      })
+    );
+    assert.equal(freeBasicSaveRes.status, 200);
+    const freeBasicSaveJson = (await freeBasicSaveRes.json()) as { shop: Shop };
+    assert.equal(
+      freeBasicSaveJson.shop.name,
+      'Quán Thật Ngôn Ngữ F1 (Đã đổi tên)'
+    );
+    assert.deepEqual(freeBasicSaveJson.shop.supported_langs, ['vi']);
+
+    // 4. Free owner attempting to save all 8 languages is blocked with 403 PLAN_LIMIT_REACHED
+    const freeAllLangsRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: realShopId,
+          supported_langs: ['vi', 'en', 'ko', 'ja', 'zh', 'es', 'it', 'ru'],
+        }),
+      })
+    );
+    assert.equal(freeAllLangsRes.status, 403);
+    const freeAllLangsJson = (await freeAllLangsRes.json()) as { code?: string };
+    assert.equal(freeAllLangsJson.code, 'PLAN_LIMIT_REACHED');
+    assert.deepEqual(mockDb.getRawShopSnapshot(realShopId)?.supported_langs, [
+      'vi',
+    ]);
+
+    // 5. Basic owner saving 3 custom-ordered languages ['vi', 'ja', 'ru'] preserves exact choices and order
+    mockDb.setProfile({
+      ...ownerProfile,
+      plan: 'basic',
+    });
+    const basicCustomOrderRes = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          id: realShopId,
+          supported_langs: ['vi', 'ja', 'ru'],
+        }),
+      })
+    );
+    assert.equal(basicCustomOrderRes.status, 200);
+    const basicCustomOrderJson = (await basicCustomOrderRes.json()) as {
+      shop: Shop;
+    };
+    assert.deepEqual(basicCustomOrderJson.shop.supported_langs, [
+      'vi',
+      'ja',
+      'ru',
+    ]);
+    assert.deepEqual(
+      (await dbGetShopById(realShopId))?.supported_langs,
+      ['vi', 'ja', 'ru']
+    );
+    assert.deepEqual(
+      (await dbGetStorefrontBundle('quan-that-ngon-ngu-f1'))?.shop
+        .supported_langs,
+      ['vi', 'ja', 'ru']
+    );
+
+    // 6. Promotions-only staff saving promotions-only patch succeeds both on change and on no-op re-save, without clobbering existing theme keys
+    const promoPatchPayload = {
+      id: realShopId,
+      theme_config: {
+        promoBanner: {
+          enabled: true,
+          badgeText: '🔥 KM',
+          title: 'Giảm 10%',
+          subtitle: 'Đặt qua QR',
+          bgGradient: 'amber_rose' as const,
+          discountType: 'percent' as const,
+          discountValue: 10,
+          minOrderAmount: 50000,
+          applyScope: 'all' as const,
+          selectedItemIds: [],
+          voucherCode: 'KM10',
+        },
+      },
+    };
+
+    const promoFirstSave = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${promoStaffToken}`,
+        },
+        body: JSON.stringify(promoPatchPayload),
+      })
+    );
+    assert.equal(promoFirstSave.status, 200);
+
+    // Re-saving identical promotions-only payload (no diff) still authorizes with promotions.manage
+    const promoNoOpSave = await patchShops(
+      new Request('http://localhost:3000/api/shops', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${promoStaffToken}`,
+        },
+        body: JSON.stringify(promoPatchPayload),
+      })
+    );
+    assert.equal(promoNoOpSave.status, 200);
+    const afterPromoSnap = mockDb.getRawShopSnapshot(realShopId);
+    assert.equal(afterPromoSnap?.theme_config?.primaryColor, '#10b981');
+    assert.ok(afterPromoSnap?.theme_config?.orderWorkflow);
+    assert.equal(
+      afterPromoSnap?.theme_config?.promoBanner?.voucherCode,
+      'KM10'
+    );
   } finally {
     setSupabaseDbClientForTests(null);
     setShopMembershipDbClientForTest(null);

@@ -368,19 +368,49 @@ export async function ensureSupabaseReadyAndSeeded(): Promise<{
 
 // ================= SHOP HELPERS =================
 
+const LEGACY_SEED_SUPPORTED_LANGS: readonly SupportedLocale[] = [
+  'vi',
+  'en',
+  'ko',
+  'ja',
+  'zh',
+];
+
+function isLegacySeedSupportedLangs(
+  langs: readonly SupportedLocale[]
+): boolean {
+  return (
+    langs.length === LEGACY_SEED_SUPPORTED_LANGS.length &&
+    LEGACY_SEED_SUPPORTED_LANGS.every((locale, idx) => langs[idx] === locale)
+  );
+}
+
 function hydrateShopWithSeedDefaults(rawShop: Shop): Shop {
   const seedMatch = SEED_SHOPS.find(
     (s) => s.id === rawShop.id || s.slug === rawShop.slug
   );
-  const currentLangs: SupportedLocale[] = Array.isArray(rawShop.supported_langs)
-    ? rawShop.supported_langs
-    : ALL_LOCALES;
+  const persistedLangs: SupportedLocale[] = [];
+  if (Array.isArray(rawShop.supported_langs)) {
+    for (const candidate of rawShop.supported_langs) {
+      if (
+        typeof candidate === 'string' &&
+        (ALL_LOCALES as readonly string[]).includes(candidate) &&
+        !persistedLangs.includes(candidate as SupportedLocale)
+      ) {
+        persistedLangs.push(candidate as SupportedLocale);
+      }
+    }
+  }
 
-  // Ensure shops always support all 8 languages unless explicitly customized with >5 langs
-  const nextLangs: SupportedLocale[] =
-    currentLangs.length <= 5
-      ? ALL_LOCALES
-      : Array.from(new Set<SupportedLocale>([...currentLangs, ...ALL_LOCALES]));
+  let nextLangs: SupportedLocale[];
+  if (seedMatch) {
+    nextLangs =
+      persistedLangs.length === 0 || isLegacySeedSupportedLangs(persistedLangs)
+        ? [...(seedMatch.supported_langs || ALL_LOCALES)]
+        : persistedLangs;
+  } else {
+    nextLangs = persistedLangs.length > 0 ? persistedLangs : ['vi'];
+  }
 
   const shopName = rawShop.name || 'Cửa hàng';
   const taglineVi =
@@ -540,7 +570,13 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
 
     return {
       shops: SEED_SHOPS.map(hydrateShopWithSeedDefaults),
-      profile: SEED_PROFILE,
+      profile: {
+        ...SEED_PROFILE,
+        plan: getEffectivePlanTier(
+          SEED_PROFILE.plan,
+          SEED_PROFILE.plan_expires_at
+        ),
+      },
       source: 'supabase',
     };
   }
@@ -689,9 +725,16 @@ export async function dbGetAllShopsAndProfile(ownerId?: string): Promise<{
     throw new Error(shopsErr.message);
   }
 
+  const fallbackResolvedProfile = (profiles?.[0] as Profile) || SEED_PROFILE;
   return {
     shops: ((shops || []) as Shop[]).map(hydrateShopWithSeedDefaults),
-    profile: (profiles?.[0] as Profile) || SEED_PROFILE,
+    profile: {
+      ...fallbackResolvedProfile,
+      plan: getEffectivePlanTier(
+        fallbackResolvedProfile.plan,
+        fallbackResolvedProfile.plan_expires_at
+      ),
+    },
     source: 'supabase',
   };
 }
@@ -2228,7 +2271,7 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
 
   const resolvedShopId = targetShopId || SEED_SHOPS[0].id;
   const { dbGetPublicShopTables } = await import('@/lib/shop-tables');
-  const [{ data: eventsData }, { data: itemsData }, publicTables] =
+  const [eventsResult, itemsResult, publicTables] =
     await Promise.all([
       sb
         .from('analytics_events')
@@ -2241,6 +2284,20 @@ export async function dbGetShopAnalyticsSummary(shopId?: string) {
         .eq('shop_id', resolvedShopId),
       dbGetPublicShopTables(resolvedShopId).catch(() => []),
     ]);
+
+  if (eventsResult.error) {
+    throw Object.assign(new Error('Unable to load analytics events'), {
+      code: 'ANALYTICS_EVENTS_QUERY_FAILED',
+    });
+  }
+  if (itemsResult.error) {
+    throw Object.assign(new Error('Unable to load analytics items'), {
+      code: 'ANALYTICS_ITEMS_QUERY_FAILED',
+    });
+  }
+
+  const eventsData = eventsResult.data;
+  const itemsData = itemsResult.data;
 
   const events = ((eventsData || []) as AnalyticsEvent[]).map(
     projectAnalyticsEventSummary
@@ -2363,8 +2420,15 @@ export async function dbGetBillingData(ownerId?: string) {
       .order('created_at', { ascending: false }),
   ]);
 
+  const resolvedBillingProfile = (ownerProfile as Profile) || SEED_PROFILE;
   return {
-    profile: (ownerProfile as Profile) || SEED_PROFILE,
+    profile: {
+      ...resolvedBillingProfile,
+      plan: getEffectivePlanTier(
+        resolvedBillingProfile.plan,
+        resolvedBillingProfile.plan_expires_at
+      ),
+    },
     transactions: (transactions || []).map((t) => ({
       ...t,
       amount: Number(t.amount),

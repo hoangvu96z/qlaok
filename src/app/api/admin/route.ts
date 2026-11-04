@@ -1041,7 +1041,49 @@ export async function POST(req: Request) {
           allowUnverifiedAmount: false,
         }
       );
-      await recordSuccessfulAudit();
+      if (result.paymentResolutionRequired) {
+        const resolutionCode =
+          typeof result.paymentResolutionCode === 'string' &&
+          result.paymentResolutionCode.trim()
+            ? result.paymentResolutionCode.trim()
+            : 'PAYMENT_REQUIRES_MANUAL_REVIEW';
+        await recordAdminAuditLog({
+          actorId: auth.user.sub,
+          actorEmail: auth.user.email,
+          action: 'approve_transaction',
+          targetId: orderCode,
+          details: {
+            orderCode,
+            amount: parsedAmount,
+            result: 'manual_review',
+            status: 'manual_review',
+            code: resolutionCode,
+            paymentResolutionRequired: true,
+            paymentResolutionCode: resolutionCode,
+          },
+        });
+        return NextResponse.json(
+          {
+            ok: false,
+            status: 'manual_review',
+            code: resolutionCode,
+            paymentResolutionRequired: true,
+            paymentResolutionCode: resolutionCode,
+            error: `${resolutionCode}: Giao dịch cần đối soát thủ công trước khi duyệt. Giao dịch vẫn giữ trạng thái chờ xử lý.`,
+            result,
+          },
+          { status: 409 }
+        );
+      }
+      await recordSuccessfulAudit({
+        targetId: orderCode,
+        details: {
+          orderCode,
+          amount: parsedAmount,
+          result: result.alreadyCompleted ? 'already_completed' : 'completed',
+          status: result.alreadyCompleted ? 'already_completed' : 'completed',
+        },
+      });
       return NextResponse.json({ ok: true, result });
     }
 

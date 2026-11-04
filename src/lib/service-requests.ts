@@ -258,13 +258,15 @@ function writeLocalServiceRequestsStore(
   try {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
+    fs.chmodSync(dir, 0o700);
     fs.writeFileSync(
       filePath,
       JSON.stringify({ serviceRequests: normalized }, null, 2),
-      'utf8'
+      { encoding: 'utf8', mode: 0o600 }
     );
+    fs.chmodSync(filePath, 0o600);
   } catch {
     // keep in-memory fallback if filesystem is read-only
   }

@@ -8,6 +8,7 @@ import type { NextResponse } from 'next/server';
 import { sanitizeNextPath } from '@/lib/post-login-route';
 import { getSupabaseDbClient } from '@/lib/db';
 import { isSuperAdminEmail } from '@/lib/auth-session';
+import { getEffectivePlanTier } from '@/lib/plan-limits';
 import type { PlanTier, Profile } from '@/types/qlaok';
 
 type SubscriptionPlan = PlanTier;
@@ -1376,7 +1377,10 @@ export async function resolveAndSyncZitadelOwnerProfile(params: {
 
     const effectivePlan: SubscriptionPlan = isAdmin
       ? 'premium'
-      : (existingProfile.plan as SubscriptionPlan) || 'free';
+      : getEffectivePlanTier(
+          existingProfile.plan,
+          existingProfile.plan_expires_at
+        );
 
     return {
       user: {

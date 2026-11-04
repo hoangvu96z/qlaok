@@ -65,12 +65,34 @@ export async function DELETE(req: Request) {
   const authentication = await requireAuthenticatedUser(req);
   if (authentication.errorResponse) return authentication.errorResponse;
 
-  const sb = getSupabaseDbClient();
-  const { data: post } = await sb
-    .from('posts')
-    .select('id, shop_id')
-    .eq('id', postId)
-    .maybeSingle();
+  let post: { id: string; shop_id: string } | null;
+  try {
+    const sb = getSupabaseDbClient();
+    const { data, error } = await sb
+      .from('posts')
+      .select('id, shop_id')
+      .eq('id', postId)
+      .maybeSingle();
+
+    if (error) {
+      return NextResponse.json(
+        {
+          error: 'Không thể kiểm tra thông báo để xóa. Vui lòng thử lại sau.',
+          code: 'POST_LOOKUP_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+    post = data;
+  } catch {
+    return NextResponse.json(
+      {
+        error: 'Không thể kiểm tra thông báo để xóa. Vui lòng thử lại sau.',
+        code: 'POST_LOOKUP_FAILED',
+      },
+      { status: 500 }
+    );
+  }
 
   if (!post) {
     return NextResponse.json({ error: 'Post not found' }, { status: 404 });

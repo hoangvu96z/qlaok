@@ -995,12 +995,16 @@ export async function PATCH(req: Request) {
     let nonOwnerThemeKeyChanged = false;
     let nonBankThemeKeySubmitted = false;
     let bankKeySubmitted = false;
+    let nonPromoThemeKeySubmitted = false;
+    let promoKeySubmitted = false;
     for (const key of Object.keys(incomingTheme || {})) {
       const changed =
         JSON.stringify(incomingTheme?.[key as keyof ShopThemeConfig]) !==
         JSON.stringify(prevTheme[key as keyof ShopThemeConfig]);
       if (bankKeys.includes(key)) bankKeySubmitted = true;
       else nonBankThemeKeySubmitted = true;
+      if (promoKeys.includes(key)) promoKeySubmitted = true;
+      else nonPromoThemeKeySubmitted = true;
       if (ownerOnlyKeys.includes(key)) {
         if (changed) {
           requiresOwnerOrAdmin = true;
@@ -1029,14 +1033,15 @@ export async function PATCH(req: Request) {
     if (Object.keys(patch).some((key) => key !== 'theme_config')) {
       requiredPerms.add('settings.manage');
     } else if (!requiredPerms.size) {
-      // Nothing changed. A payload that only carries bank keys is still a
-      // bank-settings save (bank-only managers re-saving the payment tab), while
-      // re-sending an unchanged bank block together with general settings must
-      // not escalate to settings.bank.
+      // Nothing changed. A payload that only carries bank or promo keys is still
+      // a bank/promotions save (managers re-saving their tab), while re-sending
+      // an unchanged block together with general settings must not escalate.
       requiredPerms.add(
         bankKeySubmitted && !nonBankThemeKeySubmitted
           ? 'settings.bank'
-          : 'settings.manage'
+          : promoKeySubmitted && !nonPromoThemeKeySubmitted
+            ? 'promotions.manage'
+            : 'settings.manage'
       );
     }
 

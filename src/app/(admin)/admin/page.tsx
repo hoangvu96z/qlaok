@@ -442,8 +442,24 @@ export default function SuperAdminPortalPage() {
         showToastMessage('error', authErrMsg);
         return false;
       }
-      if (!res.ok) {
-        throw new Error(apiError || tx('Thao tác thất bại', 'Action failed'));
+      if (
+        !res.ok ||
+        json.ok === false ||
+        json.paymentResolutionRequired === true
+      ) {
+        if (res.status === 409 || json.paymentResolutionRequired === true) {
+          await fetchAdminData();
+        }
+        const fallbackCode =
+          typeof json.paymentResolutionCode === 'string' &&
+          json.paymentResolutionCode.trim()
+            ? json.paymentResolutionCode.trim()
+            : typeof json.code === 'string' && json.code.trim()
+              ? json.code.trim()
+              : null;
+        throw new Error(
+          apiError || fallbackCode || tx('Thao tác thất bại', 'Action failed')
+        );
       }
       showToastMessage('success', successMsg);
       await fetchAdminData();

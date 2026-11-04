@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 import ts from 'typescript';
+import { GET as getAnalyticsTrackSummary } from '@/app/api/analytics/track/route';
 import {
   ANALYTICS_SUMMARY_EVENT_SELECT_COLUMNS,
   ANALYTICS_SUMMARY_ITEM_SELECT_COLUMNS,
@@ -10,6 +11,7 @@ import {
   setSupabaseDbClientForTests,
 } from '@/lib/db';
 import { setMposDbClientForTests } from '@/lib/mpos-store';
+import { issueSessionToken } from '@/lib/server-auth';
 import { setShopTablesDbClientForTests } from '@/lib/shop-tables';
 
 // Load and evaluate the dashboard analytics sync engine from page.tsx source
@@ -181,6 +183,84 @@ describe('Dashboard Overview analytics polling rate reduction and sync behavior'
 
   test('fallback interval is configured to exactly 60 seconds (60000ms)', () => {
     assert.equal(interval, 60000);
+  });
+
+  test('analytics summary GET returns a safe 500 when analytics or catalog reads fail', async (t) => {
+    t.after(() => {
+      setSupabaseDbClientForTests(null);
+      setMposDbClientForTests(null);
+      setShopTablesDbClientForTests(null);
+    });
+
+    const shopId = 'shop-fnb-001';
+    const ownerId = 'owner-demo-001';
+    const token = issueSessionToken({
+      id: ownerId,
+      email: 'owner-demo-001@qlaok.test',
+      role: 'owner',
+    });
+
+    for (const [failedTable, expectedCode] of [
+      ['analytics_events', 'ANALYTICS_EVENTS_QUERY_FAILED'],
+      ['items', 'ANALYTICS_ITEMS_QUERY_FAILED'],
+    ] as const) {
+      const client = {
+        from(queryTable: string) {
+          let single = false;
+          const execute = async () => {
+            if (queryTable === failedTable) {
+              return {
+                data: null,
+                error: { code: 'XX000', message: 'sensitive database detail' },
+              };
+            }
+            if (queryTable === 'shops') {
+              const shop = { id: shopId, owner_id: ownerId };
+              return { data: single ? shop : [shop], error: null };
+            }
+            if (queryTable === 'profiles') {
+              const profile = { id: ownerId, session_version: 1 };
+              return { data: single ? profile : [profile], error: null };
+            }
+            return { data: single ? null : [], error: null };
+          };
+          const builder = {
+            select() { return builder; },
+            eq() { return builder; },
+            order() { return builder; },
+            limit() { return builder; },
+            single() { single = true; return builder; },
+            maybeSingle() { single = true; return builder; },
+            then(
+              resolve: (value: unknown) => unknown,
+              reject: (reason: unknown) => unknown
+            ) {
+              return execute().then(resolve, reject);
+            },
+          };
+          return builder;
+        },
+        rpc() {
+          return Promise.resolve({ data: null, error: { code: 'PGRST202' } });
+        },
+      };
+
+      setSupabaseDbClientForTests(client);
+      setMposDbClientForTests(client, true);
+      setShopTablesDbClientForTests(client, true);
+
+      const response = await getAnalyticsTrackSummary(
+        new Request(`http://localhost/api/analytics/track?shopId=${shopId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      );
+
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: 'Failed to load analytics summary',
+        code: expectedCode,
+      });
+    }
   });
 
   test('sync engine: initial fetch, 60s visible fallback, hidden pause, visibility return, and cleanup', async (t) => {

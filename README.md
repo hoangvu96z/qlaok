@@ -129,7 +129,14 @@ Dùng secret phiên ngẫu nhiên tối thiểu 32 ký tự theo mẫu. Không d
 20261101000100_analytics_event_view_count_atomic.sql
 20261102000100_revoke_trigger_function_execute.sql
 20261102000200_admin_delete_owner_shop_atomic.sql
+20261103000100_harden_postgrest_direct_writes.sql
+20261103000200_owner_session_revocation.sql
+20261103000300_orders_assisted_idempotency_prefix_unique.sql
+20261103000400_enforce_plan_expiry_and_renewal.sql
+20261103000500_admin_transfer_shop_ownership_atomic.sql
 ```
+
+Danh sách trên đối chiếu đủ 40 file migration hiện có trong `supabase/migrations/`; chạy `npm run db:migrate` để áp dụng các migration còn thiếu theo thứ tự.
 
 `npm run db:migrate` gọi `scripts/migrate-self-hosted.mjs`, chạy từng migration PostgreSQL tự host còn thiếu theo thứ tự tên file trong một transaction riêng, kiểm checksum, lưu lịch sử trong `public.schema_migrations` và phát `NOTIFY pgrst, 'reload schema'` một lần sau khi lô migration mới hoàn tất thành công (tránh phát trùng nếu migration cuối đã có sẵn lệnh này); script không gọi Supabase Management API. Chỉ chạy khi đã xác định đúng DB đích. Migration `20261102000200_admin_delete_owner_shop_atomic.sql` cung cấp RPC xóa owner/shop theo transaction, khóa hàng gốc trước khi kiểm tra lịch sử để tránh race với insert dùng khóa ngoại, và chỉ cấp quyền gọi trực tiếp cho `service_role`; API Super Admin gọi hai RPC này. `002z` lưu archive nhóm bank reference trùng trước khi tạo unique index; cần đối chiếu thủ công trường hợp lịch sử, không coi row giữ lại là kết luận đối soát. Migration `20261028000300` từ chối tạo unique index nếu mã đơn cũ bị trùng để không tự đổi mã lịch sử; cần đối soát các đơn đó rồi chạy migration lại.
 
