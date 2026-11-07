@@ -470,7 +470,7 @@ test("9. Payment Order & Development Webhook Sandbox Auto-Upgrade (/api/webhooks
 test("10. All 19 Frontend Routes Render 200 OK with Expected Content", async () => {
   const routes = [
     { path: "/", mustContain: "Qlaok" },
-    { path: "/explore", mustContain: "Qlaok Directory" },
+    { path: "/explore", mustContain: "Khám phá quán" },
     { path: "/pricing", mustContain: "39.000" },
     { path: "/login", mustContain: "Qlaok" },
     { path: "/onboarding", mustContain: "Qlaok" },
