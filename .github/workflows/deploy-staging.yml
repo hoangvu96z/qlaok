@@ -1,0 +1,75 @@
+name: Deploy Qlaok staging (qlaok.vunph.io.vn)
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+concurrency:
+  group: qlaok-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mobile/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix mobile
+      - run: npm run typecheck && npm run typecheck --prefix mobile
+      - run: npm run test:unit && npm run test:review && npm run test:sql && npm run test:db-reset && npm test --prefix mobile
+      - name: Run E2E against disposable PostgreSQL and PostgREST
+        run: bash scripts/run-e2e-ci.sh
+      - run: npm run build
+
+  deploy:
+    needs: verify
+    if: needs.verify.result == 'success' && github.ref == 'refs/heads/develop'
+    name: Deploy → qlaok.vunph.io.vn
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify SSH key and install deploy identity
+        env:
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_SSH_FINGERPRINT: ${{ secrets.STAGING_SSH_FINGERPRINT }}
+        run: |
+          set -eu
+          test -n "$STAGING_SSH_PRIVATE_KEY"
+          test -n "$STAGING_SSH_FINGERPRINT"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_PRIVATE_KEY" > "$HOME/.ssh/qlaok-staging"
+          chmod 600 "$HOME/.ssh/qlaok-staging"
+          ssh-keyscan -T 10 -t ed25519 qlaok.vunph.io.vn > "$HOME/.ssh/known_hosts"
+          actual_fingerprint="$(ssh-keygen -lf "$HOME/.ssh/known_hosts" -E sha256 | awk 'NR == 1 {print $2}')"
+          if [ "$actual_fingerprint" != "$STAGING_SSH_FINGERPRINT" ]; then
+            printf 'Staging SSH host fingerprint did not match the pinned value.\n' >&2
+            exit 1
+          fi
+
+      - name: Deploy the exact verified commit
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          ssh \
+            -i "$HOME/.ssh/qlaok-staging" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p 22 \
+            qlaok-deploy@qlaok.vunph.io.vn \
+            "bash -s -- '$DEPLOY_SHA'" < ops/staging/deploy-server.sh

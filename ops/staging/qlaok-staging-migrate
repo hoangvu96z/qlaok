@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd /var/www/qlaok.vunph.io.vn
+export QLAOK_DB_NAME=qlaok_staging
+exec /opt/qlaok-staging/node/bin/node scripts/migrate-self-hosted.mjs

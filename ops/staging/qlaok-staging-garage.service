@@ -1,0 +1,23 @@
+[Unit]
+Description=Qlaok staging Garage object storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qlaok-storage
+Group=qlaok-storage
+EnvironmentFile=/etc/qlaok-staging/garage.env
+Environment=GARAGE_CONFIG_FILE=/etc/qlaok-staging/garage.toml
+ExecStart=/opt/qlaok-staging/bin/garage server --single-node --default-bucket
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/qlaok-staging/garage
+
+[Install]
+WantedBy=multi-user.target
