@@ -78,30 +78,30 @@ export function PwaInstallBanner() {
   };
 
   return (
-    <div className="mb-4 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-teal-50 p-3.5 shadow-xs">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-xs">
-            <Smartphone className="h-5 w-5" />
+    <div className="mb-3 rounded-xl border border-emerald-800 bg-emerald-700 p-2.5 text-white shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white">
+            <Smartphone className="h-4 w-4" aria-hidden="true" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs font-black text-slate-900">
+            <p className="text-[11px] font-black text-white">
               {t('installBanner.title')}
             </p>
-            <p className="text-[11px] text-slate-600 truncate">
+            <p className="line-clamp-1 text-[10px] text-emerald-50">
               {t('installBanner.subtitle')}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex shrink-0 items-center gap-1">
           {(deferredPrompt || isIos) && (
             <button
               type="button"
               onClick={handleInstallClick}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 active:scale-95"
+              className="inline-flex min-h-8 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 shadow-xs hover:bg-emerald-50 active:scale-95"
             >
-              <Download className="h-3.5 w-3.5" />
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{t('installBanner.cta')}</span>
             </button>
           )}
@@ -110,16 +110,16 @@ export function PwaInstallBanner() {
             onClick={handleDismiss}
             aria-label={t('installBanner.closeAria')}
             title={t('installBanner.closeAria')}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200/60 hover:text-slate-700"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-emerald-50 hover:bg-white/15 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
           >
-            <X className="h-4 w-4" />
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       </div>
 
       {showIosGuide && (
-        <div className="mt-2.5 rounded-xl bg-slate-900 p-3 text-xs text-slate-200 flex items-center gap-2">
-          <Share className="h-4 w-4 text-emerald-400 shrink-0" />
+        <div className="mt-2 rounded-lg border border-white/20 bg-white/10 p-2.5 text-xs text-white flex items-center gap-2">
+          <Share className="h-4 w-4 text-emerald-100 shrink-0" aria-hidden="true" />
           <span>{t('installBanner.iosGuide')}</span>
         </div>
       )}

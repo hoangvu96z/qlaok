@@ -249,6 +249,8 @@ export default function DashboardCatalogPage() {
   const [mutationError, setMutationError] = useState<CatalogMutationError | null>(
     null
   );
+  const [dismissedItemLimitHint, setDismissedItemLimitHint] = useState(false);
+  const [dismissedQuotaNotice, setDismissedQuotaNotice] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
@@ -375,6 +377,8 @@ export default function DashboardCatalogPage() {
     setLoadError(false);
     setHasLoaded(false);
     setMutationError(null);
+    setDismissedItemLimitHint(false);
+    setDismissedQuotaNotice(false);
     setBulkResultBanner(null);
     setEditingCategoryId(null);
     setEditingCategoryName('');
@@ -1988,7 +1992,9 @@ export default function DashboardCatalogPage() {
               data-testid="catalog-add-item-btn"
               disabled={itemLimitReached}
               aria-describedby={
-                itemLimitReached ? 'catalog-item-limit-hint' : undefined
+                itemLimitReached && !dismissedItemLimitHint
+                  ? 'catalog-item-limit-hint'
+                  : undefined
               }
               title={
                 itemLimitReached
@@ -2013,55 +2019,83 @@ export default function DashboardCatalogPage() {
         </div>
       </div>
 
-      {canManageCatalog && itemLimitReached && (
+      {canManageCatalog && itemLimitReached && !dismissedItemLimitHint && (
         <div
           id="catalog-item-limit-hint"
           data-testid="catalog-item-limit-hint"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-400 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-950 shadow-sm"
         >
-          <span>
+          <span className="min-w-0 flex-1">
             {tx(
               'Bạn đã dùng hết {max} món của {plan}. Nâng cấp để thêm món mới.',
               'You have used all {max} items on the {plan}. Upgrade to add more items.',
               { max: planCfg.maxItems, plan: planLabel }
             )}
           </span>
-          {isShopOwner && (
-            <Link
-              href="/dashboard/billing"
-              className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 font-black text-slate-950 hover:bg-amber-400"
+          <div className="flex shrink-0 items-center gap-1.5">
+            {isShopOwner && (
+              <Link
+                href="/dashboard/billing"
+                className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 font-black text-slate-950 hover:bg-amber-400"
+              >
+                <Crown className="h-3.5 w-3.5" aria-hidden="true" />
+                {tx('Nâng cấp gói', 'Upgrade plan')}
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={() => setDismissedItemLimitHint(true)}
+              aria-label={t('common.close')}
+              title={t('common.close')}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-amber-800 hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
             >
-              <Crown className="h-3.5 w-3.5" aria-hidden="true" />
-              {tx('Nâng cấp gói', 'Upgrade plan')}
-            </Link>
-          )}
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       )}
 
       {/* Plan Quota Usage Bar */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-3.5 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2.5 text-xs">
-          <Crown className="h-4 w-4 text-amber-500" />
-          <span className="font-bold text-slate-700">
-            {planLabel}: {tx('Đang dùng', 'Using')}{' '}
-            <strong className="text-slate-950">{items.length}</strong> /{' '}
-            {planCfg.maxItems > 9000
-              ? tx('Không giới hạn', 'Unlimited')
-              : tx('{max} món', '{max} items', { max: planCfg.maxItems })}
-          </span>
+      {!dismissedQuotaNotice && (
+        <div
+          role="status"
+          data-testid="catalog-plan-quota-notice"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-amber-950 shadow-sm"
+        >
+          <div className="flex min-w-0 items-center gap-2.5 text-xs">
+            <Crown className="h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+            <span className="font-bold">
+              {planLabel}: {tx('Đang dùng', 'Using')}{' '}
+              <strong className="text-amber-950">{items.length}</strong> /{' '}
+              {planCfg.maxItems > 9000
+                ? tx('Không giới hạn', 'Unlimited')
+                : tx('{max} món', '{max} items', { max: planCfg.maxItems })}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {isShopOwner && planTier !== 'premium' && (
+              <Link
+                href="/dashboard/billing"
+                className="text-xs font-bold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:text-amber-950"
+              >
+                {tx('Nâng cấp mở khóa không giới hạn →', 'Upgrade for unlimited items →')}
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={() => setDismissedQuotaNotice(true)}
+              aria-label={t('common.close')}
+              title={t('common.close')}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-amber-800 hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
-        {isShopOwner && planTier !== 'premium' && (
-          <Link
-            href="/dashboard/billing"
-            className="text-xs font-bold text-emerald-600 hover:underline"
-          >
-            {tx('Nâng cấp mở khóa không giới hạn →', 'Upgrade for unlimited items →')}
-          </Link>
-        )}
-      </div>
+      )}
 
       {/* Add Category Form & Filter Pills */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+      <div className="rounded-2xl border border-slate-300 bg-white p-4 shadow-sm space-y-3">
         {canManageCatalog && (
           <form
             onSubmit={handleCreateCategory}
@@ -2149,7 +2183,7 @@ export default function DashboardCatalogPage() {
       </div>
 
       {/* Search Box */}
-      <div className="relative">
+      <div className="relative rounded-2xl border border-slate-300 bg-white p-1 shadow-2xs">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         <input
           type="text"
@@ -2163,7 +2197,7 @@ export default function DashboardCatalogPage() {
             'Tìm nhanh món hoặc dịch vụ để đổi trạng thái, sửa giá...',
             'Search items or services to toggle stock or edit price...'
           )}
-          className="w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 focus:border-emerald-500 focus:outline-none"
+          className="w-full rounded-xl border border-transparent bg-white pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 focus:border-emerald-700 focus:outline-none"
         />
       </div>
 
@@ -2250,12 +2284,12 @@ export default function DashboardCatalogPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3 rounded-2xl border border-slate-300 bg-slate-50/80 p-3 shadow-sm">
           {/* Select-Current-Page Bar */}
           {pagedItems.length > 0 && (
             <div
               data-testid="catalog-select-page-bar"
-              className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs shadow-2xs flex-wrap"
+              className="flex items-center justify-between gap-3 rounded-2xl border border-slate-300 bg-white px-3.5 py-2 text-xs shadow-2xs flex-wrap"
             >
               <label
                 htmlFor="catalog-select-current-page"

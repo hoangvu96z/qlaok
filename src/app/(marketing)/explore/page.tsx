@@ -8,6 +8,10 @@ import {
   Wifi,
   ArrowRight,
   Store,
+  Menu,
+  Plus,
+  X,
+  ChevronRight,
 } from 'lucide-react';
 import { BusinessVertical } from '@/types/qlaok';
 import type { PublicShopDirectoryEntry } from '@/lib/public-catalog';
@@ -29,6 +33,7 @@ export default function ExploreDirectoryPage() {
   const [selectedCity, setSelectedCity] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     fetch('/api/shops', { cache: 'no-store' })
@@ -39,6 +44,15 @@ export default function ExploreDirectoryPage() {
       })
       .catch(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [mobileMenuOpen]);
 
   const cities = VIETNAM_PROVINCES_34.map((p) => p.name);
 
@@ -66,20 +80,23 @@ export default function ExploreDirectoryPage() {
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
-        <div className="mx-auto max-w-6xl px-4 py-3.5 flex items-center justify-between gap-3">
-          <Link href="/" className="flex items-center gap-2">
-            <BrandLogo className="h-9 w-9 rounded-xl" />
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-base font-black text-slate-900">
-                Qlaok Directory
+        <div className="mx-auto max-w-6xl px-3 sm:px-4 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-3">
+          <Link href="/" className="flex min-w-0 items-center gap-2">
+            <BrandLogo className="h-8 w-8 shrink-0 rounded-xl sm:h-9 sm:w-9" />
+            <div className="flex min-w-0 items-baseline gap-1.5">
+              <span className="whitespace-nowrap text-sm font-black text-slate-900 sm:text-base">
+                Qlaok
               </span>
-              <span className="hidden sm:inline text-xs font-bold text-slate-500">
+              <span className="hidden whitespace-nowrap text-xs font-bold text-slate-600 sm:inline">
+                {tx('Danh bạ quán', 'Directory')}
+              </span>
+              <span className="hidden whitespace-nowrap text-xs font-bold text-slate-500 lg:inline">
                 {tx('· Khám phá quán', '· Explore Stores')}
               </span>
             </div>
           </Link>
 
-          <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-2 md:flex">
             <AppLanguageSwitcher />
             <Link
               href="/pricing"
@@ -99,6 +116,63 @@ export default function ExploreDirectoryPage() {
             >
               {tx('+ Tạo quán mới', '+ Create Store')}
             </Link>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5 md:hidden">
+            <Link
+              href="/onboarding"
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-[11px] font-black text-white hover:bg-emerald-800 sm:text-xs"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              <span>{tx('Tạo quán', 'Create store')}</span>
+            </Link>
+            <button
+              type="button"
+              aria-label={
+                mobileMenuOpen
+                  ? tx('Đóng menu', 'Close menu')
+                  : tx('Mở menu', 'Open menu')
+              }
+              aria-expanded={mobileMenuOpen}
+              aria-controls="explore-mobile-menu"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-800 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+            >
+              {mobileMenuOpen ? (
+                <X className="h-5 w-5" aria-hidden="true" />
+              ) : (
+                <Menu className="h-5 w-5" aria-hidden="true" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="explore-mobile-menu"
+          hidden={!mobileMenuOpen}
+          className="border-t border-slate-200 bg-white px-3 py-3 shadow-sm md:hidden"
+        >
+          <div className="mx-auto max-w-6xl">
+            <AppLanguageSwitcher />
+            <nav
+              aria-label={tx('Menu chính', 'Main menu')}
+              className="mt-3 grid grid-cols-2 gap-2"
+            >
+              <Link
+                href="/pricing"
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-center text-xs font-bold text-slate-800 hover:bg-slate-100"
+              >
+                {tx('Bảng giá', 'Pricing')}
+              </Link>
+              <Link
+                href="/dashboard"
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-center text-xs font-bold text-slate-800 hover:bg-slate-100"
+              >
+                {tx('Quản lý quán', 'Manage store')}
+              </Link>
+            </nav>
           </div>
         </div>
       </header>
@@ -161,46 +235,58 @@ export default function ExploreDirectoryPage() {
             </select>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
-            {[
-              {
-                id: 'all',
-                label: tx('Tất cả ngành hàng', 'All categories'),
-              },
-              {
-                id: 'fnb',
-                label: tx('🍜 Quán ăn & Cafe', '🍜 Food & Cafe'),
-              },
-              {
-                id: 'service',
-                label: tx(
-                  '💆‍♀️ Nail, Spa & Dịch vụ',
-                  '💆‍♀️ Nail, Spa & Services'
-                ),
-              },
-              {
-                id: 'retail',
-                label: tx(
-                  '🛍️ Bán lẻ & Đặc sản',
-                  '🛍️ Retail & Specialties'
-                ),
-              },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() =>
-                  setSelectedVertical(tab.id as BusinessVertical | 'all')
-                }
-                className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-bold transition-colors ${
-                  selectedVertical === tab.id
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="relative">
+            <div
+              role="group"
+              aria-label={tx('Lọc theo ngành hàng', 'Filter by category')}
+              className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1 pr-6"
+            >
+              {[
+                {
+                  id: 'all',
+                  label: tx('Tất cả ngành hàng', 'All categories'),
+                },
+                {
+                  id: 'fnb',
+                  label: tx('🍜 Quán ăn & Cafe', '🍜 Food & Cafe'),
+                },
+                {
+                  id: 'service',
+                  label: tx(
+                    '💆‍♀️ Nail, Spa & Dịch vụ',
+                    '💆‍♀️ Nail, Spa & Services'
+                  ),
+                },
+                {
+                  id: 'retail',
+                  label: tx(
+                    '🛍️ Bán lẻ & Đặc sản',
+                    '🛍️ Retail & Specialties'
+                  ),
+                },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() =>
+                    setSelectedVertical(tab.id as BusinessVertical | 'all')
+                  }
+                  className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-bold transition-colors ${
+                    selectedVertical === tab.id
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 right-0 flex w-8 items-center justify-end bg-gradient-to-l from-white to-transparent pr-1 text-slate-500 sm:hidden"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </div>
           </div>
         </div>
 

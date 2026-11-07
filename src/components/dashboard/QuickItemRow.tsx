@@ -230,11 +230,11 @@ export function QuickItemRow({
   return (
     <div
       data-testid={`catalog-item-row-${item.id}`}
-      className={`rounded-2xl border bg-white p-2.5 sm:p-3 transition-all shadow-2xs hover:border-slate-300 ${
+      className={`rounded-2xl border bg-white p-2.5 sm:p-3 transition-all shadow-2xs hover:border-slate-400 ${
         selected
           ? 'border-emerald-500 bg-emerald-50/10 ring-2 ring-emerald-500/20'
           : item.is_available
-            ? 'border-slate-200'
+            ? 'border-slate-300'
             : 'border-rose-200 bg-rose-50/20 opacity-85'
       }`}
     >
@@ -457,7 +457,7 @@ export function QuickItemRow({
         </div>
 
         {/* Right Section: Availability + Inline Price & Stock + Action Buttons */}
-        <div className="flex items-center justify-between lg:justify-end gap-2 sm:gap-3 shrink-0 flex-wrap sm:flex-nowrap border-t border-slate-100 pt-2 lg:border-t-0 lg:pt-0">
+        <div className="flex min-w-0 items-center justify-between lg:justify-end gap-2 sm:gap-3 shrink-0 flex-wrap border-t border-slate-200 pt-2 lg:border-t-0 lg:pt-0">
           {/* Availability Toggle Switch */}
           {canAdjustInventory && <div className="flex items-center gap-1.5 shrink-0">
             <button
@@ -482,7 +482,7 @@ export function QuickItemRow({
               />
             </button>
             <span
-              className={`text-[11px] font-bold hidden sm:inline ${
+              className={`text-[11px] font-bold hidden lg:inline ${
                 item.is_available ? 'text-emerald-700' : 'text-rose-600'
               }`}
             >
@@ -494,7 +494,7 @@ export function QuickItemRow({
 
           {/* Quick Price Input */}
           {canManageCatalog && (
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <label
               htmlFor={`price-${item.id}`}
               className="text-xs font-semibold text-slate-500"
@@ -636,20 +636,21 @@ export function QuickItemRow({
           )}
 
           {/* Action Buttons */}
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             {/* Featured toggle */}
             {canManageCatalog && <button
               type="button"
               data-testid="item-featured-toggle"
               onClick={() => onToggleFeatured(item, !item.is_featured)}
+              aria-pressed={Boolean(item.is_featured)}
               className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border transition-colors ${
                 item.is_featured
                   ? 'border-amber-300 bg-amber-50 text-amber-800'
                   : 'border-slate-200 bg-white text-slate-400 hover:bg-slate-50 hover:text-amber-600'
               }`}
               title={tx(
-                'Đánh dấu món Bán chạy / Nổi bật',
-                'Mark item as Popular / Featured'
+                item.is_featured ? 'Bỏ đánh dấu nổi bật' : 'Đánh dấu nổi bật',
+                item.is_featured ? 'Remove featured status' : 'Mark as featured'
               )}
               aria-label={tx('Nổi bật', 'Featured')}
             >
@@ -666,7 +667,6 @@ export function QuickItemRow({
               aria-label={tx('Tùy chọn & Dịch 8 ngôn ngữ', 'Options & 8-language translations')}
             >
               <Languages className="h-3.5 w-3.5" />
-              <span className="hidden xl:inline">{tx('Tùy chọn', 'Options')}</span>
             </button>}
 
             {/* Photo upload action */}
@@ -703,7 +703,7 @@ export function QuickItemRow({
               data-testid="item-delete-button"
               onClick={() => onDelete(item.id)}
               className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
-              title={t('common.delete')}
+              title={tx('Xóa món', 'Delete item')}
               aria-label={t('common.delete')}
             >
               <Trash2 className="h-3.5 w-3.5" />
