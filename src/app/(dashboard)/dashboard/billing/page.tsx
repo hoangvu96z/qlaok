@@ -405,7 +405,7 @@ export default function DashboardBillingPage() {
 
         {/* Instant plan switcher — Super Admin only (server also enforces) */}
         {isAdmin && (
-          <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5">
             <span className="px-2 text-[11px] font-bold text-slate-500">
               {tx('Đổi nhanh gói (Admin):', 'Quick switch (Admin):')}
             </span>
@@ -709,7 +709,7 @@ export default function DashboardBillingPage() {
       )}
 
       {/* 3 Pricing Tiers Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         {(['free', 'basic', 'premium'] as PlanTier[]).map((tier) => {
           const cfg = PLAN_CONFIGS[tier];
           const copy = getPlanCopy(tier);
@@ -720,7 +720,7 @@ export default function DashboardBillingPage() {
           return (
             <div
               key={tier}
-              className={`rounded-3xl border p-6 flex flex-col justify-between transition-all ${
+              className={`min-w-0 rounded-3xl border p-6 flex flex-col justify-between transition-all ${
                 isPremium
                   ? 'border-2 border-emerald-500 bg-white shadow-xl relative'
                   : 'border-slate-200 bg-white shadow-2xs'
@@ -737,7 +737,7 @@ export default function DashboardBillingPage() {
                   <h3 className="text-base font-black text-slate-900">
                     {copy.name}
                   </h3>
-                  <div className="mt-2 flex items-baseline gap-1">
+                  <div className="mt-2 flex flex-wrap items-baseline gap-1">
                     <span className="text-3xl font-black text-slate-950">
                       {formatCurrency(cfg.priceMonthly)}
                     </span>

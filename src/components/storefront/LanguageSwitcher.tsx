@@ -38,11 +38,18 @@ export function LanguageSwitcher({
         setOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    };
     if (open) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [open]);
 
@@ -62,14 +69,15 @@ export function LanguageSwitcher({
           aria-expanded={open}
           onClick={() => setOpen((prev) => !prev)}
           style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
-          className="qr-light-surface inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-500/70 bg-white px-3 py-1.5 text-xs font-extrabold text-slate-900 shadow-sm hover:border-emerald-600 active:scale-95 transition"
+          className="qr-light-surface inline-flex items-center gap-1.5 rounded-full border-2 border-emerald-500/70 bg-white px-2.5 sm:px-3 py-1.5 text-xs font-extrabold text-slate-900 shadow-sm hover:border-emerald-600 active:scale-95 transition"
           aria-label={labels.selectLanguageAria}
+          title={`${labels.selectLanguageAria} (${activeMeta.nativeName})`}
         >
           <Globe className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
           <FlagIcon locale={currentLocale} className="h-3.5 w-5 shrink-0" />
-          <span>{activeMeta.nativeName}</span>
+          <span className="hidden sm:inline">{activeMeta.nativeName}</span>
           <ChevronDown
-            className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+            className={`hidden sm:block h-3.5 w-3.5 text-slate-500 transition-transform ${
               open ? 'rotate-180' : ''
             }`}
           />
@@ -78,7 +86,7 @@ export function LanguageSwitcher({
         {open && (
           <div
             style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
-            className="qr-light-surface absolute right-0 mt-2 w-64 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl ring-1 ring-black/5 z-50"
+            className="qr-light-surface absolute right-0 mt-2 w-64 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl ring-1 ring-black/5 z-50"
           >
             <div className="px-2.5 py-1.5 border-b border-slate-100 mb-1 flex items-center justify-between">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">

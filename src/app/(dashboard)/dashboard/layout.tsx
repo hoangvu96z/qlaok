@@ -982,7 +982,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         }`}
       >
         {/* Top Header Bar — Responsive across 390px, 768px, 1280px */}
-        <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-2 flex items-center justify-between gap-1.5 sm:gap-2">
+        <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-2.5 sm:px-4 py-2 xl:h-14 flex items-center justify-between gap-1.5 sm:gap-2">
           <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
             <Link
               href="/"

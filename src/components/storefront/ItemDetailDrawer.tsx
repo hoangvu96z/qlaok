@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X, Plus, Minus, Clock, Sparkles, Check } from 'lucide-react';
 import {
@@ -28,6 +28,7 @@ interface ItemDetailDrawerProps {
   locale: SupportedLocale;
   currency?: string;
   primaryColor?: string;
+  isSubmitting?: boolean;
   onClose: () => void;
   onAddToCart: (selection: CartSelection) => void;
 }
@@ -38,6 +39,7 @@ export function ItemDetailDrawer({
   locale,
   currency = 'VND',
   primaryColor = '#10b981',
+  isSubmitting = false,
   onClose,
   onAddToCart,
 }: ItemDetailDrawerProps) {
@@ -45,6 +47,9 @@ export function ItemDetailDrawer({
   const [selectedChoices, setSelectedChoices] = useState<ItemOptionChoice[]>([]);
   const [selectedQuickTagIds, setSelectedQuickTagIds] = useState<string[]>([]);
   const [customNote, setCustomNote] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   const labels = UI_LABELS[locale] || UI_LABELS.vi;
   const quickTags = QUICK_TAGS_BY_VERTICAL[vertical] || [];
@@ -71,7 +76,56 @@ export function ItemDetailDrawer({
     }
   }, [item]);
 
+  const itemId = item?.id ?? null;
+
+  useEffect(() => {
+    if (!itemId) return;
+
+    const previousActive =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const focusTimer = window.setTimeout(() => {
+      const dialogEl = dialogRef.current;
+      if (!dialogEl) return;
+      if (!dialogEl.contains(document.activeElement)) {
+        const closeBtn = dialogEl.querySelector<HTMLElement>(
+          'button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        (closeBtn || dialogEl).focus({ preventScroll: true });
+      }
+    }, 0);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      if (previousActive && document.contains(previousActive)) {
+        previousActive.focus({ preventScroll: true });
+      }
+    };
+  }, [itemId]);
+
+  useEffect(() => {
+    if (!item || isSubmitting) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [item, isSubmitting]);
+
   if (!item) return null;
+
+  const titleId = `storefront-item-detail-title-${item.id}`;
+  const handleDismiss = () => {
+    if (isSubmitting) return;
+    onClose();
+  };
 
   const toggleChoice = (groupId: string, choice: ItemOptionChoice, required: boolean) => {
     const group = item.options_json?.find((g) => g.id === groupId);
@@ -135,14 +189,19 @@ export function ItemDetailDrawer({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0"
-            onClick={onClose}
+            onClick={handleDismiss}
           />
           <motion.div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            tabIndex={-1}
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-            className="relative z-10 w-full max-w-md max-h-[88vh] overflow-y-auto rounded-t-3xl bg-white shadow-2xl flex flex-col"
+            className="relative z-10 w-full max-w-md max-h-[88vh] overflow-y-auto rounded-t-3xl bg-white shadow-2xl flex flex-col focus:outline-none"
           >
             {/* Header / Image */}
             {item.image_url ? (
@@ -157,8 +216,9 @@ export function ItemDetailDrawer({
                 <button
                   type="button"
                   aria-label={labels.closeItemDetailAria}
-                  onClick={onClose}
-                  className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-xs hover:bg-black/70"
+                  disabled={isSubmitting}
+                  onClick={handleDismiss}
+                  className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-xs hover:bg-black/70 disabled:opacity-50"
                 >
                   <X className="h-5 w-5" />
                 </button>
@@ -177,8 +237,9 @@ export function ItemDetailDrawer({
                 <button
                   type="button"
                   aria-label={labels.closeItemDetailAria}
-                  onClick={onClose}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600"
+                  disabled={isSubmitting}
+                  onClick={handleDismiss}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:opacity-50"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -189,7 +250,10 @@ export function ItemDetailDrawer({
             <div className="p-5 space-y-5 overflow-y-auto">
               <div>
                 <div className="flex items-start justify-between gap-3">
-                  <h3 className="text-lg font-bold text-slate-900 leading-snug">
+                  <h3
+                    id={titleId}
+                    className="text-lg font-bold text-slate-900 leading-snug"
+                  >
                     {tField(item.name_i18n, locale)}
                   </h3>
                   <div className="text-right shrink-0">

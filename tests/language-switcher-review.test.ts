@@ -36,7 +36,6 @@ test('LanguageSwitcher compact trigger exposes aria-expanded="false" accessibly 
     'Dropdown language counter must not be rendered when collapsed'
   );
 });
-
 test('LanguageSwitcher compact trigger preserves accessible aria-expanded across different locales', () => {
   const testLocales: SupportedLocale[] = ['en', 'ko', 'ja'];
 
@@ -82,5 +81,30 @@ test('LanguageSwitcher noncompact mode renders role="group" and does not include
     html.includes('aria-expanded'),
     false,
     'Noncompact LanguageSwitcher must not render aria-expanded trigger button'
+  );
+});
+
+test('LanguageSwitcher compact trigger hides large native language label below sm while retaining globe, flag, aria-label, and tooltip', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(LanguageSwitcher, {
+      currentLocale: 'vi',
+      compact: true,
+      onChange: () => {},
+    })
+  );
+
+  const viLabels = UI_LABELS.vi;
+  assert.ok(
+    html.includes(`aria-label="${viLabels.selectLanguageAria}"`),
+    'Compact trigger must retain accessible aria-label'
+  );
+  assert.ok(
+    html.includes(`title="${viLabels.selectLanguageAria} (Tiếng Việt)"`),
+    'Compact trigger must expose descriptive tooltip with native language name'
+  );
+  assert.match(
+    html,
+    /<span class="hidden sm:inline">Tiếng Việt<\/span>/,
+    'Compact trigger must hide native language text on narrow mobile widths (< sm)'
   );
 });

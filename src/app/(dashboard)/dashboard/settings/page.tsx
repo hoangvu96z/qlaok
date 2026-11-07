@@ -297,26 +297,45 @@ export default function DashboardSettingsPage() {
   const [serviceRequestNotificationRule, setServiceRequestNotificationRule] =
     useState<ServiceRequestNotificationRule>('all_order_staff');
 
-  const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
+  const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(false);
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('qlaok_right_preview_open');
-      if (saved === '0') setIsPreviewSidebarOpen(false);
-      else if (saved === '1') setIsPreviewSidebarOpen(true);
-    } catch {
-      // ignore
-    }
+    if (typeof window === 'undefined') return;
+    const syncPreviewSidebarForViewport = () => {
+      if (window.innerWidth < 1280) {
+        setIsPreviewSidebarOpen(false);
+        return;
+      }
+      try {
+        const saved = window.localStorage.getItem('qlaok_right_preview_open');
+        setIsPreviewSidebarOpen(saved !== '0');
+      } catch {
+        setIsPreviewSidebarOpen(true);
+      }
+    };
+
+    syncPreviewSidebarForViewport();
+
+    if (typeof window.matchMedia !== 'function') return;
+    const xlQuery = window.matchMedia('(min-width: 1280px)');
+    const handleViewportChange = () => syncPreviewSidebarForViewport();
+    xlQuery.addEventListener('change', handleViewportChange);
+    return () => xlQuery.removeEventListener('change', handleViewportChange);
   }, []);
 
   const togglePreviewSidebar = () => {
     setIsPreviewSidebarOpen((prev) => {
       const next = !prev;
-      try {
-        window.localStorage.setItem('qlaok_right_preview_open', next ? '1' : '0');
-      } catch {
-        // ignore
+      if (typeof window !== 'undefined' && window.innerWidth >= 1280) {
+        try {
+          window.localStorage.setItem(
+            'qlaok_right_preview_open',
+            next ? '1' : '0'
+          );
+        } catch {
+          // ignore
+        }
       }
       return next;
     });
@@ -896,6 +915,7 @@ export default function DashboardSettingsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            aria-expanded={isPreviewSidebarOpen}
             onClick={togglePreviewSidebar}
             className={`inline-flex items-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-bold transition ${
               isPreviewSidebarOpen
@@ -1106,7 +1126,7 @@ export default function DashboardSettingsPage() {
             <label className="block text-xs font-bold text-slate-700 mb-1">
               {tx('Logo quán', 'Store logo')}
             </label>
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               {logoUrl && (
                 <img
                   src={logoUrl}
@@ -1122,7 +1142,7 @@ export default function DashboardSettingsPage() {
                   'Dán link ảnh hoặc tải lên...',
                   'Paste image URL or upload...'
                 )}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
+                className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
               <label
                 aria-busy={uploadingField !== null}
@@ -1165,7 +1185,7 @@ export default function DashboardSettingsPage() {
             <label className="block text-xs font-bold text-slate-700 mb-1">
               {tx('Ảnh bìa đầu trang', 'Cover photo')}
             </label>
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               {coverUrl && (
                 <img
                   src={coverUrl}
@@ -1181,7 +1201,7 @@ export default function DashboardSettingsPage() {
                   'Dán link ảnh bìa hoặc tải lên...',
                   'Paste cover URL or upload...'
                 )}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
+                className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
               />
               <label
                 aria-busy={uploadingField !== null}
@@ -1520,7 +1540,7 @@ export default function DashboardSettingsPage() {
       >
       {/* 1. Storefront Theme & Appearance */}
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-2xs space-y-5">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <Palette className="h-4 w-4 text-emerald-600" />
             <span>
@@ -1672,7 +1692,7 @@ export default function DashboardSettingsPage() {
               })}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <ImageIcon className="h-4 w-4 text-slate-400 shrink-0" />
               <input
                 type="text"
@@ -1682,7 +1702,7 @@ export default function DashboardSettingsPage() {
                   'Dán link ảnh nền hoặc tải ảnh lên...',
                   'Paste wallpaper URL or upload photo...'
                 )}
-                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
+                className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
               />
               <label
                 aria-busy={uploadingField !== null}
@@ -1720,7 +1740,7 @@ export default function DashboardSettingsPage() {
               </label>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <span className="text-[11px] font-bold text-slate-600 shrink-0">
                 {tx(
                   'Độ tối lớp phủ ({pct}%)',
@@ -1737,7 +1757,7 @@ export default function DashboardSettingsPage() {
                 onChange={(e) =>
                   setBackgroundOverlayOpacity(parseFloat(e.target.value))
                 }
-                className="w-full accent-emerald-600"
+                className="min-w-[140px] flex-1 accent-emerald-600"
               />
             </div>
           </div>
@@ -1950,7 +1970,7 @@ export default function DashboardSettingsPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left 7 Cols: Mode Selector & Bank / Custom QR Inputs */}
-          <div className="lg:col-span-7 space-y-4">
+          <div className="min-w-0 lg:col-span-7 space-y-4">
             {/* Mode Switcher */}
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-2">
@@ -2141,7 +2161,7 @@ export default function DashboardSettingsPage() {
                       'Upload or paste your QR image URL (Bank / MoMo / ZaloPay) *'
                     )}
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <input
                       type="text"
                       value={paymentConfig.customQrUrl || ''}
@@ -2155,7 +2175,7 @@ export default function DashboardSettingsPage() {
                         'Dán link ảnh QR hoặc bấm nút Tải ảnh QR...',
                         'Paste QR image URL or click Upload QR...'
                       )}
-                      className="flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
+                      className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900"
                     />
                     <label
                       aria-busy={uploadingField !== null}
@@ -2260,7 +2280,7 @@ export default function DashboardSettingsPage() {
           </div>
 
           {/* Right 5 Cols: Live Payment QR Preview Card */}
-          <div className="lg:col-span-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center text-center space-y-2.5">
+          <div className="min-w-0 lg:col-span-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center text-center space-y-2.5">
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase text-emerald-700">
               <CreditCard className="h-3 w-3" />
               {tx(

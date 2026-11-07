@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -955,6 +955,49 @@ export function StorefrontWelcomePopup({
   const banner = shop.theme_config?.promoBanner;
   const [copiedCode, setCopiedCode] = useState(false);
   const [copyVoucherFailed, setCopyVoucherFailed] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  const isVisible = Boolean(
+    isOpen && popup && popup.enabled && popup.title?.trim()
+  );
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const previousActive =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const focusTimer = window.setTimeout(() => {
+      const dialogEl = dialogRef.current;
+      if (!dialogEl) return;
+      if (!dialogEl.contains(document.activeElement)) {
+        const primaryAction = dialogEl.querySelector<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        (primaryAction || dialogEl).focus({ preventScroll: true });
+      }
+    }, 0);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener('keydown', handleKeyDown);
+      if (previousActive && document.contains(previousActive)) {
+        previousActive.focus({ preventScroll: true });
+      }
+    };
+  }, [isVisible]);
 
   if (!popup || !popup.enabled || !popup.title?.trim()) return null;
 
@@ -999,11 +1042,16 @@ export function StorefrontWelcomePopup({
           />
 
           <motion.div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="storefront-welcome-popup-title"
+            tabIndex={-1}
             initial={{ opacity: 0, scale: 0.9, y: 16 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 16 }}
             transition={{ type: 'spring', damping: 24, stiffness: 300 }}
-            className="relative z-10 w-full max-w-sm overflow-hidden rounded-3xl bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl border border-slate-100 dark:border-slate-800"
+            className="relative z-10 w-full max-w-sm overflow-hidden rounded-3xl bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xl border border-slate-100 dark:border-slate-800 focus:outline-none"
           >
             {/* Close Button */}
             <button
@@ -1048,7 +1096,10 @@ export function StorefrontWelcomePopup({
             {/* Popup Content */}
             <div className="p-5 space-y-4">
               <div>
-                <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 leading-snug">
+                <h3
+                  id="storefront-welcome-popup-title"
+                  className="text-lg font-black text-slate-900 dark:text-slate-100 leading-snug"
+                >
                   {displayTitle}
                 </h3>
                 {displayContent && (

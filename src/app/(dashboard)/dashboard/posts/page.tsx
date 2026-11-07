@@ -93,25 +93,44 @@ export default function DashboardPostsPage() {
     []
   );
   const [previewPopupOpen, setPreviewPopupOpen] = useState(false);
-  const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(true);
+  const [isPreviewSidebarOpen, setIsPreviewSidebarOpen] = useState(false);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('qlaok_right_preview_open');
-      if (saved === '0') setIsPreviewSidebarOpen(false);
-      else if (saved === '1') setIsPreviewSidebarOpen(true);
-    } catch {
-      // ignore
-    }
+    if (typeof window === 'undefined') return;
+    const syncPreviewSidebarForViewport = () => {
+      if (window.innerWidth < 1280) {
+        setIsPreviewSidebarOpen(false);
+        return;
+      }
+      try {
+        const saved = window.localStorage.getItem('qlaok_right_preview_open');
+        setIsPreviewSidebarOpen(saved !== '0');
+      } catch {
+        setIsPreviewSidebarOpen(true);
+      }
+    };
+
+    syncPreviewSidebarForViewport();
+
+    if (typeof window.matchMedia !== 'function') return;
+    const xlQuery = window.matchMedia('(min-width: 1280px)');
+    const handleViewportChange = () => syncPreviewSidebarForViewport();
+    xlQuery.addEventListener('change', handleViewportChange);
+    return () => xlQuery.removeEventListener('change', handleViewportChange);
   }, []);
 
   const togglePreviewSidebar = () => {
     setIsPreviewSidebarOpen((prev) => {
       const next = !prev;
-      try {
-        window.localStorage.setItem('qlaok_right_preview_open', next ? '1' : '0');
-      } catch {
-        // ignore
+      if (typeof window !== 'undefined' && window.innerWidth >= 1280) {
+        try {
+          window.localStorage.setItem(
+            'qlaok_right_preview_open',
+            next ? '1' : '0'
+          );
+        } catch {
+          // ignore
+        }
       }
       return next;
     });
@@ -583,6 +602,7 @@ export default function DashboardPostsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            aria-expanded={isPreviewSidebarOpen}
             onClick={togglePreviewSidebar}
             className={`inline-flex items-center gap-1.5 rounded-2xl border px-3.5 py-2.5 text-xs font-bold transition ${
               isPreviewSidebarOpen

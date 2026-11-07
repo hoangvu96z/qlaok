@@ -334,7 +334,7 @@ export function ShopSePayWebhookManager() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        <div className="lg:col-span-7 space-y-4">
+        <div className="min-w-0 lg:col-span-7 space-y-4">
           {/* Shop-scoped Webhook URL */}
           <div>
             <label
@@ -346,7 +346,7 @@ export function ShopSePayWebhookManager() {
                 'Store-scoped Webhook Callback URL (paste in SePay):'
               )}
             </label>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 id="sepay-callback-url-input"
                 type="text"
@@ -355,7 +355,7 @@ export function ShopSePayWebhookManager() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.preventDefault();
                 }}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono font-bold text-slate-800"
+                className="min-w-[160px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono font-bold text-slate-800"
               />
               <button
                 type="button"
@@ -472,7 +472,7 @@ export function ShopSePayWebhookManager() {
               </span>
             </label>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {config?.hasSecret && (
                 <button
                   type="button"
@@ -512,7 +512,7 @@ export function ShopSePayWebhookManager() {
         </div>
 
         {/* Right 5 Cols: Reconciliation Rules & Setup Summary */}
-        <div className="lg:col-span-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-2.5 text-xs text-slate-700">
+        <div className="min-w-0 lg:col-span-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-2.5 text-xs text-slate-700">
           <div className="flex items-center gap-1.5 font-black text-slate-900">
             <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
             <span>

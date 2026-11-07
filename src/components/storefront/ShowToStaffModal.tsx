@@ -10,7 +10,6 @@ import {
   Minus,
   Trash2,
   CheckCircle2,
-  Sparkles,
   Send,
   Clock,
   ChefHat,
@@ -197,7 +196,7 @@ const SEND_ORDER_LABELS: Record<
     noteLabel: 'Ghi chú đơn hàng',
     notePlaceholder:
       'Ghi chú chung cho quầy (VD: mang ra cùng lúc, xin thêm chén...)',
-    trackerTitle: 'Trạng Thái Đơn Hàng Trực Tiếp (Realtime)',
+    trackerTitle: 'Trạng thái đơn hàng đang cập nhật',
     stepNew: 'Chờ quầy xác nhận',
     stepPreparing: 'Đang chuẩn bị / chế biến',
     stepCompleted: 'Đã phục vụ & Hoàn tất',
@@ -794,6 +793,7 @@ export function ShowToStaffModal({
 
   // Close the modal; finished orders (completed / cancelled) are dismissed for good
   const handleCloseModal = () => {
+    if (submitting || cancellingOrder) return;
     if (activeOrder && isGuestOrderFinished(activeOrder)) {
       onDismissOrder?.();
     }
@@ -801,6 +801,21 @@ export function ShowToStaffModal({
     setTrackerError('');
     onClose();
   };
+
+  const handleCloseModalRef = useRef(handleCloseModal);
+  handleCloseModalRef.current = handleCloseModal;
+
+  useEffect(() => {
+    if (!isOpen || submitting || cancellingOrder) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleCloseModalRef.current();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, submitting, cancellingOrder]);
 
   // Guest self-cancel while the order is still new + unpaid (guest PATCH path)
   const handleGuestCancelOrder = async () => {
@@ -940,11 +955,19 @@ export function ShowToStaffModal({
               >
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
                   <div className="min-w-0">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 px-3 py-1 text-xs font-black">
-                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{orderText.trackerTitle}</span>
+                    <span
+                      data-testid="guest-order-live-badge"
+                      aria-label={orderText.trackerTitle}
+                      title={orderText.trackerTitle}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 px-2.5 py-0.5 text-xs font-black"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 animate-pulse"
+                      />
+                      <span>Live</span>
                     </span>
-                    <h3 className="mt-2 text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                    <h3 className="mt-2 break-words text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
                       {activeOrder.order_code} •{' '}
                       <span className="text-emerald-600 dark:text-emerald-400">
                         {formatTableLabel(activeOrder.table_label, locale)}

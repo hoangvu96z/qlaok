@@ -64,6 +64,11 @@ export function RightPreviewSidebar({
         <button
           type="button"
           onClick={onToggle}
+          aria-expanded={isOpen}
+          aria-label={tx(
+            'Mở khung xem trước màn hình khách',
+            'Open customer screen preview'
+          )}
           title={tx(
             'Mở khung xem trước màn hình khách',
             'Open customer screen preview'
@@ -82,8 +87,11 @@ export function RightPreviewSidebar({
       {/* Docked Right Sidebar */}
       <aside
         aria-label={tx('Xem trước màn hình khách', 'Customer screen preview')}
-        className={`fixed inset-y-0 right-0 z-40 w-[340px] sm:w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
-          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+        aria-hidden={!isOpen}
+        className={`fixed inset-y-0 xl:top-14 right-0 z-40 w-full max-w-[min(380px,100vw)] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
+          isOpen
+            ? 'translate-x-0 visible'
+            : 'translate-x-full pointer-events-none invisible'
         }`}
       >
         {/* Prominent Left-edge Handle Tab to Collapse Sidebar */}
@@ -91,8 +99,10 @@ export function RightPreviewSidebar({
           <button
             type="button"
             onClick={onToggle}
+            aria-expanded={isOpen}
+            aria-label={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
             title={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
-            className="flex absolute -left-10 top-24 z-50 flex-col items-center justify-center gap-1 rounded-l-2xl border border-r-0 border-slate-700 bg-slate-900 px-2 py-3 text-white shadow-xl hover:bg-emerald-600 transition-colors cursor-pointer"
+            className="hidden sm:flex absolute -left-10 top-24 z-50 flex-col items-center justify-center gap-1 rounded-l-2xl border border-r-0 border-slate-700 bg-slate-900 px-2 py-3 text-white shadow-xl hover:bg-emerald-600 transition-colors cursor-pointer"
           >
             <ChevronRight className="h-4 w-4 text-emerald-400" />
             <span className="text-[9px] font-black uppercase tracking-tighter leading-none [writing-mode:vertical-rl]">
@@ -102,7 +112,7 @@ export function RightPreviewSidebar({
         )}
 
         {/* Right Sidebar Header */}
-        <div className="px-3.5 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 flex items-center justify-between gap-2 shrink-0">
+        <div className="px-3 sm:px-3.5 py-2.5 sm:py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
               <Eye className="h-4 w-4" />
@@ -129,7 +139,7 @@ export function RightPreviewSidebar({
               target="_blank"
               rel="noopener noreferrer"
               title={tx('Mở trang thực tế trên tab mới', 'Open live page in new tab')}
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 hover:border-emerald-400 hover:text-emerald-600 transition"
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 sm:px-2.5 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 hover:border-emerald-400 hover:text-emerald-600 transition"
             >
               <ExternalLink className="h-3 w-3" />
               <span>{tx('Mở trang', 'Open')}</span>
@@ -137,8 +147,10 @@ export function RightPreviewSidebar({
             <button
               type="button"
               onClick={onToggle}
+              aria-expanded={isOpen}
+              aria-label={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
               title={tx('Thu gọn khung xem trước (Esc)', 'Collapse preview (Esc)')}
-              className="inline-flex items-center gap-1 rounded-xl bg-slate-900 dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-rose-600 transition cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-1 rounded-xl bg-slate-900 dark:bg-slate-800 px-2 sm:px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-rose-600 transition cursor-pointer shadow-xs"
             >
               <PanelRightClose className="h-3.5 w-3.5 text-emerald-400" />
               <span>{tx('Thu gọn', 'Hide')}</span>
@@ -148,8 +160,8 @@ export function RightPreviewSidebar({
         </div>
 
         {/* Scrollable Phone Mockup + Extra Controls */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar flex flex-col items-center">
-          <div className="w-full">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 space-y-3 no-scrollbar flex flex-col items-center">
+          <div className="w-full max-w-full min-w-0">
             <StorefrontPhonePreview
               shop={shop}
               items={items}
