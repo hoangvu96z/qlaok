@@ -78,6 +78,8 @@ interface PosCounterWorkspaceProps {
   editingOrder?: ShopOrder | null;
   autoPrintOnPay: boolean;
   canApplyDiscount: boolean;
+  canCollectPayment?: boolean;
+  canViewReports: boolean;
   onOrderCreated: (order: ShopOrder, shouldPrint: boolean) => void;
   onCancelEditOrder?: () => void;
   onPrintOrder?: (order: ShopOrder) => void;
@@ -216,6 +218,8 @@ export function PosCounterWorkspace({
   editingOrder = null,
   autoPrintOnPay,
   canApplyDiscount,
+  canCollectPayment = true,
+  canViewReports,
   onOrderCreated,
   onCancelEditOrder,
   onPrintOrder,
@@ -1013,7 +1017,8 @@ export function PosCounterWorkspace({
           table_label: tableLabel.trim() || 'Tại quầy',
           visitor_lang: 'vi',
           payment_method: paymentMethod,
-          payment_status: markPaidImmediately ? 'paid' : 'unpaid',
+          payment_status:
+            markPaidImmediately && canCollectPayment ? 'paid' : 'unpaid',
           source: 'counter_pos',
           items: payloadItems,
           ...discountPayload,
@@ -1071,10 +1076,11 @@ export function PosCounterWorkspace({
                   tableLabel.trim() ||
                   activeEditingOrder.table_label ||
                   'Tại quầy',
-                payment_method: paymentMethod,
-                payment_status: markPaidImmediately
-                  ? 'paid'
-                  : activeEditingOrder.payment_status,
+                ...(canCollectPayment ? {
+                  payment_method: paymentMethod,
+                  payment_status: markPaidImmediately ? 'paid' : activeEditingOrder.payment_status,
+                } : {}),
+                expected_bill_version: Number(activeEditingOrder.bill_version || 1),
                 ...discountPayload,
                 items: payloadItems,
               }
@@ -1122,7 +1128,7 @@ export function PosCounterWorkspace({
       submitPosOrder(false, true);
       return;
     }
-    submitPosOrder(true);
+    submitPosOrder(canCollectPayment);
   };
 
   if (loadedRecoveryContext !== recoveryContext) {
@@ -1230,16 +1236,18 @@ export function PosCounterWorkspace({
             </span>
           </button>
 
-          <Link
-            href="/dashboard/reports"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-slate-700"
-            title={tx(
-              'Tra cứu sổ đơn theo ngày & xuất file Excel / CSV',
-              'View daily order ledger & export Excel / CSV'
-            )}
-          >
-            <span>📊 {tx('Sổ đơn & Xuất Excel', 'Reports & Export')}</span>
-          </Link>
+          {canViewReports ? (
+            <Link
+              href="/dashboard/reports"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-amber-300 hover:bg-slate-700"
+              title={tx(
+                'Tra cứu sổ đơn theo ngày & xuất file Excel / CSV',
+                'View daily order ledger & export Excel / CSV'
+              )}
+            >
+              <span>📊 {tx('Sổ đơn & Xuất Excel', 'Reports & Export')}</span>
+            </Link>
+          ) : null}
 
           <Link
             href="/dashboard/catalog"
@@ -1763,9 +1771,11 @@ export function PosCounterWorkspace({
                     ? activeEditingOrder
                       ? tx('Lưu & In Bill QR', 'Save & Print QR')
                       : tx('In Bill Kèm QR', 'Print QR Bill')
-                    : activeEditingOrder
-                      ? tx('Lưu & Thu Tiền', 'Save & Charge')
-                      : t('pos.collectAndComplete')}
+                    : !canCollectPayment
+                      ? tx('Tạo đơn chưa thu tiền', 'Create unpaid order')
+                      : activeEditingOrder
+                        ? tx('Lưu & Thu Tiền', 'Save & Charge')
+                        : t('pos.collectAndComplete')}
               </span>
               <span className="text-[11px] font-bold text-emerald-100 text-center">
                 {paymentMethod === 'vietqr'
@@ -2482,22 +2492,24 @@ export function PosCounterWorkspace({
                 </div>
 
                 <div className="space-y-2">
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => submitPosOrder(true)}
-                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    <Printer className="h-4 w-4" />
-                    <span>
-                      {submitting
-                        ? t('common.saving')
-                        : tx(
-                            'Đã nhận chuyển khoản & In Hóa Đơn',
-                            'Transfer Received & Print Receipt'
-                          )}
-                    </span>
-                  </button>
+                  {canCollectPayment ? (
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => submitPosOrder(true)}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3 text-xs font-black text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      <Printer className="h-4 w-4" />
+                      <span>
+                        {submitting
+                          ? t('common.saving')
+                          : tx(
+                              'Đã nhận chuyển khoản & In Hóa Đơn',
+                              'Transfer Received & Print Receipt'
+                            )}
+                      </span>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={submitting}
@@ -2668,7 +2680,7 @@ export function PosCounterWorkspace({
                         </button>
                       )}
 
-                      {onUpdateOrder && ord.payment_status !== 'paid' && (
+                      {canCollectPayment && onUpdateOrder && ord.payment_status !== 'paid' && (
                         <button
                           type="button"
                           onClick={() =>
@@ -2680,7 +2692,7 @@ export function PosCounterWorkspace({
                         </button>
                       )}
 
-                      {onUpdateOrder && ord.status !== 'completed' && (
+                      {canCollectPayment && onUpdateOrder && ord.status !== 'completed' && (
                         <button
                           type="button"
                           onClick={() =>

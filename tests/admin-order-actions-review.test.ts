@@ -25,7 +25,7 @@ test('admin cancellation payload keeps unpaid cancellation separate from payment
   });
 });
 
-test('admin cancellation of a paid order requires both reasons and explicitly records refund', () => {
+test('admin cancellation requires a refund reason but allows an optional cancellation reason', () => {
   const missingRefundReason = buildAdminOrderCancellationPayload({
     orderId: 'order-2',
     paymentStatus: 'paid',
@@ -43,8 +43,14 @@ test('admin cancellation of a paid order requires both reasons and explicitly re
     cancelledReason: '  ',
   });
   assert.deepEqual(missingCancelReason, {
-    ok: false,
-    code: 'CANCEL_REASON_REQUIRED',
+    ok: true,
+    payload: {
+      action: 'update_order_status',
+      orderId: 'order-2',
+      status: 'cancelled',
+      payment_status: 'refunded',
+      refund_reason: 'Đã hoàn qua ngân hàng',
+    },
   });
 
   const result = buildAdminOrderCancellationPayload({
@@ -99,7 +105,7 @@ test('admin UI exposes explicit paid refund and cancel and keeps completion stat
   assert.match(adminPage, /cancelledReason,\s*refundReason,/);
   assert.match(helper, /payment_status = 'refunded'/);
   assert.match(helper, /refund_reason = refundReason/);
-  assert.match(helper, /cancelled_reason: cancelledReason/);
+  assert.match(helper, /payload\.cancelled_reason = cancelledReason/);
   assert.match(adminPage, /window\.confirm\(/);
   assert.match(adminPage, /Qlaok, không chuyển tiền/);
   assert.match(adminPage, /does not transfer money/);

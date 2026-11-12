@@ -95,11 +95,9 @@ export function ShopSePayWebhookManager() {
 
   if (!activeShop || !isOwner) return null;
 
-  const callbackUrl =
-    config?.callbackUrl ||
-    (typeof window !== 'undefined'
-      ? `${window.location.origin}/api/webhooks/sepay/${encodeURIComponent(activeShop.id)}`
-      : `/api/webhooks/sepay/${encodeURIComponent(activeShop.id)}`);
+  const callbackUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/api/webhooks/sepay/${encodeURIComponent(activeShop.id)}`
+    : config?.callbackUrl || `/api/webhooks/sepay/${encodeURIComponent(activeShop.id)}`;
 
   const handleCopyCallbackUrl = async () => {
     try {

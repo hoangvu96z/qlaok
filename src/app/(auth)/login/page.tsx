@@ -26,10 +26,7 @@ import {
   setStoredAuthOwner,
 } from '@/lib/auth-session';
 import { resolveLoginAuthMode } from '@/lib/auth-recovery';
-import {
-  resolvePostLoginRoute,
-  sanitizeNextPath,
-} from '@/lib/post-login-route';
+import { resolvePostLoginRoute } from '@/lib/post-login-route';
 import { useAppI18n } from '@/components/ui/AppI18nProvider';
 import { AppLanguageSwitcher } from '@/components/ui/AppI18nProvider';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -37,32 +34,6 @@ import { BrandLogo } from '@/components/ui/BrandLogo';
 import type { Profile, Shop } from '@/types/qlaok';
 
 type AuthMode = 'login' | 'register' | 'reset' | 'staff';
-
-function buildZitadelOidcStartHref(params: {
-  mode: AuthMode;
-  nextPath?: string | null;
-  loginHint?: string | null;
-  lang?: 'vi' | 'en';
-}): string {
-  const oidcMode =
-    params.mode === 'register'
-      ? 'register'
-      : params.mode === 'reset'
-        ? 'reset'
-        : 'login';
-  const query = new URLSearchParams({
-    action: 'oidc_start',
-    mode: oidcMode,
-    next: sanitizeNextPath(params.nextPath) || '/dashboard',
-  });
-  if (params.loginHint && params.loginHint.trim()) {
-    query.set('login_hint', params.loginHint.trim().toLowerCase());
-  }
-  if (params.lang === 'vi' || params.lang === 'en') {
-    query.set('lang', params.lang);
-  }
-  return `/api/auth?${query.toString()}`;
-}
 
 function rememberActiveShop(
   preferredShopId: string | undefined,
@@ -349,33 +320,6 @@ function LoginContent() {
     // Only re-fetch when authRequestId changes so language toggles preserve form state
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authRequestId]);
-
-  const handleOwnerOidcRedirect = (targetMode: AuthMode = mode) => {
-    setMessage(null);
-    setLoading(true);
-
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.removeItem('qlaok_auth_owner_v1');
-        localStorage.removeItem('qlaok_auth_token_v1');
-      } catch {
-        // ignore storage errors
-      }
-    }
-
-    const href = buildZitadelOidcStartHref({
-      mode: targetMode,
-      nextPath: searchParams.get('next'),
-      loginHint: email,
-      lang: locale === 'en' ? 'en' : 'vi',
-    });
-
-    if (typeof window !== 'undefined') {
-      window.location.assign(href);
-    } else {
-      router.push(href);
-    }
-  };
 
   const isOwnerRegistration =
     mode === 'register' ||
@@ -822,6 +766,81 @@ function LoginContent() {
       return;
     }
 
+    if (mode === 'login') {
+      const cleanEmail = email.trim().toLowerCase();
+      if (
+        !cleanEmail ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail) ||
+        !ownerPassword
+      ) {
+        setMessage({
+          type: 'error',
+          text: tx(
+            'Vui lòng nhập email hợp lệ và mật khẩu.',
+            'Please enter a valid email and password.'
+          ),
+        });
+        return;
+      }
+
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem('qlaok_auth_owner_v1');
+          localStorage.removeItem('qlaok_auth_token_v1');
+        } catch {
+          // ignore storage errors
+        }
+      }
+
+      setLoading(true);
+      try {
+        const response = await fetch(
+          `/api/auth/login-ui?lang=${locale === 'en' ? 'en' : 'vi'}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+              action: 'login',
+              loginName: cleanEmail,
+              password: ownerPassword,
+              next: searchParams.get('next') || '/dashboard',
+              lang: locale === 'en' ? 'en' : 'vi',
+            }),
+          }
+        );
+        const data = (await response.json()) as {
+          callbackUrl?: string;
+          error?: string;
+        };
+        if (!response.ok || !data.callbackUrl) {
+          throw new Error(
+            data.error ||
+              tx(
+                'Email hoặc mật khẩu chưa đúng.',
+                'The email or password is incorrect.'
+              )
+          );
+        }
+        setOwnerPassword('');
+        window.location.assign(data.callbackUrl);
+      } catch (error) {
+        setMessage({
+          type: 'error',
+          text:
+            error instanceof Error && error.message
+              ? error.message
+              : tx(
+                  'Chưa thể đăng nhập lúc này. Vui lòng thử lại.',
+                  'We could not sign you in right now. Please try again.'
+                ),
+        });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (mode === 'reset') {
       if (resetStep === 'complete_form') {
         const cleanNewPassword = resetNewPassword;
@@ -991,7 +1010,6 @@ function LoginContent() {
       return;
     }
 
-    handleOwnerOidcRedirect(mode);
   };
 
   const handleDemoLogin = async () => {
@@ -1861,8 +1879,17 @@ function LoginContent() {
                     <input
                       id="owner-email-hint"
                       data-testid="login-owner-email-hint"
-                      type={isOwnerRegistration ? 'email' : 'text'}
-                      required={Boolean(authRequestId) || isOwnerRegistration}
+                      type={
+                        isOwnerRegistration ||
+                        (!authRequestId && mode === 'login')
+                          ? 'email'
+                          : 'text'
+                      }
+                      required={
+                        Boolean(authRequestId) ||
+                        isOwnerRegistration ||
+                        mode === 'login'
+                      }
                       autoComplete={isOwnerRegistration ? 'email' : 'username'}
                       autoCapitalize="none"
                       autoCorrect="off"
@@ -1881,7 +1908,9 @@ function LoginContent() {
                   </div>
                 </div>
 
-                {(Boolean(authRequestId) || isOwnerRegistration) && (
+                {(Boolean(authRequestId) ||
+                  isOwnerRegistration ||
+                  mode === 'login') && (
                   <div>
                     <label
                       htmlFor="owner-password"
@@ -2069,7 +2098,7 @@ function LoginContent() {
                       ? registrationStep === 'verify_email'
                         ? tx('Đang xác thực...', 'Verifying...')
                         : tx('Đang tạo tài khoản...', 'Creating account...')
-                      : authRequestId
+                      : authRequestId || mode === 'login'
                         ? tx('Đang đăng nhập...', 'Signing in...')
                         : mode === 'staff'
                           ? tx('Đang xử lý...', 'Processing...')

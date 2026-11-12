@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
+  bootstrapZitadelOidcAuthRequestId,
   completeZitadelLoginRequest,
   completeZitadelPasswordReset,
   completeZitadelRegistrationVerification,
@@ -290,7 +291,7 @@ export async function POST(req: Request) {
 
   try {
     if (action === 'login') {
-      const authRequestId =
+      let authRequestId =
         typeof body.authRequestId === 'string' ? body.authRequestId : '';
       const loginName =
         typeof body.loginName === 'string' ? body.loginName : '';
@@ -299,13 +300,50 @@ export async function POST(req: Request) {
         `login:${clientIp}:${loginName.trim().toLowerCase().slice(0, 128)}`,
         15
       );
+
+      let issuedWebTxCookie: string | null = null;
+      if (!authRequestId.trim()) {
+        if ((req.headers.get('x-qlaok-client') || '').trim() === 'mobile-native') {
+          throw new ZitadelLoginUiError('AUTH_REQUEST_INVALID', 400);
+        }
+        const webClientId = getZitadelClientId();
+        const webRedirectUri = resolveZitadelRedirectUri(requestOrigin);
+        if (!webClientId) {
+          throw new ZitadelLoginUiError('LOGIN_SERVICE_NOT_CONFIGURED', 503);
+        }
+        const txIssued = issueOidcTransactionCookieValue({
+          redirectUri: webRedirectUri,
+          nextPath: typeof body.next === 'string' ? body.next : '/dashboard',
+          mode: 'login',
+        });
+        issuedWebTxCookie = txIssued.cookieValue;
+        authRequestId = await bootstrapZitadelOidcAuthRequestId({
+          oidc: {
+            clientId: webClientId,
+            redirectUri: webRedirectUri,
+            state: txIssued.transaction.state,
+            nonce: txIssued.transaction.nonce,
+            codeChallenge: txIssued.codeChallenge,
+            codeChallengeMethod: txIssued.codeChallengeMethod,
+            loginHint: loginName.trim().toLowerCase(),
+            lang: locale,
+            prompt: 'login',
+          },
+          origin: requestOrigin,
+        });
+      }
+
       const callbackUrl = await completeZitadelLoginRequest({
         authRequestId,
         loginName,
         password,
         origin: requestOrigin,
       });
-      return jsonNoStore({ callbackUrl });
+      const res = jsonNoStore({ callbackUrl });
+      if (issuedWebTxCookie) {
+        attachOidcTransactionCookie(res, issuedWebTxCookie);
+      }
+      return res;
     }
 
     if (action === 'register_start') {

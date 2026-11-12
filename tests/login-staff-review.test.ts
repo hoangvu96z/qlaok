@@ -166,13 +166,19 @@ describe('login page staff mode UI contract and field isolation', () => {
     );
   });
 
-  it('replaces owner login/register/reset with Zitadel OIDC PKCE without collecting owner passwords and preserves demo preview', () => {
-    // Owner login/register/reset delegates to Zitadel OIDC start endpoint
-    assert.match(loginSource, /action:\s*['"]oidc_start['"]/);
-    assert.match(loginSource, /buildZitadelOidcStartHref/);
-    assert.match(loginSource, /handleOwnerOidcRedirect/);
+  it('keeps owner password sign-in on the Qlaok form and preserves demo preview', () => {
+    // Owner sign-in posts credentials to Qlaok's same-origin login UI endpoint.
+    assert.match(loginSource, /mode\s*===\s*['"]login['"]/);
+    assert.match(loginSource, /action:\s*['"]login['"]/);
+    assert.match(loginSource, /loginName:\s*cleanEmail/);
+    assert.match(loginSource, /password:\s*ownerPassword/);
+    assert.match(loginSource, /window\.location\.assign\(data\.callbackUrl\)/);
 
-    // Browser never posts owner password login or register payloads to /api/auth
+    // It no longer sends the browser to hosted Zitadel UI for password entry.
+    assert.doesNotMatch(loginSource, /action:\s*['"]oidc_start['"]/);
+    assert.doesNotMatch(loginSource, /buildZitadelOidcStartHref|handleOwnerOidcRedirect/);
+
+    // Owner registration still uses its server-side verification flow.
     assert.doesNotMatch(loginSource, /action:\s*['"]register['"]/);
     assert.doesNotMatch(loginSource, /signInWithOtp/);
 

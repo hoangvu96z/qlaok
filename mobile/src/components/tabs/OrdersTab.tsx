@@ -61,7 +61,7 @@ export const OrdersTab = memo(function OrdersTab({
   canCancelOrder = false,
   theme,
 }: OrdersTabProps) {
-  const { t } = useMobileI18n();
+  const { t, tb } = useMobileI18n();
   const [reasonPrompt, setReasonPrompt] = useState<{
     action: MobileOrderReasonActionType;
     order: MobileShopOrder;
@@ -686,6 +686,37 @@ export const OrdersTab = memo(function OrdersTab({
                 : t('orders.cancelReasonLabel')}
             </Text>
 
+            {reasonPrompt?.action === 'cancel' ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {[
+                  tb('Khách đổi ý', 'Customer changed their mind'),
+                  tb('Đặt nhầm món', 'Wrong order'),
+                  tb('Khách không chờ được', 'Customer could not wait'),
+                ].map((reason) => (
+                  <TouchableOpacity
+                    key={reason}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setReasonDraft(reason);
+                      setReasonError('');
+                    }}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                      backgroundColor: theme.subCard,
+                      borderRadius: 999,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                    }}
+                  >
+                    <Text style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
+                      {reason}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
             <TextInput
               style={[
                 styles.input,
@@ -757,7 +788,8 @@ export const OrdersTab = memo(function OrdersTab({
                     backgroundColor: '#dc2626',
                     flex: 1,
                   },
-                  !normalizeOrderReason(reasonDraft) && { opacity: 0.6 },
+                  reasonPrompt?.action === 'refund' &&
+                    !normalizeOrderReason(reasonDraft) && { opacity: 0.6 },
                 ]}
                 onPress={submitReasonPrompt}
               >

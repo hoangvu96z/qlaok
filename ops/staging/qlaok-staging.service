@@ -1,0 +1,27 @@
+[Unit]
+Description=Qlaok staging web application
+After=network-online.target postgresql.service qlaok-staging-postgrest.service qlaok-staging-garage.service
+Wants=network-online.target qlaok-staging-postgrest.service qlaok-staging-garage.service
+
+[Service]
+Type=simple
+User=qlaok-deploy
+Group=qlaok-deploy
+WorkingDirectory=/var/www/qlaok.vunph.io.vn
+EnvironmentFile=/etc/qlaok-staging/app.env
+Environment=NODE_ENV=production
+Environment=PORT=3105
+ExecStart=/opt/qlaok-staging/node/bin/node /var/www/qlaok.vunph.io.vn/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3105
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/qlaok.vunph.io.vn/.next
+
+[Install]
+WantedBy=multi-user.target

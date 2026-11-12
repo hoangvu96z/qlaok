@@ -1,0 +1,21 @@
+[Unit]
+Description=Qlaok staging PostgREST API
+After=postgresql@14-main.service
+Requires=postgresql@14-main.service
+
+[Service]
+Type=simple
+User=qlaok-postgrest
+Group=qlaok-postgrest
+EnvironmentFile=/etc/qlaok-staging/postgrest.env
+ExecStart=/opt/qlaok-staging/bin/postgrest
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

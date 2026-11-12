@@ -1002,6 +1002,7 @@ export interface OidcAuthorizeBootstrapParams {
   codeChallengeMethod?: string;
   loginHint?: string;
   lang?: 'vi' | 'en';
+  prompt?: 'login' | 'create';
 }
 
 export async function bootstrapZitadelOidcAuthRequestId(params: {
@@ -1050,7 +1051,7 @@ export async function bootstrapZitadelOidcAuthRequestId(params: {
   authorizeUrl.searchParams.set('code_challenge_method', 'S256');
   authorizeUrl.searchParams.set('state', state);
   authorizeUrl.searchParams.set('nonce', nonce);
-  authorizeUrl.searchParams.set('prompt', 'create');
+  authorizeUrl.searchParams.set('prompt', params.oidc.prompt || 'create');
   authorizeUrl.searchParams.set(
     'ui_locales',
     params.oidc.lang === 'en' ? 'en' : 'vi'

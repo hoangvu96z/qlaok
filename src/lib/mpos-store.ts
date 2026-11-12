@@ -2855,6 +2855,7 @@ export async function dbUpdateOrderStatus(
     canApplyDiscount?: boolean;
     require_new_unpaid?: boolean;
     expected_total?: number;
+    expected_bill_version?: number;
   }
 ): Promise<ShopOrder> {
   return withOrderInventoryLock(async () => {
@@ -2869,6 +2870,16 @@ export async function dbUpdateOrderStatus(
     }
 
     const existing = normalizeOrderRecord(store.orders[idx]);
+    if (patch.expected_bill_version !== undefined) {
+      if (
+        !Number.isFinite(patch.expected_bill_version) ||
+        Number(patch.expected_bill_version) !== Number(existing.bill_version || 1)
+      ) {
+        throw new Error(
+          'CONCURRENT_ORDER_UPDATE: Đơn đã được cập nhật trên thiết bị khác. Vui lòng tải lại đơn trước khi lưu.'
+        );
+      }
+    }
     if (patch.require_new_unpaid && (existing.status !== 'new' || existing.payment_status !== 'unpaid')) {
       throw new Error('ORDER_ALREADY_PAID: Đơn hàng đã được tiếp nhận hoặc đã thanh toán.');
     }
@@ -2898,7 +2909,6 @@ export async function dbUpdateOrderStatus(
         );
       }
       if (!refundReason) throw new Error('REFUND_REASON_REQUIRED');
-      if (!cancelledReason) throw new Error('CANCEL_REASON_REQUIRED');
       if (refundReason.length > 500 || cancelledReason.length > 500) {
         throw new Error('REASON_TOO_LONG');
       }
@@ -3066,6 +3076,11 @@ export async function dbUpdateOrderStatus(
     });
     const nextStatus = workflowMutation.nextStatus;
     const nextWorkflowStepId = workflowMutation.nextWorkflowStepId;
+    if (existing.status === 'cancelled' && nextStatus === 'completed') {
+      throw new Error(
+        'CANCELLED_ORDER_CANNOT_COMPLETE: Không thể hoàn tất đơn hàng đã hủy.'
+      );
+    }
 
     const restoredItemIds: string[] = [];
     const zeroedItemIds: string[] = [];

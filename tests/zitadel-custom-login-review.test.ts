@@ -83,6 +83,45 @@ test('registration keeps its original flow outside the custom password form', ()
   assert.equal(parsed.searchParams.get('authRequest'), authRequestId);
 });
 
+test('login authorization bootstrap requests an authRequest without opening Zitadel UI', async () => {
+  const prompts: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const authorizeUrl = new URL(String(input));
+    prompts.push(authorizeUrl.searchParams.get('prompt') || '');
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: `${config.issuerUrl}/ui/v2/login/loginname?authRequest=${authRequestId}`,
+      },
+    });
+  };
+  const oidc = {
+    clientId: config.webClientId,
+    redirectUri: config.webRedirectUri,
+    state: 'state-value-long-enough-1234',
+    nonce: 'nonce-value-long-enough-1234',
+    codeChallenge: 'a'.repeat(43),
+    codeChallengeMethod: 'S256',
+  };
+
+  const loginAuthRequestId = await bootstrapZitadelOidcAuthRequestId({
+    oidc: { ...oidc, prompt: 'login' },
+    origin: 'https://qlaok.example.test',
+    config,
+    fetchImpl,
+  });
+  const registrationAuthRequestId = await bootstrapZitadelOidcAuthRequestId({
+    oidc,
+    origin: 'https://qlaok.example.test',
+    config,
+    fetchImpl,
+  });
+
+  assert.equal(loginAuthRequestId, authRequestId);
+  assert.equal(registrationAuthRequestId, authRequestId);
+  assert.deepEqual(prompts, ['login', 'create']);
+});
+
 test('custom login accepts only configured Qlaok clients and callbacks', async () => {
   await assert.rejects(
     () =>
@@ -428,6 +467,111 @@ test('/api/auth/login-ui accepts same-origin POSTs through the HTTPS reverse pro
   );
   assert.equal(crossSitePost.status, 403);
   assert.equal((await crossSitePost.json()).code, 'INVALID_ORIGIN');
+});
+
+test('/api/auth/login-ui completes web sign-in locally when no authRequest is supplied', async () => {
+  const envKeys = [
+    'ZITADEL_ISSUER_URL',
+    'ZITADEL_CLIENT_ID',
+    'ZITADEL_MOBILE_CLIENT_ID',
+    'ZITADEL_LOGIN_CLIENT_PAT',
+    'ZITADEL_REDIRECT_URI',
+    'SESSION_SECRET',
+  ];
+  const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: URL[] = [];
+  let authorizeState = '';
+
+  process.env.ZITADEL_ISSUER_URL = config.issuerUrl;
+  process.env.ZITADEL_CLIENT_ID = config.webClientId;
+  process.env.ZITADEL_MOBILE_CLIENT_ID = config.mobileClientId;
+  process.env.ZITADEL_LOGIN_CLIENT_PAT = config.serviceToken;
+  process.env.ZITADEL_REDIRECT_URI = config.webRedirectUri;
+  process.env.SESSION_SECRET = 'review-test-session-secret-32-bytes';
+  setSupabaseDbClientForTests({
+    rpc: async () => ({ data: { allowed: true }, error: null }),
+  });
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    requestedUrls.push(url);
+
+    if (url.pathname === '/oauth/v2/authorize') {
+      authorizeState = url.searchParams.get('state') || '';
+      assert.equal(url.searchParams.get('prompt'), 'login');
+      assert.equal(url.searchParams.get('login_hint'), 'owner@example.test');
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: `${config.issuerUrl}/ui/v2/login/loginname?authRequest=${authRequestId}`,
+        },
+      });
+    }
+
+    if (
+      url.pathname === `/v2/oidc/auth_requests/${authRequestId}` &&
+      init?.method === 'GET'
+    ) {
+      return response({
+        authRequest: authRequest({ state: authorizeState }),
+      });
+    }
+    if (url.pathname === '/v2/sessions' && init?.method === 'POST') {
+      return response({
+        sessionId: 'session-123',
+        sessionToken: 'first-session-token',
+      });
+    }
+    if (url.pathname === '/v2/sessions/session-123' && init?.method === 'PATCH') {
+      assert.match(String(init.body), /example-password/);
+      return response({ sessionToken: 'latest-session-token' });
+    }
+    if (
+      url.pathname === `/v2/oidc/auth_requests/${authRequestId}` &&
+      init?.method === 'POST'
+    ) {
+      return response({
+        callbackUrl: `${config.webRedirectUri}?code=auth-code&state=${authorizeState}`,
+      });
+    }
+    throw new Error(`Unexpected Zitadel request: ${url.pathname}`);
+  };
+
+  try {
+    const res = await loginUiPost(
+      new Request('https://qlaok.example.test/api/auth/login-ui', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://qlaok.example.test',
+          'Sec-Fetch-Site': 'same-origin',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'login',
+          loginName: 'owner@example.test',
+          password: 'example-password',
+          next: '/dashboard',
+          lang: 'en',
+        }),
+      })
+    );
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(
+      body.callbackUrl,
+      `${config.webRedirectUri}?code=auth-code&state=${authorizeState}`
+    );
+    assert.match(res.headers.get('set-cookie') || '', /HttpOnly/i);
+    assert.ok(requestedUrls.some((url) => url.pathname === '/oauth/v2/authorize'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    setSupabaseDbClientForTests(null);
+    for (const [key, value] of originalEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('splitOwnerFullNameForZitadel and validateOwnerRegistrationPassword enforce Qlaok owner registration rules', () => {

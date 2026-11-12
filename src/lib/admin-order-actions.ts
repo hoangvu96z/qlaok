@@ -6,12 +6,11 @@ export interface AdminOrderCancellationPayload extends Record<string, unknown> {
   status: 'cancelled';
   payment_status?: 'refunded';
   refund_reason?: string;
-  cancelled_reason: string;
+  cancelled_reason?: string;
 }
 
 export type AdminOrderCancellationError =
   | 'ORDER_ID_REQUIRED'
-  | 'CANCEL_REASON_REQUIRED'
   | 'REFUND_REASON_REQUIRED'
   | 'REASON_TOO_LONG';
 
@@ -33,9 +32,6 @@ export function buildAdminOrderCancellationPayload(params: {
   if (!orderId) return { ok: false, code: 'ORDER_ID_REQUIRED' };
 
   const cancelledReason = normalizeReason(params.cancelledReason);
-  if (!cancelledReason) {
-    return { ok: false, code: 'CANCEL_REASON_REQUIRED' };
-  }
   if (cancelledReason.length > 500) {
     return { ok: false, code: 'REASON_TOO_LONG' };
   }
@@ -44,8 +40,8 @@ export function buildAdminOrderCancellationPayload(params: {
     action: 'update_order_status',
     orderId,
     status: 'cancelled',
-    cancelled_reason: cancelledReason,
   };
+  if (cancelledReason) payload.cancelled_reason = cancelledReason;
 
   if (params.paymentStatus === 'paid') {
     const refundReason = normalizeReason(params.refundReason);

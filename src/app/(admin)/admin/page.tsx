@@ -172,7 +172,28 @@ export default function SuperAdminPortalPage() {
   const translateRef = useRef(tx);
   translateRef.current = tx;
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [auditLogs, setAuditLogs] = useState<Array<{ id: string; action: string; actor_email: string; target_id: string | null; created_at: string }>>([]);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState('');
+  const [auditReload, setAuditReload] = useState(0);
   const [adminUser, setAdminUser] = useState<Profile | null>(null);
+  useEffect(() => {
+    if (activeTab !== 'system' || !adminUser) return;
+    const controller = new AbortController();
+    setAuditLoading(true);
+    setAuditError('');
+    fetch('/api/admin/audit?limit=200', { headers: getAuthHeaders(), cache: 'no-store', signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error('audit unavailable');
+        const body = await res.json();
+        if (!Array.isArray(body.auditLogs)) throw new Error('invalid response');
+        setAuditLogs(body.auditLogs);
+      })
+      .catch(() => { if (!controller.signal.aborted) setAuditError('audit unavailable'); })
+      .finally(() => { if (!controller.signal.aborted) setAuditLoading(false); });
+    return () => controller.abort();
+  }, [activeTab, adminUser, auditReload]);
   const [authChecked, setAuthChecked] = useState(false);
 
   // Admin Login Form state (when visiting /admin while not logged in as hoangvu96z@gmail.com)
@@ -1079,9 +1100,7 @@ export default function SuperAdminPortalPage() {
     });
     if (!result.ok) {
       const message =
-        result.code === 'CANCEL_REASON_REQUIRED'
-          ? tx('Vui lòng nhập lý do hủy đơn.', 'Enter a cancellation reason.')
-          : result.code === 'REFUND_REASON_REQUIRED'
+        result.code === 'REFUND_REASON_REQUIRED'
             ? tx('Vui lòng nhập lý do hoàn tiền.', 'Enter a refund reason.')
             : result.code === 'REASON_TOO_LONG'
               ? tx(
@@ -1168,6 +1187,12 @@ export default function SuperAdminPortalPage() {
               {tx('Ghi chú:', 'Note:')} &ldquo;{order.customer_note}&rdquo;
             </p>
           )}
+          {order.cancelled_reason && (
+            <p className="text-[11px] text-slate-600 dark:text-slate-400">{tx('Lý do hủy:', 'Cancellation reason:')} {order.cancelled_reason}</p>
+          )}
+          {order.refund_reason && (
+            <p className="text-[11px] text-slate-600 dark:text-slate-400">{tx('Lý do hoàn tiền:', 'Refund reason:')} {order.refund_reason}</p>
+          )}
         </div>
       ),
     },
@@ -1187,6 +1212,8 @@ export default function SuperAdminPortalPage() {
           <span className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">
             {order.payment_status === 'paid'
               ? tx('Đã thanh toán', 'Paid')
+              : order.payment_status === 'refunded'
+                ? tx('Đã hoàn tiền', 'Refunded')
               : tx('Chưa thu tiền', 'Unpaid')}
           </span>
         </div>
@@ -1229,7 +1256,7 @@ export default function SuperAdminPortalPage() {
       minWidth: '165px',
       cell: (order) => (
         <div className="inline-flex items-center gap-1.5">
-          {order.status !== 'completed' && (
+          {(order.status === 'new' || order.status === 'preparing') && (
             <button
               type="button"
               disabled={actionBusy}
@@ -1258,10 +1285,10 @@ export default function SuperAdminPortalPage() {
               onClick={(e) => {
                 e.stopPropagation();
                 const cancelledReason = window.prompt(
-                  tx('Nhập lý do hủy đơn', 'Enter a reason for cancelling this order')
-                )?.trim();
-                if (!cancelledReason) return;
-                submitAdminOrderCancellation(order, cancelledReason);
+                  tx('Nhập lý do hủy đơn (không bắt buộc)', 'Enter a cancellation reason (optional)')
+                );
+                if (cancelledReason === null) return;
+                submitAdminOrderCancellation(order, cancelledReason.trim());
               }}
               className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-500/20"
             >
@@ -1284,11 +1311,11 @@ export default function SuperAdminPortalPage() {
 
                 const cancelledReason = window.prompt(
                   tx(
-                    'Nhập lý do hủy đơn',
-                    'Enter a reason for cancelling this order'
+                    'Nhập lý do hủy đơn (không bắt buộc)',
+                    'Enter a cancellation reason (optional)'
                   )
-                )?.trim();
-                if (!cancelledReason) return;
+                );
+                if (cancelledReason === null) return;
 
                 const amount = formatCurrency(
                   order.total_amount,
@@ -1306,7 +1333,7 @@ export default function SuperAdminPortalPage() {
 
                 submitAdminOrderCancellation(
                   order,
-                  cancelledReason,
+                  cancelledReason.trim(),
                   refundReason
                 );
               }}
@@ -1430,11 +1457,21 @@ export default function SuperAdminPortalPage() {
             disabled={actionBusy}
             onClick={(e) => {
               e.stopPropagation();
+              const rawAmount = window.prompt(
+                tx('Nhập số tiền thực nhận từ ngân hàng (VND) sau khi đối chiếu:', 'Enter the amount actually received from the bank (VND) after verification:')
+              );
+              if (rawAmount === null) return;
+              const transferAmount = Number(rawAmount.trim());
+              if (!Number.isSafeInteger(transferAmount) || transferAmount <= 0) {
+                showToastMessage('error', tx('Số tiền phải là số nguyên dương.', 'Amount must be a positive whole number.'));
+                return;
+              }
               runAdminAction(
                 {
                   action: 'approve_transaction',
                   orderCode: trx.order_code,
                   ownerId: trx.user_id,
+                  transferAmount,
                 },
                 tx(
                   'Đã duyệt giao dịch {code} & nâng cấp gói {plan} cho {email}!',
@@ -1637,6 +1674,14 @@ export default function SuperAdminPortalPage() {
       {/* Main Content Wrapper (md:pl-64 isolates sidebar offset from inner responsive padding) */}
       <div className="flex-1 md:pl-64 flex flex-col min-h-screen min-w-0">
         <main className="flex-1 w-full p-4 sm:p-6 space-y-6">
+          <div className="flex flex-wrap items-center gap-2 md:hidden">
+            <Link href="/dashboard" className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/40 px-3 py-2 text-xs font-bold text-emerald-300">
+              <Store className="h-4 w-4" /> {t('admin.backToCms')}
+            </Link>
+            <button type="button" onClick={handleLogout} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-3 py-2 text-xs font-bold text-slate-200">
+              <LogOut className="h-4 w-4" /> {t('admin.logout')}
+            </button>
+          </div>
           {/* Top Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
             <div>
@@ -2863,6 +2908,15 @@ export default function SuperAdminPortalPage() {
           {/* ==================== TAB 6: SYSTEM HEALTH ==================== */}
           {activeTab === 'system' && data?.systemHealth && (
             <div className="space-y-6">
+              <section className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-3">
+                <h3 className="text-sm font-black text-white">{tx('Nhật ký kiểm toán', 'Audit log')}</h3>
+                <input value={auditSearch} onChange={(event) => setAuditSearch(event.target.value)} placeholder={tx('Tìm hành động, người thực hiện hoặc đối tượng', 'Search action, actor or target')} aria-label={tx('Tìm trong nhật ký', 'Search audit log')} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2 text-sm text-white" />
+                {auditLoading ? <p role="status">{tx('Đang tải...', 'Loading...')}</p> : auditError ? <div role="alert"><p>{tx('Không thể tải nhật ký.', 'Could not load audit log.')}</p><button type="button" onClick={() => setAuditReload((value) => value + 1)}>{tx('Thử lại', 'Retry')}</button></div> : (() => {
+                  const query = auditSearch.trim().toLowerCase();
+                  const rows = auditLogs.filter((row) => [row.action, row.actor_email, row.target_id].some((value) => value?.toLowerCase().includes(query)));
+                  return rows.length ? <ul className="space-y-2">{rows.map((row) => <li key={row.id} className="break-words rounded-xl bg-slate-950 p-3 text-xs text-slate-200"><strong>{row.action}</strong> · {row.actor_email} · {row.target_id || '—'} · {new Date(row.created_at).toLocaleString()}</li>)}</ul> : <p>{tx('Không có nhật ký phù hợp.', 'No matching audit records.')}</p>;
+                })()}
+              </section>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Cloud DB Status */}
                 <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-4">
