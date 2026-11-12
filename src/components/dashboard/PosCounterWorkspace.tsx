@@ -1076,10 +1076,10 @@ export function PosCounterWorkspace({
                   tableLabel.trim() ||
                   activeEditingOrder.table_label ||
                   'Tại quầy',
-                payment_method: paymentMethod,
-                payment_status: markPaidImmediately && canCollectPayment
-                  ? 'paid'
-                  : activeEditingOrder.payment_status,
+                ...(canCollectPayment ? {
+                  payment_method: paymentMethod,
+                  payment_status: markPaidImmediately ? 'paid' : activeEditingOrder.payment_status,
+                } : {}),
                 expected_bill_version: Number(activeEditingOrder.bill_version || 1),
                 ...discountPayload,
                 items: payloadItems,
