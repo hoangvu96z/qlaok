@@ -15,7 +15,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-test('validateOrderActionReason requires a non-empty reason, trims whitespace, and enforces max length', () => {
+test('validateOrderActionReason allows optional cancel reasons but requires refund reasons', () => {
   assert.equal(normalizeOrderReason(undefined), '');
   assert.equal(normalizeOrderReason(null), '');
   assert.equal(normalizeOrderReason('   \n\t  '), '');
@@ -29,14 +29,8 @@ test('validateOrderActionReason requires a non-empty reason, trims whitespace, a
     ok: false,
     code: 'REFUND_REASON_REQUIRED',
   });
-  assert.deepEqual(validateOrderActionReason('cancel', ''), {
-    ok: false,
-    code: 'CANCEL_REASON_REQUIRED',
-  });
-  assert.deepEqual(validateOrderActionReason('cancel', '   '), {
-    ok: false,
-    code: 'CANCEL_REASON_REQUIRED',
-  });
+  assert.deepEqual(validateOrderActionReason('cancel', ''), { ok: true, reason: '' });
+  assert.deepEqual(validateOrderActionReason('cancel', '   '), { ok: true, reason: '' });
 
   const tooLong = 'a'.repeat(MAX_ORDER_REASON_LENGTH + 1);
   assert.deepEqual(validateOrderActionReason('refund', tooLong), {
@@ -126,7 +120,7 @@ test('buildOrderStatusPatchPayload requires user-entered refund_reason and never
   }
 });
 
-test('buildOrderStatusPatchPayload requires cancelled_reason, blocks cancelling paid orders without refund, and preserves restock_items semantics', () => {
+test('buildOrderStatusPatchPayload allows optional cancel reason, blocks paid cancellation without refund, and preserves restock_items semantics', () => {
   const paidOrder = {
     id: 'ord-paid-2',
     status: 'preparing' as const,
@@ -163,8 +157,12 @@ test('buildOrderStatusPatchPayload requires cancelled_reason, blocks cancelling 
       existingOrder: newUnpaidOrder,
     }),
     {
-      ok: false,
-      code: 'CANCEL_REASON_REQUIRED',
+      ok: true,
+      payload: {
+        shop_id: 'shop-1',
+        orderId: 'ord-new-1',
+        status: 'cancelled',
+      },
     }
   );
 

@@ -1358,12 +1358,14 @@ export default function CounterOrdersPage() {
               <span>{t('nav.kitchen')}</span>
             </Link>
 
-            <Link
-              href="/dashboard/reports"
-              className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
-            >
-              <span>{tx('Báo cáo', 'Reports')}</span>
-            </Link>
+            {hasPermission('reports.view') ? (
+              <Link
+                href="/dashboard/reports"
+                className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500/25 transition"
+              >
+                <span>{tx('Báo cáo', 'Reports')}</span>
+              </Link>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1453,6 +1455,8 @@ export default function CounterOrdersPage() {
             onCancelEditOrder={() => setEditingOrder(null)}
             autoPrintOnPay={autoPrintOnPay}
             canApplyDiscount={hasPermission('discount.apply')}
+            canCollectPayment={hasPermission('payment.collect')}
+            canViewReports={hasPermission('reports.view')}
             onPrintOrder={(ord) => {
               setPrintingInitialTicketType(undefined);
               setPrintingOrder(ord);

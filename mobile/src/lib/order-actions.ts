@@ -69,13 +69,9 @@ export function validateOrderActionReason(
     } {
   const reason = normalizeOrderReason(rawReason);
   if (!reason) {
-    return {
-      ok: false,
-      code:
-        action === 'refund'
-          ? 'REFUND_REASON_REQUIRED'
-          : 'CANCEL_REASON_REQUIRED',
-    };
+    return action === 'refund'
+      ? { ok: false, code: 'REFUND_REASON_REQUIRED' }
+      : { ok: true, reason: '' };
   }
   if (reason.length > MAX_ORDER_REASON_LENGTH) {
     return {

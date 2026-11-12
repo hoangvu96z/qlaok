@@ -1279,6 +1279,7 @@ export async function PATCH(req: Request) {
       items,
       discount_amount,
       apply_shop_promotions,
+      expected_bill_version,
     } = body as {
       orderId?: string;
       order_id?: string;
@@ -1305,6 +1306,7 @@ export async function PATCH(req: Request) {
       items?: OrderLineItem[];
       discount_amount?: number;
       apply_shop_promotions?: boolean;
+      expected_bill_version?: number;
     };
 
     const resolvedWorkflowStepId =
@@ -1523,6 +1525,22 @@ export async function PATCH(req: Request) {
     );
     if (auth.errorResponse) return auth.errorResponse;
 
+    if (isEditingItems) {
+      if (
+        typeof expected_bill_version !== 'number' ||
+        !Number.isFinite(expected_bill_version)
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              'Thiếu phiên bản đơn hàng. Vui lòng tải lại đơn trước khi chỉnh sửa.',
+            code: 'ORDER_SNAPSHOT_REQUIRED',
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     if (status === 'cancelled' && existingOrder.payment_status === 'paid' && payment_status !== 'refunded') {
       return NextResponse.json({ error: 'Đơn đã thu tiền: hãy xác nhận hoàn tiền trước khi hủy.' }, { status: 409 });
     }
@@ -1572,15 +1590,6 @@ export async function PATCH(req: Request) {
       const trimmedCancelledReason = rawCancelledReason
         ? rawCancelledReason.trim()
         : '';
-      if (!trimmedCancelledReason) {
-        return NextResponse.json(
-          {
-            error: 'Vui lòng nhập lý do hủy đơn.',
-            code: 'CANCEL_REASON_REQUIRED',
-          },
-          { status: 400 }
-        );
-      }
       if (trimmedCancelledReason.length > 500) {
         return NextResponse.json(
           {
@@ -1626,6 +1635,7 @@ export async function PATCH(req: Request) {
       apply_shop_promotions,
       canApplyDiscount: canApplyManualDiscount,
       expected_total: body.expected_total,
+      expected_bill_version,
     });
 
     // Skip the audit row for an idempotent no-op replay (state unchanged).

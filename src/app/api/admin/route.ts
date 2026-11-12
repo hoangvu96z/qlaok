@@ -1128,12 +1128,6 @@ export async function POST(req: Request) {
           typeof cancelled_reason === 'string' ? cancelled_reason.trim() : '';
         const refundReason =
           typeof refund_reason === 'string' ? refund_reason.trim() : '';
-        if (!cancelReason) {
-          return NextResponse.json(
-            { error: 'Vui lòng nhập lý do hủy đơn.', code: 'CANCEL_REASON_REQUIRED' },
-            { status: 400 }
-          );
-        }
         if (cancelReason.length > 500) {
           return NextResponse.json(
             { error: 'Lý do hủy đơn không được vượt quá 500 ký tự.', code: 'REASON_TOO_LONG' },

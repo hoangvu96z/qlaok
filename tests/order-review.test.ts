@@ -87,7 +87,9 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
     await db.exec(`INSERT INTO profiles(id) VALUES ('owner');
       INSERT INTO shops(id,owner_id,slug,name) VALUES ('engine-shop','owner','engine-shop','Fixture');
       INSERT INTO categories(id,shop_id) VALUES ('engine-cat','engine-shop');
-      INSERT INTO items(id,shop_id,category_id,price,stock_quantity) VALUES ('engine-item','engine-shop','engine-cat',10000,10);`);
+      INSERT INTO items(id,shop_id,category_id,price,stock_quantity) VALUES
+        ('engine-item','engine-shop','engine-cat',10000,10),
+        ('engine-item-concurrency','engine-shop','engine-cat',10000,100);`);
     const optionGroups = [
       {
         id: 'size',
@@ -216,6 +218,54 @@ test('engine commits against isolated PostgreSQL, rejects failed writes, and enf
     assert.equal(cancelledPaidOrder.payment_status, 'refunded');
     assert.equal(cancelledPaidOrder.refund_reason, 'Manual refund confirmed');
     assert.equal(cancelledPaidOrder.cancelled_reason, 'Customer cancelled');
+    const concurrencyOrder = await dbCreateOrder({
+      shop_id: 'engine-shop',
+      table_label: 'Concurrency fixture',
+      items: [{ item_id: 'engine-item-concurrency', name_vi: 'Concurrency', quantity: 1, unit_price: 10000, extra_price: 0, selected_choices: [] }],
+    });
+    const concurrencyOrderBeforeEdit = await dbGetOrderById(concurrencyOrder.id);
+    assert.ok(concurrencyOrderBeforeEdit);
+    const staleSnapshot = {
+      expected_bill_version: concurrencyOrderBeforeEdit.bill_version,
+    };
+    assert.equal(concurrencyOrderBeforeEdit.bill_version, staleSnapshot.expected_bill_version);
+    const updatedOrder = await dbUpdateOrderStatus(concurrencyOrder.id, {
+      items: [{ ...concurrencyOrder.items[0], quantity: 2 }],
+      expected_total: 20000,
+      ...staleSnapshot,
+    });
+    assert.equal(updatedOrder.items[0].quantity, 2);
+    const stockAfterCurrentUpdate = (await db.query<{ stock_quantity: number }>(
+      "SELECT stock_quantity FROM items WHERE id='engine-item-concurrency'"
+    )).rows[0].stock_quantity;
+    assert.equal(stockAfterCurrentUpdate, 98);
+    await assert.rejects(
+      dbUpdateOrderStatus(concurrencyOrder.id, {
+        items: concurrencyOrder.items,
+        expected_total: 10000,
+        ...staleSnapshot,
+      }),
+      /CONCURRENT_ORDER_UPDATE/
+    );
+    const afterStaleUpdate = await dbGetOrderById(concurrencyOrder.id);
+    assert.equal(afterStaleUpdate?.items[0].quantity, 2);
+    assert.equal(afterStaleUpdate?.total_amount, 20000);
+    assert.equal(afterStaleUpdate?.bill_version, updatedOrder.bill_version);
+    assert.equal(
+      (await db.query<{ stock_quantity: number }>(
+        "SELECT stock_quantity FROM items WHERE id='engine-item-concurrency'"
+      )).rows[0].stock_quantity,
+      stockAfterCurrentUpdate,
+      'a stale edit must not change inventory'
+    );
+
+    const cancelledOrder = await create(1, 'Cancelled cannot complete fixture');
+    await dbUpdateOrderStatus(cancelledOrder.id, { status: 'cancelled' });
+    await assert.rejects(
+      dbUpdateOrderStatus(cancelledOrder.id, { status: 'completed' }),
+      /CANCELLED_ORDER_CANNOT_COMPLETE/
+    );
+    assert.equal((await dbGetOrderById(cancelledOrder.id))?.status, 'cancelled');
     const guest = await create(1);
     await dbUpdateOrderStatus(guest.id, { status: 'preparing' });
     await assert.rejects(dbUpdateOrderStatus(guest.id, { require_new_unpaid: true, customer_note: 'late customer edit' }), /ORDER_ALREADY_PAID/);
@@ -1045,16 +1095,24 @@ test('order summary RPC, paginated fallback, analytics summary, GET /api/orders,
         }),
       })
     );
-    assert.equal(emptyCancelRes.status, 400);
+    assert.equal(emptyCancelRes.status, 200);
     const emptyCancelJson = await emptyCancelRes.json();
-    assert.equal(emptyCancelJson.code, 'CANCEL_REASON_REQUIRED');
+    assert.equal(emptyCancelJson.order.status, 'cancelled');
+    assert.equal(emptyCancelJson.order.cancelled_reason, null);
 
+    const orderWithCancelReason = await dbCreateOrder({
+      shop_id: 'stats-shop',
+      table_label: 'Cancel with reason fixture',
+      apply_shop_promotions: false,
+      items: [{ item_id: 'stats-item', name_vi: 'Cà phê muối', quantity: 1, unit_price: 10000, extra_price: 0, selected_choices: [] }],
+    });
+    await dbUpdateOrderStatus(orderWithCancelReason.id, { status: 'preparing' });
     const mobileCancelBuilt = buildOrderStatusPatchPayload({
       shopId: 'stats-shop',
-      orderId: orderForCancel.id,
+      orderId: orderWithCancelReason.id,
       status: 'cancelled',
       existingOrder: {
-        id: orderForCancel.id,
+        id: orderWithCancelReason.id,
         status: 'preparing',
         payment_status: 'unpaid',
         total_amount: 10000,
@@ -2384,12 +2442,14 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       'authorized counter POS may select its bill session'
     );
 
-    const patchOwnerPosOrder = (
+    const patchOwnerPosOrder = async (
       expectedTotal: number,
       customerNote: string,
       items = ownerPosItems
-    ) =>
-      patchOrdersRoute(
+    ) => {
+      const currentOrder = await dbGetOrderById(ownerPosOrder.id);
+      assert.ok(currentOrder);
+      return patchOrdersRoute(
         new Request('http://localhost/api/orders', {
           method: 'PATCH',
           headers: {
@@ -2400,11 +2460,13 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
             shop_id: 'shop-qa-storefront',
             orderId: ownerPosOrder.id,
             expected_total: expectedTotal,
+            expected_bill_version: currentOrder.bill_version,
             customer_note: customerNote,
             items,
           }),
         })
       );
+    };
     const assertSoldOutItemUnchanged = async () => {
       const item = await db.query<{
         stock_quantity: number;
@@ -2426,7 +2488,11 @@ test('POST /api/orders guest storefront checkout against isolated PostgreSQL enf
       55000,
       'Ghi chú mới cho đơn POS'
     );
-    assert.equal(patchSameQtyRes.status, 200);
+    assert.equal(
+      patchSameQtyRes.status,
+      200,
+      JSON.stringify(await patchSameQtyRes.clone().json())
+    );
     const patchSameQtyJson = await patchSameQtyRes.json();
     assert.equal(patchSameQtyJson.order.id, ownerPosOrder.id);
     assert.equal(
