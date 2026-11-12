@@ -53,6 +53,22 @@ if (!submitMatch || /\sdisabled(?:=|\s|>)/.test(submitMatch[0])) {
 }
 console.log('PASS: confirm enabled when valid reason entered');
 
+const optionalHtml = renderToStaticMarkup(
+  React.createElement(ConfirmDialog, {
+    open: true,
+    title: 'Hủy đơn?',
+    reason: { label: 'Lý do hủy', required: false, quickChoices: ['Khách đổi ý', 'Đặt nhầm món'] },
+    onConfirm: noop,
+    onCancel: noop,
+  })
+);
+const optionalSubmit = optionalHtml.match(/<button[^>]*type="submit"[^>]*>/);
+if (!optionalSubmit || /\sdisabled(?:=|\s|>)/.test(optionalSubmit[0]) || !optionalHtml.includes('Khách đổi ý') || !optionalHtml.includes('Đặt nhầm món')) {
+  console.error('FAIL: optional cancellation permits empty reason and shows quick choices');
+  process.exit(1);
+}
+console.log('PASS: optional cancellation permits empty reason and shows quick choices');
+
 const closed = renderToStaticMarkup(
   React.createElement(ConfirmDialog, { open: false, title: 'X', onConfirm: noop, onCancel: noop })
 );
