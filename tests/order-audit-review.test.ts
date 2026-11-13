@@ -1175,6 +1175,16 @@ test('P2-12 Order Audit: durable DB + JSONL writes, multi-order table bill fan-o
       'Super Admin audit rows must be queryable from the database'
     );
 
+    await db.query(
+      `INSERT INTO public.admin_audit_logs
+       (id, actor_user_id, actor_email, action, details)
+       VALUES ('legacy-sensitive-audit', $1, 'admin@qlaok.test', 'legacy_import', $2::jsonb)`,
+      [superAdminId, JSON.stringify({ orderCode: 'QA-123', serviceRoleKey: 'legacy-secret' })]
+    );
+    const legacyAudit = (await queryAdminAuditLogs(20)).find((row) => row.id === 'legacy-sensitive-audit');
+    assert.equal(legacyAudit?.details?.orderCode, 'QA-123');
+    assert.equal(legacyAudit?.details?.serviceRoleKey, '[REDACTED]', 'Legacy DB rows must be sanitized on read');
+
     await db.exec(
       `RESET ROLE; SELECT set_config('request.jwt.claim.role', 'authenticated', false); SET ROLE authenticated`
     );
