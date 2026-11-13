@@ -1709,12 +1709,13 @@ export function PosCounterWorkspace({
 
             <button
               type="button"
+              disabled={Boolean(activeEditingOrder) && !canCollectPayment}
               onClick={() =>
                 setPaymentMethod((prev) =>
                   prev === 'cash' ? 'vietqr' : 'cash'
                 )
               }
-              className={`flex items-center justify-center gap-1 rounded-lg py-2 px-2 text-xs font-black transition ${
+              className={`flex items-center justify-center gap-1 rounded-lg py-2 px-2 text-xs font-black transition disabled:opacity-60 ${
                 paymentMethod === 'vietqr'
                   ? 'bg-blue-600 text-white'
                   : 'bg-emerald-50 text-emerald-900 border border-emerald-300'
@@ -1772,7 +1773,9 @@ export function PosCounterWorkspace({
                       ? tx('Lưu & In Bill QR', 'Save & Print QR')
                       : tx('In Bill Kèm QR', 'Print QR Bill')
                     : !canCollectPayment
-                      ? tx('Tạo đơn chưa thu tiền', 'Create unpaid order')
+                      ? activeEditingOrder
+                        ? tx('Lưu đơn chưa thu tiền', 'Save unpaid order')
+                        : tx('Tạo đơn chưa thu tiền', 'Create unpaid order')
                       : activeEditingOrder
                         ? tx('Lưu & Thu Tiền', 'Save & Charge')
                         : t('pos.collectAndComplete')}

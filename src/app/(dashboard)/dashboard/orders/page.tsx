@@ -823,12 +823,17 @@ export default function CounterOrdersPage() {
       ),
       details: renderOrderSummary(order),
       reason: {
-        label: tx('Lý do hủy', 'Cancellation reason'),
+        label: tx('Lý do hủy (không bắt buộc)', 'Cancellation reason (optional)'),
         placeholder: tx(
           'VD: Khách đổi ý, hết món...',
           'e.g. Guest changed mind, item sold out...'
         ),
-        required: true,
+        required: false,
+        quickChoices: [
+          tx('Khách đổi ý', 'Customer changed mind'),
+          tx('Đặt nhầm món', 'Ordered by mistake'),
+          tx('Khách không chờ được', 'Customer could not wait'),
+        ],
       },
       checkbox: restockApplicable
         ? {

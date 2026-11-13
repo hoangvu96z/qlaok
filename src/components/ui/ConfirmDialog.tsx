@@ -17,6 +17,7 @@ export interface ConfirmDialogReasonOptions {
   required?: boolean;
   defaultValue?: string;
   maxLength?: number;
+  quickChoices?: string[];
 }
 
 export interface ConfirmDialogCheckboxOptions {
@@ -203,6 +204,15 @@ export function ConfirmDialog({
                   </span>
                 )}
               </label>
+              {reason.quickChoices && (
+                <div className="flex flex-wrap gap-2">
+                  {reason.quickChoices.map((choice) => (
+                    <button key={choice} type="button" disabled={pending} onClick={() => setReasonText(choice)} className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-60">
+                      {choice}
+                    </button>
+                  ))}
+                </div>
+              )}
               <textarea
                 id={reasonId}
                 ref={reasonRef}
