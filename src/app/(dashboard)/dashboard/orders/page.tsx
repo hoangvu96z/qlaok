@@ -734,8 +734,7 @@ export default function CounterOrdersPage() {
     membership.permissions.includes('orders.fulfill');
   const canCollectPayment =
     !membership || membership.permissions.includes('payment.collect');
-  const canViewReports =
-    !membership || membership.permissions.includes('reports.view');
+  const canViewReports = hasPermission('reports.view');
   // Destructive / editing actions: default deny until membership is known.
   const canRefundOrder = hasPermission('payment.refund');
   const canEditItems = hasPermission('orders.edit_items');
@@ -1462,6 +1461,7 @@ export default function CounterOrdersPage() {
             canApplyDiscount={hasPermission('discount.apply')}
             canCollectPayment={hasPermission('payment.collect')}
             canViewReports={hasPermission('reports.view')}
+            canManageCatalog={hasPermission('catalog.manage')}
             onPrintOrder={(ord) => {
               setPrintingInitialTicketType(undefined);
               setPrintingOrder(ord);
