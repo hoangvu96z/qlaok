@@ -16,6 +16,8 @@ Trong Super Admin, danh sách giao dịch gói hỗ trợ lọc trạng thái v�
 
 Tab Hệ thống của Super Admin hiển thị nhật ký kiểm toán chỉ đọc, cho phép lọc hành động và tìm trong đối tượng, người thực hiện và chi tiết đã che thông tin nhạy cảm.
 
+Khi POS nhận lỗi thiếu quyền, giao diện nêu rõ lần gửi bị từ chối và giữ yêu cầu chờ: một lần gửi trước có thể đã tạo đơn dù phản hồi bị mất. Người dùng cần kiểm tra đơn trước khi bỏ yêu cầu chờ hoặc thử lại với cùng khóa chống trùng.
+
 Homepage được rà lại nội dung VI/EN ngày 20/10/2026, tập trung vào nhu cầu chủ quán và thông tin gói thực tế. Xem [review nội dung homepage](docs/HOMEPAGE_COPY_REVIEW.md).
 
 - QR Cửa `/s/[slug]`: thông tin quán, Wi-Fi, giờ mở cửa, bài viết/khuyến mãi. QR Bàn `/s/[slug]/menu`: catalog, tùy chọn, giỏ hàng, gửi đơn, theo dõi bằng token riêng và 2 nút hỗ trợ nhanh tại bàn đã xác thực QR (**Gọi phục vụ** / **Xin hóa đơn**). Khi chủ quán hoặc Super Admin đổi đường dẫn (`slug`), các đường dẫn cũ được bảo lưu bền vững trong `public.shop_slug_aliases` (ngăn đụng độ chéo quán), tự phân giải về đúng quán kèm xác thực chữ ký QR bàn và chuyển hướng (`router.replace`) sang URL chuẩn hiện tại với đầy đủ tham số truy vấn (`src`, `tableId`, `sig`, `table`, `lang`).

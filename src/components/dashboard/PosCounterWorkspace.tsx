@@ -931,6 +931,10 @@ export function PosCounterWorkspace({
       setSubmitError(tx('Đã nhận kết quả đơn nhưng không thể xóa yêu cầu chờ. Vui lòng thử lại.', 'The order was received but the pending request could not be cleared. Please retry.'));
       return;
     }
+    if (result.kind === 'permission_denied') {
+      setSubmitError(tx('Lần gửi này bị từ chối do thiếu quyền. Hãy liên hệ chủ quán; sau khi được cấp quyền, có thể thử lại cùng yêu cầu. Nếu đã thử trước đó, đơn vẫn có thể đã được tạo; hãy kiểm tra danh sách đơn trước khi bỏ yêu cầu chờ.', 'This attempt was denied due to insufficient permission. Contact the owner; once permission is restored, you can retry the same request. If an earlier attempt was made, the order may already exist; check the order list before discarding the pending request.'));
+      return;
+    }
     setSubmitError(tx('Chưa xác nhận được kết quả. Đơn có thể đã được tạo; hãy kiểm tra hoặc thử lại yêu cầu này.', 'The result is not confirmed. The order may already exist; check it or retry this request.'));
   };
 
