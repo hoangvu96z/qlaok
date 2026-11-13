@@ -172,18 +172,24 @@ export default function SuperAdminPortalPage() {
   const translateRef = useRef(tx);
   translateRef.current = tx;
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
-  const [auditLogs, setAuditLogs] = useState<Array<{ id: string; action: string; actor_email: string; target_id: string | null; created_at: string }>>([]);
+  const [auditLogs, setAuditLogs] = useState<Array<{ id: string; action: string; actor_email: string; target_id: string | null; details: Record<string, unknown> | null; created_at: string }>>([]);
   const [auditSearch, setAuditSearch] = useState('');
+  const [auditAction, setAuditAction] = useState('all');
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState('');
   const [auditReload, setAuditReload] = useState(0);
   const [adminUser, setAdminUser] = useState<Profile | null>(null);
   useEffect(() => {
+    if (auditAction !== 'all' && !auditLogs.some((row) => row.action === auditAction)) {
+      setAuditAction('all');
+    }
+  }, [auditAction, auditLogs]);
+  useEffect(() => {
     if (activeTab !== 'system' || !adminUser) return;
     const controller = new AbortController();
     setAuditLoading(true);
     setAuditError('');
-    fetch('/api/admin/audit?limit=200', { headers: getAuthHeaders(), cache: 'no-store', signal: controller.signal })
+    fetch('/api/admin/audit?limit=100', { headers: getAuthHeaders(), cache: 'no-store', signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error('audit unavailable');
         const body = await res.json();
@@ -2942,11 +2948,16 @@ export default function SuperAdminPortalPage() {
             <div className="space-y-6">
               <section className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-3">
                 <h3 className="text-sm font-black text-white">{tx('Nhật ký kiểm toán', 'Audit log')}</h3>
+                <p className="text-xs text-slate-400">{tx('Hiển thị tối đa 100 bản ghi mới nhất; tìm kiếm và bộ lọc chỉ áp dụng cho các bản ghi này.', 'Showing up to the latest 100 records; search and filters apply to these records only.')}</p>
                 <input value={auditSearch} onChange={(event) => setAuditSearch(event.target.value)} placeholder={tx('Tìm hành động, người thực hiện hoặc đối tượng', 'Search action, actor or target')} aria-label={tx('Tìm trong nhật ký', 'Search audit log')} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2 text-sm text-white" />
+                <select value={auditAction} onChange={(event) => setAuditAction(event.target.value)} aria-label={tx('Lọc theo hành động', 'Filter by action')} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2 text-sm text-white">
+                  <option value="all">{tx('Tất cả hành động', 'All actions')}</option>
+                  {[...new Set(auditLogs.map((row) => row.action))].sort().map((action) => <option key={action} value={action}>{action}</option>)}
+                </select>
                 {auditLoading ? <p role="status">{tx('Đang tải...', 'Loading...')}</p> : auditError ? <div role="alert"><p>{tx('Không thể tải nhật ký.', 'Could not load audit log.')}</p><button type="button" onClick={() => setAuditReload((value) => value + 1)}>{tx('Thử lại', 'Retry')}</button></div> : (() => {
                   const query = auditSearch.trim().toLowerCase();
-                  const rows = auditLogs.filter((row) => [row.action, row.actor_email, row.target_id].some((value) => value?.toLowerCase().includes(query)));
-                  return rows.length ? <ul className="space-y-2">{rows.map((row) => <li key={row.id} className="break-words rounded-xl bg-slate-950 p-3 text-xs text-slate-200"><strong>{row.action}</strong> · {row.actor_email} · {row.target_id || '—'} · {new Date(row.created_at).toLocaleString()}</li>)}</ul> : <p>{tx('Không có nhật ký phù hợp.', 'No matching audit records.')}</p>;
+                  const rows = auditLogs.filter((row) => (auditAction === 'all' || row.action === auditAction) && [row.action, row.actor_email, row.target_id, JSON.stringify(row.details || {})].some((value) => value?.toLowerCase().includes(query)));
+                  return rows.length ? <ul className="space-y-2">{rows.map((row) => <li key={row.id} className="break-words rounded-xl bg-slate-950 p-3 text-xs text-slate-200"><strong>{row.action}</strong> · {row.actor_email} · {row.target_id || '—'} · {new Date(row.created_at).toLocaleString()}{row.details && Object.keys(row.details).length > 0 && <pre className="mt-2 whitespace-pre-wrap break-all">{JSON.stringify(row.details, null, 2)}</pre>}</li>)}</ul> : <p>{tx('Không có nhật ký phù hợp.', 'No matching audit records.')}</p>;
                 })()}
               </section>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

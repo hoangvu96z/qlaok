@@ -1460,7 +1460,10 @@ export async function queryAdminAuditLogs(
     });
   }
 
-  const databaseRows = await dbGetAdminAuditLogs(clampedLimit);
+  const databaseRows = (await dbGetAdminAuditLogs(clampedLimit)).map((row) => ({
+    ...row,
+    details: sanitizeAuditRecordObject(row.details),
+  }));
   const seenIds = new Set(databaseRows.map((row) => row.id));
   const backupRows = readAdminAuditLog(500).flatMap((raw) => {
     const normalized = normalizeAdminAuditBackupRecord(raw);
