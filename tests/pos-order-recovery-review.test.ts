@@ -215,6 +215,36 @@ test('a committed order with a lost response is retried with the identical reque
   assert.equal((await readPendingPosOrder(store, 'owner-a', 'shop-a')).kind, 'empty');
 });
 
+test('permission denial is distinguishable but retains a previously uncertain request for safe retry', async () => {
+  const { idb: store } = indexedDbStore();
+  const original = pending('pos-web:permission-retry');
+  assert.equal(await savePendingPosOrder(store, original), true);
+  const sent: string[] = [];
+  const denied = await sendPendingPosOrder(original, async (body) => {
+    sent.push(body);
+    return { ok: false, status: 403, json: async () => ({ code: 'INSUFFICIENT_SHOP_PERMISSION' }) };
+  });
+  assert.deepEqual(denied, { kind: 'permission_denied' });
+  assert.deepEqual(await readPendingPosOrder(store, 'owner-a', 'shop-a'), { kind: 'pending', request: original });
+  const retried = await sendPendingPosOrder(original, async (body) => {
+    sent.push(body);
+    return { ok: true, json: async () => ({ order: { id: 'order-a', shop_id: 'shop-a', order_code: 'ORD-QA', items: [], total_amount: 100, status: 'new', payment_status: 'unpaid' } }) };
+  });
+  assert.equal(retried.kind, 'confirmed');
+  assert.deepEqual(sent, [original.body, original.body]);
+  assert.equal(await clearConfirmedPosOrder(store, original), 'cleared');
+  assert.equal(await clearConfirmedPosOrder(store, original), 'already-cleared');
+});
+
+test('other failures and malformed permission responses remain uncertain', async () => {
+  const request = pending();
+  for (const status of [401, 403, 409, 429, 500]) {
+    assert.deepEqual(await sendPendingPosOrder(request, async () => ({ ok: false, status, json: async () => ({ code: 'OTHER' }) })), { kind: 'uncertain' });
+  }
+  assert.deepEqual(await sendPendingPosOrder(request, async () => ({ ok: false, status: 403, json: async () => null })), { kind: 'uncertain' });
+  assert.deepEqual(await sendPendingPosOrder(request, async () => ({ ok: false, status: 403, json: async () => { throw new Error('invalid json'); } })), { kind: 'uncertain' });
+});
+
 test('a pending request cannot be overwritten by an edited cart or another intent', async () => {
   const { idb: store } = indexedDbStore();
   const original = pending();

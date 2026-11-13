@@ -533,9 +533,10 @@ export async function clearConfirmedPosOrder(
   return deleteMatchingPendingPosOrder(indexedDb, request, 'confirmed', legacyStorage);
 }
 
-type PosResponse = { ok: boolean; json(): Promise<unknown> };
+type PosResponse = { ok: boolean; status?: number; json(): Promise<unknown> };
 type PosSendResult =
   | { kind: 'confirmed'; order: ShopOrder }
+  | { kind: 'permission_denied' }
   | { kind: 'uncertain' };
 
 /** No retry happens here: the caller must explicitly invoke this for each attempt. */
@@ -546,7 +547,15 @@ export async function sendPendingPosOrder(
   if (!validRequest(request, request.accountId, request.shopId)) return { kind: 'uncertain' };
   try {
     const response = await send(request.body);
-    if (!response.ok) return { kind: 'uncertain' };
+    if (!response.ok) {
+      if (response.status === 403) {
+        const error = await response.json() as { code?: unknown } | null;
+        if (error?.code === 'INSUFFICIENT_SHOP_PERMISSION') {
+          return { kind: 'permission_denied' };
+        }
+      }
+      return { kind: 'uncertain' };
+    }
     const body = await response.json() as { order?: Partial<ShopOrder> } | null;
     const order = body?.order;
     if (
