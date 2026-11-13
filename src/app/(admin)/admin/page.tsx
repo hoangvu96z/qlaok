@@ -180,6 +180,11 @@ export default function SuperAdminPortalPage() {
   const [auditReload, setAuditReload] = useState(0);
   const [adminUser, setAdminUser] = useState<Profile | null>(null);
   useEffect(() => {
+    if (auditAction !== 'all' && !auditLogs.some((row) => row.action === auditAction)) {
+      setAuditAction('all');
+    }
+  }, [auditAction, auditLogs]);
+  useEffect(() => {
     if (activeTab !== 'system' || !adminUser) return;
     const controller = new AbortController();
     setAuditLoading(true);
@@ -2943,6 +2948,7 @@ export default function SuperAdminPortalPage() {
             <div className="space-y-6">
               <section className="rounded-3xl border border-slate-800 bg-slate-900 p-5 space-y-3">
                 <h3 className="text-sm font-black text-white">{tx('Nhật ký kiểm toán', 'Audit log')}</h3>
+                <p className="text-xs text-slate-400">{tx('Hiển thị tối đa 100 bản ghi mới nhất; tìm kiếm và bộ lọc chỉ áp dụng cho các bản ghi này.', 'Showing up to the latest 100 records; search and filters apply to these records only.')}</p>
                 <input value={auditSearch} onChange={(event) => setAuditSearch(event.target.value)} placeholder={tx('Tìm hành động, người thực hiện hoặc đối tượng', 'Search action, actor or target')} aria-label={tx('Tìm trong nhật ký', 'Search audit log')} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2 text-sm text-white" />
                 <select value={auditAction} onChange={(event) => setAuditAction(event.target.value)} aria-label={tx('Lọc theo hành động', 'Filter by action')} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2 text-sm text-white">
                   <option value="all">{tx('Tất cả hành động', 'All actions')}</option>
