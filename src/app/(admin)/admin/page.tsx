@@ -231,6 +231,8 @@ export default function SuperAdminPortalPage() {
     'all' | OrderStatus
   >('all');
   const [orderShopFilter, setOrderShopFilter] = useState<string>('all');
+  const [transactionSearch, setTransactionSearch] = useState('');
+  const [transactionStatus, setTransactionStatus] = useState<'all' | 'pending' | 'completed'>('all');
 
   // AI Test state in System tab
   const [aiTestInput, setAiTestInput] = useState(
@@ -1458,7 +1460,7 @@ export default function SuperAdminPortalPage() {
             onClick={(e) => {
               e.stopPropagation();
               const rawAmount = window.prompt(
-                tx('Nhập số tiền thực nhận từ ngân hàng (VND) sau khi đối chiếu:', 'Enter the amount actually received from the bank (VND) after verification:')
+                tx('Giao dịch dự kiến {amount}. Nhập số tiền thực nhận từ ngân hàng (VND) sau khi đối chiếu:', 'Expected transaction amount: {amount}. Enter the amount actually received from the bank (VND) after verification:', { amount: formatCurrency(trx.amount, 'VND') })
               );
               if (rawAmount === null) return;
               const transferAmount = Number(rawAmount.trim());
@@ -1466,12 +1468,17 @@ export default function SuperAdminPortalPage() {
                 showToastMessage('error', tx('Số tiền phải là số nguyên dương.', 'Amount must be a positive whole number.'));
                 return;
               }
+              const bankReference = window.prompt(
+                tx('Mã tham chiếu ngân hàng (không bắt buộc):', 'Bank reference (optional):')
+              );
+              if (bankReference === null) return;
               runAdminAction(
                 {
                   action: 'approve_transaction',
                   orderCode: trx.order_code,
                   ownerId: trx.user_id,
                   transferAmount,
+                  ...(bankReference.trim() ? { bankRefId: bankReference.trim() } : {}),
                 },
                 tx(
                   'Đã duyệt giao dịch {code} & nâng cấp gói {plan} cho {email}!',
@@ -2867,6 +2874,27 @@ export default function SuperAdminPortalPage() {
                 </div>
               </div>
 
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  type="search"
+                  value={transactionSearch}
+                  onChange={(event) => setTransactionSearch(event.target.value)}
+                  aria-label={tx('Tìm giao dịch', 'Search transactions')}
+                  placeholder={tx('Tìm mã giao dịch, chủ quán hoặc mã ngân hàng', 'Search transaction, owner or bank reference')}
+                  className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                />
+                <select
+                  value={transactionStatus}
+                  onChange={(event) => setTransactionStatus(event.target.value as 'all' | 'pending' | 'completed')}
+                  aria-label={tx('Lọc trạng thái giao dịch', 'Filter transaction status')}
+                  className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                >
+                  <option value="all">{tx('Tất cả trạng thái', 'All statuses')}</option>
+                  <option value="pending">{tx('Chờ duyệt', 'Pending')}</option>
+                  <option value="completed">{tx('Hoàn tất', 'Completed')}</option>
+                </select>
+              </div>
+
               <div className="rounded-3xl border border-slate-800 bg-slate-900 overflow-hidden">
                 <AppDataTable<EnrichedTransaction>
                   keyField="id"
@@ -2875,7 +2903,12 @@ export default function SuperAdminPortalPage() {
                     'Plan Upgrade Transactions (VietQR)'
                   )}
                   columns={transactionColumns}
-                  data={data.transactions || []}
+                  data={(data.transactions || []).filter((trx) => {
+                    const query = transactionSearch.trim().toLocaleLowerCase();
+                    return (transactionStatus === 'all' || trx.status === transactionStatus) &&
+                      (!query || [trx.order_code, trx.ownerName, trx.ownerEmail, trx.bank_ref_id]
+                        .some((value) => value?.toLocaleLowerCase().includes(query)));
+                  })}
                   pagination
                   paginationPerPage={10}
                   paginationRowsPerPageOptions={[10, 20, 50]}
@@ -2883,10 +2916,9 @@ export default function SuperAdminPortalPage() {
                     <div className="py-8 px-4 text-center">
                       <div className="max-w-md mx-auto space-y-2.5">
                         <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                          {tx(
-                            'Chưa có giao dịch nâng cấp gói cước nào.',
-                            'No plan upgrade transactions recorded yet.'
-                          )}
+                          {transactionSearch.trim() || transactionStatus !== 'all'
+                            ? tx('Không có giao dịch phù hợp.', 'No matching transactions.')
+                            : tx('Chưa có giao dịch nâng cấp gói cước nào.', 'No plan upgrade transactions recorded yet.')}
                         </p>
                         <button
                           type="button"
