@@ -80,6 +80,7 @@ interface PosCounterWorkspaceProps {
   canApplyDiscount: boolean;
   canCollectPayment?: boolean;
   canViewReports: boolean;
+  canManageCatalog: boolean;
   onOrderCreated: (order: ShopOrder, shouldPrint: boolean) => void;
   onCancelEditOrder?: () => void;
   onPrintOrder?: (order: ShopOrder) => void;
@@ -220,6 +221,7 @@ export function PosCounterWorkspace({
   canApplyDiscount,
   canCollectPayment = true,
   canViewReports,
+  canManageCatalog,
   onOrderCreated,
   onCancelEditOrder,
   onPrintOrder,
@@ -1253,15 +1255,17 @@ export function PosCounterWorkspace({
             </Link>
           ) : null}
 
-          <Link
-            href="/dashboard/catalog"
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-700"
-          >
-            <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
-            <span>
-              {tx('Cấu hình Option / Topping món', 'Item Options / Toppings')}
-            </span>
-          </Link>
+          {canManageCatalog && (
+            <Link
+              href="/dashboard/catalog"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-700"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
+              <span>
+                {tx('Cấu hình Option / Topping món', 'Item Options / Toppings')}
+              </span>
+            </Link>
+          )}
 
           <button
             type="button"
@@ -2295,12 +2299,14 @@ export function PosCounterWorkspace({
                       'No paid option/topping groups configured for this item yet.'
                     )}
                   </span>
-                  <Link
-                    href="/dashboard/catalog"
-                    className="shrink-0 font-bold text-emerald-700 underline"
-                  >
-                    {tx('+ Cấu hình trong Menu', '+ Configure in Menu')}
-                  </Link>
+                  {canManageCatalog && (
+                    <Link
+                      href="/dashboard/catalog"
+                      className="shrink-0 font-bold text-emerald-700 underline"
+                    >
+                      {tx('+ Cấu hình trong Menu', '+ Configure in Menu')}
+                    </Link>
+                  )}
                 </div>
               )}
 
